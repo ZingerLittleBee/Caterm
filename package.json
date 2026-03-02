@@ -14,14 +14,13 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "turbo dev",
-    "build": "turbo build",
-    "check-types": "turbo check-types",
-    "dev:native": "turbo -F native dev",
-    "dev:web": "turbo -F web dev",
-    "tauri": "turbo -F web tauri --",
-    "tauri:dev": "turbo -F web desktop:dev",
-    "tauri:build": "turbo -F web desktop:build",
+    "dev": "bun run --filter '*' dev",
+    "build": "bun run --filter '*' build",
+    "check-types": "bun run --filter '*' check-types",
+    "dev:web": "bun run --filter web dev",
+    "tauri": "bun run --filter web tauri --",
+    "tauri:dev": "bun run --filter web desktop:dev",
+    "tauri:build": "bun run --filter web desktop:build",
     "check": "ultracite check",
     "fix": "ultracite fix"
   },
@@ -33,7 +32,6 @@
   "devDependencies": {
     "@Caterm/config": "workspace:*",
     "@biomejs/biome": "2.4.0",
-    "turbo": "^2.6.3",
     "typescript": "catalog:",
     "ultracite": "7.2.4"
   },
