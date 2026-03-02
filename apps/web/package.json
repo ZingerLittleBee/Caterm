@@ -20,6 +20,7 @@
     "@tailwindcss/vite": "^4.0.15",
     "@tanstack/react-router": "^1.141.1",
     "class-variance-authority": "^0.7.1",
+    "@fontsource-variable/geist": "^5.2.8",
     "clsx": "^2.1.1",
     "dotenv": "catalog:",
     "lucide-react": "^0.473.0",
