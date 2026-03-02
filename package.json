@@ -19,6 +19,9 @@
     "check-types": "turbo check-types",
     "dev:native": "turbo -F native dev",
     "dev:web": "turbo -F web dev",
+    "tauri": "turbo -F web tauri --",
+    "tauri:dev": "turbo -F web desktop:dev",
+    "tauri:build": "turbo -F web desktop:build",
     "check": "ultracite check",
     "fix": "ultracite fix"
   },

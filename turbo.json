@@ -16,6 +16,18 @@
     "dev": {
       "cache": false,
       "persistent": true
+    },
+    "tauri": {
+      "cache": false,
+      "persistent": true
+    },
+    "desktop:dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "desktop:build": {
+      "dependsOn": ["^build"],
+      "outputs": ["src-tauri/target/**"]
     }
   }
 }
