@@ -17,7 +17,6 @@
     "dev": "bun run --filter '*' dev",
     "build": "bun run --filter '*' build",
     "check-types": "bun run --filter '*' check-types",
-    "dev:web": "bun run --filter web dev",
     "tauri": "bun run --filter web tauri --",
     "tauri:dev": "bun run --filter web desktop:dev",
     "tauri:build": "bun run --filter web desktop:build",
