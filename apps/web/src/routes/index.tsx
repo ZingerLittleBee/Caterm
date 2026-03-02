@@ -1,5 +1,5 @@
-import { Input } from "@/components/ui/input";
 import { createFileRoute } from "@tanstack/react-router";
+import { Input } from "@/components/ui/input";
 
 export const Route = createFileRoute("/")({
 	component: HomeComponent,
