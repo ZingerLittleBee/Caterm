@@ -92,10 +92,16 @@ export function SshTerminal({
 		// Forward user input to the SSH backend as base64-encoded data.
 		// Use TextEncoder for binary-safe base64 encoding.
 		const dataDisposable = terminal.onData((data: string) => {
-			const encoder = new TextEncoder();
-			const bytes = encoder.encode(data);
-			const binary = String.fromCodePoint(...bytes);
-			const encoded = btoa(binary);
+			const bytes = new TextEncoder().encode(data);
+			// Build binary string in chunks to avoid call stack limits
+			// with large paste operations.
+			const chunks: string[] = [];
+			const CHUNK_SIZE = 8192;
+			for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+				const slice = bytes.subarray(i, i + CHUNK_SIZE);
+				chunks.push(String.fromCodePoint(...slice));
+			}
+			const encoded = btoa(chunks.join(""));
 			invoke("ssh_write", { sessionId, data: encoded }).catch(() => {
 				// Write failures are expected when the session disconnects.
 			});

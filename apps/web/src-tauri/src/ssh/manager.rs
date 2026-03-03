@@ -56,19 +56,31 @@ impl SshSessionManager {
     }
 
     /// Disconnect a specific session and remove it from the manager.
+    ///
+    /// Removes the session from the map and releases the lock before
+    /// awaiting the close command, consistent with write/resize.
     pub async fn disconnect(&self, session_id: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.remove(session_id) {
+        let session = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.remove(session_id)
+        };
+        if let Some(session) = session {
             session.close().await?;
         }
         Ok(())
     }
 
     /// Disconnect all active sessions.
+    ///
+    /// Drains all sessions while holding the lock, then closes each
+    /// one after releasing the lock to avoid blocking other operations.
     #[allow(dead_code)]
     pub async fn disconnect_all(&self) {
-        let mut sessions = self.sessions.lock().await;
-        for (_, session) in sessions.drain() {
+        let drained: Vec<SshSession> = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.drain().map(|(_, s)| s).collect()
+        };
+        for session in drained {
             let _ = session.close().await;
         }
     }

@@ -5,6 +5,7 @@ import {
 	createContext,
 	useCallback,
 	useContext,
+	useEffect,
 	useRef,
 	useState,
 } from "react";
@@ -162,6 +163,23 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
 
 	const setActive = useCallback((sessionId: string | null) => {
 		setActiveSessionId(sessionId);
+	}, []);
+
+	// Cleanup all sessions and listeners when the provider unmounts
+	// (e.g., user navigates away from /ssh).
+	useEffect(() => {
+		return () => {
+			for (const [, unlisten] of unlistenMap.current) {
+				unlisten();
+			}
+			unlistenMap.current.clear();
+
+			for (const sid of sessionsRef.current.keys()) {
+				invoke("ssh_disconnect", { sessionId: sid }).catch(() => {
+					// Session may already be closed
+				});
+			}
+		};
 	}, []);
 
 	return (

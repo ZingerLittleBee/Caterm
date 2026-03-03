@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import Database from "@tauri-apps/plugin-sql";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { HostForm } from "@/components/hosts/host-form";
 import { HostList } from "@/components/hosts/host-list";
 import {
@@ -23,6 +24,22 @@ import {
 } from "@/components/ui/sheet";
 import type { SshHost } from "@/types/ssh";
 
+interface TerminalSettings {
+	cursorBlink: boolean;
+	cursorStyle: "block" | "underline" | "bar";
+	fontFamily: string;
+	fontSize: number;
+	scrollback: number;
+}
+
+const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+	fontFamily: "monospace",
+	fontSize: 14,
+	cursorStyle: "block",
+	cursorBlink: true,
+	scrollback: 1000,
+};
+
 export const Route = createFileRoute("/ssh")({
 	component: SshRouteWrapper,
 });
@@ -44,6 +61,33 @@ function SshLayout() {
 	);
 	const [connectTarget, setConnectTarget] = useState<SshHost | null>(null);
 	const [refreshKey, setRefreshKey] = useState(0);
+	const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>(
+		DEFAULT_TERMINAL_SETTINGS
+	);
+
+	useEffect(() => {
+		const loadSettings = async () => {
+			try {
+				const db = await Database.load("sqlite:caterm.db");
+				const rows = await db.select<TerminalSettings[]>(
+					"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback FROM terminal_settings WHERE id = 1"
+				);
+				if (rows.length > 0) {
+					const row = rows[0];
+					setTerminalSettings({
+						fontFamily: row.fontFamily,
+						fontSize: row.fontSize,
+						cursorStyle: row.cursorStyle,
+						cursorBlink: Boolean(row.cursorBlink),
+						scrollback: row.scrollback,
+					});
+				}
+			} catch {
+				// Use defaults if settings can't be loaded
+			}
+		};
+		loadSettings();
+	}, []);
 
 	const activeSession = activeSessionId
 		? (sessions.get(activeSessionId) ?? null)
@@ -69,8 +113,9 @@ function SshLayout() {
 					privateKey: credentials.privateKey,
 					keyPassphrase: credentials.keyPassphrase,
 				});
-			} catch {
-				// Connection error is reflected in session status
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				toast.error("Connection failed", { description: message });
 			}
 		},
 		[connect]
@@ -127,8 +172,9 @@ function SshLayout() {
 				setFormOpen(false);
 				setEditingHost(undefined);
 				setRefreshKey((k) => k + 1);
-			} catch {
-				// Handle error silently for now
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				toast.error("Failed to save host", { description: message });
 			}
 		},
 		[editingHost]
@@ -170,8 +216,13 @@ function SshLayout() {
 					) : (
 						Array.from(sessions.values()).map((session) => (
 							<SshTerminal
+								cursorBlink={terminalSettings.cursorBlink}
+								cursorStyle={terminalSettings.cursorStyle}
+								fontFamily={terminalSettings.fontFamily}
+								fontSize={terminalSettings.fontSize}
 								isActive={session.id === activeSessionId}
 								key={session.id}
+								scrollback={terminalSettings.scrollback}
 								sessionId={session.id}
 							/>
 						))
