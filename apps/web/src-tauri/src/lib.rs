@@ -3,9 +3,6 @@ mod crypto;
 mod db;
 mod ssh;
 
-use commands::config_commands;
-use commands::host_commands;
-use commands::settings_commands;
 use commands::ssh_commands;
 use db::migrations::get_migrations;
 use ssh::manager::SshSessionManager;
@@ -33,18 +30,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            host_commands::list_hosts,
-            host_commands::get_host,
-            host_commands::create_host,
-            host_commands::update_host,
-            host_commands::delete_host,
             ssh_commands::ssh_connect,
             ssh_commands::ssh_write,
             ssh_commands::ssh_resize,
             ssh_commands::ssh_disconnect,
-            settings_commands::get_terminal_settings,
-            config_commands::export_config,
-            config_commands::import_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
