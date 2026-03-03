@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import type * as React from "react";
 
 import {
@@ -24,10 +25,17 @@ export function NavSecondary({
 				<SidebarMenu>
 					{items.map((item) => (
 						<SidebarMenuItem key={item.title}>
-							<SidebarMenuButton render={<a href={item.url} />}>
-								{item.icon}
-								<span>{item.title}</span>
-							</SidebarMenuButton>
+							{item.url.startsWith("/") ? (
+								<SidebarMenuButton render={<Link to={item.url} />}>
+									{item.icon}
+									<span>{item.title}</span>
+								</SidebarMenuButton>
+							) : (
+								<SidebarMenuButton render={<a href={item.url} />}>
+									{item.icon}
+									<span>{item.title}</span>
+								</SidebarMenuButton>
+							)}
 						</SidebarMenuItem>
 					))}
 				</SidebarMenu>

@@ -14,6 +14,7 @@ import {
 	ListIcon,
 	SearchIcon,
 	Settings2Icon,
+	TerminalIcon,
 	UsersIcon,
 } from "lucide-react";
 import type * as React from "react";
@@ -62,6 +63,11 @@ const data = {
 			title: "Team",
 			url: "#",
 			icon: <UsersIcon />,
+		},
+		{
+			title: "SSH Terminal",
+			url: "/ssh",
+			icon: <TerminalIcon />,
 		},
 	],
 	navClouds: [
@@ -113,6 +119,11 @@ const data = {
 		},
 	],
 	navSecondary: [
+		{
+			title: "Terminal Settings",
+			url: "/ssh/settings",
+			icon: <Settings2Icon />,
+		},
 		{
 			title: "Settings",
 			url: "#",

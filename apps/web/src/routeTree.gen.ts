@@ -9,38 +9,64 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SshRouteRouteImport } from './routes/ssh/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SshSettingsRouteImport } from './routes/ssh/settings'
 
+const SshRouteRoute = SshRouteRouteImport.update({
+  id: '/ssh',
+  path: '/ssh',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SshSettingsRoute = SshSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => SshRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/ssh': typeof SshRouteRouteWithChildren
+  '/ssh/settings': typeof SshSettingsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/ssh': typeof SshRouteRouteWithChildren
+  '/ssh/settings': typeof SshSettingsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/ssh': typeof SshRouteRouteWithChildren
+  '/ssh/settings': typeof SshSettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/ssh' | '/ssh/settings'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/ssh' | '/ssh/settings'
+  id: '__root__' | '/' | '/ssh' | '/ssh/settings'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SshRouteRoute: typeof SshRouteRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/ssh': {
+      id: '/ssh'
+      path: '/ssh'
+      fullPath: '/ssh'
+      preLoaderRoute: typeof SshRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,11 +74,31 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/ssh/settings': {
+      id: '/ssh/settings'
+      path: '/settings'
+      fullPath: '/ssh/settings'
+      preLoaderRoute: typeof SshSettingsRouteImport
+      parentRoute: typeof SshRouteRoute
+    }
   }
 }
 
+interface SshRouteRouteChildren {
+  SshSettingsRoute: typeof SshSettingsRoute
+}
+
+const SshRouteRouteChildren: SshRouteRouteChildren = {
+  SshSettingsRoute: SshSettingsRoute,
+}
+
+const SshRouteRouteWithChildren = SshRouteRoute._addFileChildren(
+  SshRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SshRouteRoute: SshRouteRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
