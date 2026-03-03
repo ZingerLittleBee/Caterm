@@ -1,5 +1,6 @@
 import Database from "@tauri-apps/plugin-sql";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -50,7 +51,7 @@ export function TerminalSettingsForm() {
 		try {
 			const db = await Database.load("sqlite:caterm.db");
 			const rows = await db.select<TerminalSettings[]>(
-				"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback, theme FROM terminal_settings WHERE id = 1"
+				"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback, theme FROM terminal_settings WHERE id = 'default'"
 			);
 			if (rows.length > 0) {
 				const row = rows[0];
@@ -77,7 +78,7 @@ export function TerminalSettingsForm() {
 		try {
 			const db = await Database.load("sqlite:caterm.db");
 			await db.execute(
-				"UPDATE terminal_settings SET font_family = ?, font_size = ?, cursor_style = ?, cursor_blink = ?, scrollback = ?, theme = ? WHERE id = 1",
+				"UPDATE terminal_settings SET font_family = ?, font_size = ?, cursor_style = ?, cursor_blink = ?, scrollback = ?, theme = ? WHERE id = 'default'",
 				[
 					settings.fontFamily,
 					settings.fontSize,
@@ -87,8 +88,10 @@ export function TerminalSettingsForm() {
 					settings.theme,
 				]
 			);
-		} catch {
-			// Handle error silently for now
+			toast.success("Settings saved");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			toast.error("Failed to save settings", { description: message });
 		} finally {
 			setSaving(false);
 		}
