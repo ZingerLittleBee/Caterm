@@ -1,5 +1,6 @@
 "use client";
 
+import { Link } from "@tanstack/react-router";
 import { CirclePlusIcon, MailIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,10 +45,20 @@ export function NavMain({
 				<SidebarMenu>
 					{items.map((item) => (
 						<SidebarMenuItem key={item.title}>
-							<SidebarMenuButton tooltip={item.title}>
-								{item.icon}
-								<span>{item.title}</span>
-							</SidebarMenuButton>
+							{item.url.startsWith("/") ? (
+								<SidebarMenuButton
+									render={<Link to={item.url} />}
+									tooltip={item.title}
+								>
+									{item.icon}
+									<span>{item.title}</span>
+								</SidebarMenuButton>
+							) : (
+								<SidebarMenuButton tooltip={item.title}>
+									{item.icon}
+									<span>{item.title}</span>
+								</SidebarMenuButton>
+							)}
 						</SidebarMenuItem>
 					))}
 				</SidebarMenu>
