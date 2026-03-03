@@ -6,9 +6,26 @@ use russh::client::{self, Handle, Msg};
 use russh::Channel;
 use russh::ChannelMsg;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::handler::SshClientHandler;
+
+/// Commands sent from write/resize/close to the reader task
+/// that exclusively owns the SSH channel.
+enum ChannelCommand {
+    Data {
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Resize {
+        cols: u32,
+        rows: u32,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Close {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
 
 /// Represents an active SSH session with a remote host.
 #[allow(dead_code)]
@@ -17,8 +34,11 @@ pub struct SshSession {
     pub id: String,
     /// The host ID this session is connected to.
     pub host_id: String,
-    /// The SSH channel for reading/writing.
-    channel: Arc<Mutex<Channel<Msg>>>,
+    /// Sender for dispatching commands to the reader task that owns the channel.
+    command_tx: mpsc::Sender<ChannelCommand>,
+    /// The SSH channel and command receiver, held until `spawn_reader` takes them.
+    /// Once the reader is spawned, this becomes `None`.
+    pending_reader: Mutex<Option<(Channel<Msg>, mpsc::Receiver<ChannelCommand>)>>,
     /// The SSH client handle for the connection.
     _handle: Handle<SshClientHandler>,
     /// Handle to the Tauri application for emitting events.
@@ -69,10 +89,13 @@ impl SshSession {
             .await
             .map_err(|e| format!("Failed to request shell: {e}"))?;
 
+        let (command_tx, command_rx) = mpsc::channel(32);
+
         Ok(Self {
             id,
             host_id,
-            channel: Arc::new(Mutex::new(channel)),
+            command_tx,
+            pending_reader: Mutex::new(Some((channel, command_rx))),
             _handle: handle,
             app_handle,
         })
@@ -123,10 +146,13 @@ impl SshSession {
             .await
             .map_err(|e| format!("Failed to request shell: {e}"))?;
 
+        let (command_tx, command_rx) = mpsc::channel(32);
+
         Ok(Self {
             id,
             host_id,
-            channel: Arc::new(Mutex::new(channel)),
+            command_tx,
+            pending_reader: Mutex::new(Some((channel, command_rx))),
             _handle: handle,
             app_handle,
         })
@@ -134,69 +160,160 @@ impl SshSession {
 
     /// Write data to the SSH channel.
     pub async fn write(&self, data: &[u8]) -> Result<(), String> {
-        let channel = self.channel.lock().await;
-        channel
-            .data(data)
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(ChannelCommand::Data {
+                data: data.to_vec(),
+                reply: reply_tx,
+            })
             .await
-            .map_err(|e| format!("Failed to write to SSH channel: {e}"))
+            .map_err(|_| "SSH channel task has stopped".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "SSH channel task dropped the reply".to_string())?
     }
 
     /// Resize the remote terminal.
     pub async fn resize(&self, cols: u32, rows: u32) -> Result<(), String> {
-        let channel = self.channel.lock().await;
-        channel
-            .window_change(cols, rows, 0, 0)
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(ChannelCommand::Resize {
+                cols,
+                rows,
+                reply: reply_tx,
+            })
             .await
-            .map_err(|e| format!("Failed to resize terminal: {e}"))
+            .map_err(|_| "SSH channel task has stopped".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "SSH channel task dropped the reply".to_string())?
     }
 
     /// Close the SSH channel.
     pub async fn close(&self) -> Result<(), String> {
-        let channel = self.channel.lock().await;
-        channel
-            .close()
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(ChannelCommand::Close { reply: reply_tx })
             .await
-            .map_err(|e| format!("Failed to close SSH channel: {e}"))
+            .map_err(|_| "SSH channel task has stopped".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "SSH channel task dropped the reply".to_string())?
     }
 
     /// Spawn a background task that reads SSH output and emits Tauri events.
+    ///
+    /// The reader task takes exclusive ownership of the SSH channel, preventing
+    /// deadlocks. Write, resize, and close operations are dispatched to this task
+    /// via an internal command channel.
     ///
     /// Emits:
     /// - `ssh-output-{session_id}` with base64-encoded data for each data message.
     /// - `ssh-disconnect-{session_id}` when the channel closes or reaches EOF.
     pub fn spawn_reader(&self) {
-        let channel = self.channel.clone();
+        // Take the channel and command receiver out of the pending slot.
+        // This uses try_lock because spawn_reader is not async; the lock is
+        // uncontended at this point since it is called right after construction.
+        let Some((channel, command_rx)) = self
+            .pending_reader
+            .try_lock()
+            .expect("pending_reader lock should be uncontended during spawn_reader")
+            .take()
+        else {
+            // Reader was already spawned.
+            return;
+        };
+
         let app_handle = self.app_handle.clone();
         let session_id = self.id.clone();
         let output_event = format!("ssh-output-{}", self.id);
         let disconnect_event = format!("ssh-disconnect-{}", self.id);
 
         tokio::spawn(async move {
-            let mut ch = channel.lock().await;
-            loop {
-                match ch.wait().await {
-                    Some(ChannelMsg::Data { data }) => {
-                        let encoded = BASE64.encode(&data);
-                        let _ = app_handle.emit(&output_event, encoded);
+            Self::reader_loop(
+                channel,
+                command_rx,
+                app_handle,
+                session_id,
+                output_event,
+                disconnect_event,
+            )
+            .await;
+        });
+    }
+
+    /// The reader loop that exclusively owns the SSH channel.
+    ///
+    /// Uses `tokio::select!` to concurrently handle:
+    /// - Incoming SSH data from `channel.wait()`
+    /// - Outgoing commands (write, resize, close) from the mpsc receiver
+    async fn reader_loop(
+        mut channel: Channel<Msg>,
+        mut command_rx: mpsc::Receiver<ChannelCommand>,
+        app_handle: AppHandle,
+        session_id: String,
+        output_event: String,
+        disconnect_event: String,
+    ) {
+        loop {
+            tokio::select! {
+                msg = channel.wait() => {
+                    match msg {
+                        Some(ChannelMsg::Data { data }) => {
+                            let encoded = BASE64.encode(&data);
+                            let _ = app_handle.emit(&output_event, encoded);
+                        }
+                        Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            let encoded = BASE64.encode(&data);
+                            let _ = app_handle.emit(&output_event, encoded);
+                        }
+                        Some(ChannelMsg::Eof | ChannelMsg::Close) => {
+                            let _ = app_handle.emit(&disconnect_event, &session_id);
+                            break;
+                        }
+                        Some(_) => {
+                            // Ignore other channel messages.
+                        }
+                        None => {
+                            // Channel closed.
+                            let _ = app_handle.emit(&disconnect_event, &session_id);
+                            break;
+                        }
                     }
-                    Some(ChannelMsg::ExtendedData { data, .. }) => {
-                        let encoded = BASE64.encode(&data);
-                        let _ = app_handle.emit(&output_event, encoded);
-                    }
-                    Some(ChannelMsg::Eof | ChannelMsg::Close) => {
-                        let _ = app_handle.emit(&disconnect_event, session_id);
-                        break;
-                    }
-                    Some(_) => {
-                        // Ignore other channel messages.
-                    }
-                    None => {
-                        // Channel closed.
-                        let _ = app_handle.emit(&disconnect_event, session_id);
-                        break;
+                }
+                cmd = command_rx.recv() => {
+                    match cmd {
+                        Some(ChannelCommand::Data { data, reply }) => {
+                            let result = channel
+                                .data(&data[..])
+                                .await
+                                .map_err(|e| format!("Failed to write to SSH channel: {e}"));
+                            let _ = reply.send(result);
+                        }
+                        Some(ChannelCommand::Resize { cols, rows, reply }) => {
+                            let result = channel
+                                .window_change(cols, rows, 0, 0)
+                                .await
+                                .map_err(|e| format!("Failed to resize terminal: {e}"));
+                            let _ = reply.send(result);
+                        }
+                        Some(ChannelCommand::Close { reply }) => {
+                            let result = channel
+                                .close()
+                                .await
+                                .map_err(|e| format!("Failed to close SSH channel: {e}"));
+                            let _ = reply.send(result);
+                            break;
+                        }
+                        None => {
+                            // All command senders dropped; session is being torn down.
+                            let _ = channel.close().await;
+                            let _ = app_handle.emit(&disconnect_event, &session_id);
+                            break;
+                        }
                     }
                 }
             }
-        });
+        }
     }
 }
