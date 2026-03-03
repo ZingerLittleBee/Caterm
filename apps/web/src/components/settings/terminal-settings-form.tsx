@@ -49,36 +49,19 @@ export function TerminalSettingsForm() {
 	const loadSettings = useCallback(async () => {
 		try {
 			const db = await Database.load("sqlite:caterm.db");
-			const rows = await db.select<Array<{ key: string; value: string }>>(
-				"SELECT key, value FROM terminal_settings"
+			const rows = await db.select<TerminalSettings[]>(
+				"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback, theme FROM terminal_settings WHERE id = 1"
 			);
 			if (rows.length > 0) {
-				const loaded = { ...DEFAULT_SETTINGS };
-				for (const row of rows) {
-					switch (row.key) {
-						case "fontFamily":
-							loaded.fontFamily = row.value;
-							break;
-						case "fontSize":
-							loaded.fontSize = Number.parseInt(row.value, 10) || 14;
-							break;
-						case "cursorStyle":
-							loaded.cursorStyle = row.value as TerminalSettings["cursorStyle"];
-							break;
-						case "cursorBlink":
-							loaded.cursorBlink = row.value === "true";
-							break;
-						case "scrollback":
-							loaded.scrollback = Number.parseInt(row.value, 10) || 1000;
-							break;
-						case "theme":
-							loaded.theme = row.value;
-							break;
-						default:
-							break;
-					}
-				}
-				setSettings(loaded);
+				const row = rows[0];
+				setSettings({
+					fontFamily: row.fontFamily,
+					fontSize: row.fontSize,
+					cursorStyle: row.cursorStyle,
+					cursorBlink: Boolean(row.cursorBlink),
+					scrollback: row.scrollback,
+					theme: row.theme,
+				});
 			}
 		} catch {
 			// Table may not exist yet, use defaults
@@ -94,15 +77,16 @@ export function TerminalSettingsForm() {
 		try {
 			const db = await Database.load("sqlite:caterm.db");
 			await db.execute(
-				"CREATE TABLE IF NOT EXISTS terminal_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+				"UPDATE terminal_settings SET font_family = ?, font_size = ?, cursor_style = ?, cursor_blink = ?, scrollback = ?, theme = ? WHERE id = 1",
+				[
+					settings.fontFamily,
+					settings.fontSize,
+					settings.cursorStyle,
+					settings.cursorBlink ? 1 : 0,
+					settings.scrollback,
+					settings.theme,
+				]
 			);
-			const entries = Object.entries(settings);
-			for (const [key, value] of entries) {
-				await db.execute(
-					"INSERT OR REPLACE INTO terminal_settings (key, value) VALUES (?, ?)",
-					[key, String(value)]
-				);
-			}
 		} catch {
 			// Handle error silently for now
 		} finally {

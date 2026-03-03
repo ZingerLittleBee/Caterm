@@ -12,7 +12,7 @@ use super::handler::SshClientHandler;
 
 /// Commands sent from write/resize/close to the reader task
 /// that exclusively owns the SSH channel.
-enum ChannelCommand {
+pub(crate) enum ChannelCommand {
     Data {
         data: Vec<u8>,
         reply: oneshot::Sender<Result<(), String>>,
@@ -158,32 +158,57 @@ impl SshSession {
         })
     }
 
+    /// Clone the command sender so callers can send commands without holding
+    /// a long-lived borrow on the session (e.g. across await points).
+    pub fn command_sender(&self) -> mpsc::Sender<ChannelCommand> {
+        self.command_tx.clone()
+    }
+
     /// Write data to the SSH channel.
+    #[allow(dead_code)]
     pub async fn write(&self, data: &[u8]) -> Result<(), String> {
+        Self::write_with(self.command_tx.clone(), data).await
+    }
+
+    /// Write data using a pre-cloned command sender.
+    /// This avoids holding a Mutex across the await.
+    pub async fn write_with(
+        tx: mpsc::Sender<ChannelCommand>,
+        data: &[u8],
+    ) -> Result<(), String> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.command_tx
-            .send(ChannelCommand::Data {
-                data: data.to_vec(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| "SSH channel task has stopped".to_string())?;
+        tx.send(ChannelCommand::Data {
+            data: data.to_vec(),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| "SSH channel task has stopped".to_string())?;
         reply_rx
             .await
             .map_err(|_| "SSH channel task dropped the reply".to_string())?
     }
 
     /// Resize the remote terminal.
+    #[allow(dead_code)]
     pub async fn resize(&self, cols: u32, rows: u32) -> Result<(), String> {
+        Self::resize_with(self.command_tx.clone(), cols, rows).await
+    }
+
+    /// Resize using a pre-cloned command sender.
+    /// This avoids holding a Mutex across the await.
+    pub async fn resize_with(
+        tx: mpsc::Sender<ChannelCommand>,
+        cols: u32,
+        rows: u32,
+    ) -> Result<(), String> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.command_tx
-            .send(ChannelCommand::Resize {
-                cols,
-                rows,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| "SSH channel task has stopped".to_string())?;
+        tx.send(ChannelCommand::Resize {
+            cols,
+            rows,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| "SSH channel task has stopped".to_string())?;
         reply_rx
             .await
             .map_err(|_| "SSH channel task dropped the reply".to_string())?

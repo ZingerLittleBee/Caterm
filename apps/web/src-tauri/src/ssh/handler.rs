@@ -14,8 +14,18 @@ impl Handler for SshClientHandler {
         &mut self,
         _server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        // Accept all server keys for now (Trust On First Use).
-        // TODO: Implement known_hosts verification for production use.
+        // SECURITY TODO(v2): Implement proper host key verification.
+        //
+        // Currently accepts ALL server keys without verification. This is a
+        // known security risk that makes the application vulnerable to
+        // man-in-the-middle attacks. Before shipping a production release:
+        //
+        // 1. Implement a known_hosts file (~/.ssh/known_hosts or app-specific).
+        // 2. On first connection, prompt the user to accept the server's
+        //    fingerprint (Trust On First Use / TOFU).
+        // 3. On subsequent connections, verify the server key matches the
+        //    stored fingerprint and warn/block on mismatch.
+        // 4. Consider supporting key pinning and certificate-based verification.
         Ok(true)
     }
 }

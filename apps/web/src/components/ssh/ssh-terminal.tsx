@@ -90,8 +90,13 @@ export function SshTerminal({
 		});
 
 		// Forward user input to the SSH backend as base64-encoded data.
+		// Use TextEncoder for binary-safe base64 encoding.
 		const dataDisposable = terminal.onData((data: string) => {
-			invoke("ssh_write", { sessionId, data: btoa(data) }).catch(() => {
+			const encoder = new TextEncoder();
+			const bytes = encoder.encode(data);
+			const binary = String.fromCodePoint(...bytes);
+			const encoded = btoa(binary);
+			invoke("ssh_write", { sessionId, data: encoded }).catch(() => {
 				// Write failures are expected when the session disconnects.
 			});
 		});
@@ -106,11 +111,15 @@ export function SshTerminal({
 		);
 
 		// Listen for SSH output from the backend.
+		// Use binary-safe base64 decoding to avoid corruption of non-ASCII data.
 		let outputUnlisten: (() => void) | null = null;
 		const outputListenerPromise = listen<string>(
 			`ssh-output-${sessionId}`,
 			(event) => {
-				terminal.write(atob(event.payload));
+				const binary = atob(event.payload);
+				const bytes = Uint8Array.from(binary, (c) => c.codePointAt(0) ?? 0);
+				const decoded = new TextDecoder().decode(bytes);
+				terminal.write(decoded);
 			}
 		).then((unlisten) => {
 			outputUnlisten = unlisten;

@@ -4,6 +4,10 @@ import { useCallback, useState } from "react";
 import { HostForm } from "@/components/hosts/host-form";
 import { HostList } from "@/components/hosts/host-list";
 import {
+	type ConnectCredentials,
+	ConnectDialog,
+} from "@/components/ssh/connect-dialog";
+import {
 	SshSessionProvider,
 	useSshSessions,
 } from "@/components/ssh/ssh-session-provider";
@@ -38,13 +42,21 @@ function SshLayout() {
 	const [editingHost, setEditingHost] = useState<SshHost | undefined>(
 		undefined
 	);
+	const [connectTarget, setConnectTarget] = useState<SshHost | null>(null);
+	const [refreshKey, setRefreshKey] = useState(0);
 
 	const activeSession = activeSessionId
 		? (sessions.get(activeSessionId) ?? null)
 		: null;
 
-	const handleConnect = useCallback(
-		async (host: SshHost) => {
+	const handleConnectRequest = useCallback((host: SshHost) => {
+		setConnectTarget(host);
+	}, []);
+
+	const handleConnectConfirm = useCallback(
+		async (credentials: ConnectCredentials) => {
+			const { host } = credentials;
+			setConnectTarget(null);
 			try {
 				await connect({
 					hostId: host.id,
@@ -53,6 +65,9 @@ function SshLayout() {
 					port: host.port,
 					username: host.username,
 					authType: host.authType as "password" | "key",
+					password: credentials.password,
+					privateKey: credentials.privateKey,
+					keyPassphrase: credentials.keyPassphrase,
 				});
 			} catch {
 				// Connection error is reflected in session status
@@ -60,6 +75,10 @@ function SshLayout() {
 		},
 		[connect]
 	);
+
+	const handleConnectCancel = useCallback(() => {
+		setConnectTarget(null);
+	}, []);
 
 	const handleNewHost = useCallback(() => {
 		setEditingHost(undefined);
@@ -83,7 +102,7 @@ function SshLayout() {
 				const db = await Database.load("sqlite:caterm.db");
 				if (editingHost) {
 					await db.execute(
-						"UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, authType = ?, updatedAt = datetime('now') WHERE id = ?",
+						"UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, auth_type = ?, updated_at = datetime('now') WHERE id = ?",
 						[
 							values.name,
 							values.hostname,
@@ -95,7 +114,7 @@ function SshLayout() {
 					);
 				} else {
 					await db.execute(
-						"INSERT INTO ssh_hosts (id, name, hostname, port, username, authType, createdAt, updatedAt) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+						"INSERT INTO ssh_hosts (id, name, hostname, port, username, auth_type, created_at, updated_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
 						[
 							values.name,
 							values.hostname,
@@ -107,6 +126,7 @@ function SshLayout() {
 				}
 				setFormOpen(false);
 				setEditingHost(undefined);
+				setRefreshKey((k) => k + 1);
 			} catch {
 				// Handle error silently for now
 			}
@@ -124,7 +144,8 @@ function SshLayout() {
 			{/* Left sidebar: host list */}
 			<div className="w-64 shrink-0 border-r">
 				<HostList
-					onConnect={handleConnect}
+					key={refreshKey}
+					onConnect={handleConnectRequest}
 					onEdit={handleEditHost}
 					onNewHost={handleNewHost}
 				/>
@@ -159,6 +180,14 @@ function SshLayout() {
 
 				<SshStatusBar session={activeSession} />
 			</div>
+
+			{/* Connect credentials dialog */}
+			<ConnectDialog
+				host={connectTarget}
+				onCancel={handleConnectCancel}
+				onConnect={handleConnectConfirm}
+				open={connectTarget !== null}
+			/>
 
 			{/* Host form sheet */}
 			<Sheet

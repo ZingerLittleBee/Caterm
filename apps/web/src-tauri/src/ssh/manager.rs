@@ -26,21 +26,33 @@ impl SshSessionManager {
     }
 
     /// Write data to a specific session.
+    ///
+    /// Clones the command sender and releases the lock before awaiting
+    /// to avoid holding the Mutex across an await point.
     pub async fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
-        let sessions = self.sessions.lock().await;
-        let session = sessions
-            .get(session_id)
-            .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        session.write(data).await
+        let tx = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Session not found: {session_id}"))?;
+            session.command_sender()
+        };
+        SshSession::write_with(tx, data).await
     }
 
     /// Resize the terminal for a specific session.
+    ///
+    /// Clones the command sender and releases the lock before awaiting
+    /// to avoid holding the Mutex across an await point.
     pub async fn resize(&self, session_id: &str, cols: u32, rows: u32) -> Result<(), String> {
-        let sessions = self.sessions.lock().await;
-        let session = sessions
-            .get(session_id)
-            .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        session.resize(cols, rows).await
+        let tx = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Session not found: {session_id}"))?;
+            session.command_sender()
+        };
+        SshSession::resize_with(tx, cols, rows).await
     }
 
     /// Disconnect a specific session and remove it from the manager.

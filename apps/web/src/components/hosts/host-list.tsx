@@ -21,7 +21,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 		try {
 			const db = await Database.load("sqlite:caterm.db");
 			const rows = await db.select<SshHost[]>(
-				"SELECT * FROM ssh_hosts ORDER BY name"
+				"SELECT id, name, hostname, port, username, auth_type as authType, created_at as createdAt, updated_at as updatedAt FROM ssh_hosts ORDER BY name"
 			);
 			setHosts(rows);
 		} catch {

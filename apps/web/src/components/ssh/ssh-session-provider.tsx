@@ -46,6 +46,11 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
 	);
 	const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
+	// Keep a ref to the latest sessions map so removeSession can read it
+	// without abusing setSessions as a state-reading mechanism.
+	const sessionsRef = useRef(sessions);
+	sessionsRef.current = sessions;
+
 	// Store unlisten functions keyed by session ID, using a ref to avoid
 	// unnecessary re-renders when listeners change.
 	const unlistenMap = useRef<Map<string, () => void>>(new Map());
@@ -73,34 +78,25 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
 			unlistenMap.current.delete(sessionId);
 		}
 
+		// Find a fallback session before removing, using the ref for latest state.
+		let fallback: string | null = null;
+		for (const key of sessionsRef.current.keys()) {
+			if (key !== sessionId) {
+				fallback = key;
+				break;
+			}
+		}
+
 		setSessions((prev) => {
 			const next = new Map(prev);
 			next.delete(sessionId);
 			return next;
 		});
 
-		// If the removed session was active, switch to another session or null.
-		setActiveSessionId((current) => {
-			if (current !== sessionId) {
-				return current;
-			}
-
-			// Find another session to activate.
-			// We read sessions from the closure, but the setSessions above
-			// may not have taken effect yet, so we need to manually exclude
-			// the removed session.
-			let fallback: string | null = null;
-			setSessions((latest) => {
-				for (const key of latest.keys()) {
-					if (key !== sessionId) {
-						fallback = key;
-						break;
-					}
-				}
-				return latest;
-			});
-			return fallback;
-		});
+		// If the removed session was active, switch to the fallback.
+		setActiveSessionId((current) =>
+			current === sessionId ? fallback : current
+		);
 	}, []);
 
 	const connect = useCallback(
