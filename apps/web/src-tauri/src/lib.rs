@@ -3,6 +3,7 @@ mod crypto;
 mod db;
 mod ssh;
 
+use commands::config_commands;
 use commands::host_commands;
 use commands::settings_commands;
 use commands::ssh_commands;
@@ -42,6 +43,8 @@ pub fn run() {
             ssh_commands::ssh_resize,
             ssh_commands::ssh_disconnect,
             settings_commands::get_terminal_settings,
+            config_commands::export_config,
+            config_commands::import_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
