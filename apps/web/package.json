@@ -51,6 +51,7 @@
     "@Caterm/config": "workspace:*",
     "@tanstack/react-router-devtools": "^1.141.1",
     "@tanstack/router-plugin": "^1.141.1",
+    "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/cli": "^2.4.0",
     "@types/node": "^22.13.14",
     "@types/react": "19.2.7",
