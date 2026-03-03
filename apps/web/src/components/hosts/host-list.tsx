@@ -1,8 +1,10 @@
 import Database from "@tauri-apps/plugin-sql";
 import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { deleteCredential } from "@/lib/stronghold";
 import type { SshHost } from "@/types/ssh";
 import { HostCard } from "./host-card";
 import { HostDeleteDialog } from "./host-delete-dialog";
@@ -24,8 +26,9 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 				"SELECT id, name, hostname, port, username, auth_type as authType, created_at as createdAt, updated_at as updatedAt FROM ssh_hosts ORDER BY name"
 			);
 			setHosts(rows);
-		} catch {
-			// Database may not be initialized yet
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			toast.error("Failed to load hosts", { description: message });
 			setHosts([]);
 		}
 	}, []);
@@ -39,10 +42,12 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 			try {
 				const db = await Database.load("sqlite:caterm.db");
 				await db.execute("DELETE FROM ssh_hosts WHERE id = ?", [host.id]);
+				await deleteCredential(host.id);
 				setDeleteTarget(null);
 				await loadHosts();
-			} catch {
-				// Handle error silently for now
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				toast.error("Failed to delete host", { description: message });
 			}
 		},
 		[loadHosts]

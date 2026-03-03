@@ -22,6 +22,7 @@ import {
 	SheetHeader,
 	SheetTitle,
 } from "@/components/ui/sheet";
+import { loadCredential, saveCredential } from "@/lib/stronghold";
 import type { SshHost } from "@/types/ssh";
 
 interface TerminalSettings {
@@ -70,7 +71,7 @@ function SshLayout() {
 			try {
 				const db = await Database.load("sqlite:caterm.db");
 				const rows = await db.select<TerminalSettings[]>(
-					"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback FROM terminal_settings WHERE id = 1"
+					"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback FROM terminal_settings WHERE id = 'default'"
 				);
 				if (rows.length > 0) {
 					const row = rows[0];
@@ -93,9 +94,35 @@ function SshLayout() {
 		? (sessions.get(activeSessionId) ?? null)
 		: null;
 
-	const handleConnectRequest = useCallback((host: SshHost) => {
-		setConnectTarget(host);
-	}, []);
+	const handleConnectRequest = useCallback(
+		async (host: SshHost) => {
+			try {
+				const stored = await loadCredential(host.id, host.authType);
+				if (
+					(host.authType === "password" && stored.password) ||
+					(host.authType === "key" && stored.privateKey)
+				) {
+					// Credentials found in Stronghold — connect directly
+					await connect({
+						hostId: host.id,
+						hostName: host.name,
+						hostname: host.hostname,
+						port: host.port,
+						username: host.username,
+						authType: host.authType as "password" | "key",
+						password: stored.password,
+						privateKey: stored.privateKey,
+						keyPassphrase: stored.keyPassphrase,
+					});
+					return;
+				}
+			} catch {
+				// Failed to load credentials — fall through to dialog
+			}
+			setConnectTarget(host);
+		},
+		[connect]
+	);
 
 	const handleConnectConfirm = useCallback(
 		async (credentials: ConnectCredentials) => {
@@ -139,13 +166,19 @@ function SshLayout() {
 		async (values: {
 			authType: "password" | "key";
 			hostname: string;
+			keyPassphrase: string;
 			name: string;
+			password: string;
 			port: number;
+			privateKey: string;
 			username: string;
 		}) => {
 			try {
 				const db = await Database.load("sqlite:caterm.db");
+				let hostId: string;
+
 				if (editingHost) {
+					hostId = editingHost.id;
 					await db.execute(
 						"UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, auth_type = ?, updated_at = datetime('now') WHERE id = ?",
 						[
@@ -158,9 +191,11 @@ function SshLayout() {
 						]
 					);
 				} else {
+					hostId = crypto.randomUUID();
 					await db.execute(
-						"INSERT INTO ssh_hosts (id, name, hostname, port, username, auth_type, created_at, updated_at) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+						"INSERT INTO ssh_hosts (id, name, hostname, port, username, auth_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
 						[
+							hostId,
 							values.name,
 							values.hostname,
 							values.port,
@@ -169,6 +204,21 @@ function SshLayout() {
 						]
 					);
 				}
+
+				// Save credentials to Stronghold
+				const hasCredentials =
+					(values.authType === "password" && values.password) ||
+					(values.authType === "key" && values.privateKey);
+				if (hasCredentials) {
+					await saveCredential(
+						hostId,
+						values.authType,
+						values.password || undefined,
+						values.privateKey || undefined,
+						values.keyPassphrase || undefined
+					);
+				}
+
 				setFormOpen(false);
 				setEditingHost(undefined);
 				setRefreshKey((k) => k + 1);
