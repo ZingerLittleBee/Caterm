@@ -1,6 +1,6 @@
-import Database from "@tauri-apps/plugin-sql";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { PlusIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import {
 	SidebarGroup,
@@ -9,7 +9,7 @@ import {
 	SidebarGroupLabel,
 	SidebarMenu,
 } from "@/components/ui/sidebar";
-import { deleteCredential } from "@/lib/stronghold";
+import { orpc, queryClient } from "@/lib/orpc";
 import type { SshHost } from "@/types/ssh";
 import { HostCard } from "./host-card";
 import { HostDeleteDialog } from "./host-delete-dialog";
@@ -21,41 +21,30 @@ interface HostListProps {
 }
 
 export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
-	const [hosts, setHosts] = useState<SshHost[]>([]);
 	const [deleteTarget, setDeleteTarget] = useState<SshHost | null>(null);
 
-	const loadHosts = useCallback(async () => {
-		try {
-			const db = await Database.load("sqlite:caterm.db");
-			const rows = await db.select<SshHost[]>(
-				"SELECT id, name, hostname, port, username, auth_type as authType, created_at as createdAt, updated_at as updatedAt FROM ssh_hosts ORDER BY name"
-			);
-			setHosts(rows);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			toast.error("Failed to load hosts", { description: message });
-			setHosts([]);
-		}
-	}, []);
+	const { data: hosts = [] } = useQuery(orpc.sshHost.list.queryOptions());
 
-	useEffect(() => {
-		loadHosts();
-	}, [loadHosts]);
+	const deleteMutation = useMutation({
+		...orpc.sshHost.delete.mutationOptions(),
+		onSuccess: () => {
+			queryClient.invalidateQueries({
+				queryKey: orpc.sshHost.list.queryOptions().queryKey,
+			});
+			setDeleteTarget(null);
+		},
+	});
 
 	const handleDelete = useCallback(
 		async (host: SshHost) => {
 			try {
-				const db = await Database.load("sqlite:caterm.db");
-				await db.execute("DELETE FROM ssh_hosts WHERE id = ?", [host.id]);
-				await deleteCredential(host.id);
-				setDeleteTarget(null);
-				await loadHosts();
+				await deleteMutation.mutateAsync({ id: host.id });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				toast.error("Failed to delete host", { description: message });
 			}
 		},
-		[loadHosts]
+		[deleteMutation]
 	);
 
 	return (
@@ -74,7 +63,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 					) : (
 						hosts.map((host) => (
 							<HostCard
-								host={host}
+								host={host as SshHost}
 								key={host.id}
 								onConnect={onConnect}
 								onDelete={setDeleteTarget}
