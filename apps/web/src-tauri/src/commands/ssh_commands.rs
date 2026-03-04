@@ -93,3 +93,12 @@ pub async fn ssh_disconnect(
 ) -> Result<(), String> {
     manager.disconnect(&session_id).await
 }
+
+/// Retry reconnection for a disconnected SSH session.
+#[tauri::command]
+pub async fn ssh_retry(
+    manager: State<'_, SshSessionManager>,
+    session_id: String,
+) -> Result<(), String> {
+    manager.retry(&session_id).await
+}
