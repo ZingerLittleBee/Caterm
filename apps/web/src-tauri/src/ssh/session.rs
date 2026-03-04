@@ -312,6 +312,7 @@ impl SshSession {
     const MAX_RECONNECT_ATTEMPTS: u32 = 5;
     const INITIAL_RECONNECT_DELAY_MS: u64 = 1000;
     const MAX_RECONNECT_DELAY_MS: u64 = 30000;
+    const MAX_INPUT_BUFFER_BYTES: usize = 1_048_576; // 1 MB
 
     /// The reader loop that exclusively owns the SSH channel.
     ///
@@ -467,8 +468,13 @@ impl SshSession {
                                     cmd = command_rx.recv() => {
                                         match cmd {
                                             Some(ChannelCommand::Data { data, reply }) => {
-                                                input_buffer.push(data);
-                                                let _ = reply.send(Ok(()));
+                                                let total: usize = input_buffer.iter().map(|d| d.len()).sum();
+                                                if total + data.len() <= Self::MAX_INPUT_BUFFER_BYTES {
+                                                    input_buffer.push(data);
+                                                    let _ = reply.send(Ok(()));
+                                                } else {
+                                                    let _ = reply.send(Err("Input buffer full during reconnection".to_string()));
+                                                }
                                             }
                                             Some(ChannelCommand::Resize { cols, rows, reply }) => {
                                                 pending_resize = Some((cols, rows));
