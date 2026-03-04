@@ -1,6 +1,6 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useTerminalSettings } from "@/components/terminal/terminal-settings-provider";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -12,77 +12,25 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
-import { orpc, queryClient } from "@/lib/orpc";
-
-interface TerminalSettings {
-	cursorBlink: boolean;
-	cursorStyle: "block" | "underline" | "bar";
-	fontFamily: string;
-	fontSize: number;
-	scrollback: number;
-	theme: string;
-}
-
-const DEFAULT_SETTINGS: TerminalSettings = {
-	fontFamily: "monospace",
-	fontSize: 14,
-	cursorStyle: "block",
-	cursorBlink: true,
-	scrollback: 1000,
-	theme: "default",
-};
-
-const CURSOR_STYLE_ITEMS = {
-	block: "Block",
-	underline: "Underline",
-	bar: "Bar",
-} as const;
-
-const THEME_ITEMS = {
-	default: "Default",
-	dark: "Dark",
-	light: "Light",
-} as const;
+import { BUILTIN_THEMES } from "@/lib/terminal-themes";
+import type {
+	BellStyle,
+	CursorInactiveStyle,
+	CursorStyle,
+	TerminalSettings,
+} from "@/types/ssh";
 
 export function TerminalSettingsForm() {
-	const { data: savedSettings } = useQuery(
-		orpc.terminalSettings.get.queryOptions()
-	);
-
-	const [settings, setSettings] = useState<TerminalSettings>(DEFAULT_SETTINGS);
-
+	const { settings, updateGlobal } = useTerminalSettings();
+	const [draft, setDraft] = useState<TerminalSettings>(settings);
 	useEffect(() => {
-		if (savedSettings) {
-			setSettings({
-				fontFamily: savedSettings.fontFamily,
-				fontSize: savedSettings.fontSize,
-				cursorStyle:
-					savedSettings.cursorStyle as TerminalSettings["cursorStyle"],
-				cursorBlink: savedSettings.cursorBlink,
-				scrollback: savedSettings.scrollback,
-				theme: savedSettings.theme,
-			});
-		}
-	}, [savedSettings]);
+		setDraft(settings);
+	}, [settings]);
 
-	const upsertMutation = useMutation({
-		...orpc.terminalSettings.upsert.mutationOptions(),
-		onSuccess: () => {
-			queryClient.invalidateQueries({
-				queryKey: orpc.terminalSettings.get.queryOptions().queryKey,
-			});
-			toast.success("Settings saved");
-		},
-	});
-
-	const handleSave = useCallback(async () => {
-		try {
-			await upsertMutation.mutateAsync(settings);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			toast.error("Failed to save settings", { description: message });
-		}
-	}, [settings, upsertMutation]);
+	const handleSave = useCallback(() => {
+		updateGlobal(draft);
+		toast.success("Settings saved");
+	}, [draft, updateGlobal]);
 
 	return (
 		<div className="flex max-w-lg flex-col gap-6">
@@ -91,10 +39,10 @@ export function TerminalSettingsForm() {
 				<Input
 					id="settings-font-family"
 					onChange={(e) =>
-						setSettings((prev) => ({ ...prev, fontFamily: e.target.value }))
+						setDraft((prev) => ({ ...prev, fontFamily: e.target.value }))
 					}
 					placeholder="monospace"
-					value={settings.fontFamily}
+					value={draft.fontFamily}
 				/>
 			</div>
 
@@ -105,27 +53,61 @@ export function TerminalSettingsForm() {
 					max={32}
 					min={8}
 					onChange={(e) =>
-						setSettings((prev) => ({
+						setDraft((prev) => ({
 							...prev,
 							fontSize: Number.parseInt(e.target.value, 10) || 14,
 						}))
 					}
 					type="number"
-					value={String(settings.fontSize)}
+					value={String(draft.fontSize)}
+				/>
+			</div>
+
+			<div className="flex flex-col gap-2">
+				<Label htmlFor="settings-line-height">Line Height</Label>
+				<Input
+					id="settings-line-height"
+					max={2.0}
+					min={1.0}
+					onChange={(e) =>
+						setDraft((prev) => ({
+							...prev,
+							lineHeight: Number.parseFloat(e.target.value) || 1.0,
+						}))
+					}
+					step={0.1}
+					type="number"
+					value={String(draft.lineHeight)}
+				/>
+			</div>
+
+			<div className="flex flex-col gap-2">
+				<Label htmlFor="settings-letter-spacing">Letter Spacing</Label>
+				<Input
+					id="settings-letter-spacing"
+					max={10}
+					min={-5}
+					onChange={(e) =>
+						setDraft((prev) => ({
+							...prev,
+							letterSpacing: Number.parseFloat(e.target.value) || 0,
+						}))
+					}
+					type="number"
+					value={String(draft.letterSpacing)}
 				/>
 			</div>
 
 			<div className="flex flex-col gap-2">
 				<Label>Cursor Style</Label>
 				<Select
-					items={CURSOR_STYLE_ITEMS}
 					onValueChange={(value) =>
-						setSettings((prev) => ({
+						setDraft((prev) => ({
 							...prev,
-							cursorStyle: value as TerminalSettings["cursorStyle"],
+							cursorStyle: value as CursorStyle,
 						}))
 					}
-					value={settings.cursorStyle}
+					value={draft.cursorStyle}
 				>
 					<SelectTrigger className="w-full">
 						<SelectValue placeholder="Select cursor style" />
@@ -140,10 +122,10 @@ export function TerminalSettingsForm() {
 
 			<div className="flex items-center gap-2">
 				<Checkbox
-					checked={settings.cursorBlink}
+					checked={draft.cursorBlink}
 					id="settings-cursor-blink"
 					onCheckedChange={(checked) =>
-						setSettings((prev) => ({
+						setDraft((prev) => ({
 							...prev,
 							cursorBlink: Boolean(checked),
 						}))
@@ -153,49 +135,95 @@ export function TerminalSettingsForm() {
 			</div>
 
 			<div className="flex flex-col gap-2">
+				<Label>Cursor Inactive Style</Label>
+				<Select
+					onValueChange={(value) =>
+						setDraft((prev) => ({
+							...prev,
+							cursorInactiveStyle: value as CursorInactiveStyle,
+						}))
+					}
+					value={draft.cursorInactiveStyle}
+				>
+					<SelectTrigger className="w-full">
+						<SelectValue placeholder="Select inactive cursor style" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="outline">Outline</SelectItem>
+						<SelectItem value="block">Block</SelectItem>
+						<SelectItem value="bar">Bar</SelectItem>
+						<SelectItem value="underline">Underline</SelectItem>
+						<SelectItem value="none">None</SelectItem>
+					</SelectContent>
+				</Select>
+			</div>
+
+			<div className="flex flex-col gap-2">
 				<Label htmlFor="settings-scrollback">Scrollback Lines</Label>
 				<Input
 					id="settings-scrollback"
 					max={100_000}
 					min={100}
 					onChange={(e) =>
-						setSettings((prev) => ({
+						setDraft((prev) => ({
 							...prev,
 							scrollback: Number.parseInt(e.target.value, 10) || 1000,
 						}))
 					}
 					type="number"
-					value={String(settings.scrollback)}
+					value={String(draft.scrollback)}
 				/>
+			</div>
+
+			<div className="flex flex-col gap-2">
+				<Label>Bell Style</Label>
+				<Select
+					onValueChange={(value) =>
+						setDraft((prev) => ({
+							...prev,
+							bellStyle: value as BellStyle,
+						}))
+					}
+					value={draft.bellStyle}
+				>
+					<SelectTrigger className="w-full">
+						<SelectValue placeholder="Select bell style" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="none">None</SelectItem>
+						<SelectItem value="sound">Sound</SelectItem>
+						<SelectItem value="visual">Visual</SelectItem>
+						<SelectItem value="both">Both</SelectItem>
+					</SelectContent>
+				</Select>
 			</div>
 
 			<div className="flex flex-col gap-2">
 				<Label>Theme</Label>
 				<Select
-					items={THEME_ITEMS}
 					onValueChange={(value) =>
-						setSettings((prev) => ({
+						setDraft((prev) => ({
 							...prev,
-							theme: value as string,
+							themeName: value ?? prev.themeName,
 						}))
 					}
-					value={settings.theme}
+					value={draft.themeName}
 				>
 					<SelectTrigger className="w-full">
 						<SelectValue placeholder="Select theme" />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="default">Default</SelectItem>
-						<SelectItem value="dark">Dark</SelectItem>
-						<SelectItem value="light">Light</SelectItem>
+						{Object.entries(BUILTIN_THEMES).map(([key, preset]) => (
+							<SelectItem key={key} value={key}>
+								{preset.name}
+							</SelectItem>
+						))}
 					</SelectContent>
 				</Select>
 			</div>
 
 			<div className="pt-2">
-				<Button disabled={upsertMutation.isPending} onClick={handleSave}>
-					{upsertMutation.isPending ? "Saving..." : "Save Settings"}
-				</Button>
+				<Button onClick={handleSave}>Save Settings</Button>
 			</div>
 		</div>
 	);

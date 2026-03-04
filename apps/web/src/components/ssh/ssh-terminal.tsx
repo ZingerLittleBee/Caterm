@@ -7,30 +7,24 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
+import { useTerminalSettings } from "@/components/terminal/terminal-settings-provider";
+import { resolveTheme } from "@/lib/terminal-themes";
 import type { SshSessionStatus } from "@/types/ssh";
 
 interface SshTerminalProps {
-	cursorBlink?: boolean;
-	cursorStyle?: "block" | "underline" | "bar";
-	fontFamily?: string;
-	fontSize?: number;
+	hostId: string;
 	isActive: boolean;
 	onRetry?: () => void;
-	scrollback?: number;
 	sessionId: string;
 	status: SshSessionStatus;
 }
 
 export function SshTerminal({
 	sessionId,
+	hostId,
 	isActive,
 	status,
 	onRetry,
-	fontSize = 14,
-	fontFamily = "monospace",
-	cursorStyle = "block",
-	cursorBlink = true,
-	scrollback = 1000,
 }: SshTerminalProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const statusRef = useRef(status);
@@ -41,23 +35,14 @@ export function SshTerminal({
 	const fitAddonRef = useRef<FitAddon | null>(null);
 	const rafIdRef = useRef<number>(0);
 
+	const { getSettingsForHost } = useTerminalSettings();
+	const settings = getSettingsForHost(hostId);
+
 	// Store terminal options in a ref so the initialization effect does not
 	// need them in its dependency array. Re-creating the terminal on every
 	// option change would be wasteful and disruptive.
-	const optionsRef = useRef({
-		cursorBlink,
-		cursorStyle,
-		fontFamily,
-		fontSize,
-		scrollback,
-	});
-	optionsRef.current = {
-		cursorBlink,
-		cursorStyle,
-		fontFamily,
-		fontSize,
-		scrollback,
-	};
+	const optionsRef = useRef(settings);
+	optionsRef.current = settings;
 
 	// Initialize terminal on mount and clean up on unmount.
 	useEffect(() => {
@@ -67,13 +52,18 @@ export function SshTerminal({
 		}
 
 		const options = optionsRef.current;
+		const theme = resolveTheme(options);
 		const terminal = new Terminal({
 			allowProposedApi: true,
 			cursorBlink: options.cursorBlink,
 			cursorStyle: options.cursorStyle,
+			cursorInactiveStyle: options.cursorInactiveStyle,
 			fontFamily: options.fontFamily,
 			fontSize: options.fontSize,
+			letterSpacing: options.letterSpacing,
+			lineHeight: options.lineHeight,
 			scrollback: options.scrollback,
+			theme,
 		});
 
 		const fitAddon = new FitAddon();
@@ -229,6 +219,25 @@ export function SshTerminal({
 			fitAddonRef.current = null;
 		};
 	}, [sessionId]);
+
+	// Apply settings changes to a live terminal without re-creating it.
+	useEffect(() => {
+		const terminal = terminalRef.current;
+		if (!terminal) {
+			return;
+		}
+		const theme = resolveTheme(settings);
+		terminal.options.fontSize = settings.fontSize;
+		terminal.options.fontFamily = settings.fontFamily;
+		terminal.options.cursorStyle = settings.cursorStyle;
+		terminal.options.cursorBlink = settings.cursorBlink;
+		terminal.options.cursorInactiveStyle = settings.cursorInactiveStyle;
+		terminal.options.letterSpacing = settings.letterSpacing;
+		terminal.options.lineHeight = settings.lineHeight;
+		terminal.options.scrollback = settings.scrollback;
+		terminal.options.theme = theme;
+		fitAddonRef.current?.fit();
+	}, [settings]);
 
 	// Re-fit terminal when it becomes the active tab.
 	useEffect(() => {

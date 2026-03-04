@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SshRouteRouteImport } from './routes/ssh/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as SshIndexRouteImport } from './routes/ssh/index'
 import { Route as SshSettingsRouteImport } from './routes/ssh/settings'
 
 const LoginRoute = LoginRouteImport.update({
@@ -29,6 +30,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SshIndexRoute = SshIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SshRouteRoute,
+} as any)
 const SshSettingsRoute = SshSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -40,12 +46,13 @@ export interface FileRoutesByFullPath {
   '/ssh': typeof SshRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/ssh/settings': typeof SshSettingsRoute
+  '/ssh/': typeof SshIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/ssh': typeof SshRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/ssh/settings': typeof SshSettingsRoute
+  '/ssh': typeof SshIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +60,14 @@ export interface FileRoutesById {
   '/ssh': typeof SshRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/ssh/settings': typeof SshSettingsRoute
+  '/ssh/': typeof SshIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/ssh' | '/login' | '/ssh/settings'
+  fullPaths: '/' | '/ssh' | '/login' | '/ssh/settings' | '/ssh/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/ssh' | '/login' | '/ssh/settings'
-  id: '__root__' | '/' | '/ssh' | '/login' | '/ssh/settings'
+  to: '/' | '/login' | '/ssh/settings' | '/ssh'
+  id: '__root__' | '/' | '/ssh' | '/login' | '/ssh/settings' | '/ssh/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -91,6 +99,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/ssh/': {
+      id: '/ssh/'
+      path: '/'
+      fullPath: '/ssh/'
+      preLoaderRoute: typeof SshIndexRouteImport
+      parentRoute: typeof SshRouteRoute
+    }
     '/ssh/settings': {
       id: '/ssh/settings'
       path: '/settings'
@@ -103,10 +118,12 @@ declare module '@tanstack/react-router' {
 
 interface SshRouteRouteChildren {
   SshSettingsRoute: typeof SshSettingsRoute
+  SshIndexRoute: typeof SshIndexRoute
 }
 
 const SshRouteRouteChildren: SshRouteRouteChildren = {
   SshSettingsRoute: SshSettingsRoute,
+  SshIndexRoute: SshIndexRoute,
 }
 
 const SshRouteRouteWithChildren = SshRouteRoute._addFileChildren(
