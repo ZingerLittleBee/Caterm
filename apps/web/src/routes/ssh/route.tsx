@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import Database from "@tauri-apps/plugin-sql";
 import type * as React from "react";
 import { useCallback, useEffect, useState } from "react";
@@ -26,6 +26,7 @@ import {
 	SheetTitle,
 } from "@/components/ui/sheet";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { authClient } from "@/lib/auth-client";
 import { loadCredential, saveCredential } from "@/lib/stronghold";
 import type { SshHost } from "@/types/ssh";
 
@@ -46,6 +47,12 @@ const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
 };
 
 export const Route = createFileRoute("/ssh")({
+	beforeLoad: async () => {
+		const session = await authClient.getSession();
+		if (!session.data) {
+			throw redirect({ to: "/login" });
+		}
+	},
 	component: SshRouteWrapper,
 });
 
