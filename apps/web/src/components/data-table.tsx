@@ -681,15 +681,10 @@ function TableCellViewer({ item }: { item: z.infer<typeof schema> }) {
 	const isMobile = useIsMobile();
 	return (
 		<Drawer direction={isMobile ? "bottom" : "right"}>
-			<DrawerTrigger
-				render={
-					<Button
-						className="w-fit px-0 text-left text-foreground"
-						variant="link"
-					/>
-				}
-			>
-				{item.header}
+			<DrawerTrigger asChild>
+				<Button className="w-fit px-0 text-left text-foreground" variant="link">
+					{item.header}
+				</Button>
 			</DrawerTrigger>
 			<DrawerContent>
 				<DrawerHeader className="gap-1">
@@ -866,7 +861,9 @@ function TableCellViewer({ item }: { item: z.infer<typeof schema> }) {
 				</div>
 				<DrawerFooter>
 					<Button>Submit</Button>
-					<DrawerClose render={<Button variant="outline" />} />
+					<DrawerClose asChild>
+						<Button variant="outline">Cancel</Button>
+					</DrawerClose>
 				</DrawerFooter>
 			</DrawerContent>
 		</Drawer>
