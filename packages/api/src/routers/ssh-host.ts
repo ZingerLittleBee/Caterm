@@ -1,5 +1,6 @@
 import { db } from "@Caterm/db";
 import { sshHost } from "@Caterm/db/schema/ssh-host";
+import { ORPCError } from "@orpc/server";
 import { and, eq } from "drizzle-orm";
 import z from "zod";
 
@@ -46,7 +47,7 @@ export const sshHostRouter = {
 					)
 				);
 			if (rows.length === 0) {
-				throw new Error("Host not found");
+				throw new ORPCError("NOT_FOUND", { message: "Host not found" });
 			}
 			const row = rows[0];
 			return {

@@ -28,5 +28,7 @@ export function decrypt(encrypted: string): string {
 	const ciphertext = combined.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
 	const decipher = createDecipheriv(ALGORITHM, getKey(), iv);
 	decipher.setAuthTag(authTag);
-	return decipher.update(ciphertext) + decipher.final("utf8");
+	return (
+		decipher.update(ciphertext, undefined, "utf8") + decipher.final("utf8")
+	);
 }

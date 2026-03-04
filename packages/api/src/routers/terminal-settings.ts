@@ -40,23 +40,17 @@ export const terminalSettingsRouter = {
 		)
 		.handler(async ({ input, context }) => {
 			const userId = context.session.user.id;
-			const existing = await db
-				.select({ id: terminalSettings.id })
-				.from(terminalSettings)
-				.where(eq(terminalSettings.userId, userId));
-
-			if (existing.length > 0) {
-				await db
-					.update(terminalSettings)
-					.set(input)
-					.where(eq(terminalSettings.userId, userId));
-			} else {
-				await db.insert(terminalSettings).values({
+			await db
+				.insert(terminalSettings)
+				.values({
 					userId,
 					...DEFAULT_SETTINGS,
 					...input,
+				})
+				.onConflictDoUpdate({
+					target: terminalSettings.userId,
+					set: input,
 				});
-			}
 			return { success: true };
 		}),
 };
