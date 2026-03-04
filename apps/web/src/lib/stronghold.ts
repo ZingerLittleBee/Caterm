@@ -61,6 +61,19 @@ export async function saveCredential(
 	await stronghold.save();
 }
 
+async function safeGet(
+	store: Awaited<ReturnType<typeof getStore>>["store"],
+	key: string
+): Promise<string | undefined> {
+	try {
+		const data = await store.get(key);
+		const value = decode(data);
+		return value || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function loadCredential(
 	hostId: string,
 	authType: string
@@ -72,16 +85,13 @@ export async function loadCredential(
 	const { store } = await getStore();
 
 	if (authType === "password") {
-		const data = await store.get(`ssh-password-${hostId}`);
-		return { password: decode(data) ?? undefined };
+		const password = await safeGet(store, `ssh-password-${hostId}`);
+		return { password };
 	}
 
-	const keyData = await store.get(`ssh-private-key-${hostId}`);
-	const passphraseData = await store.get(`ssh-key-passphrase-${hostId}`);
-	return {
-		privateKey: decode(keyData) ?? undefined,
-		keyPassphrase: decode(passphraseData) ?? undefined,
-	};
+	const privateKey = await safeGet(store, `ssh-private-key-${hostId}`);
+	const keyPassphrase = await safeGet(store, `ssh-key-passphrase-${hostId}`);
+	return { privateKey, keyPassphrase };
 }
 
 export async function deleteCredential(hostId: string): Promise<void> {
