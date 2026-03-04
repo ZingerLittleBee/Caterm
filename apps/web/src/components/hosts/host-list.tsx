@@ -2,8 +2,13 @@ import Database from "@tauri-apps/plugin-sql";
 import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+	SidebarGroup,
+	SidebarGroupAction,
+	SidebarGroupContent,
+	SidebarGroupLabel,
+	SidebarMenu,
+} from "@/components/ui/sidebar";
 import { deleteCredential } from "@/lib/stronghold";
 import type { SshHost } from "@/types/ssh";
 import { HostCard } from "./host-card";
@@ -54,16 +59,14 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 	);
 
 	return (
-		<div className="flex h-full flex-col">
-			<div className="flex items-center justify-between border-b px-3 py-2">
-				<h2 className="font-medium text-sm">Hosts</h2>
-				<Button onClick={onNewHost} size="icon-xs" variant="ghost">
-					<PlusIcon />
-					<span className="sr-only">Add host</span>
-				</Button>
-			</div>
-			<ScrollArea className="flex-1">
-				<div className="flex flex-col gap-2 p-2">
+		<SidebarGroup>
+			<SidebarGroupLabel>Hosts</SidebarGroupLabel>
+			<SidebarGroupAction onClick={onNewHost}>
+				<PlusIcon />
+				<span className="sr-only">Add host</span>
+			</SidebarGroupAction>
+			<SidebarGroupContent>
+				<SidebarMenu>
 					{hosts.length === 0 ? (
 						<p className="px-2 py-8 text-center text-muted-foreground text-sm">
 							No hosts configured. Click + to add one.
@@ -79,14 +82,14 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 							/>
 						))
 					)}
-				</div>
-			</ScrollArea>
+				</SidebarMenu>
+			</SidebarGroupContent>
 			<HostDeleteDialog
 				host={deleteTarget}
 				onCancel={() => setDeleteTarget(null)}
 				onConfirm={handleDelete}
 				open={deleteTarget !== null}
 			/>
-		</div>
+		</SidebarGroup>
 	);
 }

@@ -7,6 +7,7 @@ interface SshStatusBarProps {
 const STATUS_LABELS: Record<SshSessionStatus, string> = {
 	connected: "Connected",
 	connecting: "Connecting...",
+	reconnecting: "Reconnecting...",
 	disconnected: "Disconnected",
 	error: "Error",
 };
@@ -14,6 +15,7 @@ const STATUS_LABELS: Record<SshSessionStatus, string> = {
 const STATUS_COLORS: Record<SshSessionStatus, string> = {
 	connected: "text-green-500",
 	connecting: "text-yellow-500",
+	reconnecting: "text-yellow-500",
 	disconnected: "text-red-500",
 	error: "text-red-500",
 };

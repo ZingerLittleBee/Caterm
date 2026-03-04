@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 
-use super::session::SshSession;
+use super::session::{SshSession, ChannelCommand};
 
 /// Manages all active SSH sessions. Thread-safe via Arc<Mutex<...>>.
 pub struct SshSessionManager {
@@ -68,6 +68,24 @@ impl SshSessionManager {
             session.close().await?;
         }
         Ok(())
+    }
+
+    /// Retry reconnection for a specific session.
+    pub async fn retry(&self, session_id: &str) -> Result<(), String> {
+        let tx = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(session_id)
+                .ok_or_else(|| format!("Session not found: {session_id}"))?;
+            session.command_sender()
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(ChannelCommand::Retry { reply: reply_tx })
+            .await
+            .map_err(|_| "SSH channel task has stopped".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "SSH channel task dropped the reply".to_string())?
     }
 
     /// Disconnect all active sessions.

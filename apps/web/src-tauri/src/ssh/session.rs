@@ -10,6 +10,25 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 
 use super::handler::SshClientHandler;
 
+/// Authentication method for reconnection.
+#[derive(Clone)]
+pub(crate) enum AuthMethod {
+    Password(String),
+    PrivateKey {
+        key: String,
+        passphrase: Option<String>,
+    },
+}
+
+/// Stores connection parameters needed for automatic reconnection.
+#[derive(Clone)]
+pub(crate) struct ReconnectConfig {
+    pub hostname: String,
+    pub port: u16,
+    pub username: String,
+    pub auth: AuthMethod,
+}
+
 /// Commands sent from write/resize/close to the reader task
 /// that exclusively owns the SSH channel.
 pub(crate) enum ChannelCommand {
@@ -23,6 +42,9 @@ pub(crate) enum ChannelCommand {
         reply: oneshot::Sender<Result<(), String>>,
     },
     Close {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Retry {
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -43,9 +65,62 @@ pub struct SshSession {
     _handle: Handle<SshClientHandler>,
     /// Handle to the Tauri application for emitting events.
     app_handle: AppHandle,
+    /// Connection parameters for automatic reconnection.
+    reconnect_config: ReconnectConfig,
 }
 
 impl SshSession {
+    /// Establish an SSH connection, authenticate, open a channel with PTY and shell.
+    /// Returns the client handle and the opened channel.
+    async fn establish_connection(
+        config: &ReconnectConfig,
+        cols: u32,
+        rows: u32,
+    ) -> Result<(Handle<SshClientHandler>, Channel<Msg>), String> {
+        let ssh_config = Arc::new(client::Config::default());
+        let addr = format!("{}:{}", config.hostname, config.port);
+
+        let mut handle = client::connect(ssh_config, &addr, SshClientHandler)
+            .await
+            .map_err(|e| format!("SSH connection failed: {e}"))?;
+
+        let auth_ok = match &config.auth {
+            AuthMethod::Password(password) => handle
+                .authenticate_password(&config.username, password)
+                .await
+                .map_err(|e| format!("SSH authentication failed: {e}"))?,
+            AuthMethod::PrivateKey { key, passphrase } => {
+                let key_pair = russh_keys::decode_secret_key(key, passphrase.as_deref())
+                    .map_err(|e| format!("Failed to decode private key: {e}"))?;
+                handle
+                    .authenticate_publickey(&config.username, Arc::new(key_pair))
+                    .await
+                    .map_err(|e| format!("SSH key authentication failed: {e}"))?
+            }
+        };
+
+        if !auth_ok {
+            return Err("SSH authentication rejected".to_string());
+        }
+
+        let channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|e| format!("Failed to open SSH channel: {e}"))?;
+
+        channel
+            .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
+            .await
+            .map_err(|e| format!("Failed to request PTY: {e}"))?;
+
+        channel
+            .request_shell(true)
+            .await
+            .map_err(|e| format!("Failed to request shell: {e}"))?;
+
+        Ok((handle, channel))
+    }
+
     /// Connect to an SSH host using password authentication.
     pub async fn connect_with_password(
         id: String,
@@ -56,38 +131,15 @@ impl SshSession {
         password: &str,
         app_handle: AppHandle,
     ) -> Result<Self, String> {
-        let config = Arc::new(client::Config::default());
-        let addr = format!("{hostname}:{port}");
+        let reconnect_config = ReconnectConfig {
+            hostname: hostname.to_string(),
+            port,
+            username: username.to_string(),
+            auth: AuthMethod::Password(password.to_string()),
+        };
 
-        let mut handle = client::connect(config, &addr, SshClientHandler)
-            .await
-            .map_err(|e| format!("SSH connection failed: {e}"))?;
-
-        let auth_ok = handle
-            .authenticate_password(username, password)
-            .await
-            .map_err(|e| format!("SSH authentication failed: {e}"))?;
-
-        if !auth_ok {
-            return Err("SSH password authentication rejected".to_string());
-        }
-
-        let channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("Failed to open SSH channel: {e}"))?;
-
-        // Request a PTY with default terminal settings.
-        channel
-            .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-            .await
-            .map_err(|e| format!("Failed to request PTY: {e}"))?;
-
-        // Request an interactive shell.
-        channel
-            .request_shell(true)
-            .await
-            .map_err(|e| format!("Failed to request shell: {e}"))?;
+        let (handle, channel) =
+            Self::establish_connection(&reconnect_config, 80, 24).await?;
 
         let (command_tx, command_rx) = mpsc::channel(32);
 
@@ -98,6 +150,7 @@ impl SshSession {
             pending_reader: Mutex::new(Some((channel, command_rx))),
             _handle: handle,
             app_handle,
+            reconnect_config,
         })
     }
 
@@ -112,39 +165,18 @@ impl SshSession {
         passphrase: Option<&str>,
         app_handle: AppHandle,
     ) -> Result<Self, String> {
-        let config = Arc::new(client::Config::default());
-        let addr = format!("{hostname}:{port}");
+        let reconnect_config = ReconnectConfig {
+            hostname: hostname.to_string(),
+            port,
+            username: username.to_string(),
+            auth: AuthMethod::PrivateKey {
+                key: private_key_pem.to_string(),
+                passphrase: passphrase.map(String::from),
+            },
+        };
 
-        let mut handle = client::connect(config, &addr, SshClientHandler)
-            .await
-            .map_err(|e| format!("SSH connection failed: {e}"))?;
-
-        let key_pair = russh_keys::decode_secret_key(private_key_pem, passphrase)
-            .map_err(|e| format!("Failed to decode private key: {e}"))?;
-
-        let auth_ok = handle
-            .authenticate_publickey(username, Arc::new(key_pair))
-            .await
-            .map_err(|e| format!("SSH key authentication failed: {e}"))?;
-
-        if !auth_ok {
-            return Err("SSH key authentication rejected".to_string());
-        }
-
-        let channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("Failed to open SSH channel: {e}"))?;
-
-        channel
-            .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-            .await
-            .map_err(|e| format!("Failed to request PTY: {e}"))?;
-
-        channel
-            .request_shell(true)
-            .await
-            .map_err(|e| format!("Failed to request shell: {e}"))?;
+        let (handle, channel) =
+            Self::establish_connection(&reconnect_config, 80, 24).await?;
 
         let (command_tx, command_rx) = mpsc::channel(32);
 
@@ -155,6 +187,7 @@ impl SshSession {
             pending_reader: Mutex::new(Some((channel, command_rx))),
             _handle: handle,
             app_handle,
+            reconnect_config,
         })
     }
 
@@ -226,6 +259,19 @@ impl SshSession {
             .map_err(|_| "SSH channel task dropped the reply".to_string())?
     }
 
+    /// Send a retry command to restart the reconnect loop.
+    #[allow(dead_code)]
+    pub async fn retry(&self) -> Result<(), String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(ChannelCommand::Retry { reply: reply_tx })
+            .await
+            .map_err(|_| "SSH channel task has stopped".to_string())?;
+        reply_rx
+            .await
+            .map_err(|_| "SSH channel task dropped the reply".to_string())?
+    }
+
     /// Spawn a background task that reads SSH output and emits Tauri events.
     ///
     /// The reader task takes exclusive ownership of the SSH channel, preventing
@@ -234,25 +280,22 @@ impl SshSession {
     ///
     /// Emits:
     /// - `ssh-output-{session_id}` with base64-encoded data for each data message.
-    /// - `ssh-disconnect-{session_id}` when the channel closes or reaches EOF.
+    /// - `ssh-reconnecting-{session_id}` when a reconnect attempt starts.
+    /// - `ssh-reconnected-{session_id}` when reconnection succeeds.
+    /// - `ssh-disconnect-{session_id}` when the channel closes or reconnection fails.
     pub fn spawn_reader(&self) {
-        // Take the channel and command receiver out of the pending slot.
-        // This uses try_lock because spawn_reader is not async; the lock is
-        // uncontended at this point since it is called right after construction.
         let Some((channel, command_rx)) = self
             .pending_reader
             .try_lock()
             .expect("pending_reader lock should be uncontended during spawn_reader")
             .take()
         else {
-            // Reader was already spawned.
             return;
         };
 
         let app_handle = self.app_handle.clone();
         let session_id = self.id.clone();
-        let output_event = format!("ssh-output-{}", self.id);
-        let disconnect_event = format!("ssh-disconnect-{}", self.id);
+        let reconnect_config = self.reconnect_config.clone();
 
         tokio::spawn(async move {
             Self::reader_loop(
@@ -260,85 +303,238 @@ impl SshSession {
                 command_rx,
                 app_handle,
                 session_id,
-                output_event,
-                disconnect_event,
+                reconnect_config,
             )
             .await;
         });
     }
 
+    const MAX_RECONNECT_ATTEMPTS: u32 = 5;
+    const INITIAL_RECONNECT_DELAY_MS: u64 = 1000;
+    const MAX_RECONNECT_DELAY_MS: u64 = 30000;
+    const MAX_INPUT_BUFFER_BYTES: usize = 1_048_576; // 1 MB
+
     /// The reader loop that exclusively owns the SSH channel.
     ///
-    /// Uses `tokio::select!` to concurrently handle:
-    /// - Incoming SSH data from `channel.wait()`
-    /// - Outgoing commands (write, resize, close) from the mpsc receiver
+    /// Implements a state machine with two states:
+    /// - **Connected**: normal read/write loop processing SSH data and commands.
+    /// - **Reconnecting**: attempts to re-establish the SSH connection with
+    ///   exponential backoff, buffering user input in the meantime.
     async fn reader_loop(
         mut channel: Channel<Msg>,
         mut command_rx: mpsc::Receiver<ChannelCommand>,
         app_handle: AppHandle,
         session_id: String,
-        output_event: String,
-        disconnect_event: String,
+        reconnect_config: ReconnectConfig,
     ) {
-        loop {
-            tokio::select! {
-                msg = channel.wait() => {
-                    match msg {
-                        Some(ChannelMsg::Data { data }) => {
-                            let encoded = BASE64.encode(&data);
-                            let _ = app_handle.emit(&output_event, encoded);
+        let output_event = format!("ssh-output-{}", session_id);
+        let reconnecting_event = format!("ssh-reconnecting-{}", session_id);
+        let reconnected_event = format!("ssh-reconnected-{}", session_id);
+        let disconnect_event = format!("ssh-disconnect-{}", session_id);
+
+        // Track last known terminal size for PTY on reconnect.
+        let mut last_cols: u32 = 80;
+        let mut last_rows: u32 = 24;
+
+        // Keep the active SSH handle alive for the duration of the connection.
+        let mut _active_handle: Option<Handle<SshClientHandler>> = None;
+
+        'outer: loop {
+            // === CONNECTED STATE: normal read/write loop ===
+            let needs_reconnect = loop {
+                tokio::select! {
+                    msg = channel.wait() => {
+                        match msg {
+                            Some(ChannelMsg::Data { data }) => {
+                                let encoded = BASE64.encode(&data);
+                                let _ = app_handle.emit(&output_event, encoded);
+                            }
+                            Some(ChannelMsg::ExtendedData { data, .. }) => {
+                                let encoded = BASE64.encode(&data);
+                                let _ = app_handle.emit(&output_event, encoded);
+                            }
+                            Some(ChannelMsg::Eof | ChannelMsg::Close) => {
+                                // Server closed normally — no reconnect.
+                                break false;
+                            }
+                            Some(_) => {}
+                            None => {
+                                // TCP drop / unexpected disconnect — reconnect.
+                                break true;
+                            }
                         }
-                        Some(ChannelMsg::ExtendedData { data, .. }) => {
-                            let encoded = BASE64.encode(&data);
-                            let _ = app_handle.emit(&output_event, encoded);
-                        }
-                        Some(ChannelMsg::Eof | ChannelMsg::Close) => {
-                            let _ = app_handle.emit(&disconnect_event, &session_id);
-                            break;
-                        }
-                        Some(_) => {
-                            // Ignore other channel messages.
-                        }
-                        None => {
-                            // Channel closed.
-                            let _ = app_handle.emit(&disconnect_event, &session_id);
-                            break;
+                    }
+                    cmd = command_rx.recv() => {
+                        match cmd {
+                            Some(ChannelCommand::Data { data, reply }) => {
+                                let result = channel
+                                    .data(&data[..])
+                                    .await
+                                    .map_err(|e| format!("Failed to write to SSH channel: {e}"));
+                                let _ = reply.send(result);
+                            }
+                            Some(ChannelCommand::Resize { cols, rows, reply }) => {
+                                last_cols = cols;
+                                last_rows = rows;
+                                let result = channel
+                                    .window_change(cols, rows, 0, 0)
+                                    .await
+                                    .map_err(|e| format!("Failed to resize terminal: {e}"));
+                                let _ = reply.send(result);
+                            }
+                            Some(ChannelCommand::Close { reply }) => {
+                                let result = channel
+                                    .close()
+                                    .await
+                                    .map_err(|e| format!("Failed to close SSH channel: {e}"));
+                                let _ = reply.send(result);
+                                break false; // User-initiated close — no reconnect.
+                            }
+                            Some(ChannelCommand::Retry { reply }) => {
+                                // Retry only meaningful after failed reconnect.
+                                let _ = reply.send(Ok(()));
+                            }
+                            None => {
+                                let _ = channel.close().await;
+                                break false; // All senders dropped — no reconnect.
+                            }
                         }
                     }
                 }
-                cmd = command_rx.recv() => {
-                    match cmd {
-                        Some(ChannelCommand::Data { data, reply }) => {
-                            let result = channel
-                                .data(&data[..])
-                                .await
-                                .map_err(|e| format!("Failed to write to SSH channel: {e}"));
-                            let _ = reply.send(result);
+            };
+
+            if !needs_reconnect {
+                let _ = app_handle.emit(
+                    &disconnect_event,
+                    serde_json::json!({ "reason": "user" }),
+                );
+                break 'outer;
+            }
+
+            // === RECONNECTING STATE ===
+            let mut input_buffer: Vec<Vec<u8>> = Vec::new();
+            let mut pending_resize: Option<(u32, u32)> = None;
+            'reconnect: loop {
+                let mut delay_ms = Self::INITIAL_RECONNECT_DELAY_MS;
+
+                for attempt in 1..=Self::MAX_RECONNECT_ATTEMPTS {
+                    let next_delay_ms = (delay_ms * 2).min(Self::MAX_RECONNECT_DELAY_MS);
+                    let _ = app_handle.emit(
+                        &reconnecting_event,
+                        serde_json::json!({
+                            "attempt": attempt,
+                            "maxAttempts": Self::MAX_RECONNECT_ATTEMPTS,
+                            "nextDelayMs": next_delay_ms,
+                        }),
+                    );
+
+                    match Self::establish_connection(
+                        &reconnect_config,
+                        pending_resize.map_or(last_cols, |(c, _)| c),
+                        pending_resize.map_or(last_rows, |(_, r)| r),
+                    )
+                    .await
+                    {
+                        Ok((handle, new_channel)) => {
+                            _active_handle = Some(handle);
+                            channel = new_channel;
+
+                            // Flush buffered input.
+                            for data in input_buffer.drain(..) {
+                                if channel.data(&data[..]).await.is_err() {
+                                    break;
+                                }
+                            }
+
+                            // Apply pending resize.
+                            if let Some((cols, rows)) = pending_resize.take() {
+                                last_cols = cols;
+                                last_rows = rows;
+                                let _ = channel.window_change(cols, rows, 0, 0).await;
+                            }
+
+                            let _ = app_handle.emit(&reconnected_event, serde_json::json!({}));
+                            break 'reconnect;
                         }
-                        Some(ChannelCommand::Resize { cols, rows, reply }) => {
-                            let result = channel
-                                .window_change(cols, rows, 0, 0)
-                                .await
-                                .map_err(|e| format!("Failed to resize terminal: {e}"));
-                            let _ = reply.send(result);
+                        Err(_) => {
+                            // Wait for delay while draining commands.
+                            let deadline =
+                                tokio::time::Instant::now() + tokio::time::Duration::from_millis(delay_ms);
+                            loop {
+                                tokio::select! {
+                                    _ = tokio::time::sleep_until(deadline) => {
+                                        break;
+                                    }
+                                    cmd = command_rx.recv() => {
+                                        match cmd {
+                                            Some(ChannelCommand::Data { data, reply }) => {
+                                                let total: usize = input_buffer.iter().map(|d| d.len()).sum();
+                                                if total + data.len() <= Self::MAX_INPUT_BUFFER_BYTES {
+                                                    input_buffer.push(data);
+                                                    let _ = reply.send(Ok(()));
+                                                } else {
+                                                    let _ = reply.send(Err("Input buffer full during reconnection".to_string()));
+                                                }
+                                            }
+                                            Some(ChannelCommand::Resize { cols, rows, reply }) => {
+                                                pending_resize = Some((cols, rows));
+                                                let _ = reply.send(Ok(()));
+                                            }
+                                            Some(ChannelCommand::Close { reply }) => {
+                                                let _ = reply.send(Ok(()));
+                                                let _ = app_handle.emit(
+                                                    &disconnect_event,
+                                                    serde_json::json!({ "reason": "user" }),
+                                                );
+                                                break 'outer;
+                                            }
+                                            Some(ChannelCommand::Retry { reply }) => {
+                                                let _ = reply.send(Ok(()));
+                                            }
+                                            None => {
+                                                break 'outer;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            delay_ms = next_delay_ms;
+                        }
+                    }
+                }
+
+                // All automatic attempts exhausted — wait for Retry or Close.
+                let _ = app_handle.emit(
+                    &disconnect_event,
+                    serde_json::json!({ "reason": "failed" }),
+                );
+
+                loop {
+                    match command_rx.recv().await {
+                        Some(ChannelCommand::Retry { reply }) => {
+                            let _ = reply.send(Ok(()));
+                            continue 'reconnect; // Restart reconnect attempts.
                         }
                         Some(ChannelCommand::Close { reply }) => {
-                            let result = channel
-                                .close()
-                                .await
-                                .map_err(|e| format!("Failed to close SSH channel: {e}"));
-                            let _ = reply.send(result);
-                            break;
+                            let _ = reply.send(Ok(()));
+                            break 'outer;
+                        }
+                        Some(ChannelCommand::Data { data, reply }) => {
+                            input_buffer.push(data);
+                            let _ = reply.send(Ok(()));
+                        }
+                        Some(ChannelCommand::Resize { cols, rows, reply }) => {
+                            pending_resize = Some((cols, rows));
+                            let _ = reply.send(Ok(()));
                         }
                         None => {
-                            // All command senders dropped; session is being torn down.
-                            let _ = channel.close().await;
-                            let _ = app_handle.emit(&disconnect_event, &session_id);
-                            break;
+                            break 'outer;
                         }
                     }
                 }
             }
+
+            // Loop back to 'outer to resume normal read/write.
         }
     }
 }

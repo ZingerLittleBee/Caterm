@@ -27,6 +27,7 @@ interface SshSessionContextValue {
 	activeSessionId: string | null;
 	connect: (params: ConnectParams) => Promise<string>;
 	disconnect: (sessionId: string) => Promise<void>;
+	retry: (sessionId: string) => Promise<void>;
 	sessions: Map<string, SshSessionInfo>;
 	setActive: (sessionId: string | null) => void;
 }
@@ -123,17 +124,36 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
 			sessionInfo.id = sessionId;
 			sessionInfo.status = "connected";
 
-			// Listen for disconnect events from the backend.
-			const unlisten = await listen(`ssh-disconnect-${sessionId}`, () => {
-				updateSessionStatus(sessionId, "disconnected");
-				// Clean up the listener since the session is done.
-				const storedUnlisten = unlistenMap.current.get(sessionId);
-				if (storedUnlisten) {
-					storedUnlisten();
-					unlistenMap.current.delete(sessionId);
+			// Listen for reconnecting events.
+			const unlistenReconnecting = await listen(
+				`ssh-reconnecting-${sessionId}`,
+				() => {
+					updateSessionStatus(sessionId, "reconnecting");
 				}
-			});
+			);
 
+			// Listen for reconnected events.
+			const unlistenReconnected = await listen(
+				`ssh-reconnected-${sessionId}`,
+				() => {
+					updateSessionStatus(sessionId, "connected");
+				}
+			);
+
+			// Listen for disconnect events.
+			const unlistenDisconnect = await listen(
+				`ssh-disconnect-${sessionId}`,
+				() => {
+					updateSessionStatus(sessionId, "disconnected");
+				}
+			);
+
+			// Store a combined unlisten function.
+			const unlisten = () => {
+				unlistenReconnecting();
+				unlistenReconnected();
+				unlistenDisconnect();
+			};
 			unlistenMap.current.set(sessionId, unlisten);
 
 			setSessions((prev) => {
@@ -160,6 +180,10 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
 		},
 		[removeSession]
 	);
+
+	const retry = useCallback(async (sessionId: string): Promise<void> => {
+		await invoke("ssh_retry", { sessionId });
+	}, []);
 
 	const setActive = useCallback((sessionId: string | null) => {
 		setActiveSessionId(sessionId);
@@ -189,6 +213,7 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
 				activeSessionId,
 				connect,
 				disconnect,
+				retry,
 				setActive,
 			}}
 		>

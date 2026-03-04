@@ -14,6 +14,7 @@ interface SshTabBarProps {
 const STATUS_COLORS: Record<SshSessionStatus, string> = {
 	connected: "bg-green-500",
 	connecting: "bg-yellow-500",
+	reconnecting: "bg-yellow-500 animate-pulse",
 	disconnected: "bg-red-500",
 	error: "bg-red-500",
 };
