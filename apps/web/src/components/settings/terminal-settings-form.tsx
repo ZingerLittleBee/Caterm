@@ -208,7 +208,7 @@ export function TerminalSettingsForm() {
 					onValueChange={(value) =>
 						setDraft((prev) => ({
 							...prev,
-							themeName: value,
+							themeName: value ?? prev.themeName,
 						}))
 					}
 					value={draft.themeName}
