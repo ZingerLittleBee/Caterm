@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import Database from "@tauri-apps/plugin-sql";
+import type * as React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { AppSidebar } from "@/components/app-sidebar";
