@@ -1,24 +1,7 @@
 "use client";
 
-import {
-	CameraIcon,
-	ChartBarIcon,
-	CircleHelpIcon,
-	CommandIcon,
-	DatabaseIcon,
-	FileChartColumnIcon,
-	FileIcon,
-	FileTextIcon,
-	FolderIcon,
-	LayoutDashboardIcon,
-	ListIcon,
-	SearchIcon,
-	Settings2Icon,
-	TerminalIcon,
-	UsersIcon,
-} from "lucide-react";
+import { CommandIcon, Settings2Icon, TerminalIcon } from "lucide-react";
 import type * as React from "react";
-import { NavDocuments } from "@/components/nav-documents";
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
 import { NavUser } from "@/components/nav-user";
@@ -40,82 +23,9 @@ const data = {
 	},
 	navMain: [
 		{
-			title: "Dashboard",
-			url: "#",
-			icon: <LayoutDashboardIcon />,
-		},
-		{
-			title: "Lifecycle",
-			url: "#",
-			icon: <ListIcon />,
-		},
-		{
-			title: "Analytics",
-			url: "#",
-			icon: <ChartBarIcon />,
-		},
-		{
-			title: "Projects",
-			url: "#",
-			icon: <FolderIcon />,
-		},
-		{
-			title: "Team",
-			url: "#",
-			icon: <UsersIcon />,
-		},
-		{
 			title: "SSH Terminal",
 			url: "/ssh",
 			icon: <TerminalIcon />,
-		},
-	],
-	navClouds: [
-		{
-			title: "Capture",
-			icon: <CameraIcon />,
-			isActive: true,
-			url: "#",
-			items: [
-				{
-					title: "Active Proposals",
-					url: "#",
-				},
-				{
-					title: "Archived",
-					url: "#",
-				},
-			],
-		},
-		{
-			title: "Proposal",
-			icon: <FileTextIcon />,
-			url: "#",
-			items: [
-				{
-					title: "Active Proposals",
-					url: "#",
-				},
-				{
-					title: "Archived",
-					url: "#",
-				},
-			],
-		},
-		{
-			title: "Prompts",
-			icon: <FileTextIcon />,
-			url: "#",
-			items: [
-				{
-					title: "Active Proposals",
-					url: "#",
-				},
-				{
-					title: "Archived",
-					url: "#",
-				},
-			],
 		},
 	],
 	navSecondary: [
@@ -123,38 +33,6 @@ const data = {
 			title: "Terminal Settings",
 			url: "/ssh/settings",
 			icon: <Settings2Icon />,
-		},
-		{
-			title: "Settings",
-			url: "#",
-			icon: <Settings2Icon />,
-		},
-		{
-			title: "Get Help",
-			url: "#",
-			icon: <CircleHelpIcon />,
-		},
-		{
-			title: "Search",
-			url: "#",
-			icon: <SearchIcon />,
-		},
-	],
-	documents: [
-		{
-			name: "Data Library",
-			url: "#",
-			icon: <DatabaseIcon />,
-		},
-		{
-			name: "Reports",
-			url: "#",
-			icon: <FileChartColumnIcon />,
-		},
-		{
-			name: "Word Assistant",
-			url: "#",
-			icon: <FileIcon />,
 		},
 	],
 };
@@ -172,14 +50,13 @@ export function AppSidebar({
 							render={<a href="#" />}
 						>
 							<CommandIcon className="size-5!" />
-							<span className="font-semibold text-base">Acme Inc.</span>
+							<span className="font-semibold text-base">Caterm</span>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 				</SidebarMenu>
 			</SidebarHeader>
 			<SidebarContent>
 				<NavMain items={data.navMain} />
-				<NavDocuments items={data.documents} />
 				{children}
 				<NavSecondary className="mt-auto" items={data.navSecondary} />
 			</SidebarContent>
