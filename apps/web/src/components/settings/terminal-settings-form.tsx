@@ -1,4 +1,4 @@
-import Database from "@tauri-apps/plugin-sql";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { orpc, queryClient } from "@/lib/orpc";
 
 interface TerminalSettings {
 	cursorBlink: boolean;
@@ -44,58 +45,44 @@ const THEME_ITEMS = {
 } as const;
 
 export function TerminalSettingsForm() {
-	const [settings, setSettings] = useState<TerminalSettings>(DEFAULT_SETTINGS);
-	const [saving, setSaving] = useState(false);
+	const { data: savedSettings } = useQuery(
+		orpc.terminalSettings.get.queryOptions()
+	);
 
-	const loadSettings = useCallback(async () => {
-		try {
-			const db = await Database.load("sqlite:caterm.db");
-			const rows = await db.select<TerminalSettings[]>(
-				"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback, theme FROM terminal_settings WHERE id = 'default'"
-			);
-			if (rows.length > 0) {
-				const row = rows[0];
-				setSettings({
-					fontFamily: row.fontFamily,
-					fontSize: row.fontSize,
-					cursorStyle: row.cursorStyle,
-					cursorBlink: Boolean(row.cursorBlink),
-					scrollback: row.scrollback,
-					theme: row.theme,
-				});
-			}
-		} catch {
-			// Table may not exist yet, use defaults
-		}
-	}, []);
+	const [settings, setSettings] = useState<TerminalSettings>(DEFAULT_SETTINGS);
 
 	useEffect(() => {
-		loadSettings();
-	}, [loadSettings]);
+		if (savedSettings) {
+			setSettings({
+				fontFamily: savedSettings.fontFamily,
+				fontSize: savedSettings.fontSize,
+				cursorStyle:
+					savedSettings.cursorStyle as TerminalSettings["cursorStyle"],
+				cursorBlink: savedSettings.cursorBlink,
+				scrollback: savedSettings.scrollback,
+				theme: savedSettings.theme,
+			});
+		}
+	}, [savedSettings]);
+
+	const upsertMutation = useMutation({
+		...orpc.terminalSettings.upsert.mutationOptions(),
+		onSuccess: () => {
+			queryClient.invalidateQueries({
+				queryKey: orpc.terminalSettings.get.queryOptions().queryKey,
+			});
+			toast.success("Settings saved");
+		},
+	});
 
 	const handleSave = useCallback(async () => {
-		setSaving(true);
 		try {
-			const db = await Database.load("sqlite:caterm.db");
-			await db.execute(
-				"UPDATE terminal_settings SET font_family = ?, font_size = ?, cursor_style = ?, cursor_blink = ?, scrollback = ?, theme = ? WHERE id = 'default'",
-				[
-					settings.fontFamily,
-					settings.fontSize,
-					settings.cursorStyle,
-					settings.cursorBlink ? 1 : 0,
-					settings.scrollback,
-					settings.theme,
-				]
-			);
-			toast.success("Settings saved");
+			await upsertMutation.mutateAsync(settings);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			toast.error("Failed to save settings", { description: message });
-		} finally {
-			setSaving(false);
 		}
-	}, [settings]);
+	}, [settings, upsertMutation]);
 
 	return (
 		<div className="flex max-w-lg flex-col gap-6">
@@ -206,8 +193,8 @@ export function TerminalSettingsForm() {
 			</div>
 
 			<div className="pt-2">
-				<Button disabled={saving} onClick={handleSave}>
-					{saving ? "Saving..." : "Save Settings"}
+				<Button disabled={upsertMutation.isPending} onClick={handleSave}>
+					{upsertMutation.isPending ? "Saving..." : "Save Settings"}
 				</Button>
 			</div>
 		</div>
