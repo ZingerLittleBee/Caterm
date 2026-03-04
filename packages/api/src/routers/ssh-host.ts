@@ -42,8 +42,8 @@ export const sshHostRouter = {
 				.where(
 					and(
 						eq(sshHost.id, input.id),
-						eq(sshHost.userId, context.session.user.id),
-					),
+						eq(sshHost.userId, context.session.user.id)
+					)
 				);
 			if (rows.length === 0) {
 				throw new Error("Host not found");
@@ -62,13 +62,13 @@ export const sshHostRouter = {
 			z.object({
 				name: z.string().min(1),
 				hostname: z.string().min(1),
-				port: z.number().int().min(1).max(65535).default(22),
+				port: z.number().int().min(1).max(65_535).default(22),
 				username: z.string().min(1),
 				authType: z.enum(["password", "key"]).default("password"),
 				password: z.string().optional(),
 				privateKey: z.string().optional(),
 				keyPassphrase: z.string().optional(),
-			}),
+			})
 		)
 		.handler(async ({ input, context }) => {
 			const id = crypto.randomUUID();
@@ -93,13 +93,13 @@ export const sshHostRouter = {
 				id: z.string(),
 				name: z.string().min(1).optional(),
 				hostname: z.string().min(1).optional(),
-				port: z.number().int().min(1).max(65535).optional(),
+				port: z.number().int().min(1).max(65_535).optional(),
 				username: z.string().min(1).optional(),
 				authType: z.enum(["password", "key"]).optional(),
 				password: z.string().optional(),
 				privateKey: z.string().optional(),
 				keyPassphrase: z.string().optional(),
-			}),
+			})
 		)
 		.handler(async ({ input, context }) => {
 			const { id, password, privateKey, keyPassphrase, ...rest } = input;
@@ -117,10 +117,7 @@ export const sshHostRouter = {
 				.update(sshHost)
 				.set(values)
 				.where(
-					and(
-						eq(sshHost.id, id),
-						eq(sshHost.userId, context.session.user.id),
-					),
+					and(eq(sshHost.id, id), eq(sshHost.userId, context.session.user.id))
 				);
 			return { id };
 		}),
@@ -133,8 +130,8 @@ export const sshHostRouter = {
 				.where(
 					and(
 						eq(sshHost.id, input.id),
-						eq(sshHost.userId, context.session.user.id),
-					),
+						eq(sshHost.userId, context.session.user.id)
+					)
 				);
 			return { success: true };
 		}),

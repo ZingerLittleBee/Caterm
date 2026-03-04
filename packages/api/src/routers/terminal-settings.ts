@@ -34,9 +34,9 @@ export const terminalSettingsRouter = {
 				fontSize: z.number().int().min(8).max(72).optional(),
 				cursorStyle: z.enum(["block", "underline", "bar"]).optional(),
 				cursorBlink: z.boolean().optional(),
-				scrollback: z.number().int().min(100).max(100000).optional(),
+				scrollback: z.number().int().min(100).max(100_000).optional(),
 				theme: z.string().optional(),
-			}),
+			})
 		)
 		.handler(async ({ input, context }) => {
 			const userId = context.session.user.id;
