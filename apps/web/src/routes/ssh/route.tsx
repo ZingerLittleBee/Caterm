@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import Database from "@tauri-apps/plugin-sql";
 import type * as React from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { AppSidebar } from "@/components/app-sidebar";
 import { HostForm } from "@/components/hosts/host-form";
@@ -18,6 +18,7 @@ import {
 import { SshStatusBar } from "@/components/ssh/ssh-status-bar";
 import { SshTabBar } from "@/components/ssh/ssh-tab-bar";
 import { SshTerminal } from "@/components/ssh/ssh-terminal";
+import { TerminalSettingsProvider } from "@/components/terminal/terminal-settings-provider";
 import {
 	Sheet,
 	SheetContent,
@@ -29,22 +30,6 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { loadCredential, saveCredential } from "@/lib/stronghold";
 import type { SshHost } from "@/types/ssh";
 
-interface TerminalSettings {
-	cursorBlink: boolean;
-	cursorStyle: "block" | "underline" | "bar";
-	fontFamily: string;
-	fontSize: number;
-	scrollback: number;
-}
-
-const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
-	fontFamily: "monospace",
-	fontSize: 14,
-	cursorStyle: "block",
-	cursorBlink: true,
-	scrollback: 1000,
-};
-
 export const Route = createFileRoute("/ssh")({
 	component: SshRouteWrapper,
 });
@@ -52,7 +37,9 @@ export const Route = createFileRoute("/ssh")({
 function SshRouteWrapper() {
 	return (
 		<SshSessionProvider>
-			<SshLayout />
+			<TerminalSettingsProvider>
+				<SshLayout />
+			</TerminalSettingsProvider>
 		</SshSessionProvider>
 	);
 }
@@ -66,33 +53,6 @@ function SshLayout() {
 	);
 	const [connectTarget, setConnectTarget] = useState<SshHost | null>(null);
 	const [refreshKey, setRefreshKey] = useState(0);
-	const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>(
-		DEFAULT_TERMINAL_SETTINGS
-	);
-
-	useEffect(() => {
-		const loadSettings = async () => {
-			try {
-				const db = await Database.load("sqlite:caterm.db");
-				const rows = await db.select<TerminalSettings[]>(
-					"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback FROM terminal_settings WHERE id = 'default'"
-				);
-				if (rows.length > 0) {
-					const row = rows[0];
-					setTerminalSettings({
-						fontFamily: row.fontFamily,
-						fontSize: row.fontSize,
-						cursorStyle: row.cursorStyle,
-						cursorBlink: Boolean(row.cursorBlink),
-						scrollback: row.scrollback,
-					});
-				}
-			} catch {
-				// Use defaults if settings can't be loaded
-			}
-		};
-		loadSettings();
-	}, []);
 
 	const activeSession = activeSessionId
 		? (sessions.get(activeSessionId) ?? null)
@@ -276,14 +236,10 @@ function SshLayout() {
 					) : (
 						Array.from(sessions.values()).map((session) => (
 							<SshTerminal
-								cursorBlink={terminalSettings.cursorBlink}
-								cursorStyle={terminalSettings.cursorStyle}
-								fontFamily={terminalSettings.fontFamily}
-								fontSize={terminalSettings.fontSize}
+								hostId={session.hostId}
 								isActive={session.id === activeSessionId}
 								key={session.id}
 								onRetry={() => retry(session.id)}
-								scrollback={terminalSettings.scrollback}
 								sessionId={session.id}
 								status={session.status}
 							/>
