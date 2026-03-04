@@ -235,7 +235,9 @@ function SshLayout() {
 						Array.from(sessions.values()).map((session) => (
 							<SshTerminal
 								cursorBlink={terminalSettings.cursorBlink}
-								cursorStyle={terminalSettings.cursorStyle}
+								cursorStyle={
+									terminalSettings.cursorStyle as "block" | "underline" | "bar"
+								}
 								fontFamily={terminalSettings.fontFamily}
 								fontSize={terminalSettings.fontSize}
 								isActive={session.id === activeSessionId}
