@@ -7,6 +7,7 @@ import {
 	SidebarGroupAction,
 	SidebarGroupContent,
 	SidebarGroupLabel,
+	SidebarMenu,
 } from "@/components/ui/sidebar";
 import { deleteCredential } from "@/lib/stronghold";
 import type { SshHost } from "@/types/ssh";
@@ -65,7 +66,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 				<span className="sr-only">Add host</span>
 			</SidebarGroupAction>
 			<SidebarGroupContent>
-				<div className="flex flex-col gap-2">
+				<SidebarMenu>
 					{hosts.length === 0 ? (
 						<p className="px-2 py-8 text-center text-muted-foreground text-sm">
 							No hosts configured. Click + to add one.
@@ -81,7 +82,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 							/>
 						))
 					)}
-				</div>
+				</SidebarMenu>
 			</SidebarGroupContent>
 			<HostDeleteDialog
 				host={deleteTarget}
