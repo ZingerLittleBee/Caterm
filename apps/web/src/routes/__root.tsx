@@ -1,3 +1,4 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import {
 	createRootRouteWithContext,
 	HeadContent,
@@ -7,6 +8,7 @@ import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
 import { TerminalSettingsProvider } from "@/components/terminal/terminal-settings-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { queryClient } from "@/lib/orpc";
 
 import "../index.css";
 
@@ -43,12 +45,14 @@ function RootComponent() {
 				disableTransitionOnChange
 				storageKey="vite-ui-theme"
 			>
-				<TerminalSettingsProvider>
-					<div className="grid h-svh grid-rows-[auto_1fr] overflow-hidden">
-						<Outlet />
-					</div>
-					<Toaster richColors />
-				</TerminalSettingsProvider>
+				<QueryClientProvider client={queryClient}>
+					<TerminalSettingsProvider>
+						<div className="grid h-svh grid-rows-[auto_1fr] overflow-hidden">
+							<Outlet />
+						</div>
+						<Toaster richColors />
+					</TerminalSettingsProvider>
+				</QueryClientProvider>
 			</ThemeProvider>
 			<TanStackRouterDevtools position="bottom-left" />
 		</>

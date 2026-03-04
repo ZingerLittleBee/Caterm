@@ -35,7 +35,7 @@ const AUTH_TYPE_ITEMS = {
 } as const;
 
 export function HostForm({ host, onSubmit, onCancel }: HostFormProps) {
-	const form = useForm<HostFormValues>({
+	const form = useForm({
 		defaultValues: {
 			name: host?.name ?? "",
 			hostname: host?.hostname ?? "",
