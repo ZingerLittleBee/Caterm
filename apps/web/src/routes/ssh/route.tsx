@@ -18,7 +18,6 @@ import {
 import { SshStatusBar } from "@/components/ssh/ssh-status-bar";
 import { SshTabBar } from "@/components/ssh/ssh-tab-bar";
 import { SshTerminal } from "@/components/ssh/ssh-terminal";
-import { TerminalSettingsProvider } from "@/components/terminal/terminal-settings-provider";
 import {
 	Sheet,
 	SheetContent,
@@ -37,9 +36,7 @@ export const Route = createFileRoute("/ssh")({
 function SshRouteWrapper() {
 	return (
 		<SshSessionProvider>
-			<TerminalSettingsProvider>
-				<SshLayout />
-			</TerminalSettingsProvider>
+			<SshLayout />
 		</SshSessionProvider>
 	);
 }
