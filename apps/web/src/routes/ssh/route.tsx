@@ -268,7 +268,7 @@ function SshLayout() {
 				/>
 
 				{/* Terminal area */}
-				<div className="relative flex-1">
+				<div className="relative min-h-0 flex-1">
 					{sessions.size === 0 ? (
 						<div className="flex h-full items-center justify-center text-muted-foreground">
 							<p>Select a host to connect or add a new one.</p>
