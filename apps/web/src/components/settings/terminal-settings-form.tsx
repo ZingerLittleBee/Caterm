@@ -23,17 +23,13 @@ import type {
 export function TerminalSettingsForm() {
 	const { settings, updateGlobal } = useTerminalSettings();
 	const [draft, setDraft] = useState<TerminalSettings>(settings);
-	const [saving, setSaving] = useState(false);
-
 	useEffect(() => {
 		setDraft(settings);
 	}, [settings]);
 
 	const handleSave = useCallback(() => {
-		setSaving(true);
 		updateGlobal(draft);
 		toast.success("Settings saved");
-		setSaving(false);
 	}, [draft, updateGlobal]);
 
 	return (
@@ -94,7 +90,7 @@ export function TerminalSettingsForm() {
 					onChange={(e) =>
 						setDraft((prev) => ({
 							...prev,
-							letterSpacing: Number.parseInt(e.target.value, 10) || 0,
+							letterSpacing: Number.parseFloat(e.target.value) || 0,
 						}))
 					}
 					type="number"
@@ -227,9 +223,7 @@ export function TerminalSettingsForm() {
 			</div>
 
 			<div className="pt-2">
-				<Button disabled={saving} onClick={handleSave}>
-					{saving ? "Saving..." : "Save Settings"}
-				</Button>
+				<Button onClick={handleSave}>Save Settings</Button>
 			</div>
 		</div>
 	);

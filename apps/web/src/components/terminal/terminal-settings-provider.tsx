@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 import { createContext, useCallback, useContext, useReducer } from "react";
-import { DEFAULT_TERMINAL_SETTINGS } from "@/lib/terminal-themes";
+import {
+	DEFAULT_TERMINAL_SETTINGS,
+	resolveSettings,
+} from "@/lib/terminal-themes";
 import type {
 	HostTerminalOverrides,
 	TerminalSettings,
@@ -98,13 +101,7 @@ export function TerminalSettingsProvider({
 	}, []);
 
 	const getSettingsForHost = useCallback(
-		(hostId: string): TerminalSettings => {
-			const overrides = state.hostOverrides.get(hostId);
-			if (!overrides) {
-				return state.global;
-			}
-			return { ...state.global, ...overrides };
-		},
+		(hostId: string): TerminalSettings => resolveSettings(state, hostId),
 		[state.global, state.hostOverrides]
 	);
 

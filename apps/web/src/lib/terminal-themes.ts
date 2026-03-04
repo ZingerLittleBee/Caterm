@@ -28,7 +28,7 @@ export const BUILTIN_THEMES: Record<string, TerminalThemePreset> = {
 			cursor: "#ffffff",
 			cursorAccent: "#000000",
 			selectionBackground: "#ffffff40",
-			selectionForeground: undefined as unknown as string,
+			selectionForeground: undefined,
 			selectionInactiveBackground: "#ffffff20",
 			black: "#2e3436",
 			red: "#cc0000",

@@ -40,31 +40,31 @@ export interface SshSessionInfo {
 	status: SshSessionStatus;
 }
 
-/** Complete xterm.js ITheme color definition */
+/** Complete xterm.js ITheme color definition — optional fields match xterm.js ITheme */
 export interface TerminalThemeColors {
-	background: string;
-	black: string;
-	blue: string;
-	brightBlack: string;
-	brightBlue: string;
-	brightCyan: string;
-	brightGreen: string;
-	brightMagenta: string;
-	brightRed: string;
-	brightWhite: string;
-	brightYellow: string;
-	cursor: string;
-	cursorAccent: string;
-	cyan: string;
-	foreground: string;
-	green: string;
-	magenta: string;
-	red: string;
-	selectionBackground: string;
-	selectionForeground: string;
-	selectionInactiveBackground: string;
-	white: string;
-	yellow: string;
+	background?: string;
+	black?: string;
+	blue?: string;
+	brightBlack?: string;
+	brightBlue?: string;
+	brightCyan?: string;
+	brightGreen?: string;
+	brightMagenta?: string;
+	brightRed?: string;
+	brightWhite?: string;
+	brightYellow?: string;
+	cursor?: string;
+	cursorAccent?: string;
+	cyan?: string;
+	foreground?: string;
+	green?: string;
+	magenta?: string;
+	red?: string;
+	selectionBackground?: string;
+	selectionForeground?: string;
+	selectionInactiveBackground?: string;
+	white?: string;
+	yellow?: string;
 }
 
 /** A preset theme = display name + full color set */

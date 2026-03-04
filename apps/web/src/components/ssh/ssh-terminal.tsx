@@ -220,6 +220,25 @@ export function SshTerminal({
 		};
 	}, [sessionId]);
 
+	// Apply settings changes to a live terminal without re-creating it.
+	useEffect(() => {
+		const terminal = terminalRef.current;
+		if (!terminal) {
+			return;
+		}
+		const theme = resolveTheme(settings);
+		terminal.options.fontSize = settings.fontSize;
+		terminal.options.fontFamily = settings.fontFamily;
+		terminal.options.cursorStyle = settings.cursorStyle;
+		terminal.options.cursorBlink = settings.cursorBlink;
+		terminal.options.cursorInactiveStyle = settings.cursorInactiveStyle;
+		terminal.options.letterSpacing = settings.letterSpacing;
+		terminal.options.lineHeight = settings.lineHeight;
+		terminal.options.scrollback = settings.scrollback;
+		terminal.options.theme = theme;
+		fitAddonRef.current?.fit();
+	}, [settings]);
+
 	// Re-fit terminal when it becomes the active tab.
 	useEffect(() => {
 		if (!isActive) {
