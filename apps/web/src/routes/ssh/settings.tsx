@@ -1,4 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
+import type * as React from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { TerminalSettingsForm } from "@/components/settings/terminal-settings-form";
 import { ScrollArea } from "@/components/ui/scroll-area";

@@ -36,7 +36,7 @@ function isAllowedOrigin(origin: string): boolean {
 	if (origin === "https://tauri.localhost") {
 		return true;
 	}
-	if (origin.startsWith("tauri://")) {
+	if (origin === "tauri://localhost") {
 		return true;
 	}
 	return false;

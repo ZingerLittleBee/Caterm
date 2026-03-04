@@ -1,29 +1,12 @@
 export interface SshHost {
 	authType: string;
-	createdAt: string;
+	createdAt: Date;
 	hostname: string;
 	id: string;
 	name: string;
 	port: number;
-	updatedAt: string;
+	updatedAt: Date;
 	username: string;
-}
-
-export interface CreateHostInput {
-	authType: "password" | "key";
-	hostname: string;
-	name: string;
-	port?: number;
-	username: string;
-}
-
-export interface UpdateHostInput {
-	authType?: string;
-	hostname?: string;
-	id: string;
-	name?: string;
-	port?: number;
-	username?: string;
 }
 
 export type SshSessionStatus =

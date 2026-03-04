@@ -24,6 +24,7 @@
     "@fontsource-variable/geist": "^5.2.8",
     "@hookform/resolvers": "^5.1.1",
     "@orpc/client": "^1.13.6",
+    "@orpc/server": "^1.13.6",
     "@orpc/tanstack-query": "^1.13.6",
     "@tailwindcss/vite": "^4.0.15",
     "@tanstack/react-form": "^1.28.3",

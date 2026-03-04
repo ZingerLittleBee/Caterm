@@ -63,7 +63,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 					) : (
 						hosts.map((host) => (
 							<HostCard
-								host={host as SshHost}
+								host={host}
 								key={host.id}
 								onConnect={onConnect}
 								onDelete={setDeleteTarget}
