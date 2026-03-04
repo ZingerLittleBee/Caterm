@@ -7,6 +7,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
+import type { SshSessionStatus } from "@/types/ssh";
 
 interface SshTerminalProps {
 	cursorBlink?: boolean;
@@ -14,13 +15,17 @@ interface SshTerminalProps {
 	fontFamily?: string;
 	fontSize?: number;
 	isActive: boolean;
+	onRetry?: () => void;
 	scrollback?: number;
 	sessionId: string;
+	status: SshSessionStatus;
 }
 
 export function SshTerminal({
 	sessionId,
 	isActive,
+	status,
+	onRetry,
 	fontSize = 14,
 	fontFamily = "monospace",
 	cursorStyle = "block",
@@ -28,6 +33,10 @@ export function SshTerminal({
 	scrollback = 1000,
 }: SshTerminalProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
+	const statusRef = useRef(status);
+	statusRef.current = status;
+	const onRetryRef = useRef(onRetry);
+	onRetryRef.current = onRetry;
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
 	const rafIdRef = useRef<number>(0);
@@ -92,6 +101,12 @@ export function SshTerminal({
 		// Forward user input to the SSH backend as base64-encoded data.
 		// Use TextEncoder for binary-safe base64 encoding.
 		const dataDisposable = terminal.onData((data: string) => {
+			// Intercept Enter key when disconnected for manual retry.
+			if (statusRef.current === "disconnected" && data === "\r") {
+				onRetryRef.current?.();
+				return;
+			}
+
 			const bytes = new TextEncoder().encode(data);
 			// Build binary string in chunks to avoid call stack limits
 			// with large paste operations.
@@ -131,12 +146,47 @@ export function SshTerminal({
 			outputUnlisten = unlisten;
 		});
 
-		// Listen for disconnect events from the backend.
-		let disconnectUnlisten: (() => void) | null = null;
-		const disconnectListenerPromise = listen(
-			`ssh-disconnect-${sessionId}`,
+		// Listen for reconnecting events — show inline status.
+		let reconnectingUnlisten: (() => void) | null = null;
+		const reconnectingListenerPromise = listen<string>(
+			`ssh-reconnecting-${sessionId}`,
+			(event) => {
+				const { attempt, maxAttempts } = event.payload as unknown as {
+					attempt: number;
+					maxAttempts: number;
+				};
+				terminal.write(
+					`\r\n\x1b[33mConnection lost. Reconnecting (${attempt}/${maxAttempts})...\x1b[0m`
+				);
+			}
+		).then((unlisten) => {
+			reconnectingUnlisten = unlisten;
+		});
+
+		// Listen for reconnected events — confirm success.
+		let reconnectedUnlisten: (() => void) | null = null;
+		const reconnectedListenerPromise = listen(
+			`ssh-reconnected-${sessionId}`,
 			() => {
-				terminal.write("\r\n\x1b[31mDisconnected.\x1b[0m\r\n");
+				terminal.write("\r\n\x1b[32mReconnected.\x1b[0m\r\n");
+			}
+		).then((unlisten) => {
+			reconnectedUnlisten = unlisten;
+		});
+
+		// Listen for disconnect events — show failure or normal disconnect.
+		let disconnectUnlisten: (() => void) | null = null;
+		const disconnectListenerPromise = listen<string>(
+			`ssh-disconnect-${sessionId}`,
+			(event) => {
+				const { reason } = event.payload as unknown as { reason: string };
+				if (reason === "failed") {
+					terminal.write(
+						"\r\n\x1b[31mReconnection failed.\x1b[0m\r\n\x1b[31mPress Enter to retry or close this tab.\x1b[0m\r\n"
+					);
+				} else {
+					terminal.write("\r\n\x1b[31mDisconnected.\x1b[0m\r\n");
+				}
 			}
 		).then((unlisten) => {
 			disconnectUnlisten = unlisten;
@@ -163,6 +213,12 @@ export function SshTerminal({
 			// Clean up async event listeners.
 			outputListenerPromise.then(() => {
 				outputUnlisten?.();
+			});
+			reconnectingListenerPromise.then(() => {
+				reconnectingUnlisten?.();
+			});
+			reconnectedListenerPromise.then(() => {
+				reconnectedUnlisten?.();
 			});
 			disconnectListenerPromise.then(() => {
 				disconnectUnlisten?.();

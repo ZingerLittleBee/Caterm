@@ -29,6 +29,7 @@ export interface UpdateHostInput {
 export type SshSessionStatus =
 	| "connecting"
 	| "connected"
+	| "reconnecting"
 	| "disconnected"
 	| "error";
 

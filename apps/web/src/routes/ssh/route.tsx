@@ -58,7 +58,7 @@ function SshRouteWrapper() {
 }
 
 function SshLayout() {
-	const { sessions, activeSessionId, connect, disconnect, setActive } =
+	const { sessions, activeSessionId, connect, disconnect, retry, setActive } =
 		useSshSessions();
 	const [formOpen, setFormOpen] = useState(false);
 	const [editingHost, setEditingHost] = useState<SshHost | undefined>(
@@ -282,8 +282,10 @@ function SshLayout() {
 								fontSize={terminalSettings.fontSize}
 								isActive={session.id === activeSessionId}
 								key={session.id}
+								onRetry={() => retry(session.id)}
 								scrollback={terminalSettings.scrollback}
 								sessionId={session.id}
+								status={session.status}
 							/>
 						))
 					)}
