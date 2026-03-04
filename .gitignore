@@ -40,6 +40,9 @@ lerna-debug.log*
 coverage
 .nyc_output
 
+# Make menu state
+.claude/.last-make-choice
+
 # Misc
 *.tgz
 .cache

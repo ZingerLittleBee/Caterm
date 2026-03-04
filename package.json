@@ -9,7 +9,15 @@
     "catalog": {
       "dotenv": "^17.2.2",
       "zod": "^4.1.13",
-      "typescript": "^5"
+      "typescript": "^5",
+      "@orpc/server": "^1.12.2",
+      "@orpc/client": "^1.12.2",
+      "@orpc/openapi": "^1.12.2",
+      "@orpc/zod": "^1.12.2",
+      "better-auth": "1.5.2",
+      "drizzle-orm": "^0.45.1",
+      "@types/pg": "^8.16.0",
+      "@types/node": "^22.13.14"
     }
   },
   "type": "module",
@@ -17,9 +25,17 @@
     "dev": "bun run --filter '*' dev",
     "build": "bun run --filter '*' build",
     "check-types": "bun run --filter '*' check-types",
+    "dev:server": "bun run --filter server dev",
+    "dev:web": "bun run --filter web dev",
     "tauri": "bun run --filter web tauri --",
     "tauri:dev": "bun run --filter web desktop:dev",
     "tauri:build": "bun run --filter web desktop:build",
+    "db:push": "bun run --filter @Caterm/db db:push",
+    "db:generate": "bun run --filter @Caterm/db db:generate",
+    "db:studio": "bun run --filter @Caterm/db db:studio",
+    "db:migrate": "bun run --filter @Caterm/db db:migrate",
+    "db:start": "bun run --filter @Caterm/db db:start",
+    "db:stop": "bun run --filter @Caterm/db db:stop",
     "check": "ultracite check",
     "fix": "ultracite fix"
   },
