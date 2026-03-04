@@ -2,8 +2,10 @@ import { createFileRoute } from "@tanstack/react-router";
 import Database from "@tauri-apps/plugin-sql";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { AppSidebar } from "@/components/app-sidebar";
 import { HostForm } from "@/components/hosts/host-form";
 import { HostList } from "@/components/hosts/host-list";
+import { SiteHeader } from "@/components/site-header";
 import {
 	type ConnectCredentials,
 	ConnectDialog,
@@ -22,6 +24,7 @@ import {
 	SheetHeader,
 	SheetTitle,
 } from "@/components/ui/sheet";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { loadCredential, saveCredential } from "@/lib/stronghold";
 import type { SshHost } from "@/types/ssh";
 
@@ -236,19 +239,25 @@ function SshLayout() {
 	}, []);
 
 	return (
-		<div className="row-span-full flex h-full">
-			{/* Left sidebar: host list */}
-			<div className="w-64 shrink-0 border-r">
+		<SidebarProvider
+			style={
+				{
+					"--sidebar-width": "calc(var(--spacing) * 72)",
+					"--header-height": "calc(var(--spacing) * 12)",
+				} as React.CSSProperties
+			}
+		>
+			<AppSidebar variant="inset">
 				<HostList
 					key={refreshKey}
 					onConnect={handleConnectRequest}
 					onEdit={handleEditHost}
 					onNewHost={handleNewHost}
 				/>
-			</div>
+			</AppSidebar>
+			<SidebarInset>
+				<SiteHeader title="SSH Terminal" />
 
-			{/* Right area: tabs + terminals + status bar */}
-			<div className="flex min-w-0 flex-1 flex-col">
 				<SshTabBar
 					activeSessionId={activeSessionId}
 					onAddSession={handleNewHost}
@@ -280,7 +289,7 @@ function SshLayout() {
 				</div>
 
 				<SshStatusBar session={activeSession} />
-			</div>
+			</SidebarInset>
 
 			{/* Connect credentials dialog */}
 			<ConnectDialog
@@ -313,6 +322,6 @@ function SshLayout() {
 					</div>
 				</SheetContent>
 			</Sheet>
-		</div>
+		</SidebarProvider>
 	);
 }
