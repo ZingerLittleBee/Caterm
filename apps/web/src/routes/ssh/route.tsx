@@ -1,7 +1,7 @@
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import Database from "@tauri-apps/plugin-sql";
 import type * as React from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { AppSidebar } from "@/components/app-sidebar";
 import { HostForm } from "@/components/hosts/host-form";
@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/sheet";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { authClient } from "@/lib/auth-client";
-import { loadCredential, saveCredential } from "@/lib/stronghold";
+import { client, orpc, queryClient } from "@/lib/orpc";
 import type { SshHost } from "@/types/ssh";
 
 interface TerminalSettings {
@@ -72,65 +72,36 @@ function SshLayout() {
 		undefined
 	);
 	const [connectTarget, setConnectTarget] = useState<SshHost | null>(null);
-	const [refreshKey, setRefreshKey] = useState(0);
-	const [terminalSettings, setTerminalSettings] = useState<TerminalSettings>(
-		DEFAULT_TERMINAL_SETTINGS
-	);
 
-	useEffect(() => {
-		const loadSettings = async () => {
-			try {
-				const db = await Database.load("sqlite:caterm.db");
-				const rows = await db.select<TerminalSettings[]>(
-					"SELECT font_family as fontFamily, font_size as fontSize, cursor_style as cursorStyle, cursor_blink as cursorBlink, scrollback FROM terminal_settings WHERE id = 'default'"
-				);
-				if (rows.length > 0) {
-					const row = rows[0];
-					setTerminalSettings({
-						fontFamily: row.fontFamily,
-						fontSize: row.fontSize,
-						cursorStyle: row.cursorStyle,
-						cursorBlink: Boolean(row.cursorBlink),
-						scrollback: row.scrollback,
-					});
-				}
-			} catch {
-				// Use defaults if settings can't be loaded
-			}
-		};
-		loadSettings();
-	}, []);
+	const { data: terminalSettings = DEFAULT_TERMINAL_SETTINGS } = useQuery(
+		orpc.terminalSettings.get.queryOptions()
+	);
 
 	const activeSession = activeSessionId
 		? (sessions.get(activeSessionId) ?? null)
 		: null;
 
+	const createHostMutation = useMutation(orpc.sshHost.create.mutationOptions());
+	const updateHostMutation = useMutation(orpc.sshHost.update.mutationOptions());
+
 	const handleConnectRequest = useCallback(
 		async (host: SshHost) => {
 			try {
-				const stored = await loadCredential(host.id, host.authType);
-				if (
-					(host.authType === "password" && stored.password) ||
-					(host.authType === "key" && stored.privateKey)
-				) {
-					// Credentials found in Stronghold — connect directly
-					await connect({
-						hostId: host.id,
-						hostName: host.name,
-						hostname: host.hostname,
-						port: host.port,
-						username: host.username,
-						authType: host.authType as "password" | "key",
-						password: stored.password,
-						privateKey: stored.privateKey,
-						keyPassphrase: stored.keyPassphrase,
-					});
-					return;
-				}
+				const fullHost = await client.sshHost.getById({ id: host.id });
+				await connect({
+					hostId: fullHost.id,
+					hostName: fullHost.name,
+					hostname: fullHost.hostname,
+					port: fullHost.port,
+					username: fullHost.username,
+					authType: fullHost.authType as "password" | "key",
+					password: fullHost.password,
+					privateKey: fullHost.privateKey,
+					keyPassphrase: fullHost.keyPassphrase,
+				});
 			} catch {
-				// Failed to load credentials — fall through to dialog
+				setConnectTarget(host);
 			}
-			setConnectTarget(host);
 		},
 		[connect]
 	);
@@ -185,60 +156,41 @@ function SshLayout() {
 			username: string;
 		}) => {
 			try {
-				const db = await Database.load("sqlite:caterm.db");
-				let hostId: string;
-
 				if (editingHost) {
-					hostId = editingHost.id;
-					await db.execute(
-						"UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, auth_type = ?, updated_at = datetime('now') WHERE id = ?",
-						[
-							values.name,
-							values.hostname,
-							values.port,
-							values.username,
-							values.authType,
-							editingHost.id,
-						]
-					);
+					await updateHostMutation.mutateAsync({
+						id: editingHost.id,
+						name: values.name,
+						hostname: values.hostname,
+						port: values.port,
+						username: values.username,
+						authType: values.authType,
+						password: values.password || undefined,
+						privateKey: values.privateKey || undefined,
+						keyPassphrase: values.keyPassphrase || undefined,
+					});
 				} else {
-					hostId = crypto.randomUUID();
-					await db.execute(
-						"INSERT INTO ssh_hosts (id, name, hostname, port, username, auth_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-						[
-							hostId,
-							values.name,
-							values.hostname,
-							values.port,
-							values.username,
-							values.authType,
-						]
-					);
+					await createHostMutation.mutateAsync({
+						name: values.name,
+						hostname: values.hostname,
+						port: values.port,
+						username: values.username,
+						authType: values.authType,
+						password: values.password || undefined,
+						privateKey: values.privateKey || undefined,
+						keyPassphrase: values.keyPassphrase || undefined,
+					});
 				}
-
-				// Save credentials to Stronghold
-				const hasCredentials =
-					(values.authType === "password" && values.password) ||
-					(values.authType === "key" && values.privateKey);
-				if (hasCredentials) {
-					await saveCredential(
-						hostId,
-						values.authType,
-						values.password || undefined,
-						values.privateKey || undefined,
-						values.keyPassphrase || undefined
-					);
-				}
-
 				setFormOpen(false);
 				setEditingHost(undefined);
-				setRefreshKey((k) => k + 1);
+				queryClient.invalidateQueries({
+					queryKey: orpc.sshHost.list.queryOptions().queryKey,
+				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				toast.error("Failed to save host", { description: message });
 			}
 		},
-		[editingHost]
+		[editingHost, createHostMutation, updateHostMutation]
 	);
 
 	const handleFormCancel = useCallback(() => {
@@ -257,7 +209,6 @@ function SshLayout() {
 		>
 			<AppSidebar variant="inset">
 				<HostList
-					key={refreshKey}
 					onConnect={handleConnectRequest}
 					onEdit={handleEditHost}
 					onNewHost={handleNewHost}
