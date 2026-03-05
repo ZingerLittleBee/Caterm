@@ -27,7 +27,7 @@ const getORPCClient = createIsomorphicFn()
   .server(() =>
     createRouterClient(appRouter, {
       context: async () => {
-        return createContext({ req: getRequest() })
+        return await createContext({ req: getRequest() })
       }
     })
   )

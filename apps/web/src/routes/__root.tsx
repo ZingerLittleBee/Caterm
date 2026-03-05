@@ -7,7 +7,7 @@ import { queryClient } from '@/lib/orpc'
 
 import '../index.css'
 
-export type RouterAppContext = {}
+export type RouterAppContext = Record<string, never>
 
 export const Route = createRootRouteWithContext<RouterAppContext>()({
   component: RootComponent,
