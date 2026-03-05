@@ -21,7 +21,7 @@ import type {
 } from "@/types/ssh";
 
 export function TerminalSettingsForm() {
-	const { settings, updateGlobal } = useTerminalSettings();
+	const { settings, updateGlobal, isLoading } = useTerminalSettings();
 	const [draft, setDraft] = useState<TerminalSettings>(settings);
 	useEffect(() => {
 		setDraft(settings);
@@ -31,6 +31,14 @@ export function TerminalSettingsForm() {
 		updateGlobal(draft);
 		toast.success("Settings saved");
 	}, [draft, updateGlobal]);
+
+	if (isLoading) {
+		return (
+			<div className="flex max-w-lg flex-col gap-6">
+				<p className="text-muted-foreground">Loading settings...</p>
+			</div>
+		);
+	}
 
 	return (
 		<div className="flex max-w-lg flex-col gap-6">
