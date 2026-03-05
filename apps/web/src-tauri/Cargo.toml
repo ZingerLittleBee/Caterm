@@ -24,6 +24,7 @@ log = "0.4"
 tauri = { version = "2.10.0", features = [] }
 tauri-plugin-log = "2"
 russh = "0.46"
+russh-sftp = "2.1"
 russh-keys = "0.46"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }

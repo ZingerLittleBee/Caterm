@@ -1,0 +1,88 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
+
+use super::session::SftpSessionEntry;
+use super::transfer::TransferQueue;
+
+/// Manages all active SFTP sessions. Thread-safe via Arc<Mutex<...>>.
+pub struct SftpSessionManager {
+    sessions: Arc<Mutex<HashMap<String, SftpSessionEntry>>>,
+    transfer_queue: TransferQueue,
+}
+
+impl SftpSessionManager {
+    /// Create a new empty SFTP session manager.
+    pub fn new() -> Self {
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            transfer_queue: TransferQueue::new(3),
+        }
+    }
+
+    /// Add an SFTP session to the manager.
+    pub async fn add_session(&self, session: SftpSessionEntry) {
+        let id = session.id.clone();
+        self.sessions.lock().await.insert(id, session);
+    }
+
+    /// Remove an SFTP session from the manager.
+    pub async fn remove_session(&self, session_id: &str) -> Option<SftpSessionEntry> {
+        self.sessions.lock().await.remove(session_id)
+    }
+
+    /// Execute a closure with a reference to a specific SFTP session.
+    ///
+    /// The closure receives an `&SftpSessionEntry` and must not hold the
+    /// reference across await points. Returns an error if the session is not found.
+    pub async fn with_session<F, R>(&self, session_id: &str, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&SftpSessionEntry) -> R,
+    {
+        let sessions = self.sessions.lock().await;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("SFTP session not found: {session_id}"))?;
+        Ok(f(session))
+    }
+
+    /// Close and remove a specific SFTP session.
+    pub async fn close(&self, session_id: &str) -> Result<(), String> {
+        let session = self.sessions.lock().await.remove(session_id);
+        if session.is_none() {
+            return Err(format!("SFTP session not found: {session_id}"));
+        }
+        // SftpSessionEntry is dropped here, which closes the underlying channel.
+        Ok(())
+    }
+
+    /// Close and remove all SFTP sessions.
+    pub async fn close_all(&self) {
+        let mut sessions = self.sessions.lock().await;
+        sessions.clear();
+    }
+
+    /// Close all SFTP sessions that are associated with a given SSH session ID.
+    pub async fn close_by_ssh_session(&self, ssh_session_id: &str) {
+        let mut sessions = self.sessions.lock().await;
+        sessions.retain(|_, entry| {
+            entry
+                .ssh_session_id
+                .as_deref()
+                .map_or(true, |id| id != ssh_session_id)
+        });
+    }
+
+    /// Get a reference to the transfer queue.
+    #[allow(dead_code)]
+    pub fn transfer_queue(&self) -> &TransferQueue {
+        &self.transfer_queue
+    }
+}
+
+impl Default for SftpSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -1,4 +1,5 @@
 mod commands;
+mod sftp;
 mod ssh;
 
 use commands::ssh_commands;

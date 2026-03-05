@@ -12,7 +12,7 @@ use super::handler::SshClientHandler;
 
 /// Authentication method for reconnection.
 #[derive(Clone)]
-pub(crate) enum AuthMethod {
+pub enum AuthMethod {
     Password(String),
     PrivateKey {
         key: String,
