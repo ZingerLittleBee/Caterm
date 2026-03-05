@@ -54,11 +54,21 @@ export function TerminalSettingsProvider({
 }) {
 	const { data, isLoading } = useQuery({
 		...orpc.terminalSettings.get.queryOptions(),
-		placeholderData: () => readSettingsCache(),
-		select: (raw: ApiData): ApiData => {
-			const result = {
-				global: { ...DEFAULT_TERMINAL_SETTINGS, ...raw.global },
-				hostOverrides: raw.hostOverrides ?? {},
+		placeholderData: () => readSettingsCache() as never,
+		select: (raw): ApiData => {
+			const rawData = raw as {
+				global?: Record<string, unknown>;
+				hostOverrides?: Record<string, Partial<TerminalSettings>>;
+			};
+			const result: ApiData = {
+				global: {
+					...DEFAULT_TERMINAL_SETTINGS,
+					...rawData.global,
+				} as TerminalSettings,
+				hostOverrides: (rawData.hostOverrides ?? {}) as Record<
+					string,
+					Partial<TerminalSettings>
+				>,
 			};
 			writeSettingsCache(result);
 			return result;
@@ -102,7 +112,7 @@ export function TerminalSettingsProvider({
 			});
 			queryClient.setQueryData(
 				orpc.terminalSettings.get.queryOptions().queryKey,
-				{ global: newGlobal, hostOverrides: hostOverridesRecord }
+				{ global: newGlobal, hostOverrides: hostOverridesRecord } as never
 			);
 			upsertMutation.mutate({ global: partial });
 		},
@@ -122,7 +132,7 @@ export function TerminalSettingsProvider({
 			});
 			queryClient.setQueryData(
 				orpc.terminalSettings.get.queryOptions().queryKey,
-				{ global: globalSettings, hostOverrides: newOverrides }
+				{ global: globalSettings, hostOverrides: newOverrides } as never
 			);
 			upsertMutation.mutate({
 				hostOverrides: { [hostId]: { ...existing, ...partial } },
@@ -137,7 +147,7 @@ export function TerminalSettingsProvider({
 			writeSettingsCache({ global: globalSettings, hostOverrides: rest });
 			queryClient.setQueryData(
 				orpc.terminalSettings.get.queryOptions().queryKey,
-				{ global: globalSettings, hostOverrides: rest }
+				{ global: globalSettings, hostOverrides: rest } as never
 			);
 			upsertMutation.mutate({ hostOverrides: rest });
 		},
