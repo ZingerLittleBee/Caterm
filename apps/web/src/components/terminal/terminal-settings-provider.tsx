@@ -4,9 +4,10 @@ import {
 	type ReactNode,
 	useCallback,
 	useContext,
+	useEffect,
 	useMemo,
 } from "react";
-import { client, orpc, queryClient } from "@/lib/orpc";
+import { client, queryClient } from "@/lib/orpc";
 import {
 	readSettingsCache,
 	writeSettingsCache,
@@ -42,10 +43,29 @@ export function useTerminalSettings(): TerminalSettingsContextValue {
 	return context;
 }
 
-interface ApiData {
+const SETTINGS_QUERY_KEY = ["terminalSettings", "get"] as const;
+
+function normalizeApiData(raw: unknown): {
 	global: TerminalSettings;
 	hostOverrides: Record<string, Partial<TerminalSettings>>;
+} {
+	const rawData = raw as {
+		global?: Record<string, unknown>;
+		hostOverrides?: Record<string, Partial<TerminalSettings>>;
+	};
+	return {
+		global: {
+			...DEFAULT_TERMINAL_SETTINGS,
+			...rawData.global,
+		} as TerminalSettings,
+		hostOverrides: (rawData.hostOverrides ?? {}) as Record<
+			string,
+			Partial<TerminalSettings>
+		>,
+	};
 }
+
+type SettingsData = ReturnType<typeof normalizeApiData>;
 
 export function TerminalSettingsProvider({
 	children,
@@ -53,27 +73,22 @@ export function TerminalSettingsProvider({
 	children: ReactNode;
 }) {
 	const { data, isLoading } = useQuery({
-		...orpc.terminalSettings.get.queryOptions(),
-		placeholderData: () => readSettingsCache() as never,
-		select: (raw): ApiData => {
-			const rawData = raw as {
-				global?: Record<string, unknown>;
-				hostOverrides?: Record<string, Partial<TerminalSettings>>;
-			};
-			const result: ApiData = {
-				global: {
-					...DEFAULT_TERMINAL_SETTINGS,
-					...rawData.global,
-				} as TerminalSettings,
-				hostOverrides: (rawData.hostOverrides ?? {}) as Record<
-					string,
-					Partial<TerminalSettings>
-				>,
-			};
-			writeSettingsCache(result);
-			return result;
+		queryKey: SETTINGS_QUERY_KEY,
+		queryFn: async () => {
+			const raw = await client.terminalSettings.get();
+			return normalizeApiData(raw);
+		},
+		placeholderData: () => {
+			const cached = readSettingsCache();
+			return cached ? normalizeApiData(cached) : undefined;
 		},
 	});
+
+	useEffect(() => {
+		if (data) {
+			writeSettingsCache(data);
+		}
+	}, [data]);
 
 	const upsertMutation = useMutation({
 		mutationFn: (input: {
@@ -81,9 +96,15 @@ export function TerminalSettingsProvider({
 			hostOverrides?: Record<string, Partial<TerminalSettings>>;
 		}) => client.terminalSettings.upsert(input),
 		onSuccess: () => {
-			queryClient.invalidateQueries({
-				queryKey: orpc.terminalSettings.get.queryOptions().queryKey,
-			});
+			queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
+		},
+	});
+
+	const deleteHostOverrideMutation = useMutation({
+		mutationFn: (input: { hostId: string }) =>
+			client.terminalSettings.deleteHostOverride(input),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
 		},
 	});
 
@@ -103,55 +124,56 @@ export function TerminalSettingsProvider({
 		[state]
 	);
 
+	const setOptimisticData = useCallback((newData: SettingsData) => {
+		queryClient.setQueryData<SettingsData>(SETTINGS_QUERY_KEY, newData);
+	}, []);
+
 	const updateGlobal = useCallback(
 		(partial: Partial<TerminalSettings>) => {
 			const newGlobal = { ...globalSettings, ...partial };
-			writeSettingsCache({
+			setOptimisticData({
 				global: newGlobal,
 				hostOverrides: hostOverridesRecord,
 			});
-			queryClient.setQueryData(
-				orpc.terminalSettings.get.queryOptions().queryKey,
-				{ global: newGlobal, hostOverrides: hostOverridesRecord } as never
-			);
 			upsertMutation.mutate({ global: partial });
 		},
-		[globalSettings, hostOverridesRecord, upsertMutation]
+		[globalSettings, hostOverridesRecord, upsertMutation, setOptimisticData]
 	);
 
 	const updateHostOverrides = useCallback(
 		(hostId: string, partial: Partial<TerminalSettings>) => {
 			const existing = hostOverridesRecord[hostId] ?? {};
+			const merged = { ...existing, ...partial };
 			const newOverrides = {
 				...hostOverridesRecord,
-				[hostId]: { ...existing, ...partial },
+				[hostId]: merged,
 			};
-			writeSettingsCache({
+			setOptimisticData({
 				global: globalSettings,
 				hostOverrides: newOverrides,
 			});
-			queryClient.setQueryData(
-				orpc.terminalSettings.get.queryOptions().queryKey,
-				{ global: globalSettings, hostOverrides: newOverrides } as never
-			);
 			upsertMutation.mutate({
-				hostOverrides: { [hostId]: { ...existing, ...partial } },
+				hostOverrides: { [hostId]: merged },
 			});
 		},
-		[globalSettings, hostOverridesRecord, upsertMutation]
+		[globalSettings, hostOverridesRecord, upsertMutation, setOptimisticData]
 	);
 
 	const clearHostOverrides = useCallback(
 		(hostId: string) => {
 			const { [hostId]: _, ...rest } = hostOverridesRecord;
-			writeSettingsCache({ global: globalSettings, hostOverrides: rest });
-			queryClient.setQueryData(
-				orpc.terminalSettings.get.queryOptions().queryKey,
-				{ global: globalSettings, hostOverrides: rest } as never
-			);
-			upsertMutation.mutate({ hostOverrides: rest });
+			setOptimisticData({
+				global: globalSettings,
+				hostOverrides: rest,
+			});
+			deleteHostOverrideMutation.mutate({ hostId });
 		},
-		[globalSettings, hostOverridesRecord, upsertMutation]
+		[
+			globalSettings,
+			hostOverridesRecord,
+			deleteHostOverrideMutation,
+			setOptimisticData,
+		]
 	);
 
 	return (
