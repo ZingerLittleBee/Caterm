@@ -1,4 +1,5 @@
 import {
+	Bookmark,
 	Download,
 	FolderPlus,
 	RefreshCw,
@@ -15,6 +16,7 @@ import {
 } from "@/components/ui/tooltip";
 
 interface SftpToolbarProps {
+	onBookmarks?: () => void;
 	onDelete?: () => void;
 	onDownload?: () => void;
 	onNewFolder?: () => void;
@@ -55,6 +57,7 @@ function ToolbarButton({
 }
 
 export function SftpToolbar({
+	onBookmarks,
 	onUpload,
 	onDownload,
 	onNewFolder,
@@ -95,6 +98,11 @@ export function SftpToolbar({
 					icon={<Search className="h-4 w-4" />}
 					label="Search"
 					onClick={onSearch}
+				/>
+				<ToolbarButton
+					icon={<Bookmark className="h-4 w-4" />}
+					label="Bookmarks"
+					onClick={onBookmarks}
 				/>
 			</div>
 		</TooltipProvider>

@@ -1,6 +1,11 @@
 "use client";
 
-import { CommandIcon, Settings2Icon, TerminalIcon } from "lucide-react";
+import {
+	CommandIcon,
+	FolderSyncIcon,
+	Settings2Icon,
+	TerminalIcon,
+} from "lucide-react";
 import type * as React from "react";
 import { NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
@@ -26,6 +31,11 @@ const data = {
 			title: "SSH Terminal",
 			url: "/ssh",
 			icon: <TerminalIcon />,
+		},
+		{
+			title: "File Manager",
+			url: "/sftp",
+			icon: <FolderSyncIcon />,
 		},
 	],
 	navSecondary: [

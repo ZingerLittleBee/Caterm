@@ -12,6 +12,7 @@ import type { FileEntry } from "@/types/sftp";
 
 interface SftpFileTableProps {
 	entries: FileEntry[];
+	onContextMenu?: (entry: FileEntry, event: React.MouseEvent) => void;
 	onOpen: (entry: FileEntry) => void;
 	onSelect: (entries: FileEntry[]) => void;
 }
@@ -66,6 +67,7 @@ function FileIcon({ entry }: { entry: FileEntry }) {
 
 export function SftpFileTable({
 	entries,
+	onContextMenu,
 	onOpen,
 	onSelect,
 }: SftpFileTableProps) {
@@ -111,6 +113,23 @@ export function SftpFileTable({
 		[onOpen]
 	);
 
+	const handleRowContextMenu = useCallback(
+		(entry: FileEntry, index: number, event: React.MouseEvent) => {
+			if (!onContextMenu) {
+				return;
+			}
+			event.preventDefault();
+			if (!selectedPaths.has(entry.path)) {
+				const nextSelected = new Set([entry.path]);
+				lastClickedIndex.current = index;
+				setSelectedPaths(nextSelected);
+				onSelect([entry]);
+			}
+			onContextMenu(entry, event);
+		},
+		[onContextMenu, selectedPaths, onSelect]
+	);
+
 	if (entries.length === 0) {
 		return (
 			<div className="flex h-32 items-center justify-center text-muted-foreground text-sm">
@@ -138,6 +157,7 @@ export function SftpFileTable({
 						data-state={selectedPaths.has(entry.path) ? "selected" : undefined}
 						key={entry.path}
 						onClick={(e) => handleRowClick(entry, index, e)}
+						onContextMenu={(e) => handleRowContextMenu(entry, index, e)}
 						onDoubleClick={() => handleRowDoubleClick(entry)}
 					>
 						<TableCell>

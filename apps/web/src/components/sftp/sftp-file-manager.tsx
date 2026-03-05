@@ -20,6 +20,7 @@ import type { SshHost } from "@/types/ssh";
 import { SftpConnectDialog } from "./sftp-connect-dialog";
 import { SftpFilePanel } from "./sftp-file-panel";
 import { useSftp } from "./sftp-provider";
+import { SftpTransferQueue } from "./sftp-transfer-queue";
 
 export function SftpFileManager() {
 	const { openStandalone, close, sessions, activeSftpSessionId } = useSftp();
@@ -183,22 +184,25 @@ export function SftpFileManager() {
 				</SiteHeader>
 
 				{activeSession ? (
-					<div className="flex min-h-0 flex-1">
-						<div className="flex min-h-0 w-1/2 flex-col border-r">
-							<div className="border-b px-3 py-1.5">
-								<h2 className="font-medium text-sm">Local</h2>
+					<div className="flex min-h-0 flex-1 flex-col">
+						<div className="flex min-h-0 flex-1">
+							<div className="flex min-h-0 w-1/2 flex-col border-r">
+								<div className="border-b px-3 py-1.5">
+									<h2 className="font-medium text-sm">Local</h2>
+								</div>
+								<SftpFilePanel source="local" />
 							</div>
-							<SftpFilePanel source="local" />
-						</div>
-						<div className="flex min-h-0 w-1/2 flex-col">
-							<div className="border-b px-3 py-1.5">
-								<h2 className="font-medium text-sm">Remote</h2>
+							<div className="flex min-h-0 w-1/2 flex-col">
+								<div className="border-b px-3 py-1.5">
+									<h2 className="font-medium text-sm">Remote</h2>
+								</div>
+								<SftpFilePanel
+									sftpSessionId={activeSftpSessionId ?? undefined}
+									source="remote"
+								/>
 							</div>
-							<SftpFilePanel
-								sftpSessionId={activeSftpSessionId ?? undefined}
-								source="remote"
-							/>
 						</div>
+						<SftpTransferQueue />
 					</div>
 				) : (
 					<div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
