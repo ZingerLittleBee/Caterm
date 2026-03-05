@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "setup": "ln -sf AGENTS.md CLAUDE.md && cp $CONDUCTOR_ROOT_PATH/apps/server/.env apps/server/ && bun i",
+    "run": ""
+  }
+}
