@@ -7,6 +7,10 @@ import tsconfigPaths from 'vite-tsconfig-paths'
 export default defineConfig({
   plugins: [tsconfigPaths(), tailwindcss(), tanstackStart(), viteReact()],
   server: {
-    port: 3002
+    port: 3002,
+    cors: {
+      origin: ['http://localhost:3001', 'https://tauri.localhost', 'tauri://localhost'],
+      credentials: true
+    }
   }
 })
