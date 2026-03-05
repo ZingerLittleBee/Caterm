@@ -2,7 +2,7 @@ name: caterm-compose
 
 services:
   postgres:
-    image: postgres
+    image: postgres:15
     container_name: caterm-postgres
     environment:
       POSTGRES_DB: caterm
