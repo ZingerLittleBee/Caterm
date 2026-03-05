@@ -43,6 +43,12 @@
     "enabled": true,
     "rules": {
       "recommended": true,
+      "a11y": {
+        "noLabelWithoutControl": "off",
+        "useAnchorContent": "off",
+        "useSemanticElements": "off",
+        "useFocusableInteractive": "off"
+      },
       "correctness": {
         "useExhaustiveDependencies": "info"
       },
@@ -55,6 +61,13 @@
           }
         }
       },
+      "performance": {
+        "noNamespaceImport": "off",
+        "noBarrelFile": "off"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "off"
+      },
       "style": {
         "noParameterAssign": "error",
         "useAsConstAssertion": "error",
@@ -66,9 +79,24 @@
         "useNumberNamespace": "error",
         "noInferrableTypes": "error",
         "noUselessElse": "error"
+      },
+      "suspicious": {
+        "noDocumentCookie": "off"
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["**/$.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "useFilenamingConvention": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "semicolons": "asNeeded",

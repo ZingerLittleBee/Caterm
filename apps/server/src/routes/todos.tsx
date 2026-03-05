@@ -75,13 +75,15 @@ function TodosRoute() {
             </Button>
           </form>
 
-          {todos.isLoading ? (
+          {todos.isLoading && (
             <div className="flex justify-center py-4">
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>
-          ) : todos.data?.length === 0 ? (
+          )}
+          {!todos.isLoading && todos.data?.length === 0 && (
             <p className="py-4 text-center">No todos yet. Add one above!</p>
-          ) : (
+          )}
+          {!todos.isLoading && (todos.data?.length ?? 0) > 0 && (
             <ul className="space-y-2">
               {todos.data?.map((todo) => (
                 <li className="flex items-center justify-between rounded-md border p-2" key={todo.id}>

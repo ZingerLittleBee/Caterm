@@ -47,7 +47,7 @@ export function AppSidebar({ children, ...props }: React.ComponentProps<typeof S
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton className="data-[slot=sidebar-menu-button]:p-1.5!" render={<a href="#" />}>
+            <SidebarMenuButton className="data-[slot=sidebar-menu-button]:p-1.5!" render={<a href="/" />}>
               <CommandIcon className="size-5!" />
               <span className="font-semibold text-base">Caterm</span>
             </SidebarMenuButton>

@@ -10,7 +10,7 @@ export const Route = createFileRoute('/dashboard')({
     const session = await getUser()
     return { session }
   },
-  loader: async ({ context }) => {
+  loader: ({ context }) => {
     if (!context.session) {
       throw redirect({
         to: '/login'
