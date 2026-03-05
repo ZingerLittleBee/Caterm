@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use russh_sftp::client::SftpSession;
 use tokio::sync::Mutex;
 
 use super::session::SftpSessionEntry;
-use super::transfer::TransferQueue;
+use super::transfer::{TransferQueue, TransferTaskInfo};
 
 /// Manages all active SFTP sessions. Thread-safe via Arc<Mutex<...>>.
 pub struct SftpSessionManager {
     sessions: Arc<Mutex<HashMap<String, SftpSessionEntry>>>,
-    transfer_queue: TransferQueue,
+    transfer_queue: Arc<Mutex<TransferQueue>>,
 }
 
 impl SftpSessionManager {
@@ -17,7 +18,7 @@ impl SftpSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            transfer_queue: TransferQueue::new(3),
+            transfer_queue: Arc::new(Mutex::new(TransferQueue::new(3))),
         }
     }
 
@@ -74,10 +75,26 @@ impl SftpSessionManager {
         });
     }
 
-    /// Get a reference to the transfer queue.
-    #[allow(dead_code)]
-    pub fn transfer_queue(&self) -> &TransferQueue {
-        &self.transfer_queue
+    /// Get a cloneable SFTP session handle by session ID.
+    ///
+    /// Returns an `Arc<SftpSession>` that can be used across await points
+    /// without holding the session manager lock.
+    pub async fn get_sftp(&self, session_id: &str) -> Result<Arc<SftpSession>, String> {
+        let sessions = self.sessions.lock().await;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("SFTP session not found: {session_id}"))?;
+        Ok(session.sftp_arc())
+    }
+
+    /// List all transfer tasks as serializable DTOs.
+    pub async fn transfer_queue_list(&self) -> Vec<TransferTaskInfo> {
+        self.transfer_queue.lock().await.list()
+    }
+
+    /// Cancel a transfer task by ID. Returns true if found and removed.
+    pub async fn transfer_queue_cancel(&self, transfer_id: &str) -> bool {
+        self.transfer_queue.lock().await.cancel(transfer_id)
     }
 }
 

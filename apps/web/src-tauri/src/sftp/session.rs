@@ -25,8 +25,8 @@ pub struct SftpSessionEntry {
     pub host_id: String,
     /// If this SFTP session reuses an existing SSH session, its ID.
     pub ssh_session_id: Option<String>,
-    /// The SFTP session handle for file operations.
-    sftp: SftpSession,
+    /// The SFTP session handle for file operations, wrapped in Arc for cloning.
+    sftp: Arc<SftpSession>,
     /// The underlying SSH client handle (kept alive).
     _handle: Handle<SshClientHandler>,
     /// Handle to the Tauri application for emitting events.
@@ -86,7 +86,7 @@ impl SftpSessionEntry {
             id,
             host_id,
             ssh_session_id: None,
-            sftp,
+            sftp: Arc::new(sftp),
             _handle: handle,
             app_handle,
         })
@@ -95,6 +95,14 @@ impl SftpSessionEntry {
     /// Get a reference to the SFTP session for file operations.
     pub fn sftp(&self) -> &SftpSession {
         &self.sftp
+    }
+
+    /// Get a cloneable handle to the SFTP session.
+    ///
+    /// This allows callers to hold the SFTP session across await points
+    /// without keeping the session manager locked.
+    pub fn sftp_arc(&self) -> Arc<SftpSession> {
+        Arc::clone(&self.sftp)
     }
 
     /// Get a reference to the Tauri app handle.

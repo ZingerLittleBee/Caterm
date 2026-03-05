@@ -5,7 +5,7 @@ A cloud-synced SSH terminal manager built with Tauri and the Better-T-Stack.
 ## Features
 
 - **SSH Terminal** - Multi-tab terminal sessions powered by xterm.js and Rust SSH (russh)
-- **Cloud Sync** - SSH hosts, credentials, and terminal settings stored in PostgreSQL with server-side AES-256-GCM encryption
+- **Cloud Sync** - SSH hosts, credentials, and terminal settings stored in PostgreSQL (JSONB) with server-side AES-256-GCM encryption and localStorage caching for instant startup
 - **User Authentication** - Email/password auth via better-auth
 - **Tauri Desktop App** - Native desktop experience with Rust-powered SSH connections
 - **TypeScript** - Full type safety across the stack
