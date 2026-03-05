@@ -1,12 +1,11 @@
 LAST_CHOICE_FILE := .claude/.last-make-choice
 
 .DEFAULT_GOAL := menu
-.PHONY: menu dev dev-server dev-web build check-types tauri tauri-dev tauri-build check fix install db-push db-generate db-studio db-migrate db-start db-stop
+.PHONY: menu dev dev-server build check-types tauri tauri-dev tauri-build check fix install db-push db-generate db-studio db-migrate db-start db-stop
 
 ITEMS := \
-	"dev           — Run all packages in dev mode" \
+	"dev           — Run Tauri desktop + server" \
 	"dev-server    — Run server only" \
-	"dev-web       — Run web only" \
 	"tauri-dev     — Run Tauri desktop dev" \
 	"build         — Build all packages" \
 	"tauri-build   — Build Tauri desktop" \
@@ -39,13 +38,10 @@ menu:
 	fi
 
 dev:
-	bun run --filter '*' dev
+	bun run --filter server dev & bun run --filter web desktop:dev
 
 dev-server:
 	bun run --filter server dev
-
-dev-web:
-	bun run --filter web dev
 
 build:
 	bun run --filter '*' build
