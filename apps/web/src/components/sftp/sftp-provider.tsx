@@ -197,14 +197,14 @@ export function SftpProvider({ children }: { children: ReactNode }) {
 	}, []);
 
 	const listDir = useCallback(
-		async (sessionId: string, path: string): Promise<FileEntry[]> => {
+		(sessionId: string, path: string): Promise<FileEntry[]> => {
 			return invoke<FileEntry[]>("sftp_list_dir", { sessionId, path });
 		},
 		[]
 	);
 
 	const stat = useCallback(
-		async (sessionId: string, path: string): Promise<FileStat> => {
+		(sessionId: string, path: string): Promise<FileStat> => {
 			return invoke<FileStat>("sftp_stat", { sessionId, path });
 		},
 		[]
@@ -250,11 +250,7 @@ export function SftpProvider({ children }: { children: ReactNode }) {
 	);
 
 	const readFile = useCallback(
-		async (
-			sessionId: string,
-			path: string,
-			maxSize?: number
-		): Promise<string> => {
+		(sessionId: string, path: string, maxSize?: number): Promise<string> => {
 			return invoke<string>("sftp_read_file", {
 				sessionId,
 				path,
@@ -272,14 +268,14 @@ export function SftpProvider({ children }: { children: ReactNode }) {
 	);
 
 	const readlink = useCallback(
-		async (sessionId: string, path: string): Promise<string> => {
+		(sessionId: string, path: string): Promise<string> => {
 			return invoke<string>("sftp_readlink", { sessionId, path });
 		},
 		[]
 	);
 
 	const search = useCallback(
-		async (
+		(
 			sessionId: string,
 			path: string,
 			pattern: string
@@ -294,7 +290,7 @@ export function SftpProvider({ children }: { children: ReactNode }) {
 	);
 
 	const upload = useCallback(
-		async (
+		(
 			sessionId: string,
 			localPath: string,
 			remotePath: string
@@ -309,7 +305,7 @@ export function SftpProvider({ children }: { children: ReactNode }) {
 	);
 
 	const download = useCallback(
-		async (
+		(
 			sessionId: string,
 			remotePath: string,
 			localPath: string
