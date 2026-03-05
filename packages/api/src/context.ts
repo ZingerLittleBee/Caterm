@@ -1,12 +1,12 @@
-import { auth } from "@Caterm/auth";
+import { auth } from '@Caterm/auth'
 
 export async function createContext({ req }: { req: Request }) {
-	const session = await auth.api.getSession({
-		headers: req.headers,
-	});
-	return {
-		session,
-	};
+  const session = await auth.api.getSession({
+    headers: req.headers
+  })
+  return {
+    session
+  }
 }
 
-export type Context = Awaited<ReturnType<typeof createContext>>;
+export type Context = Awaited<ReturnType<typeof createContext>>
