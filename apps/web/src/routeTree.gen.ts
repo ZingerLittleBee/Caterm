@@ -11,8 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SshRouteRouteImport } from './routes/ssh/route'
+import { Route as SftpRouteRouteImport } from './routes/sftp/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SshIndexRouteImport } from './routes/ssh/index'
+import { Route as SftpIndexRouteImport } from './routes/sftp/index'
 import { Route as SshSettingsRouteImport } from './routes/ssh/settings'
 
 const LoginRoute = LoginRouteImport.update({
@@ -25,6 +27,11 @@ const SshRouteRoute = SshRouteRouteImport.update({
   path: '/ssh',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SftpRouteRoute = SftpRouteRouteImport.update({
+  id: '/sftp',
+  path: '/sftp',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -35,6 +42,11 @@ const SshIndexRoute = SshIndexRouteImport.update({
   path: '/',
   getParentRoute: () => SshRouteRoute,
 } as any)
+const SftpIndexRoute = SftpIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SftpRouteRoute,
+} as any)
 const SshSettingsRoute = SshSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -43,35 +55,56 @@ const SshSettingsRoute = SshSettingsRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/sftp': typeof SftpRouteRouteWithChildren
   '/ssh': typeof SshRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/ssh/settings': typeof SshSettingsRoute
+  '/sftp/': typeof SftpIndexRoute
   '/ssh/': typeof SshIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/ssh/settings': typeof SshSettingsRoute
+  '/sftp': typeof SftpIndexRoute
   '/ssh': typeof SshIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/sftp': typeof SftpRouteRouteWithChildren
   '/ssh': typeof SshRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/ssh/settings': typeof SshSettingsRoute
+  '/sftp/': typeof SftpIndexRoute
   '/ssh/': typeof SshIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/ssh' | '/login' | '/ssh/settings' | '/ssh/'
+  fullPaths:
+    | '/'
+    | '/sftp'
+    | '/ssh'
+    | '/login'
+    | '/ssh/settings'
+    | '/sftp/'
+    | '/ssh/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/ssh/settings' | '/ssh'
-  id: '__root__' | '/' | '/ssh' | '/login' | '/ssh/settings' | '/ssh/'
+  to: '/' | '/login' | '/ssh/settings' | '/sftp' | '/ssh'
+  id:
+    | '__root__'
+    | '/'
+    | '/sftp'
+    | '/ssh'
+    | '/login'
+    | '/ssh/settings'
+    | '/sftp/'
+    | '/ssh/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  SftpRouteRoute: typeof SftpRouteRouteWithChildren
   SshRouteRoute: typeof SshRouteRouteWithChildren
   LoginRoute: typeof LoginRoute
 }
@@ -92,6 +125,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SshRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/sftp': {
+      id: '/sftp'
+      path: '/sftp'
+      fullPath: '/sftp'
+      preLoaderRoute: typeof SftpRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -106,6 +146,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SshIndexRouteImport
       parentRoute: typeof SshRouteRoute
     }
+    '/sftp/': {
+      id: '/sftp/'
+      path: '/'
+      fullPath: '/sftp/'
+      preLoaderRoute: typeof SftpIndexRouteImport
+      parentRoute: typeof SftpRouteRoute
+    }
     '/ssh/settings': {
       id: '/ssh/settings'
       path: '/settings'
@@ -115,6 +162,18 @@ declare module '@tanstack/react-router' {
     }
   }
 }
+
+interface SftpRouteRouteChildren {
+  SftpIndexRoute: typeof SftpIndexRoute
+}
+
+const SftpRouteRouteChildren: SftpRouteRouteChildren = {
+  SftpIndexRoute: SftpIndexRoute,
+}
+
+const SftpRouteRouteWithChildren = SftpRouteRoute._addFileChildren(
+  SftpRouteRouteChildren,
+)
 
 interface SshRouteRouteChildren {
   SshSettingsRoute: typeof SshSettingsRoute
@@ -132,6 +191,7 @@ const SshRouteRouteWithChildren = SshRouteRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  SftpRouteRoute: SftpRouteRouteWithChildren,
   SshRouteRoute: SshRouteRouteWithChildren,
   LoginRoute: LoginRoute,
 }

@@ -44,7 +44,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
 				toast.error("Failed to delete host", { description: message });
 			}
 		},
-		[deleteMutation]
+		[deleteMutation.mutateAsync]
 	);
 
 	return (

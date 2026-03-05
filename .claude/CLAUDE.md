@@ -1,126 +1,89 @@
-# Ultracite Code Standards
+# CLAUDE.md
 
-This project uses **Ultracite**, a zero-config preset that enforces strict code quality standards through automated formatting and linting.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Quick Reference
+## Project Overview
 
-- **Format code**: `bun x ultracite fix`
-- **Check for issues**: `bun x ultracite check`
-- **Diagnose setup**: `bun x ultracite doctor`
+Caterm is a cloud-synced SSH terminal manager. Monorepo with a Tauri desktop app (React + Rust SSH backend) and a full-stack web server.
 
-Biome (the underlying engine) provides robust linting and formatting. Most issues are automatically fixable.
+## Commands
 
----
+```bash
+# Development
+bun run dev              # Start all apps
+bun run dev:server       # Server only (port 3001)
+bun run tauri:dev        # Tauri desktop app
 
-## Core Principles
+# Database (PostgreSQL via Docker)
+bun run db:start         # Start PostgreSQL container
+bun run db:stop          # Stop PostgreSQL container
+bun run db:push          # Apply schema changes to DB
+bun run db:generate      # Generate Drizzle migrations
+bun run db:studio        # Open Drizzle Studio
 
-Write code that is **accessible, performant, type-safe, and maintainable**. Focus on clarity and explicit intent over brevity.
+# Code quality
+bun run check-types      # TypeScript type check across all packages
+bun x ultracite check    # Lint + format check (Biome)
+bun x ultracite fix      # Auto-fix lint + format issues
 
-### Type Safety & Explicitness
+# Build
+bun run build            # Build all apps
+bun run tauri:build      # Build Tauri desktop app
+```
 
-- Use explicit types for function parameters and return values when they enhance clarity
-- Prefer `unknown` over `any` when the type is genuinely unknown
-- Use const assertions (`as const`) for immutable values and literal types
-- Leverage TypeScript's type narrowing instead of type assertions
-- Use meaningful variable names instead of magic numbers - extract constants with descriptive names
+## Architecture
 
-### Modern JavaScript/TypeScript
+### Monorepo Structure
 
-- Use arrow functions for callbacks and short functions
-- Prefer `for...of` loops over `.forEach()` and indexed `for` loops
-- Use optional chaining (`?.`) and nullish coalescing (`??`) for safer property access
-- Prefer template literals over string concatenation
-- Use destructuring for object and array assignments
-- Use `const` by default, `let` only when reassignment is needed, never `var`
+- `apps/web/` — Tauri desktop app: React 19 + Vite + xterm.js frontend, Rust SSH backend (`src-tauri/`)
+- `apps/server/` — Full-stack web server: TanStack Start + oRPC API endpoints
+- `packages/api/` — oRPC router definitions (shared between web and server)
+- `packages/db/` — Drizzle ORM schemas and migrations (PostgreSQL)
+- `packages/auth/` — better-auth configuration
+- `packages/env/` — Type-safe environment variables (t3-oss/env-core + Zod)
 
-### Async & Promises
+### Key Data Flow
 
-- Always `await` promises in async functions - don't forget to use the return value
-- Use `async/await` syntax instead of promise chains for better readability
-- Handle errors appropriately in async code with try-catch blocks
-- Don't use async functions as Promise executors
+**oRPC API layer** (`packages/api/src/routers/`): Type-safe RPC routers consumed by both apps. Routers: `sshHost` (host CRUD with encrypted credentials), `terminalSettings` (JSONB-stored user preferences), `todo`.
 
-### React & JSX
+**Frontend oRPC client** (`apps/web/src/lib/orpc.ts`): Exports `client` (direct calls), `orpc` (TanStack Query utils), `queryClient`. Server URL defaults to `http://localhost:3001`.
 
-- Use function components over class components
-- Call hooks at the top level only, never conditionally
-- Specify all dependencies in hook dependency arrays correctly
-- Use the `key` prop for elements in iterables (prefer unique IDs over array indices)
-- Nest children between opening and closing tags instead of passing as props
-- Don't define components inside other components
-- Use semantic HTML and ARIA attributes for accessibility:
-  - Provide meaningful alt text for images
-  - Use proper heading hierarchy
-  - Add labels for form inputs
-  - Include keyboard event handlers alongside mouse events
-  - Use semantic elements (`<button>`, `<nav>`, etc.) instead of divs with roles
+**SSH connections**: Rust backend (`apps/web/src-tauri/src/ssh/`) handles SSH via `russh`. Frontend communicates through Tauri IPC commands. Sessions managed by `SshSessionProvider` context.
 
-### Error Handling & Debugging
+**Terminal settings**: Stored as JSONB in PostgreSQL. `TerminalSettingsProvider` (root layout) uses React Query with localStorage cache as `placeholderData` for instant startup. Supports global settings + per-host overrides.
 
-- Remove `console.log`, `debugger`, and `alert` statements from production code
-- Throw `Error` objects with descriptive messages, not strings or other values
-- Use `try-catch` blocks meaningfully - don't catch errors just to rethrow them
-- Prefer early returns over nested conditionals for error cases
+### Route Structure (TanStack Router, file-based)
 
-### Code Organization
+```
+apps/web/src/routes/
+├── __root.tsx          # ThemeProvider → QueryClientProvider → TerminalSettingsProvider
+├── index.tsx           # Redirects to /ssh
+├── login.tsx           # Auth (sign-in / sign-up)
+└── ssh/
+    ├── route.tsx       # SshSessionProvider wrapper
+    ├── index.tsx       # Main terminal UI (tabs, sidebar, host list)
+    └── settings.tsx    # Terminal settings form (protected route)
+```
 
-- Keep functions focused and under reasonable cognitive complexity limits
-- Extract complex conditions into well-named boolean variables
-- Use early returns to reduce nesting
-- Prefer simple conditionals over nested ternary operators
-- Group related code together and separate concerns
+### Environment Variables
 
-### Security
+Configure in `apps/server/.env` (also read by `packages/db/drizzle.config.ts`):
 
-- Add `rel="noopener"` when using `target="_blank"` on links
-- Avoid `dangerouslySetInnerHTML` unless absolutely necessary
-- Don't use `eval()` or assign directly to `document.cookie`
-- Validate and sanitize user input
+```
+DATABASE_URL=postgresql://postgres:password@localhost:5432/caterm
+BETTER_AUTH_SECRET=<min 32 chars>
+BETTER_AUTH_URL=http://localhost:3001
+CORS_ORIGIN=http://localhost:1420
+ENCRYPTION_KEY=<64 hex chars>
+```
 
-### Performance
+### Type Definitions
 
-- Avoid spread syntax in accumulators within loops
-- Use top-level regex literals instead of creating them in loops
-- Prefer specific imports over namespace imports
-- Avoid barrel files (index files that re-export everything)
-- Use proper image components (e.g., Next.js `<Image>`) over `<img>` tags
+Terminal settings types are in `apps/web/src/types/ssh.ts`. Theme presets and defaults in `apps/web/src/lib/terminal-themes.ts`.
 
-### Framework-Specific Guidance
+## Code Standards (Ultracite / Biome)
 
-**Next.js:**
-
-- Use Next.js `<Image>` component for images
-- Use `next/head` or App Router metadata API for head elements
-- Use Server Components for async data fetching instead of async Client Components
-
-**React 19+:**
-
-- Use ref as a prop instead of `React.forwardRef`
-
-**Solid/Svelte/Vue/Qwik:**
-
-- Use `class` and `for` attributes (not `className` or `htmlFor`)
-
----
-
-## Testing
-
-- Write assertions inside `it()` or `test()` blocks
-- Avoid done callbacks in async tests - use async/await instead
-- Don't use `.only` or `.skip` in committed code
-- Keep test suites reasonably flat - avoid excessive `describe` nesting
-
-## When Biome Can't Help
-
-Biome's linter will catch most issues automatically. Focus your attention on:
-
-1. **Business logic correctness** - Biome can't validate your algorithms
-2. **Meaningful naming** - Use descriptive names for functions, variables, and types
-3. **Architecture decisions** - Component structure, data flow, and API design
-4. **Edge cases** - Handle boundary conditions and error states
-5. **User experience** - Accessibility, performance, and usability considerations
-6. **Documentation** - Add comments for complex logic, but prefer self-documenting code
-
----
-
-Most formatting and common issues are automatically fixed by Biome. Run `bun x ultracite fix` before committing to ensure compliance.
+- Tabs for indentation, double quotes
+- React 19: use ref as prop, not `React.forwardRef`
+- Prefer `for...of` over `.forEach()`, `const` by default, `async/await` over promise chains
+- Run `bun x ultracite fix` before committing
