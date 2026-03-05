@@ -7,6 +7,7 @@ import {
 	useEffect,
 	useMemo,
 } from "react";
+import { toast } from "sonner";
 import { client, queryClient } from "@/lib/orpc";
 import {
 	readSettingsCache,
@@ -49,6 +50,9 @@ function normalizeApiData(raw: unknown): {
 	global: TerminalSettings;
 	hostOverrides: Record<string, Partial<TerminalSettings>>;
 } {
+	if (!raw || typeof raw !== "object") {
+		return { global: DEFAULT_TERMINAL_SETTINGS, hostOverrides: {} };
+	}
 	const rawData = raw as {
 		global?: Record<string, unknown>;
 		hostOverrides?: Record<string, Partial<TerminalSettings>>;
@@ -82,6 +86,7 @@ export function TerminalSettingsProvider({
 			const cached = readSettingsCache();
 			return cached ? normalizeApiData(cached) : undefined;
 		},
+		staleTime: 60_000,
 	});
 
 	useEffect(() => {
@@ -95,7 +100,42 @@ export function TerminalSettingsProvider({
 			global?: Partial<TerminalSettings>;
 			hostOverrides?: Record<string, Partial<TerminalSettings>>;
 		}) => client.terminalSettings.upsert(input),
-		onSuccess: () => {
+		onMutate: async (input) => {
+			await queryClient.cancelQueries({ queryKey: SETTINGS_QUERY_KEY });
+			const previous =
+				queryClient.getQueryData<SettingsData>(SETTINGS_QUERY_KEY);
+			queryClient.setQueryData<SettingsData>(SETTINGS_QUERY_KEY, (old) => {
+				if (!old) {
+					return old;
+				}
+				const newGlobal = input.global
+					? { ...old.global, ...input.global }
+					: old.global;
+				const newOverrides = { ...old.hostOverrides };
+				if (input.hostOverrides) {
+					for (const [hostId, overrideValues] of Object.entries(
+						input.hostOverrides
+					)) {
+						newOverrides[hostId] = {
+							...(newOverrides[hostId] ?? {}),
+							...overrideValues,
+						};
+					}
+				}
+				return {
+					global: newGlobal as TerminalSettings,
+					hostOverrides: newOverrides,
+				};
+			});
+			return { previous };
+		},
+		onError: (_err, _input, context) => {
+			if (context?.previous) {
+				queryClient.setQueryData(SETTINGS_QUERY_KEY, context.previous);
+			}
+			toast.error("Failed to save settings");
+		},
+		onSettled: () => {
 			queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
 		},
 	});
@@ -103,7 +143,26 @@ export function TerminalSettingsProvider({
 	const deleteHostOverrideMutation = useMutation({
 		mutationFn: (input: { hostId: string }) =>
 			client.terminalSettings.deleteHostOverride(input),
-		onSuccess: () => {
+		onMutate: async (input) => {
+			await queryClient.cancelQueries({ queryKey: SETTINGS_QUERY_KEY });
+			const previous =
+				queryClient.getQueryData<SettingsData>(SETTINGS_QUERY_KEY);
+			queryClient.setQueryData<SettingsData>(SETTINGS_QUERY_KEY, (old) => {
+				if (!old) {
+					return old;
+				}
+				const { [input.hostId]: _, ...rest } = old.hostOverrides;
+				return { global: old.global, hostOverrides: rest };
+			});
+			return { previous };
+		},
+		onError: (_err, _input, context) => {
+			if (context?.previous) {
+				queryClient.setQueryData(SETTINGS_QUERY_KEY, context.previous);
+			}
+			toast.error("Failed to delete host overrides");
+		},
+		onSettled: () => {
 			queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
 		},
 	});
@@ -124,56 +183,27 @@ export function TerminalSettingsProvider({
 		[state]
 	);
 
-	const setOptimisticData = useCallback((newData: SettingsData) => {
-		queryClient.setQueryData<SettingsData>(SETTINGS_QUERY_KEY, newData);
-	}, []);
-
 	const updateGlobal = useCallback(
 		(partial: Partial<TerminalSettings>) => {
-			const newGlobal = { ...globalSettings, ...partial };
-			setOptimisticData({
-				global: newGlobal,
-				hostOverrides: hostOverridesRecord,
-			});
 			upsertMutation.mutate({ global: partial });
 		},
-		[globalSettings, hostOverridesRecord, upsertMutation, setOptimisticData]
+		[upsertMutation.mutate]
 	);
 
 	const updateHostOverrides = useCallback(
 		(hostId: string, partial: Partial<TerminalSettings>) => {
-			const existing = hostOverridesRecord[hostId] ?? {};
-			const merged = { ...existing, ...partial };
-			const newOverrides = {
-				...hostOverridesRecord,
-				[hostId]: merged,
-			};
-			setOptimisticData({
-				global: globalSettings,
-				hostOverrides: newOverrides,
-			});
 			upsertMutation.mutate({
-				hostOverrides: { [hostId]: merged },
+				hostOverrides: { [hostId]: partial },
 			});
 		},
-		[globalSettings, hostOverridesRecord, upsertMutation, setOptimisticData]
+		[upsertMutation.mutate]
 	);
 
 	const clearHostOverrides = useCallback(
 		(hostId: string) => {
-			const { [hostId]: _, ...rest } = hostOverridesRecord;
-			setOptimisticData({
-				global: globalSettings,
-				hostOverrides: rest,
-			});
 			deleteHostOverrideMutation.mutate({ hostId });
 		},
-		[
-			globalSettings,
-			hostOverridesRecord,
-			deleteHostOverrideMutation,
-			setOptimisticData,
-		]
+		[deleteHostOverrideMutation.mutate]
 	);
 
 	return (

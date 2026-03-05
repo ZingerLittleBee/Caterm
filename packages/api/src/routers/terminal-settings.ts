@@ -73,15 +73,24 @@ export const terminalSettingsRouter = {
 			return { global: DEFAULT_GLOBAL, hostOverrides: {} };
 		}
 		const row = rows[0];
+		const rawGlobal = row.settingsJson;
+		const globalData =
+			rawGlobal && typeof rawGlobal === "object" && !Array.isArray(rawGlobal)
+				? rawGlobal
+				: {};
+		const rawOverrides = row.hostOverridesJson;
+		const overridesData =
+			rawOverrides &&
+			typeof rawOverrides === "object" &&
+			!Array.isArray(rawOverrides)
+				? rawOverrides
+				: {};
 		return {
 			global: {
 				...DEFAULT_GLOBAL,
-				...(row.settingsJson as Record<string, unknown>),
+				...globalData,
 			},
-			hostOverrides: (row.hostOverridesJson ?? {}) as Record<
-				string,
-				Record<string, unknown>
-			>,
+			hostOverrides: overridesData as Record<string, Record<string, unknown>>,
 		};
 	}),
 
@@ -100,21 +109,35 @@ export const terminalSettingsRouter = {
 				.from(terminalSettings)
 				.where(eq(terminalSettings.userId, userId));
 
+			const rawGlobal = existing.length > 0 ? existing[0].settingsJson : null;
 			const currentGlobal =
-				existing.length > 0
-					? (existing[0].settingsJson as Record<string, unknown>)
+				rawGlobal && typeof rawGlobal === "object" && !Array.isArray(rawGlobal)
+					? (rawGlobal as Record<string, unknown>)
 					: {};
+			const rawOverrides =
+				existing.length > 0 ? existing[0].hostOverridesJson : null;
 			const currentOverrides =
-				existing.length > 0
-					? (existing[0].hostOverridesJson as Record<string, unknown>)
+				rawOverrides &&
+				typeof rawOverrides === "object" &&
+				!Array.isArray(rawOverrides)
+					? (rawOverrides as Record<string, Record<string, unknown>>)
 					: {};
 
 			const mergedGlobal = input.global
 				? { ...currentGlobal, ...input.global }
 				: currentGlobal;
-			const mergedOverrides = input.hostOverrides
-				? { ...currentOverrides, ...input.hostOverrides }
-				: currentOverrides;
+			const mergedOverrides: Record<string, unknown> = {
+				...currentOverrides,
+			};
+			if (input.hostOverrides) {
+				for (const [hostId, overrideValues] of Object.entries(
+					input.hostOverrides
+				)) {
+					const prev =
+						(mergedOverrides[hostId] as Record<string, unknown>) ?? {};
+					mergedOverrides[hostId] = { ...prev, ...overrideValues };
+				}
+			}
 
 			await db
 				.insert(terminalSettings)
@@ -148,8 +171,13 @@ export const terminalSettingsRouter = {
 				return { success: true };
 			}
 
-			const overrides = {
-				...((existing[0].hostOverridesJson as Record<string, unknown>) ?? {}),
+			const rawOverrides = existing[0].hostOverridesJson;
+			const overrides: Record<string, unknown> = {
+				...(rawOverrides &&
+				typeof rawOverrides === "object" &&
+				!Array.isArray(rawOverrides)
+					? rawOverrides
+					: {}),
 			};
 			delete overrides[input.hostId];
 

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
 import { useTerminalSettings } from "@/components/terminal/terminal-settings-provider";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -29,7 +28,6 @@ export function TerminalSettingsForm() {
 
 	const handleSave = useCallback(() => {
 		updateGlobal(draft);
-		toast.success("Settings saved");
 	}, [draft, updateGlobal]);
 
 	if (isLoading) {

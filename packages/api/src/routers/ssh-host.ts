@@ -49,12 +49,12 @@ export const sshHostRouter = {
 			if (rows.length === 0) {
 				throw new ORPCError("NOT_FOUND", { message: "Host not found" });
 			}
-			const row = rows[0];
+			const { userId: _, ...host } = rows[0];
 			return {
-				...row,
-				password: decryptOptional(row.password),
-				privateKey: decryptOptional(row.privateKey),
-				keyPassphrase: decryptOptional(row.keyPassphrase),
+				...host,
+				password: decryptOptional(host.password),
+				privateKey: decryptOptional(host.privateKey),
+				keyPassphrase: decryptOptional(host.keyPassphrase),
 			};
 		}),
 
@@ -104,7 +104,7 @@ export const sshHostRouter = {
 		)
 		.handler(async ({ input, context }) => {
 			const { id, password, privateKey, keyPassphrase, ...rest } = input;
-			const values: Record<string, unknown> = { ...rest };
+			const values: Partial<typeof sshHost.$inferInsert> = { ...rest };
 			if (password !== undefined) {
 				values.password = encryptOptional(password);
 			}
@@ -114,26 +114,34 @@ export const sshHostRouter = {
 			if (keyPassphrase !== undefined) {
 				values.keyPassphrase = encryptOptional(keyPassphrase);
 			}
-			await db
+			const result = await db
 				.update(sshHost)
 				.set(values)
 				.where(
 					and(eq(sshHost.id, id), eq(sshHost.userId, context.session.user.id))
-				);
+				)
+				.returning({ id: sshHost.id });
+			if (result.length === 0) {
+				throw new ORPCError("NOT_FOUND", { message: "Host not found" });
+			}
 			return { id };
 		}),
 
 	delete: protectedProcedure
 		.input(z.object({ id: z.string() }))
 		.handler(async ({ input, context }) => {
-			await db
+			const result = await db
 				.delete(sshHost)
 				.where(
 					and(
 						eq(sshHost.id, input.id),
 						eq(sshHost.userId, context.session.user.id)
 					)
-				);
+				)
+				.returning({ id: sshHost.id });
+			if (result.length === 0) {
+				throw new ORPCError("NOT_FOUND", { message: "Host not found" });
+			}
 			return { success: true };
 		}),
 };
