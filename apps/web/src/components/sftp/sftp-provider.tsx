@@ -237,7 +237,7 @@ export function SftpProvider({ children }: { children: ReactNode }) {
 			oldPath: string,
 			newPath: string
 		): Promise<void> => {
-			await invoke("sftp_rename", { sessionId, oldPath, newPath });
+			await invoke("sftp_rename", { sessionId, from: oldPath, to: newPath });
 		},
 		[]
 	);
@@ -321,7 +321,7 @@ export function SftpProvider({ children }: { children: ReactNode }) {
 
 	const cancelTransfer = useCallback(
 		async (transferId: string): Promise<void> => {
-			await invoke("sftp_transfer_cancel", { transferId });
+			await invoke("sftp_transfer_cancel", { taskId: transferId });
 		},
 		[]
 	);

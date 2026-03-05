@@ -1,5 +1,5 @@
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::sftp::manager::SftpSessionManager;
 use crate::sftp::session::{SftpConnectConfig, SftpSessionEntry};
@@ -279,29 +279,37 @@ pub async fn sftp_chmod(
         .map_err(|e| format!("Failed to chmod: {e}"))
 }
 
-/// Read a remote file as UTF-8 text. Max 1 MB.
+/// Read a remote file as UTF-8 text. Default max 1 MB.
 #[tauri::command]
 pub async fn sftp_read_file(
     manager: State<'_, SftpSessionManager>,
     session_id: String,
     path: String,
+    max_size: Option<usize>,
 ) -> Result<String, String> {
-    const MAX_SIZE: usize = 1_048_576; // 1 MB
+    let max_size = max_size.unwrap_or(1_048_576); // Default 1 MB
 
     let sftp = manager.get_sftp(&session_id).await?;
+
+    // Check file size via metadata before downloading.
+    let metadata = sftp
+        .metadata(&path)
+        .await
+        .map_err(|e| format!("Failed to stat file: {e}"))?;
+
+    if let Some(size) = metadata.size {
+        if (size as usize) > max_size {
+            return Err(format!(
+                "File too large: {} bytes (max {} bytes)",
+                size, max_size
+            ));
+        }
+    }
 
     let data = sftp
         .read(&path)
         .await
         .map_err(|e| format!("Failed to read file: {e}"))?;
-
-    if data.len() > MAX_SIZE {
-        return Err(format!(
-            "File too large: {} bytes (max {} bytes)",
-            data.len(),
-            MAX_SIZE
-        ));
-    }
 
     String::from_utf8(data).map_err(|_| "File is not valid UTF-8".to_string())
 }
@@ -333,7 +341,7 @@ pub async fn sftp_readlink(
         .map_err(|e| format!("Failed to read link: {e}"))
 }
 
-/// Recursively search for files matching a pattern. Max 500 results.
+/// Recursively search for files matching a pattern. Max 500 results, max depth 10.
 #[tauri::command]
 pub async fn sftp_search(
     manager: State<'_, SftpSessionManager>,
@@ -342,13 +350,15 @@ pub async fn sftp_search(
     pattern: String,
 ) -> Result<Vec<FileEntry>, String> {
     const MAX_RESULTS: usize = 500;
+    const MAX_DEPTH: usize = 10;
 
     let sftp = manager.get_sftp(&session_id).await?;
     let pattern_lower = pattern.to_lowercase();
     let mut results: Vec<FileEntry> = Vec::new();
-    let mut dirs_to_visit: Vec<String> = vec![path];
+    // (directory_path, current_depth)
+    let mut dirs_to_visit: Vec<(String, usize)> = vec![(path, 0)];
 
-    while let Some(current_dir) = dirs_to_visit.pop() {
+    while let Some((current_dir, depth)) = dirs_to_visit.pop() {
         if results.len() >= MAX_RESULTS {
             break;
         }
@@ -372,8 +382,8 @@ pub async fn sftp_search(
             let is_symlink = metadata.is_symlink();
             let entry_path = join_path(&current_dir, &name);
 
-            if is_dir {
-                dirs_to_visit.push(entry_path.clone());
+            if is_dir && depth < MAX_DEPTH {
+                dirs_to_visit.push((entry_path.clone(), depth + 1));
             }
 
             if name.to_lowercase().contains(&pattern_lower) {
@@ -404,6 +414,118 @@ pub async fn sftp_search(
     });
 
     Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Upload / Download commands
+// ---------------------------------------------------------------------------
+
+/// Upload a local file to the remote server. Returns a transfer ID.
+#[tauri::command]
+pub async fn sftp_upload(
+    app: AppHandle,
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<String, String> {
+    let transfer_id = uuid::Uuid::new_v4().to_string();
+    let sftp = manager.get_sftp(&session_id).await?;
+
+    let data = tokio::fs::read(&local_path)
+        .await
+        .map_err(|e| format!("Failed to read local file: {e}"))?;
+
+    let total_bytes = data.len() as u64;
+
+    // Emit initial progress.
+    let info = TransferTaskInfo {
+        id: transfer_id.clone(),
+        sftp_session_id: session_id.clone(),
+        kind: crate::sftp::transfer::TransferKind::Upload,
+        remote_path: remote_path.clone(),
+        local_path: local_path.clone(),
+        total_bytes: Some(total_bytes),
+        transferred_bytes: 0,
+        status: crate::sftp::transfer::TransferStatus::Active,
+    };
+    let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
+
+    sftp.write(&remote_path, &data)
+        .await
+        .map_err(|e| format!("Failed to upload file: {e}"))?;
+
+    // Emit completion.
+    let info = TransferTaskInfo {
+        id: transfer_id.clone(),
+        sftp_session_id: session_id.clone(),
+        kind: crate::sftp::transfer::TransferKind::Upload,
+        remote_path,
+        local_path,
+        total_bytes: Some(total_bytes),
+        transferred_bytes: total_bytes,
+        status: crate::sftp::transfer::TransferStatus::Completed,
+    };
+    let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
+
+    Ok(transfer_id)
+}
+
+/// Download a remote file to the local filesystem. Returns a transfer ID.
+#[tauri::command]
+pub async fn sftp_download(
+    app: AppHandle,
+    manager: State<'_, SftpSessionManager>,
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+) -> Result<String, String> {
+    let transfer_id = uuid::Uuid::new_v4().to_string();
+    let sftp = manager.get_sftp(&session_id).await?;
+
+    // Check remote file size first.
+    let metadata = sftp
+        .metadata(&remote_path)
+        .await
+        .map_err(|e| format!("Failed to stat remote file: {e}"))?;
+    let total_bytes = metadata.size.unwrap_or(0);
+
+    // Emit initial progress.
+    let info = TransferTaskInfo {
+        id: transfer_id.clone(),
+        sftp_session_id: session_id.clone(),
+        kind: crate::sftp::transfer::TransferKind::Download,
+        remote_path: remote_path.clone(),
+        local_path: local_path.clone(),
+        total_bytes: Some(total_bytes),
+        transferred_bytes: 0,
+        status: crate::sftp::transfer::TransferStatus::Active,
+    };
+    let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
+
+    let data = sftp
+        .read(&remote_path)
+        .await
+        .map_err(|e| format!("Failed to download file: {e}"))?;
+
+    tokio::fs::write(&local_path, &data)
+        .await
+        .map_err(|e| format!("Failed to write local file: {e}"))?;
+
+    // Emit completion.
+    let info = TransferTaskInfo {
+        id: transfer_id.clone(),
+        sftp_session_id: session_id.clone(),
+        kind: crate::sftp::transfer::TransferKind::Download,
+        remote_path,
+        local_path,
+        total_bytes: Some(total_bytes),
+        transferred_bytes: total_bytes,
+        status: crate::sftp::transfer::TransferStatus::Completed,
+    };
+    let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
+
+    Ok(transfer_id)
 }
 
 // ---------------------------------------------------------------------------

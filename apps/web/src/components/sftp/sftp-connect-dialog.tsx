@@ -2,6 +2,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Server } from "lucide-react";
 import { useCallback, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { client, orpc } from "@/lib/orpc";
@@ -110,7 +111,7 @@ export function SftpConnectDialog({
 				onConnect(sessionId);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				throw new Error(message);
+				toast.error("SFTP connection failed", { description: message });
 			} finally {
 				setConnecting(null);
 			}

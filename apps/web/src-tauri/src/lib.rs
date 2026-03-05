@@ -31,6 +31,8 @@ pub fn run() {
             sftp_commands::sftp_write_file,
             sftp_commands::sftp_readlink,
             sftp_commands::sftp_search,
+            sftp_commands::sftp_upload,
+            sftp_commands::sftp_download,
             sftp_commands::sftp_transfer_list,
             sftp_commands::sftp_transfer_cancel,
         ])
