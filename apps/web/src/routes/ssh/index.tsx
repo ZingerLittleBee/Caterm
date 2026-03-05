@@ -1,10 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { FolderTree } from "lucide-react";
 import type * as React from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AppSidebar } from "@/components/app-sidebar";
 import { HostForm } from "@/components/hosts/host-form";
 import { HostList } from "@/components/hosts/host-list";
+import { useSftp } from "@/components/sftp/sftp-provider";
+import { SftpSidebarTree } from "@/components/sftp/sftp-sidebar-tree";
 import { SiteHeader } from "@/components/site-header";
 import {
 	type ConnectCredentials,
@@ -14,6 +17,7 @@ import { useSshSessions } from "@/components/ssh/ssh-session-provider";
 import { SshStatusBar } from "@/components/ssh/ssh-status-bar";
 import { SshTabBar } from "@/components/ssh/ssh-tab-bar";
 import { SshTerminal } from "@/components/ssh/ssh-terminal";
+import { Button } from "@/components/ui/button";
 import {
 	Sheet,
 	SheetContent,
@@ -32,14 +36,72 @@ export const Route = createFileRoute("/ssh/")({
 function SshIndexPage() {
 	const { sessions, activeSessionId, connect, disconnect, retry, setActive } =
 		useSshSessions();
+	const { openStandalone } = useSftp();
 	const [formOpen, setFormOpen] = useState(false);
 	const [editingHost, setEditingHost] = useState<SshHost | undefined>(
 		undefined
 	);
 	const [connectTarget, setConnectTarget] = useState<SshHost | null>(null);
+	const [sftpPanelOpen, setSftpPanelOpen] = useState(false);
+	const [sftpSessionId, setSftpSessionId] = useState<string | null>(null);
+	const sftpHostIdRef = useRef<string | null>(null);
+	const sftpOpeningRef = useRef(false);
+
 	const activeSession = activeSessionId
 		? (sessions.get(activeSessionId) ?? null)
 		: null;
+
+	const hasConnectedSession =
+		activeSession !== null && activeSession.status === "connected";
+
+	const handleToggleSftpPanel = useCallback(async () => {
+		if (sftpPanelOpen) {
+			setSftpPanelOpen(false);
+			return;
+		}
+
+		if (!activeSession || activeSession.status !== "connected") {
+			return;
+		}
+
+		setSftpPanelOpen(true);
+
+		// If we already have an SFTP session for this host, reuse it
+		if (sftpSessionId && sftpHostIdRef.current === activeSession.hostId) {
+			return;
+		}
+
+		// Prevent concurrent openStandalone calls
+		if (sftpOpeningRef.current) {
+			return;
+		}
+		sftpOpeningRef.current = true;
+
+		try {
+			const stored = await client.sshHost.getById({
+				id: activeSession.hostId,
+			});
+			const id = await openStandalone({
+				authType: stored.authType as "password" | "key",
+				hostId: stored.id,
+				hostName: stored.name,
+				hostname: stored.hostname,
+				keyPassphrase: stored.keyPassphrase ?? undefined,
+				password: stored.password ?? undefined,
+				port: stored.port,
+				privateKey: stored.privateKey ?? undefined,
+				username: stored.username,
+			});
+			setSftpSessionId(id);
+			sftpHostIdRef.current = activeSession.hostId;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			toast.error("Failed to open SFTP session", { description: message });
+			setSftpPanelOpen(false);
+		} finally {
+			sftpOpeningRef.current = false;
+		}
+	}, [sftpPanelOpen, activeSession, sftpSessionId, openStandalone]);
 
 	const handleConnectRequest = useCallback(
 		async (host: SshHost) => {
@@ -180,7 +242,19 @@ function SshIndexPage() {
 				/>
 			</AppSidebar>
 			<SidebarInset>
-				<SiteHeader title="SSH Terminal" />
+				<SiteHeader title="SSH Terminal">
+					{hasConnectedSession && (
+						<Button
+							className="ml-auto"
+							onClick={handleToggleSftpPanel}
+							size="sm"
+							variant={sftpPanelOpen ? "secondary" : "ghost"}
+						>
+							<FolderTree className="mr-1 h-4 w-4" />
+							Files
+						</Button>
+					)}
+				</SiteHeader>
 
 				<SshTabBar
 					activeSessionId={activeSessionId}
@@ -190,23 +264,31 @@ function SshIndexPage() {
 					sessions={sessions}
 				/>
 
-				{/* Terminal area */}
-				<div className="relative min-h-0 flex-1">
-					{sessions.size === 0 ? (
-						<div className="flex h-full items-center justify-center text-muted-foreground">
-							<p>Select a host to connect or add a new one.</p>
+				{/* Terminal + optional file tree panel */}
+				<div className="relative flex min-h-0 flex-1">
+					<div className="relative min-w-0 flex-1">
+						{sessions.size === 0 ? (
+							<div className="flex h-full items-center justify-center text-muted-foreground">
+								<p>Select a host to connect or add a new one.</p>
+							</div>
+						) : (
+							Array.from(sessions.values()).map((session) => (
+								<SshTerminal
+									hostId={session.hostId}
+									isActive={session.id === activeSessionId}
+									key={session.id}
+									onRetry={() => retry(session.id)}
+									sessionId={session.id}
+									status={session.status}
+								/>
+							))
+						)}
+					</div>
+
+					{sftpPanelOpen && sftpSessionId && (
+						<div className="w-64 shrink-0">
+							<SftpSidebarTree sftpSessionId={sftpSessionId} />
 						</div>
-					) : (
-						Array.from(sessions.values()).map((session) => (
-							<SshTerminal
-								hostId={session.hostId}
-								isActive={session.id === activeSessionId}
-								key={session.id}
-								onRetry={() => retry(session.id)}
-								sessionId={session.id}
-								status={session.status}
-							/>
-						))
 					)}
 				</div>
 
