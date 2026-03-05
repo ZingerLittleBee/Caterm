@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import Database from "@tauri-apps/plugin-sql";
 import type * as React from "react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
@@ -23,7 +22,7 @@ import {
 	SheetTitle,
 } from "@/components/ui/sheet";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { loadCredential, saveCredential } from "@/lib/stronghold";
+import { client, orpc, queryClient } from "@/lib/orpc";
 import type { SshHost } from "@/types/ssh";
 
 export const Route = createFileRoute("/ssh/")({
@@ -38,8 +37,6 @@ function SshIndexPage() {
 		undefined
 	);
 	const [connectTarget, setConnectTarget] = useState<SshHost | null>(null);
-	const [refreshKey, setRefreshKey] = useState(0);
-
 	const activeSession = activeSessionId
 		? (sessions.get(activeSessionId) ?? null)
 		: null;
@@ -47,7 +44,7 @@ function SshIndexPage() {
 	const handleConnectRequest = useCallback(
 		async (host: SshHost) => {
 			try {
-				const stored = await loadCredential(host.id, host.authType);
+				const stored = await client.sshHost.getById({ id: host.id });
 				if (
 					(host.authType === "password" && stored.password) ||
 					(host.authType === "key" && stored.privateKey)
@@ -123,53 +120,36 @@ function SshIndexPage() {
 			username: string;
 		}) => {
 			try {
-				const db = await Database.load("sqlite:caterm.db");
-				let hostId: string;
-
 				if (editingHost) {
-					hostId = editingHost.id;
-					await db.execute(
-						"UPDATE ssh_hosts SET name = ?, hostname = ?, port = ?, username = ?, auth_type = ?, updated_at = datetime('now') WHERE id = ?",
-						[
-							values.name,
-							values.hostname,
-							values.port,
-							values.username,
-							values.authType,
-							editingHost.id,
-						]
-					);
+					await client.sshHost.update({
+						id: editingHost.id,
+						name: values.name,
+						hostname: values.hostname,
+						port: values.port,
+						username: values.username,
+						authType: values.authType,
+						password: values.password || undefined,
+						privateKey: values.privateKey || undefined,
+						keyPassphrase: values.keyPassphrase || undefined,
+					});
 				} else {
-					hostId = crypto.randomUUID();
-					await db.execute(
-						"INSERT INTO ssh_hosts (id, name, hostname, port, username, auth_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
-						[
-							hostId,
-							values.name,
-							values.hostname,
-							values.port,
-							values.username,
-							values.authType,
-						]
-					);
-				}
-
-				const hasCredentials =
-					(values.authType === "password" && values.password) ||
-					(values.authType === "key" && values.privateKey);
-				if (hasCredentials) {
-					await saveCredential(
-						hostId,
-						values.authType,
-						values.password || undefined,
-						values.privateKey || undefined,
-						values.keyPassphrase || undefined
-					);
+					await client.sshHost.create({
+						name: values.name,
+						hostname: values.hostname,
+						port: values.port,
+						username: values.username,
+						authType: values.authType,
+						password: values.password || undefined,
+						privateKey: values.privateKey || undefined,
+						keyPassphrase: values.keyPassphrase || undefined,
+					});
 				}
 
 				setFormOpen(false);
 				setEditingHost(undefined);
-				setRefreshKey((k) => k + 1);
+				queryClient.invalidateQueries({
+					queryKey: orpc.sshHost.list.queryOptions().queryKey,
+				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				toast.error("Failed to save host", { description: message });
@@ -194,7 +174,6 @@ function SshIndexPage() {
 		>
 			<AppSidebar variant="inset">
 				<HostList
-					key={refreshKey}
 					onConnect={handleConnectRequest}
 					onEdit={handleEditHost}
 					onNewHost={handleNewHost}
