@@ -6,7 +6,7 @@ import { createTanstackQueryUtils } from '@orpc/tanstack-query'
 import { QueryCache, QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001'
+const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3002'
 
 export const queryClient = new QueryClient({
   queryCache: new QueryCache({
