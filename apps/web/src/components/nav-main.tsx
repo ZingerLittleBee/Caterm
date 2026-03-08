@@ -29,7 +29,7 @@ export function NavMain({
             return (
               <SidebarMenuItem key={item.title}>
                 <SidebarMenuButton
-                  className="data-active:bg-primary data-active:text-primary-foreground data-active:hover:bg-primary/90"
+                  className="data-active:bg-primary data-active:text-primary-foreground data-active:hover:bg-primary/90 data-active:hover:text-primary-foreground"
                   data-active={isActive || undefined}
                   render={<Link to={item.url} />}
                   tooltip={item.title}
