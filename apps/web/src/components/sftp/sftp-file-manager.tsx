@@ -1,6 +1,6 @@
 import { FolderOpen, PlugZap, Unplug } from 'lucide-react'
 import type * as React from 'react'
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { AppSidebar } from '@/components/app-sidebar'
 import { HostForm } from '@/components/hosts/host-form'
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { client, orpc, queryClient } from '@/lib/orpc'
+import type { FileEntry } from '@/types/fs'
 import type { SshHost } from '@/types/ssh'
 import { SftpConnectDialog } from './sftp-connect-dialog'
 import { SftpFilePanel } from './sftp-file-panel'
@@ -17,10 +18,13 @@ import { useSftp } from './sftp-provider'
 import { SftpTransferQueue } from './sftp-transfer-queue'
 
 export function SftpFileManager() {
-  const { openStandalone, close, sessions, activeSftpSessionId } = useSftp()
+  const { openStandalone, close, sessions, activeSftpSessionId, upload, download } = useSftp()
   const [connectDialogOpen, setConnectDialogOpen] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
   const [editingHost, setEditingHost] = useState<SshHost | undefined>(undefined)
+
+  const localPathRef = useRef('/')
+  const remotePathRef = useRef('/')
 
   const activeSession = activeSftpSessionId ? (sessions.get(activeSftpSessionId) ?? null) : null
 
@@ -131,6 +135,70 @@ export function SftpFileManager() {
     setEditingHost(undefined)
   }, [])
 
+  // Download: remote -> local (button-based, uses current local path as target)
+  const handleDownload = useCallback(
+    async (entries: FileEntry[]) => {
+      if (!activeSftpSessionId) {
+        return
+      }
+      for (const entry of entries) {
+        if (!entry.isDir) {
+          const localPath = localPathRef.current === '/' ? `/${entry.name}` : `${localPathRef.current}/${entry.name}`
+          await download(activeSftpSessionId, entry.path, localPath)
+        }
+      }
+    },
+    [activeSftpSessionId, download]
+  )
+
+  // Upload: local -> remote (button-based, uses current remote path as target)
+  const handleUpload = useCallback(
+    async (entries: FileEntry[]) => {
+      if (!activeSftpSessionId) {
+        return
+      }
+      for (const entry of entries) {
+        if (!entry.isDir) {
+          const remotePath = remotePathRef.current === '/' ? `/${entry.name}` : `${remotePathRef.current}/${entry.name}`
+          await upload(activeSftpSessionId, entry.path, remotePath)
+        }
+      }
+    },
+    [activeSftpSessionId, upload]
+  )
+
+  // Drag-drop onto local panel: download remote files to the drop target path
+  const handleLocalDrop = useCallback(
+    async (entries: FileEntry[], targetPath: string) => {
+      if (!activeSftpSessionId) {
+        return
+      }
+      for (const entry of entries) {
+        if (!entry.isDir) {
+          const localPath = targetPath === '/' ? `/${entry.name}` : `${targetPath}/${entry.name}`
+          await download(activeSftpSessionId, entry.path, localPath)
+        }
+      }
+    },
+    [activeSftpSessionId, download]
+  )
+
+  // Drag-drop onto remote panel: upload local files to the drop target path
+  const handleRemoteDrop = useCallback(
+    async (entries: FileEntry[], targetPath: string) => {
+      if (!activeSftpSessionId) {
+        return
+      }
+      for (const entry of entries) {
+        if (!entry.isDir) {
+          const remotePath = targetPath === '/' ? `/${entry.name}` : `${targetPath}/${entry.name}`
+          await upload(activeSftpSessionId, entry.path, remotePath)
+        }
+      }
+    },
+    [activeSftpSessionId, upload]
+  )
+
   return (
     <SidebarProvider
       style={
@@ -170,13 +238,28 @@ export function SftpFileManager() {
                 <div className="border-b px-3 py-1.5">
                   <h2 className="font-medium text-sm">Local</h2>
                 </div>
-                <SftpFilePanel source="local" />
+                <SftpFilePanel
+                  onDownload={handleUpload}
+                  onDrop={handleLocalDrop}
+                  onPathChange={(path) => {
+                    localPathRef.current = path
+                  }}
+                  source="local"
+                />
               </div>
               <div className="flex min-h-0 w-1/2 flex-col">
                 <div className="border-b px-3 py-1.5">
                   <h2 className="font-medium text-sm">Remote</h2>
                 </div>
-                <SftpFilePanel sftpSessionId={activeSftpSessionId ?? undefined} source="remote" />
+                <SftpFilePanel
+                  onDownload={handleDownload}
+                  onDrop={handleRemoteDrop}
+                  onPathChange={(path) => {
+                    remotePathRef.current = path
+                  }}
+                  sftpSessionId={activeSftpSessionId ?? undefined}
+                  source="remote"
+                />
               </div>
             </div>
             <SftpTransferQueue />

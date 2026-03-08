@@ -7,12 +7,21 @@ import { useSftp } from './sftp-provider'
 
 interface SftpFilePanelProps {
   onDownload?: (entries: FileEntry[]) => void
+  onDrop?: (entries: FileEntry[], targetPath: string) => void
+  onPathChange?: (path: string) => void
   onUpload?: () => void
   sftpSessionId?: string
   source: 'local' | 'remote'
 }
 
-export function SftpFilePanel({ source, sftpSessionId, onUpload, onDownload }: SftpFilePanelProps) {
+export function SftpFilePanel({
+  source,
+  sftpSessionId,
+  onUpload,
+  onDownload,
+  onDrop,
+  onPathChange: onPathChangeProp
+}: SftpFilePanelProps) {
   const sftp = useSftp()
   const session = sftpSessionId ? (sftp.sessions.get(sftpSessionId) ?? null) : null
 
@@ -65,11 +74,13 @@ export function SftpFilePanel({ source, sftpSessionId, onUpload, onDownload }: S
       hostId={session?.hostId}
       initialPath={initialPath}
       onDownload={onDownload}
-      onPathChange={
-        source === 'local'
-          ? (path: string) => localStorage.setItem('caterm:local-file-panel:lastPath', path)
-          : undefined
-      }
+      onDrop={onDrop}
+      onPathChange={(path: string) => {
+        if (source === 'local') {
+          localStorage.setItem('caterm:local-file-panel:lastPath', path)
+        }
+        onPathChangeProp?.(path)
+      }}
       onUpload={onUpload}
       operations={operations}
       source={source}

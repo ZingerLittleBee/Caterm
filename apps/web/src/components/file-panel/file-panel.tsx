@@ -24,6 +24,7 @@ interface FilePanelProps {
   hostId?: string
   initialPath: string
   onDownload?: (entries: FileEntry[]) => void
+  onDrop?: (entries: FileEntry[], targetPath: string) => void
   onPathChange?: (path: string) => void
   onUpload?: () => void
   operations: FileOperations
@@ -35,6 +36,7 @@ export function FilePanel({
   hostId,
   initialPath,
   onDownload,
+  onDrop,
   onPathChange,
   onUpload,
   operations,
@@ -48,6 +50,8 @@ export function FilePanel({
   const [newFolderName, setNewFolderName] = useState('')
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const newFolderInputRef = useRef<HTMLInputElement>(null)
+
+  const [dragOver, setDragOver] = useState(false)
 
   // Context menu state
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null)
@@ -229,7 +233,39 @@ export function FilePanel({
   }, [])
 
   return (
-    <div className="flex h-full flex-col">
+    // biome-ignore lint/a11y/noNoninteractiveElementInteractions: drag-and-drop zone requires event handlers on container div
+    <div
+      aria-label={`${source} file panel drop zone`}
+      className={`flex h-full flex-col ${dragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) {
+          setDragOver(false)
+        }
+      }}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('application/x-caterm-files')) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'copy'
+          setDragOver(true)
+        }
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragOver(false)
+        const raw = e.dataTransfer.getData('application/x-caterm-files')
+        if (raw && onDrop) {
+          try {
+            const data = JSON.parse(raw) as { source: string; entries: FileEntry[] }
+            if (data.source !== source) {
+              onDrop(data.entries, currentPath)
+            }
+          } catch {
+            // ignore invalid data
+          }
+        }
+      }}
+      role="region"
+    >
       <div className="flex items-center gap-2 border-b px-2 py-1">
         <div className="min-w-0 flex-1">
           <FileBreadcrumb onNavigate={handleNavigate} path={currentPath} />
