@@ -1,7 +1,16 @@
 use crate::fs_common::types::{format_permissions, join_path, sort_entries, FileEntry, FileStat};
 
+/// Validate that a path is absolute to prevent path traversal attacks.
+fn validate_absolute_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err(format!("Path must be absolute, got: {path}"));
+    }
+    Ok(())
+}
+
 /// List directory entries with metadata.
 pub async fn list_dir(path: &str) -> Result<Vec<FileEntry>, String> {
+    validate_absolute_path(path)?;
     let mut read_dir = tokio::fs::read_dir(path)
         .await
         .map_err(|e| format!("Failed to read directory: {e}"))?;
@@ -62,6 +71,7 @@ pub async fn list_dir(path: &str) -> Result<Vec<FileEntry>, String> {
 
 /// Get file/directory metadata.
 pub async fn stat(path: &str) -> Result<FileStat, String> {
+    validate_absolute_path(path)?;
     let metadata = tokio::fs::symlink_metadata(path)
         .await
         .map_err(|e| format!("Failed to stat: {e}"))?;
@@ -99,6 +109,7 @@ pub async fn stat(path: &str) -> Result<FileStat, String> {
 
 /// Create a directory (and all parent directories).
 pub async fn mkdir(path: &str) -> Result<(), String> {
+    validate_absolute_path(path)?;
     tokio::fs::create_dir_all(path)
         .await
         .map_err(|e| format!("Failed to create directory: {e}"))
@@ -106,6 +117,8 @@ pub async fn mkdir(path: &str) -> Result<(), String> {
 
 /// Rename a file or directory.
 pub async fn rename(old_path: &str, new_path: &str) -> Result<(), String> {
+    validate_absolute_path(old_path)?;
+    validate_absolute_path(new_path)?;
     tokio::fs::rename(old_path, new_path)
         .await
         .map_err(|e| format!("Failed to rename: {e}"))
@@ -113,6 +126,7 @@ pub async fn rename(old_path: &str, new_path: &str) -> Result<(), String> {
 
 /// Remove a file or directory.
 pub async fn remove(path: &str) -> Result<(), String> {
+    validate_absolute_path(path)?;
     let metadata = tokio::fs::symlink_metadata(path)
         .await
         .map_err(|e| format!("Failed to stat: {e}"))?;
@@ -130,6 +144,7 @@ pub async fn remove(path: &str) -> Result<(), String> {
 
 /// Change file permissions (unix only).
 pub fn chmod(path: &str, mode: u32) -> Result<(), String> {
+    validate_absolute_path(path)?;
     #[cfg(unix)]
     {
         use std::fs;
@@ -149,6 +164,7 @@ pub fn chmod(path: &str, mode: u32) -> Result<(), String> {
 
 /// Read a file as UTF-8 text. Default max size is 1 MB.
 pub async fn read_file(path: &str, max_size: Option<usize>) -> Result<String, String> {
+    validate_absolute_path(path)?;
     let max_size = max_size.unwrap_or(1_048_576);
 
     let metadata = tokio::fs::metadata(path)
@@ -172,6 +188,7 @@ pub async fn read_file(path: &str, max_size: Option<usize>) -> Result<String, St
 
 /// Write UTF-8 text to a file.
 pub async fn write_file(path: &str, content: &str) -> Result<(), String> {
+    validate_absolute_path(path)?;
     tokio::fs::write(path, content.as_bytes())
         .await
         .map_err(|e| format!("Failed to write file: {e}"))
@@ -179,6 +196,7 @@ pub async fn write_file(path: &str, content: &str) -> Result<(), String> {
 
 /// Recursively search for files matching a pattern. Max 500 results, max depth 10.
 pub async fn search(base_path: &str, pattern: &str) -> Result<Vec<FileEntry>, String> {
+    validate_absolute_path(base_path)?;
     const MAX_RESULTS: usize = 500;
     const MAX_DEPTH: usize = 10;
 
@@ -260,6 +278,7 @@ pub fn get_home_dir() -> Result<String, String> {
 
 /// Open a file or directory in the system's default application.
 pub fn open_in_system(path: &str) -> Result<(), String> {
+    validate_absolute_path(path)?;
     open::that(path).map_err(|e| format!("Failed to open: {e}"))
 }
 
