@@ -301,7 +301,7 @@ export function FilePanel({
           onTransfer={onTransfer && selectedEntries.length > 0 ? () => onTransfer(selectedEntries) : undefined}
         />
       </div>
-      <ScrollArea className="flex-1">
+      <ScrollArea className="min-h-0 flex-1">
         {loading ? (
           <div className="flex h-32 items-center justify-center">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
