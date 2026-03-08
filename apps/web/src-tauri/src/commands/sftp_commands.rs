@@ -1,65 +1,10 @@
-use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::fs_common::types::{format_permissions, join_path, sort_entries, FileEntry, FileStat};
 use crate::sftp::manager::SftpSessionManager;
 use crate::sftp::session::{SftpConnectConfig, SftpSessionEntry};
 use crate::sftp::transfer::TransferTaskInfo;
 use crate::ssh::session::AuthMethod;
-
-/// A file entry returned by directory listing operations.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileEntry {
-    pub name: String,
-    pub path: String,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size: u64,
-    pub permissions: u32,
-    pub permissions_str: String,
-    pub modified_at: Option<i64>,
-    pub link_target: Option<String>,
-}
-
-/// File stat information returned by the stat command.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileStat {
-    pub size: u64,
-    pub permissions: u32,
-    pub permissions_str: String,
-    pub modified_at: Option<i64>,
-    pub accessed_at: Option<i64>,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub uid: Option<u32>,
-    pub gid: Option<u32>,
-}
-
-/// Format a unix permission mode into a human-readable string like `-rwxr-xr-x`.
-fn format_permissions(mode: u32, is_dir: bool) -> String {
-    let mut s = String::with_capacity(10);
-    s.push(if is_dir { 'd' } else { '-' });
-    s.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-    s.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-    s.push(if mode & 0o100 != 0 { 'x' } else { '-' });
-    s.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-    s.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-    s.push(if mode & 0o010 != 0 { 'x' } else { '-' });
-    s.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-    s.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-    s.push(if mode & 0o001 != 0 { 'x' } else { '-' });
-    s
-}
-
-/// Normalize a remote path by joining parent and name.
-fn join_path(parent: &str, name: &str) -> String {
-    if parent.ends_with('/') {
-        format!("{parent}{name}")
-    } else {
-        format!("{parent}/{name}")
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Session management commands
@@ -166,12 +111,7 @@ pub async fn sftp_list_dir(
         });
     }
 
-    // Sort: directories first, then alphabetically by name (case-insensitive).
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    sort_entries(&mut entries);
 
     Ok(entries)
 }
@@ -406,12 +346,7 @@ pub async fn sftp_search(
         }
     }
 
-    // Sort: directories first, then alphabetically by name.
-    results.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    sort_entries(&mut results);
 
     Ok(results)
 }
