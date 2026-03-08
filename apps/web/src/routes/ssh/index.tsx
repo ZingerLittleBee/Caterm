@@ -25,7 +25,7 @@ export const Route = createFileRoute('/ssh/')({
 })
 
 function SshIndexPage() {
-  const { sessions, activeSessionId, connect, disconnect, retry, setActive } = useSshSessions()
+  const { sessions, activeSessionId, connect, disconnect, retry, setActive, updateCwd } = useSshSessions()
   const { openStandalone } = useSftp()
   const [formOpen, setFormOpen] = useState(false)
   const [editingHost, setEditingHost] = useState<SshHost | undefined>(undefined)
@@ -255,6 +255,7 @@ function SshIndexPage() {
                   hostId={session.hostId}
                   isActive={session.id === activeSessionId}
                   key={session.id}
+                  onCwdChange={(cwd) => updateCwd(session.id, cwd)}
                   onRetry={() => retry(session.id)}
                   sessionId={session.id}
                   status={session.status}
