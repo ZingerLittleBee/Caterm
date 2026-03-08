@@ -9,8 +9,7 @@ import type { FileOperations } from '@/lib/file-operations'
 import type { FileEntry } from '@/types/fs'
 import { BookmarkDialog } from './dialogs/bookmark-dialog'
 import { ChmodDialog } from './dialogs/chmod-dialog'
-import { EditorDialog } from './dialogs/editor-dialog'
-import { PreviewDialog } from './dialogs/preview-dialog'
+import { FileEditorDialog } from './dialogs/file-editor-dialog'
 import { SearchDialog } from './dialogs/search-dialog'
 import { FileBreadcrumb } from './file-breadcrumb'
 import { FileContextMenu } from './file-context-menu'
@@ -71,8 +70,8 @@ export function FilePanel({
   // Dialog states
   const [searchOpen, setSearchOpen] = useState(false)
   const [bookmarksOpen, setBookmarksOpen] = useState(false)
-  const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null)
-  const [editEntry, setEditEntry] = useState<FileEntry | null>(null)
+  const [editorEntry, setEditorEntry] = useState<FileEntry | null>(null)
+  const [editorReadOnly, setEditorReadOnly] = useState(true)
   const [chmodEntry, setChmodEntry] = useState<FileEntry | null>(null)
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
   const [renameEntry, setRenameEntry] = useState<FileEntry | null>(null)
@@ -221,13 +220,15 @@ export function FilePanel({
 
   const handleContextPreview = useCallback((entry: FileEntry) => {
     if (!entry.isDir) {
-      setPreviewEntry(entry)
+      setEditorEntry(entry)
+      setEditorReadOnly(true)
     }
   }, [])
 
   const handleContextEdit = useCallback((entry: FileEntry) => {
     if (!entry.isDir) {
-      setEditEntry(entry)
+      setEditorEntry(entry)
+      setEditorReadOnly(false)
     }
   }, [])
 
@@ -506,24 +507,15 @@ export function FilePanel({
         source={source}
       />
 
-      {/* Preview Dialog */}
-      {previewEntry && (
-        <PreviewDialog
-          onClose={() => setPreviewEntry(null)}
-          open={!!previewEntry}
-          path={previewEntry.path}
-          readFile={operations.readFile}
-        />
-      )}
-
-      {/* Editor Dialog */}
-      {editEntry && (
-        <EditorDialog
-          onClose={() => setEditEntry(null)}
+      {/* File Editor/Preview Dialog */}
+      {editorEntry && (
+        <FileEditorDialog
+          onClose={() => setEditorEntry(null)}
           onSaved={handleRefresh}
-          open={!!editEntry}
-          path={editEntry.path}
+          open={!!editorEntry}
+          path={editorEntry.path}
           readFile={operations.readFile}
+          readOnly={editorReadOnly}
           writeFile={operations.writeFile}
         />
       )}
