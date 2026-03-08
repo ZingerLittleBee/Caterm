@@ -22,7 +22,7 @@ function buildDefaultLocalBookmarks(homeDir: string): LocalBookmark[] {
     { id: 'preset-home', label: 'Home', path: homeDir },
     { id: 'preset-desktop', label: 'Desktop', path: `${homeDir}/Desktop` },
     { id: 'preset-downloads', label: 'Downloads', path: `${homeDir}/Downloads` },
-    { id: 'preset-documents', label: 'Documents', path: `${homeDir}/Documents` },
+    { id: 'preset-documents', label: 'Documents', path: `${homeDir}/Documents` }
   ]
 }
 
