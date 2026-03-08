@@ -32,17 +32,15 @@ pub struct SftpSessionEntry {
     _handle: Handle<SshClientHandler>,
     /// Handle to the Tauri application for emitting events.
     app_handle: AppHandle,
+    /// Connection config stored for automatic reconnection.
+    connect_config: SftpConnectConfig,
 }
 
 impl SftpSessionEntry {
-    /// Open a standalone SFTP connection by creating a new SSH session,
-    /// authenticating, opening a channel, and requesting the SFTP subsystem.
-    pub async fn open_standalone(
-        id: String,
-        host_id: String,
+    /// Establish an SSH connection, authenticate, and open an SFTP subsystem.
+    async fn establish(
         config: &SftpConnectConfig,
-        app_handle: AppHandle,
-    ) -> Result<Self, String> {
+    ) -> Result<(Handle<SshClientHandler>, Arc<SftpSession>), String> {
         let ssh_config = Arc::new(client::Config {
             inactivity_timeout: Some(Duration::from_secs(15)),
             ..Default::default()
@@ -86,14 +84,36 @@ impl SftpSessionEntry {
             .await
             .map_err(|e| format!("Failed to create SFTP session: {e}"))?;
 
+        Ok((handle, Arc::new(sftp)))
+    }
+
+    /// Open a standalone SFTP connection by creating a new SSH session,
+    /// authenticating, opening a channel, and requesting the SFTP subsystem.
+    pub async fn open_standalone(
+        id: String,
+        host_id: String,
+        config: &SftpConnectConfig,
+        app_handle: AppHandle,
+    ) -> Result<Self, String> {
+        let (handle, sftp) = Self::establish(config).await?;
+
         Ok(Self {
             id,
             host_id,
             ssh_session_id: None,
-            sftp: Arc::new(sftp),
+            sftp,
             _handle: handle,
             app_handle,
+            connect_config: config.clone(),
         })
+    }
+
+    /// Reconnect this SFTP session by establishing a new SSH connection.
+    pub async fn reconnect(&mut self) -> Result<(), String> {
+        let (handle, sftp) = Self::establish(&self.connect_config).await?;
+        self._handle = handle;
+        self.sftp = sftp;
+        Ok(())
     }
 
     /// Get a reference to the SFTP session for file operations.
