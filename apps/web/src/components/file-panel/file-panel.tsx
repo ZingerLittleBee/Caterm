@@ -28,6 +28,7 @@ interface FilePanelProps {
   onPathChange?: (path: string) => void
   onUpload?: () => void
   operations: FileOperations
+  refreshTrigger?: number
   source: 'local' | 'remote'
 }
 
@@ -40,6 +41,7 @@ export function FilePanel({
   onPathChange,
   onUpload,
   operations,
+  refreshTrigger,
   source
 }: FilePanelProps) {
   const [currentPath, setCurrentPath] = useState(initialPath)
@@ -93,6 +95,13 @@ export function FilePanel({
     loadDirectory(initialPath)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only load on mount
   }, [])
+
+  useEffect(() => {
+    if (refreshTrigger) {
+      loadDirectory(currentPath)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when trigger changes
+  }, [refreshTrigger])
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {

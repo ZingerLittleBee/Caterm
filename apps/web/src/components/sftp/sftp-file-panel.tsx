@@ -10,6 +10,7 @@ interface SftpFilePanelProps {
   onDrop?: (entries: FileEntry[], targetPath: string) => void
   onPathChange?: (path: string) => void
   onUpload?: () => void
+  refreshTrigger?: number
   sftpSessionId?: string
   source: 'local' | 'remote'
 }
@@ -20,7 +21,8 @@ export function SftpFilePanel({
   onUpload,
   onDownload,
   onDrop,
-  onPathChange: onPathChangeProp
+  onPathChange: onPathChangeProp,
+  refreshTrigger
 }: SftpFilePanelProps) {
   const sftp = useSftp()
   const session = sftpSessionId ? (sftp.sessions.get(sftpSessionId) ?? null) : null
@@ -92,6 +94,7 @@ export function SftpFilePanel({
       onPathChange={handlePathChange}
       onUpload={onUpload}
       operations={operations}
+      refreshTrigger={refreshTrigger}
       source={source}
     />
   )

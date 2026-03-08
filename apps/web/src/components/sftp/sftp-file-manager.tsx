@@ -25,6 +25,8 @@ export function SftpFileManager() {
 
   const localPathRef = useRef('/')
   const remotePathRef = useRef('/')
+  const [localRefresh, setLocalRefresh] = useState(0)
+  const [remoteRefresh, setRemoteRefresh] = useState(0)
 
   const activeSession = activeSftpSessionId ? (sessions.get(activeSftpSessionId) ?? null) : null
 
@@ -141,12 +143,14 @@ export function SftpFileManager() {
       if (!activeSftpSessionId) {
         return
       }
-      for (const entry of entries) {
-        if (!entry.isDir) {
+      const files = entries.filter((e) => !e.isDir)
+      await Promise.allSettled(
+        files.map((entry) => {
           const localPath = localPathRef.current === '/' ? `/${entry.name}` : `${localPathRef.current}/${entry.name}`
-          await download(activeSftpSessionId, entry.path, localPath)
-        }
-      }
+          return download(activeSftpSessionId, entry.path, localPath)
+        })
+      )
+      setLocalRefresh((c) => c + 1)
     },
     [activeSftpSessionId, download]
   )
@@ -157,12 +161,14 @@ export function SftpFileManager() {
       if (!activeSftpSessionId) {
         return
       }
-      for (const entry of entries) {
-        if (!entry.isDir) {
+      const files = entries.filter((e) => !e.isDir)
+      await Promise.allSettled(
+        files.map((entry) => {
           const remotePath = remotePathRef.current === '/' ? `/${entry.name}` : `${remotePathRef.current}/${entry.name}`
-          await upload(activeSftpSessionId, entry.path, remotePath)
-        }
-      }
+          return upload(activeSftpSessionId, entry.path, remotePath)
+        })
+      )
+      setRemoteRefresh((c) => c + 1)
     },
     [activeSftpSessionId, upload]
   )
@@ -173,12 +179,14 @@ export function SftpFileManager() {
       if (!activeSftpSessionId) {
         return
       }
-      for (const entry of entries) {
-        if (!entry.isDir) {
+      const files = entries.filter((e) => !e.isDir)
+      await Promise.allSettled(
+        files.map((entry) => {
           const localPath = targetPath === '/' ? `/${entry.name}` : `${targetPath}/${entry.name}`
-          await download(activeSftpSessionId, entry.path, localPath)
-        }
-      }
+          return download(activeSftpSessionId, entry.path, localPath)
+        })
+      )
+      setLocalRefresh((c) => c + 1)
     },
     [activeSftpSessionId, download]
   )
@@ -189,12 +197,14 @@ export function SftpFileManager() {
       if (!activeSftpSessionId) {
         return
       }
-      for (const entry of entries) {
-        if (!entry.isDir) {
+      const files = entries.filter((e) => !e.isDir)
+      await Promise.allSettled(
+        files.map((entry) => {
           const remotePath = targetPath === '/' ? `/${entry.name}` : `${targetPath}/${entry.name}`
-          await upload(activeSftpSessionId, entry.path, remotePath)
-        }
-      }
+          return upload(activeSftpSessionId, entry.path, remotePath)
+        })
+      )
+      setRemoteRefresh((c) => c + 1)
     },
     [activeSftpSessionId, upload]
   )
@@ -244,6 +254,7 @@ export function SftpFileManager() {
                   onPathChange={(path) => {
                     localPathRef.current = path
                   }}
+                  refreshTrigger={localRefresh}
                   source="local"
                 />
               </div>
@@ -257,6 +268,7 @@ export function SftpFileManager() {
                   onPathChange={(path) => {
                     remotePathRef.current = path
                   }}
+                  refreshTrigger={remoteRefresh}
                   sftpSessionId={activeSftpSessionId ?? undefined}
                   source="remote"
                 />
