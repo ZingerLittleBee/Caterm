@@ -1,4 +1,5 @@
 mod commands;
+mod fs_common;
 mod sftp;
 mod ssh;
 
