@@ -51,6 +51,15 @@ pub async fn list_dir(path: &str) -> Result<Vec<FileEntry>, String> {
         let permissions = get_permissions(&metadata);
         let entry_path = join_path(path, &name);
 
+        let link_target = if is_symlink {
+            tokio::fs::read_link(&entry_path)
+                .await
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        } else {
+            None
+        };
+
         entries.push(FileEntry {
             name,
             path: entry_path,
@@ -60,7 +69,7 @@ pub async fn list_dir(path: &str) -> Result<Vec<FileEntry>, String> {
             permissions,
             permissions_str: format_permissions(permissions, is_dir),
             modified_at,
-            link_target: None,
+            link_target,
         });
     }
 
@@ -249,6 +258,15 @@ pub async fn search(base_path: &str, pattern: &str) -> Result<Vec<FileEntry>, St
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64);
 
+                let link_target = if is_symlink {
+                    tokio::fs::read_link(&entry_path)
+                        .await
+                        .ok()
+                        .map(|p| p.to_string_lossy().into_owned())
+                } else {
+                    None
+                };
+
                 results.push(FileEntry {
                     name,
                     path: entry_path,
@@ -258,7 +276,7 @@ pub async fn search(base_path: &str, pattern: &str) -> Result<Vec<FileEntry>, St
                     permissions,
                     permissions_str: format_permissions(permissions, is_dir),
                     modified_at,
-                    link_target: None,
+                    link_target,
                 });
             }
         }
