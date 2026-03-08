@@ -29,6 +29,7 @@ interface FilePanelProps {
   operations: FileOperations
   refreshTrigger?: number
   source: 'local' | 'remote'
+  title?: string
 }
 
 export function FilePanel({
@@ -40,7 +41,8 @@ export function FilePanel({
   onPathChange,
   operations,
   refreshTrigger,
-  source
+  source,
+  title
 }: FilePanelProps) {
   const [currentPath, setCurrentPath] = useState(initialPath)
   const [entries, setEntries] = useState<FileEntry[]>([])
@@ -269,20 +271,17 @@ export function FilePanel({
       }}
       role="region"
     >
-      <div className="flex items-center gap-2 border-b px-2 py-1">
-        <div className="min-w-0 flex-1">
-          <FileBreadcrumb onNavigate={handleNavigate} path={currentPath} />
-        </div>
-        <FileToolbar
-          onBookmarks={() => setBookmarksOpen(true)}
-          onDelete={handleDeleteOpen}
-          onNewFolder={handleNewFolderOpen}
-          onOpenInSystem={
-            source === 'local' && extraContextMenuItems?.onOpenInSystem
-              ? () =>
-                  extraContextMenuItems.onOpenInSystem?.(
-                    // Open current directory in system
-                    {
+      {title && (
+        <div className="flex items-center gap-2 border-b px-3 py-1.5">
+          <h2 className="min-w-0 flex-1 font-medium text-sm">{title}</h2>
+          <FileToolbar
+            onBookmarks={() => setBookmarksOpen(true)}
+            onDelete={handleDeleteOpen}
+            onNewFolder={handleNewFolderOpen}
+            onOpenInSystem={
+              source === 'local' && extraContextMenuItems?.onOpenInSystem
+                ? () =>
+                    extraContextMenuItems.onOpenInSystem?.({
                       isDir: true,
                       isSymlink: false,
                       linkTarget: null,
@@ -292,14 +291,17 @@ export function FilePanel({
                       permissions: 0,
                       permissionsStr: '',
                       size: 0
-                    }
-                  )
-              : undefined
-          }
-          onRefresh={handleRefresh}
-          onSearch={() => setSearchOpen(true)}
-          onTransfer={onTransfer && selectedEntries.length > 0 ? () => onTransfer(selectedEntries) : undefined}
-        />
+                    })
+                : undefined
+            }
+            onRefresh={handleRefresh}
+            onSearch={() => setSearchOpen(true)}
+            onTransfer={onTransfer && selectedEntries.length > 0 ? () => onTransfer(selectedEntries) : undefined}
+          />
+        </div>
+      )}
+      <div className="border-b px-2 py-1">
+        <FileBreadcrumb onNavigate={handleNavigate} path={currentPath} />
       </div>
       <ScrollArea className="min-h-0 flex-1">
         {loading ? (

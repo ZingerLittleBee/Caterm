@@ -245,9 +245,6 @@ export function SftpFileManager() {
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex min-h-0 flex-1">
               <div className="flex min-h-0 w-1/2 flex-col border-r">
-                <div className="border-b px-3 py-1.5">
-                  <h2 className="font-medium text-sm">Local</h2>
-                </div>
                 <SftpFilePanel
                   onDrop={handleLocalDrop}
                   onPathChange={(path) => {
@@ -256,12 +253,10 @@ export function SftpFileManager() {
                   onTransfer={handleUpload}
                   refreshTrigger={localRefresh}
                   source="local"
+                  title="Local"
                 />
               </div>
               <div className="flex min-h-0 w-1/2 flex-col">
-                <div className="border-b px-3 py-1.5">
-                  <h2 className="font-medium text-sm">Remote</h2>
-                </div>
                 <SftpFilePanel
                   onDrop={handleRemoteDrop}
                   onPathChange={(path) => {
@@ -271,6 +266,7 @@ export function SftpFileManager() {
                   refreshTrigger={remoteRefresh}
                   sftpSessionId={activeSftpSessionId ?? undefined}
                   source="remote"
+                  title="Remote"
                 />
               </div>
             </div>
