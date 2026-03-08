@@ -1,16 +1,15 @@
-import { Bookmark, Download, ExternalLink, FolderPlus, RefreshCw, Search, Trash2, Upload } from 'lucide-react'
+import { ArrowRightLeft, Bookmark, ExternalLink, FolderPlus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 interface FileToolbarProps {
   onBookmarks?: () => void
   onDelete?: () => void
-  onDownload?: () => void
   onNewFolder?: () => void
   onOpenInSystem?: () => void
   onRefresh?: () => void
   onSearch?: () => void
-  onUpload?: () => void
+  onTransfer?: () => void
 }
 
 function ToolbarButton({
@@ -42,18 +41,16 @@ function ToolbarButton({
 export function FileToolbar({
   onBookmarks,
   onDelete,
-  onDownload,
+  onTransfer,
   onNewFolder,
   onOpenInSystem,
   onRefresh,
-  onSearch,
-  onUpload
+  onSearch
 }: FileToolbarProps) {
   return (
     <TooltipProvider>
       <div className="flex items-center gap-0.5">
-        <ToolbarButton icon={<Upload className="h-4 w-4" />} label="Upload" onClick={onUpload} />
-        <ToolbarButton icon={<Download className="h-4 w-4" />} label="Download" onClick={onDownload} />
+        <ToolbarButton icon={<ArrowRightLeft className="h-4 w-4" />} label="Transfer" onClick={onTransfer} />
         <ToolbarButton icon={<FolderPlus className="h-4 w-4" />} label="New Folder" onClick={onNewFolder} />
         <ToolbarButton icon={<Trash2 className="h-4 w-4" />} label="Delete" onClick={onDelete} />
         <div className="mx-1 h-4 w-px bg-border" />

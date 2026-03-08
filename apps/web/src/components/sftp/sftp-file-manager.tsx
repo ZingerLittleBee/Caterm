@@ -249,11 +249,11 @@ export function SftpFileManager() {
                   <h2 className="font-medium text-sm">Local</h2>
                 </div>
                 <SftpFilePanel
-                  onDownload={handleUpload}
                   onDrop={handleLocalDrop}
                   onPathChange={(path) => {
                     localPathRef.current = path
                   }}
+                  onTransfer={handleUpload}
                   refreshTrigger={localRefresh}
                   source="local"
                 />
@@ -263,11 +263,11 @@ export function SftpFileManager() {
                   <h2 className="font-medium text-sm">Remote</h2>
                 </div>
                 <SftpFilePanel
-                  onDownload={handleDownload}
                   onDrop={handleRemoteDrop}
                   onPathChange={(path) => {
                     remotePathRef.current = path
                   }}
+                  onTransfer={handleDownload}
                   refreshTrigger={remoteRefresh}
                   sftpSessionId={activeSftpSessionId ?? undefined}
                   source="remote"

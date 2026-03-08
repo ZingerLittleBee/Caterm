@@ -6,10 +6,9 @@ import type { FileEntry } from '@/types/fs'
 import { useSftp } from './sftp-provider'
 
 interface SftpFilePanelProps {
-  onDownload?: (entries: FileEntry[]) => void
   onDrop?: (entries: FileEntry[], targetPath: string) => void
   onPathChange?: (path: string) => void
-  onUpload?: () => void
+  onTransfer?: (entries: FileEntry[]) => void
   refreshTrigger?: number
   sftpSessionId?: string
   source: 'local' | 'remote'
@@ -18,8 +17,7 @@ interface SftpFilePanelProps {
 export function SftpFilePanel({
   source,
   sftpSessionId,
-  onUpload,
-  onDownload,
+  onTransfer,
   onDrop,
   onPathChange: onPathChangeProp,
   refreshTrigger
@@ -89,10 +87,9 @@ export function SftpFilePanel({
       hostId={session?.hostId}
       initialPath={initialPath}
       key={initialPath}
-      onDownload={onDownload}
       onDrop={onDrop}
       onPathChange={handlePathChange}
-      onUpload={onUpload}
+      onTransfer={onTransfer}
       operations={operations}
       refreshTrigger={refreshTrigger}
       source={source}

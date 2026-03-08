@@ -23,10 +23,9 @@ interface FilePanelProps {
   }
   hostId?: string
   initialPath: string
-  onDownload?: (entries: FileEntry[]) => void
   onDrop?: (entries: FileEntry[], targetPath: string) => void
   onPathChange?: (path: string) => void
-  onUpload?: () => void
+  onTransfer?: (entries: FileEntry[]) => void
   operations: FileOperations
   refreshTrigger?: number
   source: 'local' | 'remote'
@@ -36,10 +35,9 @@ export function FilePanel({
   extraContextMenuItems,
   hostId,
   initialPath,
-  onDownload,
+  onTransfer,
   onDrop,
   onPathChange,
-  onUpload,
   operations,
   refreshTrigger,
   source
@@ -192,13 +190,13 @@ export function FilePanel({
     }
   }, [])
 
-  const handleContextDownload = useCallback(
+  const handleContextTransfer = useCallback(
     (entry: FileEntry) => {
-      if (onDownload) {
-        onDownload([entry])
+      if (onTransfer) {
+        onTransfer([entry])
       }
     },
-    [onDownload]
+    [onTransfer]
   )
 
   const handleContextRename = useCallback((entry: FileEntry) => {
@@ -278,7 +276,6 @@ export function FilePanel({
         <FileToolbar
           onBookmarks={() => setBookmarksOpen(true)}
           onDelete={handleDeleteOpen}
-          onDownload={onDownload && selectedEntries.length > 0 ? () => onDownload(selectedEntries) : undefined}
           onNewFolder={handleNewFolderOpen}
           onOpenInSystem={
             source === 'local' && extraContextMenuItems?.onOpenInSystem
@@ -301,7 +298,7 @@ export function FilePanel({
           }
           onRefresh={handleRefresh}
           onSearch={() => setSearchOpen(true)}
-          onUpload={onUpload}
+          onTransfer={onTransfer && selectedEntries.length > 0 ? () => onTransfer(selectedEntries) : undefined}
         />
       </div>
       <ScrollArea className="flex-1">
@@ -326,13 +323,13 @@ export function FilePanel({
               }}
               onCopyPath={handleContextCopyPath}
               onDelete={handleContextDelete}
-              onDownload={onDownload ? handleContextDownload : undefined}
               onEdit={handleContextEdit}
               onOpen={handleContextOpen}
               onOpenInSystem={extraContextMenuItems?.onOpenInSystem}
               onPermissions={handleContextPermissions}
               onPreview={handleContextPreview}
               onRename={handleContextRename}
+              onTransfer={onTransfer ? handleContextTransfer : undefined}
               position={contextMenuPos}
             />
           </>

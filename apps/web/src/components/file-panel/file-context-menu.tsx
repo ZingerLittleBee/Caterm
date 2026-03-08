@@ -1,6 +1,6 @@
 import {
+  ArrowRightLeft,
   ClipboardCopy,
-  Download,
   ExternalLink,
   Eye,
   FileEdit,
@@ -18,13 +18,13 @@ interface FileContextMenuProps {
   onClose: () => void
   onCopyPath?: (entry: FileEntry) => void
   onDelete?: (entry: FileEntry) => void
-  onDownload?: (entry: FileEntry) => void
   onEdit?: (entry: FileEntry) => void
   onOpen?: (entry: FileEntry) => void
   onOpenInSystem?: (entry: FileEntry) => void
   onPermissions?: (entry: FileEntry) => void
   onPreview?: (entry: FileEntry) => void
   onRename?: (entry: FileEntry) => void
+  onTransfer?: (entry: FileEntry) => void
   position: { x: number; y: number } | null
 }
 
@@ -65,7 +65,7 @@ export function FileContextMenu({
   onClose,
   onCopyPath,
   onDelete,
-  onDownload,
+  onTransfer,
   onEdit,
   onOpen,
   onOpenInSystem,
@@ -137,9 +137,9 @@ export function FileContextMenu({
       )}
       <MenuItem
         disabled={entry.isDir}
-        icon={<Download className="h-4 w-4" />}
-        label={entry.isDir ? 'Download as...' : 'Download'}
-        onClick={() => handleAction(onDownload)}
+        icon={<ArrowRightLeft className="h-4 w-4" />}
+        label="Transfer"
+        onClick={() => handleAction(onTransfer)}
       />
       <div className="my-1 h-px bg-border" />
       <MenuItem icon={<Pencil className="h-4 w-4" />} label="Rename" onClick={() => handleAction(onRename)} />
