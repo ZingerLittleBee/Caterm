@@ -1,5 +1,5 @@
 import { Loader2 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FilePanel } from '@/components/file-panel'
 import { createLocalFileOps, createSftpFileOps, getHomeDir, openInSystem } from '@/lib/file-operations'
 import type { FileEntry } from '@/types/fs'
@@ -58,6 +58,21 @@ export function SftpFilePanel({
     }
   }, [source])
 
+  const handlePathChange = useCallback(
+    (path: string) => {
+      if (source === 'local') {
+        localStorage.setItem('caterm:local-file-panel:lastPath', path)
+      }
+      onPathChangeProp?.(path)
+    },
+    [source, onPathChangeProp]
+  )
+
+  const extraContextMenuItems = useMemo(
+    () => (source === 'local' ? { onOpenInSystem: (entry: FileEntry) => openInSystem(entry.path) } : undefined),
+    [source]
+  )
+
   if (!(operations && ready)) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -68,19 +83,12 @@ export function SftpFilePanel({
 
   return (
     <FilePanel
-      extraContextMenuItems={
-        source === 'local' ? { onOpenInSystem: (entry: FileEntry) => openInSystem(entry.path) } : undefined
-      }
+      extraContextMenuItems={extraContextMenuItems}
       hostId={session?.hostId}
       initialPath={initialPath}
       onDownload={onDownload}
       onDrop={onDrop}
-      onPathChange={(path: string) => {
-        if (source === 'local') {
-          localStorage.setItem('caterm:local-file-panel:lastPath', path)
-        }
-        onPathChangeProp?.(path)
-      }}
+      onPathChange={handlePathChange}
       onUpload={onUpload}
       operations={operations}
       source={source}

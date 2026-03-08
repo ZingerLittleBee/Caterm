@@ -18,13 +18,19 @@ pub async fn list_dir(path: &str) -> Result<Vec<FileEntry>, String> {
             .to_string_lossy()
             .into_owned();
 
-        // Get symlink-aware metadata first, fall back to symlink metadata.
+        // Use file_type() to detect symlinks (does not follow them).
+        let file_type = match dir_entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let is_symlink = file_type.is_symlink();
+
+        // Use regular metadata (follows symlinks) for size/permissions/mtime.
         let metadata = match dir_entry.metadata().await {
             Ok(m) => m,
             Err(_) => continue,
         };
 
-        let is_symlink = metadata.file_type().is_symlink();
         let is_dir = metadata.is_dir();
         let size = metadata.len();
         let modified_at = metadata
@@ -197,13 +203,19 @@ pub async fn search(base_path: &str, pattern: &str) -> Result<Vec<FileEntry>, St
 
             let name = dir_entry.file_name().to_string_lossy().into_owned();
 
+            // Use file_type() to detect symlinks (does not follow them).
+            let file_type = match dir_entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            let is_symlink = file_type.is_symlink();
+
             let metadata = match dir_entry.metadata().await {
                 Ok(m) => m,
                 Err(_) => continue,
             };
 
             let is_dir = metadata.is_dir();
-            let is_symlink = metadata.file_type().is_symlink();
             let entry_path = join_path(&current_dir, &name);
 
             if is_dir && depth < MAX_DEPTH {

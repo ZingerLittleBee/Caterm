@@ -56,7 +56,7 @@ pub fn join_path(parent: &str, name: &str) -> String {
 }
 
 /// Sort entries with directories first, then case-insensitive alphabetical by name.
-pub fn sort_entries(entries: &mut Vec<FileEntry>) {
+pub fn sort_entries(entries: &mut [FileEntry]) {
     entries.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
