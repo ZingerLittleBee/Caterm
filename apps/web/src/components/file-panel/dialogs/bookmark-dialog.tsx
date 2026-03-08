@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { getHomeDir } from '@/lib/file-operations'
 import { client, orpc, queryClient } from '@/lib/orpc'
 
 interface LocalBookmark {
@@ -16,14 +17,16 @@ interface LocalBookmark {
 
 const LOCAL_BOOKMARKS_KEY = 'caterm:local-bookmarks'
 
-const DEFAULT_LOCAL_BOOKMARKS: LocalBookmark[] = [
-  { id: 'preset-home', label: 'Home', path: '~' },
-  { id: 'preset-desktop', label: 'Desktop', path: '~/Desktop' },
-  { id: 'preset-downloads', label: 'Downloads', path: '~/Downloads' },
-  { id: 'preset-documents', label: 'Documents', path: '~/Documents' }
-]
+function buildDefaultLocalBookmarks(homeDir: string): LocalBookmark[] {
+  return [
+    { id: 'preset-home', label: 'Home', path: homeDir },
+    { id: 'preset-desktop', label: 'Desktop', path: `${homeDir}/Desktop` },
+    { id: 'preset-downloads', label: 'Downloads', path: `${homeDir}/Downloads` },
+    { id: 'preset-documents', label: 'Documents', path: `${homeDir}/Documents` },
+  ]
+}
 
-function getLocalBookmarks(): LocalBookmark[] {
+function getStoredLocalBookmarks(): LocalBookmark[] | null {
   try {
     const stored = localStorage.getItem(LOCAL_BOOKMARKS_KEY)
     if (stored) {
@@ -32,10 +35,10 @@ function getLocalBookmarks(): LocalBookmark[] {
   } catch {
     // Ignore parse errors
   }
-  return DEFAULT_LOCAL_BOOKMARKS
+  return null
 }
 
-function setLocalBookmarks(bookmarks: LocalBookmark[]): void {
+function saveLocalBookmarks(bookmarks: LocalBookmark[]): void {
   localStorage.setItem(LOCAL_BOOKMARKS_KEY, JSON.stringify(bookmarks))
 }
 
@@ -51,12 +54,19 @@ interface BookmarkDialogProps {
 export function BookmarkDialog({ currentPath, hostId, onClose, onNavigate, open, source }: BookmarkDialogProps) {
   const [addLabel, setAddLabel] = useState('')
   const [adding, setAdding] = useState(false)
-  const [localBookmarks, setLocalBookmarksState] = useState<LocalBookmark[]>(getLocalBookmarks)
+  const [localBookmarks, setLocalBookmarksState] = useState<LocalBookmark[]>([])
 
-  // Refresh local bookmarks when dialog opens
+  // Load local bookmarks when dialog opens, resolving home dir for defaults
   useEffect(() => {
     if (open && source === 'local') {
-      setLocalBookmarksState(getLocalBookmarks())
+      const stored = getStoredLocalBookmarks()
+      if (stored) {
+        setLocalBookmarksState(stored)
+      } else {
+        getHomeDir()
+          .then((home) => setLocalBookmarksState(buildDefaultLocalBookmarks(home)))
+          .catch(() => setLocalBookmarksState([]))
+      }
     }
   }, [open, source])
 
@@ -104,7 +114,7 @@ export function BookmarkDialog({ currentPath, hostId, onClose, onNavigate, open,
       path: currentPath
     }
     const updated = [...localBookmarks, newBookmark]
-    setLocalBookmarks(updated)
+    saveLocalBookmarks(updated)
     setLocalBookmarksState(updated)
     setAddLabel('')
     toast.success('Bookmark added')
@@ -138,7 +148,7 @@ export function BookmarkDialog({ currentPath, hostId, onClose, onNavigate, open,
   const handleDeleteLocal = useCallback(
     (id: string) => {
       const updated = localBookmarks.filter((bm) => bm.id !== id)
-      setLocalBookmarks(updated)
+      saveLocalBookmarks(updated)
       setLocalBookmarksState(updated)
     },
     [localBookmarks]
