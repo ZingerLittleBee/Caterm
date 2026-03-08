@@ -1,5 +1,5 @@
 import { Dialog } from '@base-ui/react/dialog'
-import { Loader2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -53,6 +53,12 @@ export function FilePanel({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const newFolderInputRef = useRef<HTMLInputElement>(null)
 
+  // Navigation history
+  const historyBackRef = useRef<string[]>([])
+  const historyForwardRef = useRef<string[]>([])
+  const [canGoBack, setCanGoBack] = useState(false)
+  const [canGoForward, setCanGoForward] = useState(false)
+
   const [dragOver, setDragOver] = useState(false)
 
   // Context menu state
@@ -91,6 +97,39 @@ export function FilePanel({
     [operations, onPathChange]
   )
 
+  const navigateTo = useCallback(
+    (path: string, pushHistory = true) => {
+      if (pushHistory && currentPath !== path) {
+        historyBackRef.current.push(currentPath)
+        historyForwardRef.current = []
+        setCanGoBack(true)
+        setCanGoForward(false)
+      }
+      loadDirectory(path)
+    },
+    [loadDirectory, currentPath]
+  )
+
+  const handleGoBack = useCallback(() => {
+    const prev = historyBackRef.current.pop()
+    if (prev != null) {
+      historyForwardRef.current.push(currentPath)
+      setCanGoBack(historyBackRef.current.length > 0)
+      setCanGoForward(true)
+      loadDirectory(prev)
+    }
+  }, [loadDirectory, currentPath])
+
+  const handleGoForward = useCallback(() => {
+    const next = historyForwardRef.current.pop()
+    if (next != null) {
+      historyBackRef.current.push(currentPath)
+      setCanGoBack(true)
+      setCanGoForward(historyForwardRef.current.length > 0)
+      loadDirectory(next)
+    }
+  }, [loadDirectory, currentPath])
+
   useEffect(() => {
     loadDirectory(initialPath)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only load on mount
@@ -106,17 +145,17 @@ export function FilePanel({
   const handleOpen = useCallback(
     (entry: FileEntry) => {
       if (entry.isDir) {
-        loadDirectory(entry.path)
+        navigateTo(entry.path)
       }
     },
-    [loadDirectory]
+    [navigateTo]
   )
 
   const handleNavigate = useCallback(
     (path: string) => {
-      loadDirectory(path)
+      navigateTo(path)
     },
-    [loadDirectory]
+    [navigateTo]
   )
 
   const handleRefresh = useCallback(() => {
@@ -271,6 +310,7 @@ export function FilePanel({
       }}
       role="region"
     >
+      {/* Row 1: Title + Toolbar */}
       {title && (
         <div className="flex items-center gap-2 border-b px-3 py-1.5">
           <h2 className="min-w-0 flex-1 font-medium text-sm">{title}</h2>
@@ -300,9 +340,22 @@ export function FilePanel({
           />
         </div>
       )}
-      <div className="border-b px-2 py-1">
-        <FileBreadcrumb onNavigate={handleNavigate} path={currentPath} />
+
+      {/* Row 2: Back/Forward + Breadcrumb */}
+      <div className="flex items-center gap-0.5 border-b px-1 py-0.5">
+        <Button className="h-7 w-7" disabled={!canGoBack} onClick={handleGoBack} size="icon" variant="ghost">
+          <ChevronLeft className="h-4 w-4" />
+          <span className="sr-only">Back</span>
+        </Button>
+        <Button className="h-7 w-7" disabled={!canGoForward} onClick={handleGoForward} size="icon" variant="ghost">
+          <ChevronRight className="h-4 w-4" />
+          <span className="sr-only">Forward</span>
+        </Button>
+        <div className="min-w-0 flex-1">
+          <FileBreadcrumb onNavigate={handleNavigate} path={currentPath} />
+        </div>
       </div>
+
       <ScrollArea className="min-h-0 flex-1">
         {loading ? (
           <div className="flex h-32 items-center justify-center">
