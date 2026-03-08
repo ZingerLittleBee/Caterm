@@ -89,14 +89,10 @@ export function FilePanel({
     [operations, onPathChange]
   )
 
-  const initialLoadDone = useRef(false)
-
   useEffect(() => {
-    if (!initialLoadDone.current) {
-      initialLoadDone.current = true
-      loadDirectory(initialPath)
-    }
-  }, [initialPath, loadDirectory])
+    loadDirectory(initialPath)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only load on mount
+  }, [])
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {

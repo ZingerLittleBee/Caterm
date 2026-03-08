@@ -86,6 +86,7 @@ export function SftpFilePanel({
       extraContextMenuItems={extraContextMenuItems}
       hostId={session?.hostId}
       initialPath={initialPath}
+      key={initialPath}
       onDownload={onDownload}
       onDrop={onDrop}
       onPathChange={handlePathChange}
