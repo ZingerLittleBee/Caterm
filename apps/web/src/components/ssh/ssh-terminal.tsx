@@ -14,17 +14,20 @@ import type { SshSessionStatus } from '@/types/ssh'
 interface SshTerminalProps {
   hostId: string
   isActive: boolean
+  onCwdChange?: (cwd: string) => void
   onRetry?: () => void
   sessionId: string
   status: SshSessionStatus
 }
 
-export function SshTerminal({ sessionId, hostId, isActive, status, onRetry }: SshTerminalProps) {
+export function SshTerminal({ sessionId, hostId, isActive, status, onRetry, onCwdChange }: SshTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const statusRef = useRef(status)
   statusRef.current = status
   const onRetryRef = useRef(onRetry)
   onRetryRef.current = onRetry
+  const onCwdChangeRef = useRef(onCwdChange)
+  onCwdChangeRef.current = onCwdChange
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const rafIdRef = useRef<number>(0)
@@ -65,6 +68,21 @@ export function SshTerminal({ sessionId, hostId, isActive, status, onRetry }: Ss
     terminal.loadAddon(new WebLinksAddon())
 
     terminal.open(container)
+
+    // Track current working directory via OSC 7 escape sequences.
+    // Shells emit: \x1b]7;file://hostname/path\x07
+    const osc7Disposable = terminal.parser.registerOscHandler(7, (data) => {
+      try {
+        const url = new URL(data)
+        if (url.protocol === 'file:') {
+          const cwd = decodeURIComponent(url.pathname)
+          onCwdChangeRef.current?.(cwd)
+        }
+      } catch {
+        // Malformed URI — ignore
+      }
+      return false
+    })
 
     // Try to load the WebGL renderer for better performance.
     // Falls back to the default canvas renderer if WebGL is unavailable.
@@ -177,6 +195,7 @@ export function SshTerminal({ sessionId, hostId, isActive, status, onRetry }: Ss
 
       dataDisposable.dispose()
       resizeDisposable.dispose()
+      osc7Disposable.dispose()
 
       // Clean up async event listeners.
       outputListenerPromise.then(() => {

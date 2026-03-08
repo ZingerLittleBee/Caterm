@@ -10,10 +10,14 @@ import { useSftp } from '@/components/sftp/sftp-provider'
 import { SftpSidebarTree } from '@/components/sftp/sftp-sidebar-tree'
 import { SiteHeader } from '@/components/site-header'
 import { type ConnectCredentials, ConnectDialog } from '@/components/ssh/connect-dialog'
+import { RemoteDirectoryPicker } from '@/components/ssh/remote-directory-picker'
 import { useSshSessions } from '@/components/ssh/ssh-session-provider'
 import { SshStatusBar } from '@/components/ssh/ssh-status-bar'
 import { SshTabBar } from '@/components/ssh/ssh-tab-bar'
 import { SshTerminal } from '@/components/ssh/ssh-terminal'
+import { TerminalDropOverlay } from '@/components/ssh/terminal-drop-overlay'
+import { TerminalUploadProgress } from '@/components/ssh/terminal-upload-progress'
+import { useTerminalDragUpload } from '@/components/ssh/use-terminal-drag-upload'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
@@ -25,8 +29,8 @@ export const Route = createFileRoute('/ssh/')({
 })
 
 function SshIndexPage() {
-  const { sessions, activeSessionId, connect, disconnect, retry, setActive } = useSshSessions()
-  const { openStandalone } = useSftp()
+  const { sessions, activeSessionId, connect, disconnect, retry, setActive, updateCwd } = useSshSessions()
+  const { openStandalone, upload, listDir, cancelTransfer, transfers, sessions: sftpSessions } = useSftp()
   const [formOpen, setFormOpen] = useState(false)
   const [editingHost, setEditingHost] = useState<SshHost | undefined>(undefined)
   const [connectTarget, setConnectTarget] = useState<SshHost | null>(null)
@@ -35,9 +39,78 @@ function SshIndexPage() {
   const sftpHostIdRef = useRef<string | null>(null)
   const sftpOpeningRef = useRef(false)
 
+  const terminalAreaRef = useRef<HTMLDivElement>(null)
+  const [dirPickerOpen, setDirPickerOpen] = useState(false)
+  const [dirPickerSftpId, setDirPickerSftpId] = useState<string | null>(null)
+
+  // Map hostId → sftpSessionId for drag-upload sessions
+  const uploadSftpMapRef = useRef<Map<string, string>>(new Map())
+  const sftpSessionsRef = useRef(sftpSessions)
+  sftpSessionsRef.current = sftpSessions
+
   const activeSession = activeSessionId ? (sessions.get(activeSessionId) ?? null) : null
 
   const hasConnectedSession = activeSession !== null && activeSession.status === 'connected'
+
+  const ensureSftpSession = useCallback(
+    async (hostId: string): Promise<string> => {
+      // Check if we already have a session for this host
+      const existing = uploadSftpMapRef.current.get(hostId)
+      if (existing && sftpSessionsRef.current.has(existing)) {
+        return existing
+      }
+      uploadSftpMapRef.current.delete(hostId)
+
+      // Create new SFTP session
+      const stored = await client.sshHost.getById({ id: hostId })
+      const id = await openStandalone({
+        authType: stored.authType as 'password' | 'key',
+        hostId: stored.id,
+        hostName: stored.name,
+        hostname: stored.hostname,
+        keyPassphrase: stored.keyPassphrase ?? undefined,
+        password: stored.password ?? undefined,
+        port: stored.port,
+        privateKey: stored.privateKey ?? undefined,
+        username: stored.username
+      })
+      uploadSftpMapRef.current.set(hostId, id)
+      return id
+    },
+    [openStandalone]
+  )
+
+  const { isDragOver, handleDirectoryPicked } = useTerminalDragUpload({
+    terminalAreaRef,
+    activeSession,
+    ensureSftpSession,
+    upload,
+    onNeedDirectoryPick: () => {
+      if (!activeSession) {
+        return
+      }
+      ensureSftpSession(activeSession.hostId)
+        .then((id) => {
+          setDirPickerSftpId(id)
+          setDirPickerOpen(true)
+        })
+        .catch((error) => {
+          const msg = error instanceof Error ? error.message : String(error)
+          toast.error('Failed to open SFTP for directory picker', { description: msg })
+        })
+    }
+  })
+
+  // Filter transfers to show only uploads from the active session's SFTP
+  const terminalUploads = activeSession
+    ? transfers.filter((t) => {
+        if (t.kind !== 'upload') {
+          return false
+        }
+        const sftpId = uploadSftpMapRef.current.get(activeSession.hostId)
+        return t.sftpSessionId === sftpId
+      })
+    : []
 
   const handleToggleSftpPanel = useCallback(async () => {
     if (sftpPanelOpen) {
@@ -244,7 +317,7 @@ function SshIndexPage() {
 
         {/* Terminal + optional file tree panel */}
         <div className="relative flex min-h-0 flex-1">
-          <div className="relative min-w-0 flex-1">
+          <div className="relative min-w-0 flex-1" ref={terminalAreaRef}>
             {sessions.size === 0 ? (
               <div className="flex h-full items-center justify-center text-muted-foreground">
                 <p>Select a host to connect or add a new one.</p>
@@ -255,12 +328,15 @@ function SshIndexPage() {
                   hostId={session.hostId}
                   isActive={session.id === activeSessionId}
                   key={session.id}
+                  onCwdChange={(cwd) => updateCwd(session.id, cwd)}
                   onRetry={() => retry(session.id)}
                   sessionId={session.id}
                   status={session.status}
                 />
               ))
             )}
+            <TerminalDropOverlay visible={isDragOver} />
+            <TerminalUploadProgress onCancel={cancelTransfer} transfers={terminalUploads} />
           </div>
 
           {sftpPanelOpen && sftpSessionId && (
@@ -293,6 +369,16 @@ function SshIndexPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      <RemoteDirectoryPicker
+        listDir={dirPickerSftpId ? (path) => listDir(dirPickerSftpId, path) : async () => []}
+        onCancel={() => setDirPickerOpen(false)}
+        onSelect={(path) => {
+          setDirPickerOpen(false)
+          handleDirectoryPicked(path)
+        }}
+        open={dirPickerOpen}
+      />
     </SidebarProvider>
   )
 }

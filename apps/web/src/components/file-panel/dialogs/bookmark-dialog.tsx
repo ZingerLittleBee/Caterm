@@ -1,34 +1,86 @@
 import { Dialog } from '@base-ui/react/dialog'
 import { useQuery } from '@tanstack/react-query'
 import { Bookmark, FolderOpen, Loader2, Plus, Trash2 } from 'lucide-react'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { getHomeDir } from '@/lib/file-operations'
 import { client, orpc, queryClient } from '@/lib/orpc'
 
-interface SftpBookmarkListProps {
+interface LocalBookmark {
+  id: string
+  label: string
+  path: string
+}
+
+const LOCAL_BOOKMARKS_KEY = 'caterm:local-bookmarks'
+
+function buildDefaultLocalBookmarks(homeDir: string): LocalBookmark[] {
+  return [
+    { id: 'preset-home', label: 'Home', path: homeDir },
+    { id: 'preset-desktop', label: 'Desktop', path: `${homeDir}/Desktop` },
+    { id: 'preset-downloads', label: 'Downloads', path: `${homeDir}/Downloads` },
+    { id: 'preset-documents', label: 'Documents', path: `${homeDir}/Documents` }
+  ]
+}
+
+function getStoredLocalBookmarks(): LocalBookmark[] | null {
+  try {
+    const stored = localStorage.getItem(LOCAL_BOOKMARKS_KEY)
+    if (stored) {
+      return JSON.parse(stored) as LocalBookmark[]
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return null
+}
+
+function saveLocalBookmarks(bookmarks: LocalBookmark[]): void {
+  localStorage.setItem(LOCAL_BOOKMARKS_KEY, JSON.stringify(bookmarks))
+}
+
+interface BookmarkDialogProps {
   currentPath: string
-  hostId: string | undefined
+  hostId?: string
   onClose: () => void
   onNavigate: (path: string) => void
   open: boolean
+  source: 'local' | 'remote'
 }
 
-export function SftpBookmarkList({ currentPath, hostId, onClose, onNavigate, open }: SftpBookmarkListProps) {
+export function BookmarkDialog({ currentPath, hostId, onClose, onNavigate, open, source }: BookmarkDialogProps) {
   const [addLabel, setAddLabel] = useState('')
   const [adding, setAdding] = useState(false)
+  const [localBookmarks, setLocalBookmarksState] = useState<LocalBookmark[]>([])
 
-  const bookmarksQuery = useQuery(
-    orpc.sftpBookmark.list.queryOptions({
+  // Load local bookmarks when dialog opens, resolving home dir for defaults
+  useEffect(() => {
+    if (open && source === 'local') {
+      const stored = getStoredLocalBookmarks()
+      if (stored) {
+        setLocalBookmarksState(stored)
+      } else {
+        getHomeDir()
+          .then((home) => setLocalBookmarksState(buildDefaultLocalBookmarks(home)))
+          .catch(() => setLocalBookmarksState([]))
+      }
+    }
+  }, [open, source])
+
+  // Remote bookmarks query (only used when source === 'remote')
+  const bookmarksQuery = useQuery({
+    ...orpc.sftpBookmark.list.queryOptions({
       input: { hostId }
-    })
-  )
+    }),
+    enabled: source === 'remote'
+  })
 
-  const bookmarks = bookmarksQuery.data ?? []
+  const remoteBookmarks = bookmarksQuery.data ?? []
 
-  const handleAdd = useCallback(async () => {
+  const handleAddRemote = useCallback(async () => {
     if (!(hostId && addLabel.trim())) {
       return
     }
@@ -52,7 +104,31 @@ export function SftpBookmarkList({ currentPath, hostId, onClose, onNavigate, ope
     }
   }, [hostId, addLabel, currentPath])
 
-  const handleDelete = useCallback(
+  const handleAddLocal = useCallback(() => {
+    if (!addLabel.trim()) {
+      return
+    }
+    const newBookmark: LocalBookmark = {
+      id: crypto.randomUUID(),
+      label: addLabel.trim(),
+      path: currentPath
+    }
+    const updated = [...localBookmarks, newBookmark]
+    saveLocalBookmarks(updated)
+    setLocalBookmarksState(updated)
+    setAddLabel('')
+    toast.success('Bookmark added')
+  }, [addLabel, currentPath, localBookmarks])
+
+  const handleAdd = useCallback(() => {
+    if (source === 'remote') {
+      handleAddRemote()
+    } else {
+      handleAddLocal()
+    }
+  }, [source, handleAddRemote, handleAddLocal])
+
+  const handleDeleteRemote = useCallback(
     async (id: string) => {
       try {
         await client.sftpBookmark.delete({ id })
@@ -69,13 +145,50 @@ export function SftpBookmarkList({ currentPath, hostId, onClose, onNavigate, ope
     [hostId]
   )
 
+  const handleDeleteLocal = useCallback(
+    (id: string) => {
+      const updated = localBookmarks.filter((bm) => bm.id !== id)
+      saveLocalBookmarks(updated)
+      setLocalBookmarksState(updated)
+    },
+    [localBookmarks]
+  )
+
+  const handleDelete = useCallback(
+    (id: string) => {
+      if (source === 'remote') {
+        handleDeleteRemote(id)
+      } else {
+        handleDeleteLocal(id)
+      }
+    },
+    [source, handleDeleteRemote, handleDeleteLocal]
+  )
+
   const handleBookmarkClick = useCallback(
-    (remotePath: string) => {
-      onNavigate(remotePath)
+    (bookmarkPath: string) => {
+      onNavigate(bookmarkPath)
       onClose()
     },
     [onNavigate, onClose]
   )
+
+  const isAddDisabled = adding || !addLabel.trim() || (source === 'remote' && !hostId)
+
+  const bookmarkItems =
+    source === 'remote'
+      ? remoteBookmarks.map((bm) => ({
+          id: bm.id,
+          label: bm.label,
+          path: bm.remotePath
+        }))
+      : localBookmarks.map((bm) => ({
+          id: bm.id,
+          label: bm.label,
+          path: bm.path
+        }))
+
+  const isLoading = source === 'remote' && bookmarksQuery.isLoading
 
   return (
     <Dialog.Root onOpenChange={(isOpen) => !isOpen && onClose()} open={open}>
@@ -99,7 +212,7 @@ export function SftpBookmarkList({ currentPath, hostId, onClose, onNavigate, ope
               placeholder="Label for current path..."
               value={addLabel}
             />
-            <Button disabled={adding || !addLabel.trim() || !hostId} onClick={handleAdd} size="icon">
+            <Button disabled={isAddDisabled} onClick={handleAdd} size="icon">
               {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             </Button>
           </div>
@@ -107,26 +220,26 @@ export function SftpBookmarkList({ currentPath, hostId, onClose, onNavigate, ope
 
           {/* Bookmark list */}
           <ScrollArea className="mt-4 max-h-64">
-            {bookmarksQuery.isLoading && (
+            {isLoading && (
               <div className="flex h-16 items-center justify-center">
                 <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
               </div>
             )}
-            {bookmarks.length === 0 && !bookmarksQuery.isLoading && (
+            {bookmarkItems.length === 0 && !isLoading && (
               <p className="py-4 text-center text-muted-foreground text-sm">No bookmarks yet.</p>
             )}
             <div className="space-y-0.5">
-              {bookmarks.map((bm) => (
+              {bookmarkItems.map((bm) => (
                 <div className="flex items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-accent" key={bm.id}>
                   <button
                     className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm"
-                    onClick={() => handleBookmarkClick(bm.remotePath)}
+                    onClick={() => handleBookmarkClick(bm.path)}
                     type="button"
                   >
                     <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-medium">{bm.label}</div>
-                      <div className="truncate text-muted-foreground text-xs">{bm.remotePath}</div>
+                      <div className="truncate text-muted-foreground text-xs">{bm.path}</div>
                     </div>
                   </button>
                   <Button onClick={() => handleDelete(bm.id)} size="icon" variant="ghost">

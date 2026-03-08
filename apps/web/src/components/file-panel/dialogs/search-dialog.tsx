@@ -5,19 +5,17 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import type { FileEntry } from '@/types/sftp'
-import { useSftp } from './sftp-provider'
+import type { FileEntry } from '@/types/fs'
 
-interface SftpSearchDialogProps {
+interface SearchDialogProps {
   basePath: string
   onClose: () => void
   onNavigate: (path: string) => void
   open: boolean
-  sessionId: string
+  search: (path: string, pattern: string) => Promise<FileEntry[]>
 }
 
-export function SftpSearchDialog({ basePath, onClose, onNavigate, open, sessionId }: SftpSearchDialogProps) {
-  const { search } = useSftp()
+export function SearchDialog({ basePath, onClose, onNavigate, open, search }: SearchDialogProps) {
   const [pattern, setPattern] = useState('')
   const [results, setResults] = useState<FileEntry[]>([])
   const [searching, setSearching] = useState(false)
@@ -28,7 +26,7 @@ export function SftpSearchDialog({ basePath, onClose, onNavigate, open, sessionI
     }
     setSearching(true)
     try {
-      const found = await search(sessionId, basePath, pattern.trim())
+      const found = await search(basePath, pattern.trim())
       setResults(found)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -36,7 +34,7 @@ export function SftpSearchDialog({ basePath, onClose, onNavigate, open, sessionI
     } finally {
       setSearching(false)
     }
-  }, [search, sessionId, basePath, pattern])
+  }, [search, basePath, pattern])
 
   const handleResultClick = useCallback(
     (entry: FileEntry) => {

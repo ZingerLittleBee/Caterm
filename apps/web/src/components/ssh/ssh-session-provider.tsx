@@ -23,6 +23,7 @@ interface SshSessionContextValue {
   retry: (sessionId: string) => Promise<void>
   sessions: Map<string, SshSessionInfo>
   setActive: (sessionId: string | null) => void
+  updateCwd: (sessionId: string, cwd: string) => void
 }
 
 const SshSessionContext = createContext<SshSessionContextValue | null>(null)
@@ -56,6 +57,18 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
       }
       const next = new Map(prev)
       next.set(sessionId, { ...session, status })
+      return next
+    })
+  }, [])
+
+  const updateCwd = useCallback((sessionId: string, cwd: string) => {
+    setSessions((prev) => {
+      const session = prev.get(sessionId)
+      if (!session) {
+        return prev
+      }
+      const next = new Map(prev)
+      next.set(sessionId, { ...session, cwd })
       return next
     })
   }, [])
@@ -191,7 +204,8 @@ export function SshSessionProvider({ children }: { children: ReactNode }) {
         connect,
         disconnect,
         retry,
-        setActive
+        setActive,
+        updateCwd
       }}
     >
       {children}

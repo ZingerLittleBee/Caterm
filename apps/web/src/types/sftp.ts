@@ -1,3 +1,6 @@
+// Re-export shared file system types for backward compatibility.
+export type { FileEntry, FileStat } from './fs'
+
 // ---------------------------------------------------------------------------
 // SFTP session types (frontend-only, not backed by Rust structs)
 // ---------------------------------------------------------------------------
@@ -10,34 +13,6 @@ export interface SftpSessionInfo {
   id: string
   sshSessionId: string | null
   status: SftpSessionStatus
-}
-
-// ---------------------------------------------------------------------------
-// File types — mirrors Rust structs in sftp_commands.rs
-// ---------------------------------------------------------------------------
-
-export interface FileEntry {
-  isDir: boolean
-  isSymlink: boolean
-  linkTarget: string | null
-  modifiedAt: number | null
-  name: string
-  path: string
-  permissions: number
-  permissionsStr: string
-  size: number
-}
-
-export interface FileStat {
-  accessedAt: number | null
-  gid: number | null
-  isDir: boolean
-  isSymlink: boolean
-  modifiedAt: number | null
-  permissions: number
-  permissionsStr: string
-  size: number
-  uid: number | null
 }
 
 // ---------------------------------------------------------------------------

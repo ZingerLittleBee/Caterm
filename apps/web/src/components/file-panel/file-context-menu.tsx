@@ -1,19 +1,30 @@
-import { ClipboardCopy, Download, Eye, FileEdit, FolderOpen, KeyRound, Pencil, Trash2 } from 'lucide-react'
+import {
+  ArrowRightLeft,
+  ClipboardCopy,
+  ExternalLink,
+  Eye,
+  FileEdit,
+  FolderOpen,
+  KeyRound,
+  Pencil,
+  Trash2
+} from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef } from 'react'
-import type { FileEntry } from '@/types/sftp'
+import type { FileEntry } from '@/types/fs'
 
-interface SftpContextMenuProps {
+interface FileContextMenuProps {
   entry: FileEntry | null
   onClose: () => void
   onCopyPath?: (entry: FileEntry) => void
   onDelete?: (entry: FileEntry) => void
-  onDownload?: (entry: FileEntry) => void
   onEdit?: (entry: FileEntry) => void
   onOpen?: (entry: FileEntry) => void
+  onOpenInSystem?: (entry: FileEntry) => void
   onPermissions?: (entry: FileEntry) => void
   onPreview?: (entry: FileEntry) => void
   onRename?: (entry: FileEntry) => void
+  onTransfer?: (entry: FileEntry) => void
   position: { x: number; y: number } | null
 }
 
@@ -49,19 +60,20 @@ function MenuItem({ disabled, icon, label, onClick, variant = 'default' }: MenuI
   )
 }
 
-export function SftpContextMenu({
+export function FileContextMenu({
   entry,
   onClose,
   onCopyPath,
   onDelete,
-  onDownload,
+  onTransfer,
   onEdit,
   onOpen,
+  onOpenInSystem,
   onPermissions,
   onPreview,
   onRename,
   position
-}: SftpContextMenuProps) {
+}: FileContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -116,11 +128,18 @@ export function SftpContextMenu({
       {!entry.isDir && (
         <MenuItem icon={<FileEdit className="h-4 w-4" />} label="Edit" onClick={() => handleAction(onEdit)} />
       )}
+      {!entry.isDir && onOpenInSystem && (
+        <MenuItem
+          icon={<ExternalLink className="h-4 w-4" />}
+          label="Open in System App"
+          onClick={() => handleAction(onOpenInSystem)}
+        />
+      )}
       <MenuItem
         disabled={entry.isDir}
-        icon={<Download className="h-4 w-4" />}
-        label={entry.isDir ? 'Download as...' : 'Download'}
-        onClick={() => handleAction(onDownload)}
+        icon={<ArrowRightLeft className="h-4 w-4" />}
+        label="Transfer"
+        onClick={() => handleAction(onTransfer)}
       />
       <div className="my-1 h-px bg-border" />
       <MenuItem icon={<Pencil className="h-4 w-4" />} label="Rename" onClick={() => handleAction(onRename)} />

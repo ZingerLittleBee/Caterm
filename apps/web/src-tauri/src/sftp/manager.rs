@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use russh_sftp::client::SftpSession;
@@ -85,6 +86,51 @@ impl SftpSessionManager {
             .get(session_id)
             .ok_or_else(|| format!("SFTP session not found: {session_id}"))?;
         Ok(session.sftp_arc())
+    }
+
+    /// Reconnect an existing SFTP session by re-establishing the SSH connection.
+    pub async fn reconnect(&self, session_id: &str) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("SFTP session not found: {session_id}"))?;
+        session.reconnect().await
+    }
+
+    /// Execute an async SFTP operation with automatic reconnection on failure.
+    ///
+    /// If the operation fails with a connection-related error, reconnects the
+    /// session and retries the operation once. Non-connection errors (e.g. file
+    /// not found, permission denied) are returned immediately without retry.
+    pub async fn with_retry<F, Fut, T>(&self, session_id: &str, f: F) -> Result<T, String>
+    where
+        F: Fn(Arc<SftpSession>) -> Fut,
+        Fut: Future<Output = Result<T, String>>,
+    {
+        let sftp = self.get_sftp(session_id).await?;
+        match f(sftp).await {
+            Ok(val) => Ok(val),
+            Err(e) if Self::is_retryable(&e) => {
+                match self.reconnect(session_id).await {
+                    Ok(()) => {
+                        let sftp = self.get_sftp(session_id).await?;
+                        f(sftp).await
+                    }
+                    Err(_) => Err(e), // Return original error if reconnect fails
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Check if an error message indicates a broken connection that is worth retrying.
+    fn is_retryable(err: &str) -> bool {
+        let lower = err.to_lowercase();
+        lower.contains("session closed")
+            || lower.contains("channel closed")
+            || lower.contains("connection reset")
+            || lower.contains("broken pipe")
+            || lower.contains("eof")
     }
 
     /// List all transfer tasks as serializable DTOs.

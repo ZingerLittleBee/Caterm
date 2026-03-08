@@ -4,14 +4,13 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { useSftp } from './sftp-provider'
 
-interface SftpChmodDialogProps {
+interface ChmodDialogProps {
+  chmod: (path: string, mode: number) => Promise<void>
   currentPermissions: number
   onClose: () => void
   open: boolean
   path: string
-  sessionId: string
 }
 
 const PERMISSION_BITS = [
@@ -44,8 +43,7 @@ function octalToMode(octal: string): number {
   return parsed
 }
 
-export function SftpChmodDialog({ currentPermissions, onClose, open, path, sessionId }: SftpChmodDialogProps) {
-  const { chmod } = useSftp()
+export function ChmodDialog({ chmod, currentPermissions, onClose, open, path }: ChmodDialogProps) {
   // biome-ignore lint/suspicious/noBitwiseOperators: bitwise operations are intentional for permission masks
   const [mode, setMode] = useState(currentPermissions & 0o777)
   const [octalInput, setOctalInput] = useState(modeToOctal(currentPermissions))
@@ -82,7 +80,7 @@ export function SftpChmodDialog({ currentPermissions, onClose, open, path, sessi
   const handleApply = useCallback(async () => {
     setApplying(true)
     try {
-      await chmod(sessionId, path, mode)
+      await chmod(path, mode)
       toast.success('Permissions updated')
       onClose()
     } catch (error) {
@@ -91,7 +89,7 @@ export function SftpChmodDialog({ currentPermissions, onClose, open, path, sessi
     } finally {
       setApplying(false)
     }
-  }, [chmod, sessionId, path, mode, onClose])
+  }, [chmod, path, mode, onClose])
 
   const groups = ['Owner', 'Group', 'Others'] as const
 

@@ -1,11 +1,11 @@
 import { ChevronRight } from 'lucide-react'
 
-interface SftpBreadcrumbProps {
+interface FileBreadcrumbProps {
   onNavigate: (path: string) => void
   path: string
 }
 
-export function SftpBreadcrumb({ path, onNavigate }: SftpBreadcrumbProps) {
+export function FileBreadcrumb({ path, onNavigate }: FileBreadcrumbProps) {
   const segments = path.split('/').filter(Boolean)
 
   return (

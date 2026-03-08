@@ -1,8 +1,10 @@
 mod commands;
+mod fs_common;
+mod local_fs;
 mod sftp;
 mod ssh;
 
-use commands::{sftp_commands, ssh_commands};
+use commands::{local_fs_commands, sftp_commands, ssh_commands};
 use sftp::manager::SftpSessionManager;
 use ssh::manager::SshSessionManager;
 
@@ -35,6 +37,17 @@ pub fn run() {
             sftp_commands::sftp_download,
             sftp_commands::sftp_transfer_list,
             sftp_commands::sftp_transfer_cancel,
+            local_fs_commands::local_fs_list_dir,
+            local_fs_commands::local_fs_stat,
+            local_fs_commands::local_fs_mkdir,
+            local_fs_commands::local_fs_rename,
+            local_fs_commands::local_fs_remove,
+            local_fs_commands::local_fs_chmod,
+            local_fs_commands::local_fs_read_file,
+            local_fs_commands::local_fs_write_file,
+            local_fs_commands::local_fs_search,
+            local_fs_commands::local_fs_get_home_dir,
+            local_fs_commands::local_fs_open_in_system,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

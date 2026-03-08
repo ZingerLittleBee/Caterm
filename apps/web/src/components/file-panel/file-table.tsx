@@ -1,13 +1,14 @@
 import { File, Folder, Link } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { FileEntry } from '@/types/sftp'
+import type { FileEntry } from '@/types/fs'
 
-interface SftpFileTableProps {
+interface FileTableProps {
   entries: FileEntry[]
   onContextMenu?: (entry: FileEntry, event: React.MouseEvent) => void
   onOpen: (entry: FileEntry) => void
   onSelect: (entries: FileEntry[]) => void
+  source: 'local' | 'remote'
 }
 
 function formatSize(bytes: number): string {
@@ -58,7 +59,7 @@ function FileIcon({ entry }: { entry: FileEntry }) {
   return <File className="h-4 w-4 shrink-0 text-muted-foreground" />
 }
 
-export function SftpFileTable({ entries, onContextMenu, onOpen, onSelect }: SftpFileTableProps) {
+export function FileTable({ entries, onContextMenu, onOpen, onSelect, source }: FileTableProps) {
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set())
   const lastClickedIndex = useRef<number>(-1)
 
@@ -137,10 +138,18 @@ export function SftpFileTable({ entries, onContextMenu, onOpen, onSelect }: Sftp
           <TableRow
             className={`cursor-pointer select-none ${selectedPaths.has(entry.path) ? 'bg-accent' : ''}`}
             data-state={selectedPaths.has(entry.path) ? 'selected' : undefined}
+            draggable
             key={entry.path}
             onClick={(e) => handleRowClick(entry, index, e)}
             onContextMenu={(e) => handleRowContextMenu(entry, index, e)}
             onDoubleClick={() => handleRowDoubleClick(entry)}
+            onDragStart={(e) => {
+              const dragEntries = selectedPaths.has(entry.path)
+                ? entries.filter((item) => selectedPaths.has(item.path))
+                : [entry]
+              e.dataTransfer.setData('application/x-caterm-files', JSON.stringify({ source, entries: dragEntries }))
+              e.dataTransfer.effectAllowed = 'copy'
+            }}
           >
             <TableCell>
               <div className="flex items-center gap-2">

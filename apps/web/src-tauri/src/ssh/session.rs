@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -77,7 +78,10 @@ impl SshSession {
         cols: u32,
         rows: u32,
     ) -> Result<(Handle<SshClientHandler>, Channel<Msg>), String> {
-        let ssh_config = Arc::new(client::Config::default());
+        let ssh_config = Arc::new(client::Config {
+            inactivity_timeout: Some(Duration::from_secs(15)),
+            ..Default::default()
+        });
         let addr = format!("{}:{}", config.hostname, config.port);
 
         let mut handle = client::connect(ssh_config, &addr, SshClientHandler)

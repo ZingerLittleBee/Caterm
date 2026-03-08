@@ -1,6 +1,6 @@
 import { auth } from '@Caterm/auth'
-import { addCorsHeaders } from '../../../lib/cors'
 import { createFileRoute } from '@tanstack/react-router'
+import { addCorsHeaders } from '../../../lib/cors'
 
 async function handle({ request }: { request: Request }) {
   if (request.method === 'OPTIONS') {

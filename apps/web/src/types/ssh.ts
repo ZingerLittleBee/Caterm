@@ -12,6 +12,7 @@ export interface SshHost {
 export type SshSessionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error'
 
 export interface SshSessionInfo {
+  cwd?: string
   hostId: string
   hostName: string
   id: string
