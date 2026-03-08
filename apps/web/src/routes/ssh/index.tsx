@@ -30,7 +30,7 @@ export const Route = createFileRoute('/ssh/')({
 
 function SshIndexPage() {
   const { sessions, activeSessionId, connect, disconnect, retry, setActive, updateCwd } = useSshSessions()
-  const { openStandalone, upload, mkdir, listDir, cancelTransfer, transfers, sessions: sftpSessions } = useSftp()
+  const { openStandalone, upload, listDir, cancelTransfer, transfers, sessions: sftpSessions } = useSftp()
   const [formOpen, setFormOpen] = useState(false)
   const [editingHost, setEditingHost] = useState<SshHost | undefined>(undefined)
   const [connectTarget, setConnectTarget] = useState<SshHost | null>(null)
@@ -45,6 +45,8 @@ function SshIndexPage() {
 
   // Map hostId → sftpSessionId for drag-upload sessions
   const uploadSftpMapRef = useRef<Map<string, string>>(new Map())
+  const sftpSessionsRef = useRef(sftpSessions)
+  sftpSessionsRef.current = sftpSessions
 
   const activeSession = activeSessionId ? (sessions.get(activeSessionId) ?? null) : null
 
@@ -54,7 +56,7 @@ function SshIndexPage() {
     async (hostId: string): Promise<string> => {
       // Check if we already have a session for this host
       const existing = uploadSftpMapRef.current.get(hostId)
-      if (existing && sftpSessions.has(existing)) {
+      if (existing && sftpSessionsRef.current.has(existing)) {
         return existing
       }
       uploadSftpMapRef.current.delete(hostId)
@@ -75,7 +77,7 @@ function SshIndexPage() {
       uploadSftpMapRef.current.set(hostId, id)
       return id
     },
-    [openStandalone, sftpSessions]
+    [openStandalone]
   )
 
   const { isDragOver, handleDirectoryPicked } = useTerminalDragUpload({
@@ -83,7 +85,6 @@ function SshIndexPage() {
     activeSession,
     ensureSftpSession,
     upload,
-    mkdir,
     onNeedDirectoryPick: () => {
       if (!activeSession) {
         return

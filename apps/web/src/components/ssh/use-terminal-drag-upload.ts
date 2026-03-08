@@ -4,19 +4,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import type { FileEntry, FileStat } from '@/types/fs'
 
+type UploadFn = (sftpSessionId: string, localPath: string, remotePath: string) => Promise<string>
+
 interface UseTerminalDragUploadParams {
   /** Current active SSH session (with optional cwd) */
   activeSession: { hostId: string; status: string; cwd?: string } | null
   /** Function to get/create SFTP session for a host, returns SFTP session ID */
   ensureSftpSession: (hostId: string) => Promise<string>
-  /** SFTP mkdir function */
-  mkdir: (sftpSessionId: string, path: string) => Promise<void>
   /** Called when CWD is unavailable and user must pick a directory */
   onNeedDirectoryPick: () => void
   /** Ref to the terminal area container element */
   terminalAreaRef: React.RefObject<HTMLDivElement | null>
   /** SFTP upload function: (sftpSessionId, localPath, remotePath) => transferId */
-  upload: (sftpSessionId: string, localPath: string, remotePath: string) => Promise<string>
+  upload: UploadFn
 }
 
 interface UseTerminalDragUploadResult {
@@ -36,11 +36,11 @@ async function uploadSinglePath(
   sftpSessionId: string,
   localPath: string,
   remoteCwd: string,
-  uploadFn: (sid: string, local: string, remote: string) => Promise<string>
+  uploadFn: UploadFn
 ): Promise<void> {
   const stat = await invoke<FileStat>('local_fs_stat', { path: localPath })
   if (stat.isDir) {
-    await uploadDirectory(sftpSessionId, localPath, remoteCwd)
+    await uploadDirectory(sftpSessionId, localPath, remoteCwd, uploadFn)
     return
   }
   const fileName = localPath.split('/').pop() ?? localPath
@@ -49,7 +49,12 @@ async function uploadSinglePath(
 }
 
 /** Recursively upload a local directory to remote via SFTP */
-async function uploadDirectory(sftpSessionId: string, localDirPath: string, remoteParentPath: string): Promise<void> {
+async function uploadDirectory(
+  sftpSessionId: string,
+  localDirPath: string,
+  remoteParentPath: string,
+  uploadFn: UploadFn
+): Promise<void> {
   const dirName = localDirPath.split('/').pop() ?? localDirPath
   const remoteDirPath = joinRemotePath(remoteParentPath, dirName)
 
@@ -66,14 +71,10 @@ async function uploadDirectory(sftpSessionId: string, localDirPath: string, remo
 
   for (const entry of entries) {
     if (entry.isDir) {
-      await uploadDirectory(sftpSessionId, entry.path, remoteDirPath)
+      await uploadDirectory(sftpSessionId, entry.path, remoteDirPath, uploadFn)
     } else {
       const remotePath = `${remoteDirPath}/${entry.name}`
-      await invoke('sftp_upload', {
-        sessionId: sftpSessionId,
-        localPath: entry.path,
-        remotePath
-      })
+      await uploadFn(sftpSessionId, entry.path, remotePath)
     }
   }
 }
@@ -83,7 +84,6 @@ export function useTerminalDragUpload({
   activeSession,
   ensureSftpSession,
   upload,
-  mkdir,
   onNeedDirectoryPick
 }: UseTerminalDragUploadParams): UseTerminalDragUploadResult {
   const [isDragOver, setIsDragOver] = useState(false)
@@ -95,8 +95,6 @@ export function useTerminalDragUpload({
   ensureSftpSessionRef.current = ensureSftpSession
   const uploadRef = useRef(upload)
   uploadRef.current = upload
-  const mkdirRef = useRef(mkdir)
-  mkdirRef.current = mkdir
   const onNeedDirectoryPickRef = useRef(onNeedDirectoryPick)
   onNeedDirectoryPickRef.current = onNeedDirectoryPick
 
