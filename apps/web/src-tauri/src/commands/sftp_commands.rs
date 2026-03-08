@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
+use tokio::io::AsyncWriteExt;
 
 use crate::fs_common::types::{format_permissions, join_path, sort_entries, FileEntry, FileStat};
 use crate::sftp::manager::SftpSessionManager;
@@ -312,9 +313,14 @@ pub async fn sftp_write_file(
             let path = path.clone();
             let content = content.clone();
             async move {
-                sftp.write(&path, content.as_bytes())
+                let mut file = sftp
+                    .create(&path)
                     .await
-                    .map_err(|e| format!("Failed to write file: {e}"))
+                    .map_err(|e| format!("Failed to create remote file: {e}"))?;
+                file.write_all(content.as_bytes())
+                    .await
+                    .map_err(|e| format!("Failed to write file: {e}"))?;
+                Ok(())
             }
         })
         .await
@@ -450,33 +456,58 @@ pub async fn sftp_upload(
     let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
 
     // Upload with auto-reconnect.
+    // NOTE: SftpSession::write() only uses OpenFlags::WRITE which cannot create
+    // new files. We use create() (CREATE | TRUNCATE | WRITE) instead.
     let data = Arc::new(data);
-    manager
+    let upload_result = manager
         .with_retry(&session_id, |sftp| {
             let remote_path = remote_path.clone();
             let data = Arc::clone(&data);
             async move {
-                sftp.write(&remote_path, &data)
+                let mut file = sftp
+                    .create(&remote_path)
                     .await
-                    .map_err(|e| format!("Failed to upload file: {e}"))
+                    .map_err(|e| format!("Failed to create remote file: {e}"))?;
+                file.write_all(&data)
+                    .await
+                    .map_err(|e| format!("Failed to upload file: {e}"))?;
+                Ok(())
             }
         })
-        .await?;
+        .await;
 
-    // Emit completion.
-    let info = TransferTaskInfo {
-        id: transfer_id.clone(),
-        sftp_session_id: session_id.clone(),
-        kind: crate::sftp::transfer::TransferKind::Upload,
-        remote_path,
-        local_path,
-        total_bytes: Some(total_bytes),
-        transferred_bytes: total_bytes,
-        status: crate::sftp::transfer::TransferStatus::Completed,
-    };
-    let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
-
-    Ok(transfer_id)
+    match upload_result {
+        Ok(()) => {
+            // Emit completion.
+            let info = TransferTaskInfo {
+                id: transfer_id.clone(),
+                sftp_session_id: session_id.clone(),
+                kind: crate::sftp::transfer::TransferKind::Upload,
+                remote_path,
+                local_path,
+                total_bytes: Some(total_bytes),
+                transferred_bytes: total_bytes,
+                status: crate::sftp::transfer::TransferStatus::Completed,
+            };
+            let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
+            Ok(transfer_id)
+        }
+        Err(e) => {
+            // Emit failure so the UI can update the transfer status.
+            let info = TransferTaskInfo {
+                id: transfer_id.clone(),
+                sftp_session_id: session_id.clone(),
+                kind: crate::sftp::transfer::TransferKind::Upload,
+                remote_path,
+                local_path,
+                total_bytes: Some(total_bytes),
+                transferred_bytes: 0,
+                status: crate::sftp::transfer::TransferStatus::Failed,
+            };
+            let _ = app.emit(&format!("sftp-transfer-progress-{session_id}"), &info);
+            Err(e)
+        }
+    }
 }
 
 /// Download a remote file to the local filesystem. Returns a transfer ID.
