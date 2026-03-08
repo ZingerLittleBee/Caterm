@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use russh::client::{self, Handle};
 use russh_sftp::client::SftpSession;
@@ -42,7 +43,10 @@ impl SftpSessionEntry {
         config: &SftpConnectConfig,
         app_handle: AppHandle,
     ) -> Result<Self, String> {
-        let ssh_config = Arc::new(client::Config::default());
+        let ssh_config = Arc::new(client::Config {
+            inactivity_timeout: Some(Duration::from_secs(15)),
+            ..Default::default()
+        });
         let addr = format!("{}:{}", config.hostname, config.port);
 
         let mut handle = client::connect(ssh_config, &addr, SshClientHandler)
