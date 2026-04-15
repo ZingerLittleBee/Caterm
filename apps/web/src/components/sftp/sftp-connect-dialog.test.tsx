@@ -8,7 +8,8 @@ const reactQuery = await import('@tanstack/react-query')
 const useQuery = mock(() => ({
   data: [],
   isError: true,
-  isLoading: false
+  isPending: false,
+  refetch: () => Promise.resolve()
 }))
 
 mock.module('@base-ui/react/dialog', () => ({
@@ -41,6 +42,6 @@ test('SftpConnectDialog shows host sync error UI instead of the empty state', ()
   )
 
   expect(markup).toContain('SSH hosts unavailable')
-  expect(markup).toContain('Retry')
+  expect(markup).toContain('>Retry<')
   expect(markup).not.toContain('No hosts configured. Add a host from the SSH page first.')
 })

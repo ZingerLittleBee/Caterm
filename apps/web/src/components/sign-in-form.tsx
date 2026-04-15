@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import z from 'zod'
 
 import { authClient } from '@/lib/auth-client'
+import { getSignInErrorMessage } from '@/lib/auth-error-message'
 
 import Loader from './loader'
 import { Button } from './ui/button'
@@ -35,7 +36,7 @@ export function SignInForm({ onSwitchToSignUp }: { onSwitchToSignUp: () => void 
             toast.success('Sign in successful')
           },
           onError: (error) => {
-            toast.error(error.error.message || error.error.statusText)
+            toast.error(getSignInErrorMessage(error))
           }
         }
       )
