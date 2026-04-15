@@ -3,9 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import { Loader2, Server } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
+import { SyncStatusBanner } from '@/components/sync/sync-status-banner'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { client, orpc } from '@/lib/orpc'
+import { client } from '@/lib/orpc'
+import { getSshHostsSyncQueryOptions } from '@/lib/sync-query-options'
+import { getHostSyncPresentation } from '@/lib/sync-status'
 import type { SshHost } from '@/types/ssh'
 
 interface SftpConnectDialogProps {
@@ -25,17 +28,27 @@ interface SftpConnectDialogProps {
   }) => Promise<string>
 }
 
-function HostListContent({
+export function SftpHostListContent({
   isLoading,
   hosts,
   connecting,
+  isError,
+  onRetry,
   onSelectHost
 }: {
   connecting: string | null
+  isError: boolean
   hosts: SshHost[]
   isLoading: boolean
+  onRetry: () => void
   onSelectHost: (host: SshHost) => void
 }) {
+  const presentation = getHostSyncPresentation({
+    hostCount: hosts.length,
+    isError,
+    isPending: isLoading
+  })
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -44,7 +57,17 @@ function HostListContent({
     )
   }
 
-  if (hosts.length === 0) {
+  if (presentation.banner) {
+    return (
+      <SyncStatusBanner
+        description={presentation.banner.description}
+        onRetry={onRetry}
+        title={presentation.banner.title}
+      />
+    )
+  }
+
+  if (presentation.showEmptyState) {
     return (
       <p className="py-8 text-center text-muted-foreground text-sm">
         No hosts configured. Add a host from the SSH page first.
@@ -82,7 +105,7 @@ function HostListContent({
 }
 
 export function SftpConnectDialog({ open, onClose, onConnect, openStandalone }: SftpConnectDialogProps) {
-  const { data: hosts = [], isLoading } = useQuery(orpc.sshHost.list.queryOptions())
+  const { data: hosts = [], isError, isPending, refetch } = useQuery(getSshHostsSyncQueryOptions())
   const [connecting, setConnecting] = useState<string | null>(null)
 
   const handleSelectHost = useCallback(
@@ -123,10 +146,12 @@ export function SftpConnectDialog({ open, onClose, onConnect, openStandalone }: 
           </Dialog.Description>
 
           <div className="mt-4">
-            <HostListContent
+            <SftpHostListContent
               connecting={connecting}
               hosts={hosts}
-              isLoading={isLoading}
+              isError={isError}
+              isLoading={isPending}
+              onRetry={refetch}
               onSelectHost={handleSelectHost}
             />
           </div>
