@@ -11,6 +11,10 @@ const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3002'
 export const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error, query) => {
+      if (query.meta?.suppressGlobalErrorToast === true) {
+        return
+      }
+
       toast.error(`Error: ${error.message}`, {
         action: {
           label: 'retry',
