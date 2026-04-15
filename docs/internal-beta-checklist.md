@@ -48,6 +48,11 @@
 5. Confirm terminal-settings degraded-state behavior shows the inline fallback state instead of a false empty state.
 6. Restore the network or server.
 7. Retry and confirm synced data becomes available again.
+3. Confirm session verification failure shows a blocking retry state.
+4. Confirm host-sync failure shows an inline error banner instead of a false empty state.
+5. Confirm terminal-settings degraded-state behavior shows the inline fallback state instead of a false empty state.
+6. Restore the network or server.
+7. Retry and confirm synced data becomes available again.
 
 ## Known Beta Limitations
 
