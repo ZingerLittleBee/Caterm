@@ -1,14 +1,15 @@
-import { createFileRoute, Outlet, redirect } from '@tanstack/react-router'
+import { createFileRoute, Outlet } from '@tanstack/react-router'
+import { SessionRouteError } from '@/components/auth/session-route-error'
 import { SftpProvider } from '@/components/sftp/sftp-provider'
-import { authClient } from '@/lib/auth-client'
+import { requireAuthenticatedSession } from '@/lib/route-auth'
+import { prefetchSftpRouteData } from '@/lib/sync-prefetch'
 
 export const Route = createFileRoute('/sftp')({
   beforeLoad: async () => {
-    const session = await authClient.getSession()
-    if (!session.data) {
-      throw redirect({ to: '/login' })
-    }
+    await requireAuthenticatedSession()
   },
+  loader: ({ context }) => prefetchSftpRouteData(context.queryClient),
+  errorComponent: ({ error }) => <SessionRouteError error={error} />,
   component: SftpRouteLayout
 })
 

@@ -1,16 +1,17 @@
-import { createFileRoute, Outlet, redirect } from '@tanstack/react-router'
+import { createFileRoute, Outlet } from '@tanstack/react-router'
+import { SessionRouteError } from '@/components/auth/session-route-error'
 import { SftpProvider } from '@/components/sftp/sftp-provider'
 import { SshSessionProvider } from '@/components/ssh/ssh-session-provider'
 import { TerminalSettingsProvider } from '@/components/terminal/terminal-settings-provider'
-import { authClient } from '@/lib/auth-client'
+import { requireAuthenticatedSession } from '@/lib/route-auth'
+import { prefetchSshRouteData } from '@/lib/sync-prefetch'
 
 export const Route = createFileRoute('/ssh')({
   beforeLoad: async () => {
-    const session = await authClient.getSession()
-    if (!session.data) {
-      throw redirect({ to: '/login' })
-    }
+    await requireAuthenticatedSession()
   },
+  loader: ({ context }) => prefetchSshRouteData(context.queryClient),
+  errorComponent: ({ error }) => <SessionRouteError error={error} />,
   component: SshRouteLayout
 })
 
