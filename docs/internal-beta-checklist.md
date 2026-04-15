@@ -43,9 +43,11 @@
 
 1. Disconnect the network or stop the server on machine B.
 2. Reload `/ssh`.
-3. Confirm session verification failure shows a blocking retry state, or host/settings failures show inline banners instead of false empty states.
-4. Restore the network or server.
-5. Retry and confirm synced data becomes available again.
+3. Confirm session verification failure shows a blocking retry state.
+4. Confirm host-sync failure shows an inline error banner instead of a false empty state.
+5. Confirm terminal-settings degraded-state behavior shows the inline fallback state instead of a false empty state.
+6. Restore the network or server.
+7. Retry and confirm synced data becomes available again.
 
 ## Known Beta Limitations
 
