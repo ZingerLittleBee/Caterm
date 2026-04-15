@@ -26,7 +26,7 @@ interface HostListProps {
 export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
   const [deleteTarget, setDeleteTarget] = useState<SshHost | null>(null)
 
-  const { data: hosts = [], error, isError, isPending, refetch } = useQuery(getSshHostsSyncQueryOptions())
+  const { data: hosts = [], isError, isPending, refetch } = useQuery(getSshHostsSyncQueryOptions())
 
   const presentation = getHostSyncPresentation({
     hostCount: hosts.length,
@@ -76,11 +76,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
         {presentation.banner ? (
           <div className="px-2 pb-2">
             <SyncStatusBanner
-              description={
-                error instanceof Error
-                  ? `${presentation.banner.description} ${error.message}`
-                  : presentation.banner.description
-              }
+              description={presentation.banner.description}
               onRetry={refetch}
               title={presentation.banner.title}
             />
