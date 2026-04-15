@@ -42,6 +42,7 @@ coverage
 
 # Make menu state
 .claude/.last-make-choice
+.worktrees/
 
 # Misc
 *.tgz
