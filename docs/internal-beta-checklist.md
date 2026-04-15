@@ -26,6 +26,10 @@
 6. Confirm the SSH terminal renders with the same global terminal settings.
 7. Open `/ssh/settings`.
 8. Confirm the saved font size and theme are present.
+9. Confirm there is no `SSH hosts unavailable` banner.
+10. Confirm there is no `Terminal settings out of sync` banner.
+11. Confirm `/ssh/settings` is not in read-only fallback.
+12. Treat restore verification as successful only after those checks pass.
 
 ## Delete Propagation
 
@@ -33,6 +37,7 @@
 2. Delete `Beta Host A`.
 3. On machine B, retry host sync or reload `/ssh`.
 4. Confirm `Beta Host A` disappears.
+5. Confirm there is no host-sync error banner before marking delete propagation successful.
 
 ## Failure-State Checks
 
@@ -46,5 +51,5 @@
 
 - SSH host key verification is not implemented yet; this beta is for trusted internal usage only.
 - SSH host list has no local cache fallback. If host sync fails, the app must show an inline error instead of stale hosts.
-- Terminal settings can briefly render cached values before reconciling to newer server state.
+- Cached terminal settings may appear on startup and can remain in read-only fallback until sync succeeds.
 - SFTP transfer queue UI exists, but transfer scheduling and cancellation are not fully authoritative yet.
