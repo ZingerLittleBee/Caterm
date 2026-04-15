@@ -56,6 +56,7 @@ export function HostList({ onConnect, onEdit, onNewHost }: HostListProps) {
     [deleteMutation]
   )
 
+  // Stale hosts stay hidden during sync failure in this phase.
   const shouldRenderHosts = !(presentation.showLoadingState || presentation.showEmptyState || presentation.banner)
 
   return (
