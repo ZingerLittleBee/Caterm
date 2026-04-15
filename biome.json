@@ -83,8 +83,7 @@
         "noUselessElse": "error"
       },
       "suspicious": {
-        "noDocumentCookie": "off",
-        "useBiomeIgnoreFolder": "off"
+        "noDocumentCookie": "off"
       }
     }
   },
