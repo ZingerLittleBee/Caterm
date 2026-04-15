@@ -18,6 +18,7 @@ import { SshTerminal } from '@/components/ssh/ssh-terminal'
 import { TerminalDropOverlay } from '@/components/ssh/terminal-drop-overlay'
 import { TerminalUploadProgress } from '@/components/ssh/terminal-upload-progress'
 import { useTerminalDragUpload } from '@/components/ssh/use-terminal-drag-upload'
+import { TerminalSettingsSyncBanner } from '@/components/terminal/terminal-settings-sync-banner'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
@@ -306,6 +307,9 @@ function SshIndexPage() {
             </Button>
           )}
         </SiteHeader>
+        <div className="px-4 pt-4">
+          <TerminalSettingsSyncBanner />
+        </div>
 
         <SshTabBar
           activeSessionId={activeSessionId}

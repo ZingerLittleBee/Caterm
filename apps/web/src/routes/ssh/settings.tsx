@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import type * as React from 'react'
 import { AppSidebar } from '@/components/app-sidebar'
 import { TerminalSettingsForm } from '@/components/settings/terminal-settings-form'
+import { TerminalSettingsSyncBanner } from '@/components/terminal/terminal-settings-sync-banner'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 
@@ -25,7 +26,8 @@ function SshSettingsPage() {
           <h1 className="font-semibold text-lg">Terminal Settings</h1>
         </div>
         <ScrollArea className="flex-1 overflow-hidden">
-          <div className="p-6">
+          <div className="flex flex-col gap-4 p-6">
+            <TerminalSettingsSyncBanner />
             <TerminalSettingsForm />
           </div>
         </ScrollArea>
