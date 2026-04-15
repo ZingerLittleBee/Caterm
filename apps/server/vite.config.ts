@@ -12,5 +12,17 @@ export default defineConfig({
       origin: ['http://localhost:3001', 'https://tauri.localhost', 'tauri://localhost'],
       credentials: true
     }
+  },
+  ssr: {
+    noExternal: ['@t3-oss/env-core'],
+    external: ['pg', 'pg-protocol']
+  },
+  optimizeDeps: {
+    exclude: ['pg', 'pg-protocol']
+  },
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true
+    }
   }
 })
