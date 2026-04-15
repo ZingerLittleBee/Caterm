@@ -47,6 +47,10 @@ Alternatives considered:
 2. Release hardening first
    Better long-term security posture, but slower progress toward an internal beta that users can exercise now.
 
+Implementation assumption for this phase:
+
+- Phase 1 is expected to be client-side only. No server API or schema changes are expected unless implementation uncovers a concrete bug in existing auth or sync behavior.
+
 ## Current State
 
 The codebase already has most of the core building blocks:
@@ -62,7 +66,7 @@ Known gaps relevant to this beta:
 - The sync/hydration path is implemented implicitly across providers and routes, but not yet treated as a first-class, tested product flow.
 - Biome/Ultracite checks are blocked by a nested config under `.claude/worktrees`, which reduces confidence in routine validation.
 - SSH host key verification is still not implemented, which is acceptable only for a limited internal beta with controlled usage and must not be treated as done for release.
-- The SFTP transfer queue UI exists, but the backend queue semantics are not fully wired into actual transfer execution and cancellation.
+- The SFTP transfer queue UI exists and queue structs exist server-side, but uploads/downloads are not actually scheduled through that queue, and cancellation is not authoritative over live transfer execution.
 
 ## Priority Model
 
@@ -90,13 +94,13 @@ These items must be stable before calling the cross-device restore flow ready fo
 These should be done immediately after P0 or pulled into P0 if instability is discovered during testing.
 
 1. SSH connection reliability and diagnostics
-   Failed connects, reconnecting state, and credential loading errors must be understandable enough for internal testers.
+   This phase covers bounded stability work only: failed connects, reconnecting state, reconnect failure messaging, and credential loading errors must be understandable enough for internal testers.
 
 2. SFTP baseline usability
    Connect, browse, edit, and single-file transfer should remain functional, but this phase does not require a full transfer-management system.
 
 3. Validation workflow cleanup
-   The repository should be lint-checkable in a normal developer workflow. The current nested Biome config conflict should be removed or isolated.
+   The repository should be lint-checkable in a normal developer workflow. The current nested Biome config conflict should be removed or isolated as a small infrastructure cleanup inside Phase 1, not as a standalone milestone.
 
 ### P2: Post-Beta or Beta-Plus Work
 
@@ -122,6 +126,40 @@ The design should treat synced account state as a first-class data domain with a
 
 The key design rule is that server state is the source of truth for synced entities, while local cache only improves startup responsiveness and resilience.
 
+### Hydration Architecture
+
+Chosen pattern:
+
+- Keep `beforeLoad` responsible only for auth gating and redirect behavior.
+- Add router context access to the shared React Query client in the desktop app.
+- Use route `loader` prefetch for synced domains.
+- Do not throw route-level loader errors for hosts or terminal settings.
+- Let domain-level queries and UI surfaces expose degraded-state behavior explicitly.
+
+Concrete shape:
+
+1. `/ssh` `beforeLoad`
+   Verify session. Redirect to `/login` if unauthenticated.
+
+2. `/ssh` `loader`
+   Prefetch `sshHost.list` and `terminalSettings.get` in parallel with `Promise.allSettled`.
+
+3. `/sftp` `beforeLoad`
+   Verify session. Redirect to `/login` if unauthenticated.
+
+4. `/sftp` `loader`
+   Prefetch `sshHost.list`. Terminal settings are not required for SFTP route usability in this beta.
+
+Why this pattern:
+
+- It keeps authentication decisions separate from data hydration.
+- It fits the current route structure better than inventing a new global hydration provider first.
+- It gives `HostList` and `TerminalSettingsProvider` warm query cache on entry without introducing a second source of truth.
+
+Explicit non-goal for this phase:
+
+- Do not introduce a general-purpose `useHydration()` orchestration layer unless the loader-plus-query approach proves insufficient during implementation.
+
 ### Data Domains
 
 Account/session:
@@ -133,12 +171,14 @@ SSH hosts:
 - Persisted server-side.
 - Credentials remain encrypted at rest.
 - The hydrated host list is the canonical input for connection flows.
+- There is no host-list client cache fallback in this beta.
 
 Global terminal settings:
 
 - Persisted server-side.
 - Cached locally for quick startup and temporary fallback.
 - Resolved per host at runtime, even though this beta only commits to syncing the global layer.
+- The cache is placeholder-only. It must not suppress an immediate server refetch on route entry.
 
 ### Hydration Rules
 
@@ -149,11 +189,41 @@ On authenticated startup:
 - Use cached terminal settings as placeholder state only until server data resolves.
 - Never treat cache-only state as authoritative once server state is available.
 
+React Query policy for terminal settings in this phase:
+
+- Keep `placeholderData` for fast paint.
+- Reduce `staleTime` for terminal settings to `0` so the route always reconciles against server state on entry.
+- Accept a short placeholder flash if server data differs from local cache. Correctness is more important than preserving a 60-second stale window.
+
 On failed sync fetch:
 
 - Surface a visible but non-blocking error.
 - Continue to expose any safe cached settings already present.
 - Avoid pretending that SSH hosts synced successfully if the host fetch failed.
+
+### Failure-State UI Contract
+
+Hydration failures should use sticky inline UI, not ephemeral toasts.
+
+Session verification failure:
+
+- If unauthenticated, redirect to `/login`.
+- If session verification fails because of transport or server error, show a blocking route-level error state with a retry action.
+- Do not render the protected SSH or SFTP workspace until session state is known.
+
+SSH host fetch failure:
+
+- Show a sticky sidebar-level error banner in the host list area with retry.
+- Do not show the normal "No hosts configured" empty state.
+- Do not render cached hosts because there is no host-list cache in this phase.
+- Disable host-dependent actions until the host query succeeds.
+
+Terminal settings fetch failure:
+
+- Show a sticky page-level banner on SSH surfaces.
+- If cached settings exist, use them for terminal rendering only.
+- If no cached settings exist, fall back to built-in defaults for terminal rendering.
+- Keep terminal settings editing read-only until a successful server fetch occurs, to avoid overwriting unknown newer server state with fallback data.
 
 ### Error Handling
 
@@ -165,6 +235,16 @@ Required behavior:
 - Host CRUD failures should leave the local UI consistent with actual server state.
 - Settings save failures should roll back optimistic state or visibly re-sync.
 - Startup hydration failures should state which synced domain failed: session, hosts, or settings.
+
+### Conflict Strategy
+
+For internal beta, cross-device concurrent edits use last-write-wins.
+
+Implications:
+
+- No optimistic concurrency control is added in this phase.
+- No version prompts or merge UI are added in this phase.
+- Manual verification should confirm deterministic behavior for sequential edits, not collaborative conflict resolution.
 
 ### Testing Strategy
 
@@ -195,13 +275,17 @@ Target outcome:
 Work in this phase:
 
 - Audit and tighten auth/session initialization
+- Add route-loader prefetch for synced domains
 - Normalize SSH host fetch/update/invalidate behavior
 - Normalize terminal settings fetch/cache/update behavior
-- Define and implement explicit hydration order for the desktop app
+- Implement explicit degraded-state UI for session, hosts, and settings
+- Reduce terminal settings stale window to immediate server reconciliation
+- Remove the current nested-root Biome failure from normal root lint/check usage
 
 Exit criteria:
 
 - Cross-device host and global settings restore works repeatedly in manual verification.
+- Root `bun run check` is no longer blocked by the nested worktree Biome config conflict.
 
 ### Phase 2: Make the Restored State Immediately Usable
 
@@ -215,6 +299,11 @@ Work in this phase:
 - Verify stored credentials flow cleanly from server to connect actions
 - Keep SFTP baseline flows working against synced hosts
 
+Stop condition for this phase:
+
+- Reliability work is limited to current known flows: initial connect failure, credential loading failure, reconnect state, and reconnect failure messaging.
+- This phase does not include broad transport refactors or deep SSH protocol hardening.
+
 Exit criteria:
 
 - A tester can sign in on machine B, pick a synced host, and start a real SSH session without manual re-entry of synced metadata.
@@ -227,18 +316,17 @@ Target outcome:
 
 Work in this phase:
 
-- Remove the current Biome nested-root failure from normal `bun run check`
 - Add targeted workflow verification or automated smoke coverage where practical
 - Document beta limitations explicitly
 
 Exit criteria:
 
-- The team has a repeatable validation checklist and a clean developer quality gate.
+- The team has a repeatable validation checklist and beta limitations are documented.
 
 ## Risks
 
 1. Cache/server divergence
-   If placeholder cached settings behave like final state, users may see confusing reversions.
+   If placeholder cached settings render first and then reconcile to newer server state, users may see a visible setting shift. This is acceptable for beta because it preserves correctness.
 
 2. Auth appears healthy while sync is degraded
    A logged-in shell with missing synced data would fail the beta promise even if the app is technically usable.
@@ -258,7 +346,7 @@ This design is complete for the internal beta when all of the following are true
 - The synced state becomes available through a predictable startup hydration flow.
 - Failures in auth, host sync, or settings sync are visible and distinguishable.
 - SSH remains usable with synced hosts after restore.
-- The team can run type checks and builds successfully, and lint/check workflow is no longer blocked by repository-local config noise.
+- The team can run type checks and builds successfully, and root `bun run check` is no longer blocked by the nested worktree Biome config conflict.
 
 ## Deferred Items
 
