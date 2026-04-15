@@ -6,7 +6,9 @@ import { runPrefetchBundle } from './sync-prefetch'
 test('runPrefetchBundle returns settled results without short-circuiting when one request fails', async () => {
   const result = await runPrefetchBundle({
     hosts: () => Promise.resolve('hosts-ok'),
-    settings: () => Promise.reject(new Error('settings-down'))
+    settings: () => {
+      throw new Error('settings-down')
+    }
   })
 
   expect(result.hosts.status).toBe('fulfilled')
@@ -24,17 +26,27 @@ test('runPrefetchBundle omits settings result for routes that only need hosts', 
 
 test('runPrefetchBundle starts hosts and settings prefetchers in the same turn', async () => {
   const calls: string[] = []
+  let releaseHosts!: () => void
+  const hostsReady = new Promise<void>((resolve) => {
+    releaseHosts = resolve
+  })
 
-  await runPrefetchBundle({
+  const resultPromise = runPrefetchBundle({
     hosts: () => {
       calls.push('hosts')
-      return Promise.resolve('hosts-ok')
+      return hostsReady.then(() => 'hosts-ok')
     },
     settings: () => {
       calls.push('settings')
       return Promise.resolve('settings-ok')
     }
   })
+
+  await Promise.resolve()
+  expect(calls).toEqual(['hosts', 'settings'])
+
+  releaseHosts()
+  await resultPromise
 
   expect(calls).toEqual(['hosts', 'settings'])
 })

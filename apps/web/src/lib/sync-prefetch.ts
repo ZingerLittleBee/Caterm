@@ -10,10 +10,12 @@ export interface RoutePrefetchResult {
 }
 
 function settle(prefetcher: Prefetcher): Promise<PromiseSettledResult<unknown>> {
-  return Promise.resolve(prefetcher()).then(
-    (value) => ({ status: 'fulfilled', value }) as const,
-    (reason) => ({ status: 'rejected', reason }) as const
-  )
+  return Promise.resolve()
+    .then(prefetcher)
+    .then(
+      (value) => ({ status: 'fulfilled', value }) as const,
+      (reason) => ({ status: 'rejected', reason }) as const
+    )
 }
 
 export async function runPrefetchBundle(prefetchers: {
