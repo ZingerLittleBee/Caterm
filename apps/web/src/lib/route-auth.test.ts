@@ -4,8 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { SessionRouteError } from '@/components/auth/session-route-error'
-import { getSessionGateOutcome } from './route-auth'
-import { SessionVerificationError } from './route-auth'
+import { getSessionGateOutcome, SessionVerificationError } from './route-auth'
 
 test('getSessionGateOutcome returns redirect when there is no session data', () => {
   expect(getSessionGateOutcome({ data: null, error: null })).toBe('redirect')
