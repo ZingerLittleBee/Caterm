@@ -68,7 +68,9 @@ export function TerminalSettingsProvider({ children }: { children: ReactNode }) 
     hasError: isError,
     hasSuccessfulServerSync: data !== undefined && !isError && !isPlaceholderData
   })
-  const isReadOnlyFallback = !presentation.allowEditing
+  const hasSuccessfulServerSync = data !== undefined && !isPlaceholderData
+  const isUsingPlaceholderFallback = isPlaceholderData || data === undefined
+  const isReadOnlyFallback = !hasSuccessfulServerSync && isUsingPlaceholderFallback && !presentation.allowEditing
   const retrySync = useCallback(() => refetch(), [refetch])
   const isLoading = isPending && data === undefined
 

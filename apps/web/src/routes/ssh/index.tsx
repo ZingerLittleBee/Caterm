@@ -307,9 +307,7 @@ function SshIndexPage() {
             </Button>
           )}
         </SiteHeader>
-        <div className="px-4 pt-4">
-          <TerminalSettingsSyncBanner />
-        </div>
+        <TerminalSettingsSyncBanner className="px-4 pt-4" />
 
         <SshTabBar
           activeSessionId={activeSessionId}

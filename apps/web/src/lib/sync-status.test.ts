@@ -70,6 +70,22 @@ test('terminal settings error uses cached settings copy when available', () => {
   })
 })
 
+test('terminal settings error uses built-in defaults copy when no cache exists', () => {
+  expect(
+    getTerminalSettingsPresentation({
+      hasCachedSettings: false,
+      hasError: true,
+      hasSuccessfulServerSync: false
+    })
+  ).toEqual({
+    allowEditing: false,
+    banner: {
+      title: 'Terminal settings out of sync',
+      description: 'Using built-in terminal defaults until sync succeeds.'
+    }
+  })
+})
+
 test('terminal settings success allows editing without a banner', () => {
   expect(
     getTerminalSettingsPresentation({
