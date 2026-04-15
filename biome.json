@@ -21,6 +21,8 @@
       "!**/.wrangler",
       "!**/.alchemy",
       "!**/.svelte-kit",
+      "!**/.claude/worktrees",
+      "!**/.claude/worktrees/**",
       "!**/wrangler.jsonc",
       "!**/.source",
       "!**/convex/_generated"
