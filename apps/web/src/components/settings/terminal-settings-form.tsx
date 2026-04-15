@@ -9,7 +9,7 @@ import { BUILTIN_THEMES } from '@/lib/terminal-themes'
 import type { BellStyle, CursorInactiveStyle, CursorStyle, TerminalSettings } from '@/types/ssh'
 
 export function TerminalSettingsForm() {
-  const { settings, updateGlobal, isLoading } = useTerminalSettings()
+  const { settings, updateGlobal, isLoading, isReadOnlyFallback } = useTerminalSettings()
   const [draft, setDraft] = useState<TerminalSettings>(settings)
   useEffect(() => {
     setDraft(settings)
@@ -29,9 +29,14 @@ export function TerminalSettingsForm() {
 
   return (
     <div className="flex max-w-lg flex-col gap-6">
+      {isReadOnlyFallback ? (
+        <p className="text-muted-foreground text-sm">Settings are temporarily read-only until server sync succeeds.</p>
+      ) : null}
+
       <div className="flex flex-col gap-2">
         <Label htmlFor="settings-font-family">Font Family</Label>
         <Input
+          disabled={isReadOnlyFallback}
           id="settings-font-family"
           onChange={(e) => setDraft((prev) => ({ ...prev, fontFamily: e.target.value }))}
           placeholder="monospace"
@@ -42,6 +47,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label htmlFor="settings-font-size">Font Size</Label>
         <Input
+          disabled={isReadOnlyFallback}
           id="settings-font-size"
           max={32}
           min={8}
@@ -59,6 +65,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label htmlFor="settings-line-height">Line Height</Label>
         <Input
+          disabled={isReadOnlyFallback}
           id="settings-line-height"
           max={2.0}
           min={1.0}
@@ -77,6 +84,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label htmlFor="settings-letter-spacing">Letter Spacing</Label>
         <Input
+          disabled={isReadOnlyFallback}
           id="settings-letter-spacing"
           max={10}
           min={-5}
@@ -94,6 +102,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label>Cursor Style</Label>
         <Select
+          disabled={isReadOnlyFallback}
           onValueChange={(value) =>
             setDraft((prev) => ({
               ...prev,
@@ -102,7 +111,7 @@ export function TerminalSettingsForm() {
           }
           value={draft.cursorStyle}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full" disabled={isReadOnlyFallback}>
             <SelectValue placeholder="Select cursor style" />
           </SelectTrigger>
           <SelectContent>
@@ -116,6 +125,7 @@ export function TerminalSettingsForm() {
       <div className="flex items-center gap-2">
         <Checkbox
           checked={draft.cursorBlink}
+          disabled={isReadOnlyFallback}
           id="settings-cursor-blink"
           onCheckedChange={(checked) =>
             setDraft((prev) => ({
@@ -130,6 +140,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label>Cursor Inactive Style</Label>
         <Select
+          disabled={isReadOnlyFallback}
           onValueChange={(value) =>
             setDraft((prev) => ({
               ...prev,
@@ -138,7 +149,7 @@ export function TerminalSettingsForm() {
           }
           value={draft.cursorInactiveStyle}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full" disabled={isReadOnlyFallback}>
             <SelectValue placeholder="Select inactive cursor style" />
           </SelectTrigger>
           <SelectContent>
@@ -154,6 +165,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label htmlFor="settings-scrollback">Scrollback Lines</Label>
         <Input
+          disabled={isReadOnlyFallback}
           id="settings-scrollback"
           max={100_000}
           min={100}
@@ -171,6 +183,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label>Bell Style</Label>
         <Select
+          disabled={isReadOnlyFallback}
           onValueChange={(value) =>
             setDraft((prev) => ({
               ...prev,
@@ -179,7 +192,7 @@ export function TerminalSettingsForm() {
           }
           value={draft.bellStyle}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full" disabled={isReadOnlyFallback}>
             <SelectValue placeholder="Select bell style" />
           </SelectTrigger>
           <SelectContent>
@@ -194,6 +207,7 @@ export function TerminalSettingsForm() {
       <div className="flex flex-col gap-2">
         <Label>Theme</Label>
         <Select
+          disabled={isReadOnlyFallback}
           onValueChange={(value) =>
             setDraft((prev) => ({
               ...prev,
@@ -202,7 +216,7 @@ export function TerminalSettingsForm() {
           }
           value={draft.themeName}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full" disabled={isReadOnlyFallback}>
             <SelectValue placeholder="Select theme" />
           </SelectTrigger>
           <SelectContent>
@@ -216,7 +230,9 @@ export function TerminalSettingsForm() {
       </div>
 
       <div className="pt-2">
-        <Button onClick={handleSave}>Save Settings</Button>
+        <Button disabled={isReadOnlyFallback} onClick={handleSave}>
+          Save Settings
+        </Button>
       </div>
     </div>
   )

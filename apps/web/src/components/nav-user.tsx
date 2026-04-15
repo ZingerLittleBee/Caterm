@@ -13,9 +13,11 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar'
 
+const WHITESPACE_PATTERN = /\s+/
+
 function getInitials(name: string): string {
   return name
-    .split(/\s+/)
+    .split(WHITESPACE_PATTERN)
     .slice(0, 2)
     .map((w) => w[0])
     .join('')

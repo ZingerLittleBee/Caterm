@@ -1,7 +1,10 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo } from 'react'
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { client, queryClient } from '@/lib/orpc'
+import { getTerminalSettingsSyncQueryOptions } from '@/lib/sync-query-options'
+import type { SyncBannerCopy } from '@/lib/sync-status'
+import { getTerminalSettingsPresentation } from '@/lib/sync-status'
 import { readSettingsCache, writeSettingsCache } from '@/lib/terminal-settings-cache'
 import { DEFAULT_TERMINAL_SETTINGS, resolveSettings } from '@/lib/terminal-themes'
 import type { TerminalSettings, TerminalSettingsState } from '@/types/ssh'
@@ -10,7 +13,10 @@ interface TerminalSettingsContextValue {
   clearHostOverrides: (hostId: string) => void
   getSettingsForHost: (hostId: string) => TerminalSettings
   isLoading: boolean
+  isReadOnlyFallback: boolean
+  retrySync: () => Promise<unknown>
   settings: TerminalSettings
+  syncBanner: SyncBannerCopy | null
   updateGlobal: (partial: Partial<TerminalSettings>) => void
   updateHostOverrides: (hostId: string, partial: Partial<TerminalSettings>) => void
 }
@@ -24,8 +30,6 @@ export function useTerminalSettings(): TerminalSettingsContextValue {
   }
   return context
 }
-
-const SETTINGS_QUERY_KEY = ['terminalSettings', 'get'] as const
 
 function normalizeApiData(raw: unknown): {
   global: TerminalSettings
@@ -50,24 +54,31 @@ function normalizeApiData(raw: unknown): {
 type SettingsData = ReturnType<typeof normalizeApiData>
 
 export function TerminalSettingsProvider({ children }: { children: ReactNode }) {
-  const { data, isLoading } = useQuery({
-    queryKey: SETTINGS_QUERY_KEY,
-    queryFn: async () => {
-      const raw = await client.terminalSettings.get()
-      return normalizeApiData(raw)
-    },
-    placeholderData: () => {
-      const cached = readSettingsCache()
-      return cached ? normalizeApiData(cached) : undefined
-    },
-    staleTime: 60_000
+  const [bootCache] = useState(() => readSettingsCache())
+  const bootCacheData = useMemo(() => (bootCache ? normalizeApiData(bootCache) : undefined), [bootCache])
+  const terminalSettingsQueryOptions = useMemo(() => getTerminalSettingsSyncQueryOptions(), [])
+  const { data, isError, isPending, isPlaceholderData, refetch } = useQuery({
+    ...terminalSettingsQueryOptions,
+    placeholderData: bootCache,
+    select: normalizeApiData
   })
 
+  const presentation = getTerminalSettingsPresentation({
+    hasCachedSettings: bootCacheData !== undefined || data !== undefined,
+    hasError: isError,
+    hasSuccessfulServerSync: data !== undefined && !isError && !isPlaceholderData
+  })
+  const hasSuccessfulServerSync = data !== undefined && !isPlaceholderData
+  const isUsingPlaceholderFallback = isPlaceholderData || data === undefined
+  const isReadOnlyFallback = !hasSuccessfulServerSync && isUsingPlaceholderFallback && !presentation.allowEditing
+  const retrySync = useCallback(() => refetch(), [refetch])
+  const isLoading = isPending && data === undefined
+
   useEffect(() => {
-    if (data) {
+    if (data && !isPlaceholderData) {
       writeSettingsCache(data)
     }
-  }, [data])
+  }, [data, isPlaceholderData])
 
   const upsertMutation = useMutation({
     mutationFn: (input: {
@@ -75,9 +86,9 @@ export function TerminalSettingsProvider({ children }: { children: ReactNode }) 
       hostOverrides?: Record<string, Partial<TerminalSettings>>
     }) => client.terminalSettings.upsert(input),
     onMutate: async (input) => {
-      await queryClient.cancelQueries({ queryKey: SETTINGS_QUERY_KEY })
-      const previous = queryClient.getQueryData<SettingsData>(SETTINGS_QUERY_KEY)
-      queryClient.setQueryData<SettingsData>(SETTINGS_QUERY_KEY, (old) => {
+      await queryClient.cancelQueries({ queryKey: terminalSettingsQueryOptions.queryKey })
+      const previous = queryClient.getQueryData<SettingsData>(terminalSettingsQueryOptions.queryKey)
+      queryClient.setQueryData<SettingsData>(terminalSettingsQueryOptions.queryKey, (old) => {
         if (!old) {
           return old
         }
@@ -100,37 +111,37 @@ export function TerminalSettingsProvider({ children }: { children: ReactNode }) 
     },
     onError: (_err, _input, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(SETTINGS_QUERY_KEY, context.previous)
+        queryClient.setQueryData(terminalSettingsQueryOptions.queryKey, context.previous)
       }
       toast.error('Failed to save settings')
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: terminalSettingsQueryOptions.queryKey })
     }
   })
 
   const deleteHostOverrideMutation = useMutation({
     mutationFn: (input: { hostId: string }) => client.terminalSettings.deleteHostOverride(input),
     onMutate: async (input) => {
-      await queryClient.cancelQueries({ queryKey: SETTINGS_QUERY_KEY })
-      const previous = queryClient.getQueryData<SettingsData>(SETTINGS_QUERY_KEY)
-      queryClient.setQueryData<SettingsData>(SETTINGS_QUERY_KEY, (old) => {
+      await queryClient.cancelQueries({ queryKey: terminalSettingsQueryOptions.queryKey })
+      const previous = queryClient.getQueryData<SettingsData>(terminalSettingsQueryOptions.queryKey)
+      queryClient.setQueryData<SettingsData>(terminalSettingsQueryOptions.queryKey, (old) => {
         if (!old) {
           return old
         }
-        const { [input.hostId]: _, ...rest } = old.hostOverrides
+        const { [input.hostId]: _deletedOverride, ...rest } = old.hostOverrides
         return { global: old.global, hostOverrides: rest }
       })
       return { previous }
     },
     onError: (_err, _input, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(SETTINGS_QUERY_KEY, context.previous)
+        queryClient.setQueryData(terminalSettingsQueryOptions.queryKey, context.previous)
       }
       toast.error('Failed to delete host overrides')
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: terminalSettingsQueryOptions.queryKey })
     }
   })
 
@@ -149,25 +160,34 @@ export function TerminalSettingsProvider({ children }: { children: ReactNode }) 
 
   const updateGlobal = useCallback(
     (partial: Partial<TerminalSettings>) => {
+      if (isReadOnlyFallback) {
+        return
+      }
       upsertMutation.mutate({ global: partial })
     },
-    [upsertMutation.mutate]
+    [isReadOnlyFallback, upsertMutation]
   )
 
   const updateHostOverrides = useCallback(
     (hostId: string, partial: Partial<TerminalSettings>) => {
+      if (isReadOnlyFallback) {
+        return
+      }
       upsertMutation.mutate({
         hostOverrides: { [hostId]: partial }
       })
     },
-    [upsertMutation.mutate]
+    [isReadOnlyFallback, upsertMutation]
   )
 
   const clearHostOverrides = useCallback(
     (hostId: string) => {
+      if (isReadOnlyFallback) {
+        return
+      }
       deleteHostOverrideMutation.mutate({ hostId })
     },
-    [deleteHostOverrideMutation.mutate]
+    [deleteHostOverrideMutation, isReadOnlyFallback]
   )
 
   return (
@@ -175,7 +195,10 @@ export function TerminalSettingsProvider({ children }: { children: ReactNode }) 
       value={{
         settings: globalSettings,
         isLoading,
+        isReadOnlyFallback,
         getSettingsForHost,
+        retrySync,
+        syncBanner: presentation.banner,
         updateGlobal,
         updateHostOverrides,
         clearHostOverrides

@@ -1,11 +1,14 @@
 LAST_CHOICE_FILE := .claude/.last-make-choice
 
 .DEFAULT_GOAL := menu
-.PHONY: menu dev dev-server build check-types tauri tauri-dev tauri-build check fix install db-push db-generate db-studio db-migrate db-start db-stop
+.PHONY: menu dev dev-server dev-op dev-server-op build check-types tauri tauri-dev tauri-build check fix install db-push db-generate db-studio db-migrate db-start db-stop env-sync
 
 ITEMS := \
 	"dev           — Run Tauri desktop + server" \
 	"dev-server    — Run server only" \
+	"dev-op        — Run Tauri desktop + server (with 1Password)" \
+	"dev-server-op — Run server only (with 1Password)" \
+	"env-sync      — Sync .env to 1Password" \
 	"tauri-dev     — Run Tauri desktop dev" \
 	"build         — Build all packages" \
 	"tauri-build   — Build Tauri desktop" \
@@ -84,3 +87,25 @@ db-start:
 
 db-stop:
 	bun run --filter @Caterm/db db:stop
+
+# Run with 1Password environment variables
+dev-op:
+	op run --env-file ./apps/server/.env.op -- bun run --filter server dev & \
+	op run --env-file ./apps/server/.env.op -- bun run --filter web desktop:dev
+
+dev-server-op:
+	op run --env-file ./apps/server/.env.op -- bun run --filter server dev
+
+# Sync local .env to 1Password Caterm item
+env-sync:
+	@echo "Syncing .env to 1Password (Caterm)..."
+	@op item delete "Caterm" --vault=Developer 2>/dev/null || true
+	@op item create --vault=Developer --category="Server" --title="Caterm" \
+		"DATABASE_URL[password]=$$(grep DATABASE_URL apps/server/.env | cut -d= -f2-)" \
+		"BETTER_AUTH_SECRET[password]=$$(grep BETTER_AUTH_SECRET apps/server/.env | cut -d= -f2-)" \
+		"BETTER_AUTH_URL[text]=$$(grep BETTER_AUTH_URL apps/server/.env | cut -d= -f2-)" \
+		"CORS_ORIGIN[text]=$$(grep CORS_ORIGIN apps/server/.env | cut -d= -f2-)" \
+		"ENCRYPTION_KEY[password]=$$(grep ENCRYPTION_KEY apps/server/.env | cut -d= -f2-)" \
+		"NODE_ENV[text]=$$(grep NODE_ENV apps/server/.env | cut -d= -f2-)" \
+		--tags="env,server,caterm"
+	@echo "Done! Updated 1Password Developer/Caterm"
