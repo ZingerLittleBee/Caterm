@@ -2,10 +2,8 @@ import { redirect } from '@tanstack/react-router'
 
 import { authClient } from '@/lib/auth-client'
 
-export interface SessionGatePayload {
-  data: unknown | null
-  error?: { message?: string } | null
-}
+export type SessionResult = Awaited<ReturnType<typeof authClient.getSession>>
+export type AuthenticatedSession = NonNullable<SessionResult['data']>
 
 export class SessionVerificationError extends Error {
   constructor(message = 'Failed to verify your session. Retry to continue.') {
@@ -14,7 +12,7 @@ export class SessionVerificationError extends Error {
   }
 }
 
-export function getSessionGateOutcome(payload: SessionGatePayload): 'authenticated' | 'redirect' | 'error' {
+export function getSessionGateOutcome(payload: SessionResult): 'authenticated' | 'redirect' | 'error' {
   if (payload.error) {
     return 'error'
   }
@@ -26,7 +24,7 @@ export function getSessionGateOutcome(payload: SessionGatePayload): 'authenticat
   return 'authenticated'
 }
 
-export async function requireAuthenticatedSession() {
+export async function requireAuthenticatedSession(): Promise<AuthenticatedSession> {
   const result = await authClient.getSession()
   const outcome = getSessionGateOutcome(result)
 
@@ -38,5 +36,11 @@ export async function requireAuthenticatedSession() {
     throw redirect({ to: '/login' })
   }
 
-  return result.data
+  const session = result.data
+
+  if (!session) {
+    throw new Error('Session gate invariant violated.')
+  }
+
+  return session
 }
