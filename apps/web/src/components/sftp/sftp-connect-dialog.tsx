@@ -28,7 +28,7 @@ interface SftpConnectDialogProps {
   }) => Promise<string>
 }
 
-export function SftpHostListContent({
+function SftpHostListContent({
   isLoading,
   hosts,
   connecting,

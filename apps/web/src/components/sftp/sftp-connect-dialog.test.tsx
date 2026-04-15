@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is available at runtime in Bun but not declared in this web tsconfig
 import { expect, mock, test } from 'bun:test'
-import { createElement } from 'react'
+import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 const reactQuery = await import('@tanstack/react-query')
@@ -11,22 +11,32 @@ const useQuery = mock(() => ({
   isLoading: false
 }))
 
+mock.module('@base-ui/react/dialog', () => ({
+  Dialog: {
+    Backdrop: () => null,
+    Close: ({ render }: { render: ReactNode }) => render,
+    Description: ({ children }: { children: ReactNode }) => children,
+    Popup: ({ children }: { children: ReactNode }) => children,
+    Portal: ({ children }: { children: ReactNode }) => children,
+    Root: ({ children }: { children: ReactNode }) => children,
+    Title: ({ children }: { children: ReactNode }) => children
+  }
+}))
+
 mock.module('@tanstack/react-query', () => ({
   ...reactQuery,
   useQuery
 }))
 
-const { SftpHostListContent } = await import('./sftp-connect-dialog')
+const { SftpConnectDialog } = await import('./sftp-connect-dialog')
 
-test('SftpHostListContent shows host sync error UI instead of the empty state', () => {
+test('SftpConnectDialog shows host sync error UI instead of the empty state', () => {
   const markup = renderToStaticMarkup(
-    createElement(SftpHostListContent, {
-      connecting: null,
-      isError: true,
-      hosts: [],
-      isLoading: false,
-      onRetry: () => undefined,
-      onSelectHost: () => undefined
+    createElement(SftpConnectDialog, {
+      onClose: () => undefined,
+      onConnect: () => undefined,
+      open: true,
+      openStandalone: async () => 'session_1'
     })
   )
 
