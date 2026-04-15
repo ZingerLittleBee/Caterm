@@ -131,15 +131,13 @@ export function FilePanel({
 
   useEffect(() => {
     loadDirectory(initialPath)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only load on mount
-  }, [])
+  }, [initialPath, loadDirectory])
 
   useEffect(() => {
     if (refreshTrigger) {
       loadDirectory(currentPath)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh when trigger changes
-  }, [refreshTrigger])
+  }, [currentPath, loadDirectory, refreshTrigger])
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {

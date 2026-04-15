@@ -190,8 +190,6 @@ export function FileEditorDialog({
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/10 backdrop-blur-xs" />
         <Dialog.Popup className="fixed top-1/2 left-1/2 z-50 w-full max-w-4xl -translate-x-1/2 -translate-y-1/2 rounded-xl border bg-background p-6 shadow-lg outline-none">
-          {/* Absorb auto-focus so no visible element gets the focus ring */}
-          <span aria-hidden className="fixed opacity-0" tabIndex={0} />
           <div className="flex items-center justify-between">
             <div className="min-w-0">
               <Dialog.Title className="truncate font-medium text-base">
