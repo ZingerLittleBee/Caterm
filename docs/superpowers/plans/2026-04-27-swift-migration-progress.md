@@ -66,6 +66,7 @@ Spike S1-S6 全过；spec 大改三轮（spike pivot + 7 处 review 修复）；
 | 2026-04-27 | **Phase 1 v1 实施计划写好**（12 Tasks，TDD 节奏；spec §6.1 step 1.0-1.11 一一对应）：1.0 Package.swift 改 9 targets + 删 spike；1.1 TerminalEngine；1.2 SSHCommandBuilder + 60+ 个 fuzz 注入用例；1.3 AskpassHelper + KeychainStore + dev-codesign 端到端；1.4 单 tab connect + 双信号 child-exit 验证；1.5 NSWindow 多 tab；1.6 HostListSidebar + 表单 + JSON 持久化；1.7 KeychainStore 接 UI；1.8 ReconnectScheduler + overlay；1.9 ConfigStore；1.10 菜单/快捷键/About；1.11 release.sh + 双 binary codesign + notarize + Sparkle + Tauri banner。等开 fresh 仓 / 进 1.0 实施 |
 | 2026-04-27 | Task 1.0 通过：spike 代码删除；Package.swift 重写为 9 targets（5 lib + 2 exec + 4 test）；entitlements plist 落位；`swift build` + `swift test` 全绿。Phase 1 干净 baseline 起来 |
 | 2026-04-27 | Task 1.1 通过：TerminalEngine module 起来；GhosttySurface + GhosttySurfaceNSView 包装 libghostty；默认 shell 在 NSView 内渲染；resize OK；键盘输入 OK |
+| 2026-04-27 | Task 1.2 通过：SSHCommandBuilder 三路 enum 实现完毕；ShellQuote POSIX；FuzzInjectionTests 60+ 用例（含分号/反引号/$()/单双引号/unicode/换行）全绿。凭据安全防线立起来 |
 
 ---
 
