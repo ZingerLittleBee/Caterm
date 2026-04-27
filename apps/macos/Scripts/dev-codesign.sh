@@ -48,6 +48,22 @@ substitute_entitlements "$ROOT/Resources/Caterm.entitlements" \
 substitute_entitlements "$ROOT/Resources/CatermAskpass.entitlements" \
     "$TMPDIR_ENT/CatermAskpass.entitlements"
 
+# Dev-only: when CATERM_DEV_LOGIN_KEYCHAIN=1 (default in this dev workflow),
+# strip the `keychain-access-groups` entitlement before signing. AMFI on
+# Apple Silicon macOS rejects that restricted entitlement without an
+# embedded development provisioning profile (kills the process at exec
+# with SIGKILL / exit 137). For dev we fall back to the login-keychain
+# path which works with no provisioning profile. See
+# Manual/end-to-end-smoke.md for the full rationale.
+DEV_LOGIN_KEYCHAIN="${CATERM_DEV_LOGIN_KEYCHAIN:-1}"
+if [[ "$DEV_LOGIN_KEYCHAIN" == "1" ]]; then
+    echo "Dev mode: stripping keychain-access-groups (login-keychain path)"
+    /usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" \
+        "$TMPDIR_ENT/Caterm.entitlements" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" \
+        "$TMPDIR_ENT/CatermAskpass.entitlements" 2>/dev/null || true
+fi
+
 codesign --force --options runtime \
     --sign "$CATERM_DEV_IDENTITY" \
     --entitlements "$TMPDIR_ENT/Caterm.entitlements" \

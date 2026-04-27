@@ -18,6 +18,38 @@ import KeychainStore
 
 let env = ProcessInfo.processInfo.environment
 
+// Dev-only stuff mode — used by Task 1.4 EndToEndSSHTests to seed a Keychain
+// item from the same signed binary that will later read it (so the partition
+// list automatically grants access without an "Always Allow" dialog). Gated
+// behind an explicit env var so production ssh invocations cannot trigger it.
+//
+// Usage:
+//   CATERM_ASKPASS_STUFF=1 \
+//   CATERM_HOST_ID=<uuid> \
+//   CATERM_ASKPASS_KIND=password \
+//   CATERM_ASKPASS_SECRET=<secret> \
+//   CATERM_ACCESS_GROUP=<optional> \
+//     ./caterm-askpass
+if env["CATERM_ASKPASS_STUFF"] == "1" {
+    guard let hostId = env["CATERM_HOST_ID"], !hostId.isEmpty,
+          let kind = env["CATERM_ASKPASS_KIND"],
+          kind == "password" || kind == "passphrase",
+          let secret = env["CATERM_ASKPASS_SECRET"]
+    else {
+        FileHandle.standardError.write(Data("stuff: missing required env\n".utf8))
+        exit(1)
+    }
+    let stuffStore = KeychainStore(service: "com.caterm.host",
+                                   accessGroup: env["CATERM_ACCESS_GROUP"])
+    do {
+        try stuffStore.set(account: "\(hostId).\(kind)", secret: secret)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("stuff: keychain write failed \(error)\n".utf8))
+        exit(4)
+    }
+}
+
 guard let hostId = env["CATERM_HOST_ID"], !hostId.isEmpty else {
     FileHandle.standardError.write(Data("CATERM_HOST_ID not set\n".utf8))
     exit(1)

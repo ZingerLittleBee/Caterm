@@ -1,5 +1,11 @@
 import Foundation
 
+/// Disambiguating alias for callers who also import modules that expose
+/// `Foundation.NSHost` (e.g. anything pulling in AppKit/SwiftUI/Combine).
+/// Use `SSHHost` from those contexts; `Host` remains the canonical name
+/// inside this module and existing tests.
+public typealias SSHHost = Host
+
 public struct Host: Codable, Identifiable, Hashable {
     public let id: UUID
     public var name: String
