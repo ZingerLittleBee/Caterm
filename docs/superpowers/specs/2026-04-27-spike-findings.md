@@ -114,8 +114,16 @@ Phase 1 starts with a fresh `apps/macos/Sources/Caterm/` tree.
 
 **Recommendation:** Proceed to Phase 1 design rewrite (the spec sections listed above). The spike has answered its central question — libghostty + macOS Swift can deliver an SSH terminal — but the v1 transport layer is fundamentally simpler than the spec assumed. The plan should reflect that smaller scope.
 
-Open question for the user before rewriting Phase 1:
+### Resolved (2026-04-27): v1 auth UX
 
-- **Auth UX in v1:** OK to lean on the user's existing ssh-agent + `~/.ssh/config` (no Caterm-managed credentials) and let v1.1 add a Keychain-backed askpass? Or is "passwords stored in the app" a v1 must-have?
+**Decision:** v1 supports all three credential paths simultaneously (not mutually exclusive). When the user adds a host, they pick one of:
 
-If the answer is "v1 must store passwords": we need a Keychain askpass binary in v1. Doable but adds a chunk of work. Otherwise v1 is much closer to "host list + libghostty surface" with the auth machinery deferred.
+1. **Password** → stored in Keychain
+2. **SSH key file** (user picks `~/.ssh/id_*`) + optional passphrase → passphrase stored in Keychain
+3. **Existing ssh-agent** → nothing stored, direct `ssh user@host`
+
+All three compile to different `/usr/bin/ssh ...` command strings handed to libghostty's `surface.command`. Paths 1+2 share one askpass binary that reads Keychain and writes stdout (`SSH_ASKPASS=<binary> SSH_ASKPASS_REQUIRE=force`); path 3 is essentially free (no `SSH_ASKPASS`, no `IdentityFile`).
+
+**Cost:** ~2-3 days extra for the askpass binary + Keychain read logic, vs. the "ssh-agent only" baseline.
+
+**Spec impact:** §7.1 must be rewritten with credential source as an enum (`CredentialSource.password | .keyFile(path, passphraseRef) | .agent`), not a single source.

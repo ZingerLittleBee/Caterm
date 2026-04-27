@@ -64,6 +64,7 @@ S1-S6 全部通过；技术路径基本锁定但**有重大架构调整**：libg
 | 2026-04-27 | Spike Task 3 通过 (S2)：libghostty surface 渲染默认 shell。架构发现：libghostty 没有外部字节注入入口（详见 spike-findings.md），spec §3-§4 NIOSSH-feed 路线 v1 不可行 |
 | 2026-04-27 | Spike Task 4-8 合并通过 (S3-S6)：用 `command="/usr/bin/ssh user@host"` 绕开外部字节问题。OpenSSH-server Docker 容器作 target，欢迎 banner / prompt / `echo PID=$$` (→ "PID=238") / 拖拽 resize 后 `stty size` 14 76 → 41 145 全部观测到 |
 | 2026-04-27 | **Phase 0 spike COMPLETE — S1-S6 全部通过；技术路径锁定（libghostty + ssh-as-subprocess），swift-nio-ssh 暂不入 v1。Findings 写入 `2026-04-27-spike-findings.md`**|
+| 2026-04-27 | v1 auth UX 决策：三路并存（密码/Keychain、SSH key + passphrase/Keychain、ssh-agent 兜底），凭据来源是 enum。代价 +2-3 天写 askpass 二进制；spec §7.1 待重写为 enum 起稿。spike-findings 决策门记录 |
 
 ---
 
