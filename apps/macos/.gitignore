@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+Package.resolved
+Frameworks/
+*.xcframework
+.spike.local.json
+DerivedData/
+xcuserdata/
