@@ -8,9 +8,21 @@
 
 ## 当前阶段
 
-**Phase 1 v1 — 设计 + 计划 READY (2026-04-27)**
+**Phase 1 v1 — 7/12 Tasks COMPLETE (2026-04-27)**
 
-Spike S1-S6 全过；spec 大改三轮（spike pivot + 7 处 review 修复）；Phase 1 v1 实施计划已写好（12 Tasks）。下一步：进 Task 1.0（删 spike + restructure Package.swift），用 subagent-driven-development 推进。
+分支：`feature/phase-1-v1`（基于 `e9dc32a` Merge spike/phase-0）。最近 commit `5b907c9`。
+
+完成：1.0 scaffold / 1.1 TerminalEngine / 1.2 SSHCommandBuilder + fuzz / 1.3 KeychainStore + askpass + dev-codesign / 1.4 端到端 SSH（Docker target 跑通） / 1.5 NSWindow native multi-tab / 1.6 HostListSidebar + 表单 + JSON 持久化 / 1.7 KeychainIntegrationTests。49 tests 全绿（1 Docker skip）。
+
+剩余 5 Tasks：1.8 重连 FSM + overlay / 1.9 ConfigStore / 1.10 菜单/快捷键/About / 1.11 Release（packaging + Sparkle + provisioning profile + Tauri banner）。
+
+**关键技术状态（必读）**：
+- AMFI 在 Apple Silicon 上拒绝无 provisioning profile 的 `keychain-access-groups` restricted entitlement → dev 路径走 `accessGroup: nil`（login keychain）；production .app 需在 1.11 加 provisioning profile 嵌入或 Developer ID + Notarization。
+- 真实 TeamID 是 `9VM4RM39R3`（cert OU），不是 CN 后缀的 `4GH398M5WH`。dev-codesign.sh 自动从 cert 提取。
+- `CATERM_ASKPASS_STUFF=1` dev-only bootstrap：同一签名 binary 写 + 读 Keychain item 走 partition list trust，免去 macOS "Always Allow" 对话框。每次 codesign 重做后需重跑。
+- `SSHHost = Host` typealias 在 SSHCommandBuilder/Host.swift 里（解决 SessionStore 引入 Combine 后 Foundation `NSHost` 名称冲突）。
+
+下一会话起点：用户做端到端视觉 smoke 验证（add host → connect → multi-tab → close），通过后进 Task 1.8。
 
 ---
 
