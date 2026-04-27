@@ -65,6 +65,7 @@ S1-S6 全部通过；技术路径基本锁定但**有重大架构调整**：libg
 | 2026-04-27 | Spike Task 4-8 合并通过 (S3-S6)：用 `command="/usr/bin/ssh user@host"` 绕开外部字节问题。OpenSSH-server Docker 容器作 target，欢迎 banner / prompt / `echo PID=$$` (→ "PID=238") / 拖拽 resize 后 `stty size` 14 76 → 41 145 全部观测到 |
 | 2026-04-27 | **Phase 0 spike COMPLETE — S1-S6 全部通过；技术路径锁定（libghostty + ssh-as-subprocess），swift-nio-ssh 暂不入 v1。Findings 写入 `2026-04-27-spike-findings.md`**|
 | 2026-04-27 | v1 auth UX 决策：三路并存（密码/Keychain、SSH key + passphrase/Keychain、ssh-agent 兜底），凭据来源是 enum。代价 +2-3 天写 askpass 二进制；spec §7.1 待重写为 enum 起稿。spike-findings 决策门记录 |
+| 2026-04-27 | **设计 spec 大改**（一口气 §3/§4/§6/§7）：架构图 + 模块表去掉 SSHTransport/KnownHostStore/BoundedByteChannel，加 SSHCommandBuilder + AskpassHelper；§4.1 重写连接流（含三种 commandString + env_vars）；§4.2 删除 NIO/字节流模型，I/O 由 libghostty PTY 包办；§4.3 重连改成"销毁旧 surface + 同 command 建新 surface"+ 5s Connected 判定；§6.1 step 列表改 12 步含 askpass 子任务；§6.2 Host 模型加 CredentialSource enum + Keychain access group 命名；§6.3 测试矩阵换成 SSHCommandBuilder/AskpassHelper/失败模式分类；§7.1.2 加跨设备 needsLocalCredential 三路判定；R1/R2 关闭，R9（askpass 签名）/R10（locale 文本匹配）补上 |
 
 ---
 
