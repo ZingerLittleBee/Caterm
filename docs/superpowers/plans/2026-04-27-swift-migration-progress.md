@@ -67,6 +67,7 @@ Spike S1-S6 全过；spec 大改三轮（spike pivot + 7 处 review 修复）；
 | 2026-04-27 | Task 1.0 通过：spike 代码删除；Package.swift 重写为 9 targets（5 lib + 2 exec + 4 test）；entitlements plist 落位；`swift build` + `swift test` 全绿。Phase 1 干净 baseline 起来 |
 | 2026-04-27 | Task 1.1 通过：TerminalEngine module 起来；GhosttySurface + GhosttySurfaceNSView 包装 libghostty；默认 shell 在 NSView 内渲染；resize OK；键盘输入 OK |
 | 2026-04-27 | Task 1.2 通过：SSHCommandBuilder 三路 enum 实现完毕；ShellQuote POSIX；FuzzInjectionTests 60+ 用例（含分号/反引号/$()/单双引号/unicode/换行）全绿。凭据安全防线立起来 |
+| 2026-04-27 | Task 1.3 DONE_WITH_CONCERNS：KeychainStore（SecItem* + 可选 access group，6 个测试全绿）；caterm-askpass 二进制实现完毕（env 驱动 host_id/kind 读 secret）；dev-codesign.sh 自动从证书 OU 提取真实 TeamIdentifier (`9VM4RM39R3`，非 spec 误写的 `4GH398M5WH`) 并替换 `$(TeamIdentifierPrefix)`，两个 binary 同 TeamID 签名通过。**端到端 access group 验证 BLOCKED**：amfid 拒绝 `keychain-access-groups` 这个 restricted entitlement，要求 development provisioning profile（exit 137 / "No matching profile found"）。dev v1 路径走"login keychain + accessGroup=nil"（KeychainStore API 已支持双模式；签名 binary 读 login keychain 全绿，Step 7 验证）。production .app 路径需要嵌 provisioning profile 或 Developer ID + Notarization，留给后续打包 task。Manual/end-to-end-smoke.md 全文记录约束与 fallback |
 
 ---
 
