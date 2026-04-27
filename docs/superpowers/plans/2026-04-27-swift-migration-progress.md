@@ -8,11 +8,13 @@
 
 ## 当前阶段
 
-**Phase 0 — Spike implementation (ready to start)**
+**Phase 0 — Spike COMPLETE (2026-04-27)**
 
-设计已通过三轮 review；Phase 0 实施计划已写好。下一步：按 `2026-04-27-phase-0-spike-plan.md` 的 9 个 Task 跑 spike，3-5 天验证 S1-S6。
+S1-S6 全部通过；技术路径基本锁定但**有重大架构调整**：libghostty 的公开 C API 不接受外部字节注入（surface 自己 spawn 命令并拥有 PTY），所以原 spec §3-§4 设计的 "swift-nio-ssh → MainActor → ghostty.feed(data)" 通路在 v1 不可行。v1 改走 `command="/usr/bin/ssh user@host"` 由 libghostty 自己 spawn ssh 子进程。
 
-Phase 1 v1 实施计划 = spike 通过后再写（spec §5.3 明确 spike 代码扔掉，Phase 1 fresh start；先经过 spike 才知道 libghostty/NIOSSH 公开 API 的真实形状）。
+详见 `docs/superpowers/specs/2026-04-27-spike-findings.md` 与 spec 修订列表。
+
+下一步：基于 spike 发现重写 Phase 1 v1 设计章节（§3-§4、§7 凭据流、§6 测试），再写 Phase 1 实施计划。
 
 ---
 
@@ -57,6 +59,11 @@ Phase 1 v1 实施计划 = spike 通过后再写（spec §5.3 明确 spike 代码
 | 2026-04-27 | 第二轮 review 8 处二次细化全部接受：架构图加 KnownHostStore；统一 AsyncThrowingStream；NIO API 名修正（autoRead / ChannelOptions.allowRemoteHalfClosure）；stdin 加界限处理 paste；spike host key 移到排除列；known_hosts 非 22 端口格式修正；v1.1 移除 bookmarks；新增 §7.1.2 凭据/metadata 同步边界纪律 |
 | 2026-04-27 | 第三轮 review 5 处接受：sshHost.upsert → create/update（router 没 upsert）；新增 §7.1.3 本地 id ↔ server id 映射（方案 A 双 id，Keychain 锚定本地 id）；§4.1 加 TOFU 异步纪律（NIO event loop 不阻塞等 UI）；TODO(v1.2) → TODO(step-1.2)；§6.3 集成测试改为本地 + ship 前手动跑（与 R5 一致）|
 | 2026-04-27 | Phase 0 spike 实施计划写好（9 Tasks，bite-sized 步骤，每 Task 末尾 commit + progress log），等用户跑 spike |
+| 2026-04-27 | Spike Task 1 通过：SwiftPM 项目壳起来，`swift build` + `swift run` 出空白 SwiftUI 窗口。Branch `spike/phase-0` |
+| 2026-04-27 | Spike Task 2 通过 (S1)：libghostty.xcframework 链接成功；ghostty submodule pinned at `bc90a5128`（v1.3.1 之后，有 fat-static-archive 修复 — v1.3.1 自己漏掉 `libghostty_zcu.o` 导致 macOS slice 没导出 embedding API）。Build script 容忍 zig 在 xcframework 产出后 app-bundle 步骤失败 |
+| 2026-04-27 | Spike Task 3 通过 (S2)：libghostty surface 渲染默认 shell。架构发现：libghostty 没有外部字节注入入口（详见 spike-findings.md），spec §3-§4 NIOSSH-feed 路线 v1 不可行 |
+| 2026-04-27 | Spike Task 4-8 合并通过 (S3-S6)：用 `command="/usr/bin/ssh user@host"` 绕开外部字节问题。OpenSSH-server Docker 容器作 target，欢迎 banner / prompt / `echo PID=$$` (→ "PID=238") / 拖拽 resize 后 `stty size` 14 76 → 41 145 全部观测到 |
+| 2026-04-27 | **Phase 0 spike COMPLETE — S1-S6 全部通过；技术路径锁定（libghostty + ssh-as-subprocess），swift-nio-ssh 暂不入 v1。Findings 写入 `2026-04-27-spike-findings.md`**|
 
 ---
 
