@@ -8,9 +8,11 @@
 
 ## 当前阶段
 
-**Phase 0 — Brainstorming**
+**Phase 0 — Spike implementation (ready to start)**
 
-正在使用 `superpowers:brainstorming` skill 收敛设计。
+设计已通过三轮 review；Phase 0 实施计划已写好。下一步：按 `2026-04-27-phase-0-spike-plan.md` 的 9 个 Task 跑 spike，3-5 天验证 S1-S6。
+
+Phase 1 v1 实施计划 = spike 通过后再写（spec §5.3 明确 spike 代码扔掉，Phase 1 fresh start；先经过 spike 才知道 libghostty/NIOSSH 公开 API 的真实形状）。
 
 ---
 
@@ -54,11 +56,15 @@
 | 2026-04-27 | 用户 review 提出 10 处修订，全部接受并修复（host key 校验 / 背压 / 重连语义 / D7-D10 矛盾 / D9 例外 / v2 文件浏览器单栏 / spike 凭据 / DoD 列举 / EmbeddedChannel 测试 / R8 升级仪式）|
 | 2026-04-27 | 第二轮 review 8 处二次细化全部接受：架构图加 KnownHostStore；统一 AsyncThrowingStream；NIO API 名修正（autoRead / ChannelOptions.allowRemoteHalfClosure）；stdin 加界限处理 paste；spike host key 移到排除列；known_hosts 非 22 端口格式修正；v1.1 移除 bookmarks；新增 §7.1.2 凭据/metadata 同步边界纪律 |
 | 2026-04-27 | 第三轮 review 5 处接受：sshHost.upsert → create/update（router 没 upsert）；新增 §7.1.3 本地 id ↔ server id 映射（方案 A 双 id，Keychain 锚定本地 id）；§4.1 加 TOFU 异步纪律（NIO event loop 不阻塞等 UI）；TODO(v1.2) → TODO(step-1.2)；§6.3 集成测试改为本地 + ship 前手动跑（与 R5 一致）|
+| 2026-04-27 | Phase 0 spike 实施计划写好（9 Tasks，bite-sized 步骤，每 Task 末尾 commit + progress log），等用户跑 spike |
 
 ---
 
 ## 产出物路径
 
-- 设计文档：`docs/superpowers/specs/2026-04-27-tauri-to-swift-migration-design.md`（pending）
-- 实现计划：`docs/superpowers/plans/2026-04-27-tauri-to-swift-migration-plan.md`（pending）
+- 设计文档：`docs/superpowers/specs/2026-04-27-tauri-to-swift-migration-design.md` ✅（三轮 review 通过）
+- Phase 0 spike 计划：`docs/superpowers/plans/2026-04-27-phase-0-spike-plan.md` ✅
+- Phase 1 v1 计划：待 spike 通过后写
+- v1.1 同步计划：待 v1 ship 后写
+- v2 SFTP 计划：待 v1.1 ship 后写
 - 本进度文件：`docs/superpowers/plans/2026-04-27-swift-migration-progress.md`
