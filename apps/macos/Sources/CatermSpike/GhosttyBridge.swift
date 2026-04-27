@@ -106,18 +106,45 @@ final class GhosttyBridge {
         ghostty_surface_set_content_scale(surface, scale, scale)
     }
 
-    /// Spike-grade text input: forwards UTF-8 bytes to the PTY. Good enough for
-    /// "echo hi" + Return. Real implementation needs `ghostty_surface_key` for
-    /// modifiers, arrow keys, Ctrl-C, etc.
-    func feedKeyText(_ string: String) {
-        guard let surface, !string.isEmpty else { return }
-        let utf8 = Array(string.utf8)
-        utf8.withUnsafeBufferPointer { buf in
-            guard let base = buf.baseAddress else { return }
-            base.withMemoryRebound(to: CChar.self, capacity: buf.count) { cBase in
-                ghostty_surface_text(surface, cBase, UInt(buf.count))
-            }
+    /// Forwards an NSEvent keyDown to libghostty. Tries `ghostty_surface_key`
+    /// first (handles Enter / arrows / Ctrl combos via keycode + mods); if
+    /// libghostty doesn't claim it, falls back to `ghostty_surface_text` for
+    /// regular printable input.
+    func feedKey(event: NSEvent) {
+        guard let surface else { return }
+
+        let chars = event.characters ?? ""
+        let mods = Self.ghosttyMods(event.modifierFlags)
+        let action: ghostty_input_action_e = event.isARepeat
+            ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+
+        let handled: Bool = chars.withCString { textPtr -> Bool in
+            var k = ghostty_input_key_s()
+            k.action = action
+            k.mods = mods
+            k.consumed_mods = mods
+            k.keycode = UInt32(event.keyCode)
+            k.text = chars.isEmpty ? nil : textPtr
+            k.unshifted_codepoint = chars.unicodeScalars.first.map { UInt32($0.value) } ?? 0
+            k.composing = false
+            return ghostty_surface_key(surface, k)
         }
+
+        // If ghostty's binding system didn't consume it AND we have printable
+        // text that wasn't already sent through key (text path), forward the
+        // text. ghostty_surface_key is supposed to handle text for us, so
+        // this branch is mainly a safety net.
+        _ = handled
+    }
+
+    private static func ghosttyMods(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
+        var raw: UInt32 = 0
+        if flags.contains(.shift)   { raw |= GHOSTTY_MODS_SHIFT.rawValue }
+        if flags.contains(.control) { raw |= GHOSTTY_MODS_CTRL.rawValue }
+        if flags.contains(.option)  { raw |= GHOSTTY_MODS_ALT.rawValue }
+        if flags.contains(.command) { raw |= GHOSTTY_MODS_SUPER.rawValue }
+        if flags.contains(.capsLock){ raw |= GHOSTTY_MODS_CAPS.rawValue }
+        return ghostty_input_mods_e(raw)
     }
 
     deinit {

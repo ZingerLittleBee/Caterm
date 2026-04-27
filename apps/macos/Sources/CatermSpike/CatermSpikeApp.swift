@@ -41,9 +41,16 @@ final class AppState: ObservableObject {
     func start() {
         guard bridge == nil, error == nil else { return }
         do {
-            // Spike S2: render the user's default shell. SSH comes in Task 5
-            // by passing `command="ssh user@host"`.
-            self.bridge = try GhosttyBridge(command: nil)
+            // If SpikeConfig is available we set the surface command to
+            // `ssh user@host`; otherwise we fall back to the user's default
+            // shell so the binary is still useful without env vars.
+            let command: String?
+            if let cfg = try? SpikeConfig.load() {
+                command = cfg.sshCommand()
+            } else {
+                command = nil
+            }
+            self.bridge = try GhosttyBridge(command: command)
         } catch {
             self.error = "\(error)"
         }

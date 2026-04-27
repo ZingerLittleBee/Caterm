@@ -56,9 +56,7 @@ final class TerminalNSView: NSView {
 
     override func keyDown(with event: NSEvent) {
         guard let bridge else { return super.keyDown(with: event) }
-        if let chars = event.characters, !chars.isEmpty {
-            bridge.feedKeyText(chars)
-        }
+        bridge.feedKey(event: event)
     }
 
     private func propagateSize() {
