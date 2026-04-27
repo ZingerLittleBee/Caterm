@@ -51,6 +51,7 @@
 | 2026-04-27 | Tauri 客户端冻结（不再维护）；新 Swift 客户端建议放 `apps/macos` |
 | 2026-04-27 | 锁定 Approach 1（spike 先行）；Section 1-4 设计通过 |
 | 2026-04-27 | 构建系统锁定 SwiftPM（不引入 xcodeproj）；最低 macOS 14；libghostty 用 .xcframework binaryTarget |
+| 2026-04-27 | 用户 review 提出 10 处修订，全部接受并修复（host key 校验 / 背压 / 重连语义 / D7-D10 矛盾 / D9 例外 / v2 文件浏览器单栏 / spike 凭据 / DoD 列举 / EmbeddedChannel 测试 / R8 升级仪式）|
 
 ---
 
