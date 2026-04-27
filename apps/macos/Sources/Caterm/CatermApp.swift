@@ -103,8 +103,10 @@ private func makeStore() -> SessionStore {
 
 	// Dev: askpass binary path can be overridden via env. In a packaged .app
 	// it would sit alongside the main binary in Contents/MacOS/.
+	// For a SwiftPM CLI executable, `Bundle.main.executableURL` is the binary
+	// itself; its parent directory contains the sibling `caterm-askpass`.
 	let askpassPath = ProcessInfo.processInfo.environment["CATERM_DEV_ASKPASS_PATH"]
-		?? Bundle.main.bundleURL
+		?? Bundle.main.executableURL!
 		.deletingLastPathComponent()
 		.appendingPathComponent("caterm-askpass").path
 
