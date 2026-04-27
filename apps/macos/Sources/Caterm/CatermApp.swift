@@ -15,7 +15,8 @@ struct CatermApp: App {
 		// `NSWindow.allowsAutomaticWindowTabbing = true` (AppDelegate).
 		//
 		// When `tabId == nil` the user opened a "fresh" window via the
-		// File > New Window default; show the landing screen prompting ⌘T.
+		// File > New Window default; show the landing screen with the host
+		// list sidebar.
 		WindowGroup(for: UUID.self) { $tabId in
 			Group {
 				if let id = tabId, store.tabs.contains(where: { $0.id == id }) {
@@ -28,53 +29,32 @@ struct CatermApp: App {
 			.background(OpenTabBridge(store: store))
 		}
 		.commands {
-			// Replace the default "New Window" with ⌘T → New Tab. macOS's
-			// auto-tabbing groups subsequent windows of the same WindowGroup
-			// into the active window's native tab bar.
+			// ⌘T now means "add a new host" (the sidebar listens for this
+			// notification and opens its add-sheet). Connecting to a host
+			// happens via the sidebar (Connect / double-click).
 			CommandGroup(replacing: .newItem) {
-				Button("New Tab") { newTab(store: store) }
-					.keyboardShortcut("t", modifiers: .command)
+				Button("New Host…") {
+					NotificationCenter.default.post(name: .catermAddHost, object: nil)
+				}
+				.keyboardShortcut("t", modifiers: .command)
 			}
 		}
 	}
 }
 
-/// Posts a request to open a new tab window. The actual `openWindow(value:)`
-/// call needs `@Environment(\.openWindow)` which is only available inside a
-/// View body — `OpenTabBridge` (mounted in every window) listens for this
-/// notification and routes through to the environment value.
-@MainActor
-private func newTab(store: SessionStore) {
-	// Task 1.5: still hardcoded smoke host; Task 1.6 replaces this with a real
-	// host picker / connect dialog.
-	let host = SSHHost(
-		id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-		name: "smoke-\(store.tabs.count)",
-		hostname: "127.0.0.1", port: 2222,
-		username: "spike", credential: .password
-	)
-	// Stuff Keychain (idempotent — replaces if exists)
-	let kc = KeychainStore(service: "com.caterm.host",
-	                       accessGroup: store.accessGroup)
-	try? kc.set(account: "\(host.id.uuidString).password", secret: "spikepass")
-	let tabId = store.openTab(host: host)
-	NotificationCenter.default.post(
-		name: .catermOpenTab, object: nil, userInfo: ["tabId": tabId]
-	)
-}
-
 extension Notification.Name {
 	static let catermOpenTab = Notification.Name("CatermOpenTabNotification")
+	static let catermAddHost = Notification.Name("CatermAddHostNotification")
 }
 
 /// Invisible bridge view that lets us call `openWindow(value:)` (which needs
 /// the `@Environment(\.openWindow)` from inside a SwiftUI View) in response to
-/// a NotificationCenter post from the App-level `newTab` command.
+/// a NotificationCenter post from anywhere (HostListSidebar's Connect action).
 ///
 /// Mounted in every window's `.background` so any window's environment can
 /// drive the new-tab opening — macOS auto-tabbing then merges the resulting
 /// new window into the active window's tab bar.
-private struct OpenTabBridge: View {
+struct OpenTabBridge: View {
 	@Environment(\.openWindow) var openWindow
 	let store: SessionStore
 
@@ -89,15 +69,24 @@ private struct OpenTabBridge: View {
 }
 
 /// Initial landing view shown when a "fresh" (tabId-less) window opens.
-/// Once Task 1.6 lands, this is replaced by the host list / connect dialog.
+/// Embeds the host list sidebar so users can manage hosts before any tab
+/// is open.
 struct LandingView: View {
 	var body: some View {
-		VStack(spacing: 12) {
-			Text("Caterm").font(.largeTitle)
-			Text("⌘T to open a new SSH tab")
-				.foregroundColor(.secondary)
+		NavigationSplitView {
+			HostListSidebar()
+				.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+		} detail: {
+			VStack(spacing: 12) {
+				Image(systemName: "terminal").font(.system(size: 64))
+					.foregroundColor(.secondary)
+				Text("Caterm").font(.largeTitle)
+				Text("Pick a host from the sidebar, or press ⌘T to add one")
+					.foregroundColor(.secondary)
+			}
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
-		.frame(minWidth: 800, minHeight: 500)
+		.frame(minWidth: 1000, minHeight: 600)
 	}
 }
 
@@ -110,6 +99,7 @@ private func makeStore() -> SessionStore {
 	                                         withIntermediateDirectories: true)
 	let knownCaterm = supportDir.appendingPathComponent("known_hosts").path
 	let knownUser = ("~/.ssh/known_hosts" as NSString).expandingTildeInPath
+	let hostsURL = supportDir.appendingPathComponent("hosts.json")
 
 	// Dev: askpass binary path can be overridden via env. In a packaged .app
 	// it would sit alongside the main binary in Contents/MacOS/.
@@ -123,8 +113,12 @@ private func makeStore() -> SessionStore {
 	let teamId = ProcessInfo.processInfo.environment["CATERM_TEAM_ID"] ?? ""
 	let accessGroup = teamId.isEmpty ? nil : "\(teamId).caterm.shared"
 
+	let keychain = KeychainStore(service: "com.caterm.host", accessGroup: accessGroup)
+
 	return SessionStore(askpassPath: askpassPath,
 	                    knownHostsCaterm: knownCaterm,
 	                    knownHostsUser: knownUser,
-	                    accessGroup: accessGroup)
+	                    accessGroup: accessGroup,
+	                    hostsURL: hostsURL,
+	                    keychain: keychain)
 }

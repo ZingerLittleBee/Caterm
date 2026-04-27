@@ -1,3 +1,4 @@
+import AppKit
 import SessionStore
 import SwiftUI
 
@@ -14,15 +15,21 @@ struct MainWindow: View {
 	let tabId: UUID
 
 	var body: some View {
-		Group {
-			if store.tabs.contains(where: { $0.id == tabId }) {
-				TerminalContainerView(tabId: tabId)
-					.frame(minWidth: 800, minHeight: 500)
-			} else {
-				Text("Tab closed")
-					.frame(minWidth: 800, minHeight: 500)
+		NavigationSplitView {
+			HostListSidebar()
+				.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+		} detail: {
+			Group {
+				if store.tabs.contains(where: { $0.id == tabId }) {
+					TerminalContainerView(tabId: tabId)
+				} else {
+					Text("Tab closed")
+						.foregroundColor(.secondary)
+				}
 			}
+			.frame(minWidth: 600, minHeight: 500)
 		}
+		.frame(minWidth: 1000, minHeight: 600)
 		.onDisappear { store.closeTab(tabId: tabId) }
 	}
 }

@@ -127,10 +127,15 @@ final class EndToEndSSHTests: XCTestCase {
 
         // FailureKind.cleanExit semantics: child exited 0 with hadConnected.
         // Verify SessionStore would record this transition.
+        let tmpHostsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("caterm-e2e-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: tmpHostsURL) }
         let store = SessionStore(askpassPath: askpassPath,
                                  knownHostsCaterm: knownCaterm,
                                  knownHostsUser: knownUser,
-                                 accessGroup: nil)
+                                 accessGroup: nil,
+                                 hostsURL: tmpHostsURL,
+                                 keychain: keychain)
         let tabId = store.openTab(host: host)
         store.markConnecting(tabId: tabId)
         store.markConnected(tabId: tabId)

@@ -1,14 +1,20 @@
 import XCTest
+@testable import KeychainStore
 @testable import SessionStore
 @testable import SSHCommandBuilder
 
 @MainActor
 final class SessionStoreTabsTests: XCTestCase {
 	private func makeStore() -> SessionStore {
-		SessionStore(askpassPath: "/dev/null",
-		             knownHostsCaterm: "/dev/null",
-		             knownHostsUser: "/dev/null",
-		             accessGroup: nil)
+		let tmp = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-tabs-\(UUID()).json")
+		let kc = KeychainStore(service: "com.caterm.test.\(UUID())", accessGroup: nil)
+		return SessionStore(askpassPath: "/dev/null",
+		                    knownHostsCaterm: "/dev/null",
+		                    knownHostsUser: "/dev/null",
+		                    accessGroup: nil,
+		                    hostsURL: tmp,
+		                    keychain: kc)
 	}
 
 	private func makeHost(name: String = "h") -> SSHHost {

@@ -85,7 +85,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SessionStoreTests",
-            dependencies: ["SessionStore"],
+            dependencies: ["SessionStore", "KeychainStore", "SSHCommandBuilder"],
             path: "Tests/SessionStoreTests"
         ),
         .testTarget(
