@@ -8,11 +8,9 @@
 
 ## 当前阶段
 
-**Phase 0 — Spike implementation (ready to start)**
+**Phase 1 v1 — 设计 + 计划 READY (2026-04-27)**
 
-设计已通过三轮 review；Phase 0 实施计划已写好。下一步：按 `2026-04-27-phase-0-spike-plan.md` 的 9 个 Task 跑 spike，3-5 天验证 S1-S6。
-
-Phase 1 v1 实施计划 = spike 通过后再写（spec §5.3 明确 spike 代码扔掉，Phase 1 fresh start；先经过 spike 才知道 libghostty/NIOSSH 公开 API 的真实形状）。
+Spike S1-S6 全过；spec 大改三轮（spike pivot + 7 处 review 修复）；Phase 1 v1 实施计划已写好（12 Tasks）。下一步：进 Task 1.0（删 spike + restructure Package.swift），用 subagent-driven-development 推进。
 
 ---
 
@@ -57,14 +55,23 @@ Phase 1 v1 实施计划 = spike 通过后再写（spec §5.3 明确 spike 代码
 | 2026-04-27 | 第二轮 review 8 处二次细化全部接受：架构图加 KnownHostStore；统一 AsyncThrowingStream；NIO API 名修正（autoRead / ChannelOptions.allowRemoteHalfClosure）；stdin 加界限处理 paste；spike host key 移到排除列；known_hosts 非 22 端口格式修正；v1.1 移除 bookmarks；新增 §7.1.2 凭据/metadata 同步边界纪律 |
 | 2026-04-27 | 第三轮 review 5 处接受：sshHost.upsert → create/update（router 没 upsert）；新增 §7.1.3 本地 id ↔ server id 映射（方案 A 双 id，Keychain 锚定本地 id）；§4.1 加 TOFU 异步纪律（NIO event loop 不阻塞等 UI）；TODO(v1.2) → TODO(step-1.2)；§6.3 集成测试改为本地 + ship 前手动跑（与 R5 一致）|
 | 2026-04-27 | Phase 0 spike 实施计划写好（9 Tasks，bite-sized 步骤，每 Task 末尾 commit + progress log），等用户跑 spike |
+| 2026-04-27 | Spike Task 1 通过：SwiftPM 项目壳起来，`swift build` + `swift run` 出空白 SwiftUI 窗口。Branch `spike/phase-0` |
+| 2026-04-27 | Spike Task 2 通过 (S1)：libghostty.xcframework 链接成功；ghostty submodule pinned at `bc90a5128`（v1.3.1 之后，有 fat-static-archive 修复 — v1.3.1 自己漏掉 `libghostty_zcu.o` 导致 macOS slice 没导出 embedding API）。Build script 容忍 zig 在 xcframework 产出后 app-bundle 步骤失败 |
+| 2026-04-27 | Spike Task 3 通过 (S2)：libghostty surface 渲染默认 shell。架构发现：libghostty 没有外部字节注入入口（详见 spike-findings.md），spec §3-§4 NIOSSH-feed 路线 v1 不可行 |
+| 2026-04-27 | Spike Task 4-8 合并通过 (S3-S6)：用 `command="/usr/bin/ssh user@host"` 绕开外部字节问题。OpenSSH-server Docker 容器作 target，欢迎 banner / prompt / `echo PID=$$` (→ "PID=238") / 拖拽 resize 后 `stty size` 14 76 → 41 145 全部观测到 |
+| 2026-04-27 | **Phase 0 spike COMPLETE — S1-S6 全部通过；技术路径锁定（libghostty + ssh-as-subprocess），swift-nio-ssh 暂不入 v1。Findings 写入 `2026-04-27-spike-findings.md`**|
+| 2026-04-27 | v1 auth UX 决策：三路并存（密码/Keychain、SSH key + passphrase/Keychain、ssh-agent 兜底），凭据来源是 enum。代价 +2-3 天写 askpass 二进制；spec §7.1 待重写为 enum 起稿。spike-findings 决策门记录 |
+| 2026-04-27 | **设计 spec 大改**（一口气 §3/§4/§6/§7）：架构图 + 模块表去掉 SSHTransport/KnownHostStore/BoundedByteChannel，加 SSHCommandBuilder + AskpassHelper；§4.1 重写连接流（含三种 commandString + env_vars）；§4.2 删除 NIO/字节流模型，I/O 由 libghostty PTY 包办；§4.3 重连改成"销毁旧 surface + 同 command 建新 surface"+ 5s Connected 判定；§6.1 step 列表改 12 步含 askpass 子任务；§6.2 Host 模型加 CredentialSource enum + Keychain access group 命名；§6.3 测试矩阵换成 SSHCommandBuilder/AskpassHelper/失败模式分类；§7.1.2 加跨设备 needsLocalCredential 三路判定；R1/R2 关闭，R9（askpass 签名）/R10（locale 文本匹配）补上 |
+| 2026-04-27 | **Spec review 7 处修复（H1-H4 + M1-M3）**：(H1) 改正 command 经 macOS bash 解析事实，强制 shell-quote 所有用户输入；(H2) 失败分类降级到 exit code + Connected 历史粗分（stderr 拿不到，stderr 文本匹配方案删除）；Connected 判定从"首字节"改成 grace period 3s alive 检查；scrollback 字节注入改成 NSView overlay；(H3) child-exit 信号源切到 GHOSTTY_ACTION_SHOW_CHILD_EXITED action + ghostty_surface_process_exited，不依赖 close_surface_cb（wait-after-command 强制 true 已 verify）；(H4) v1.1 CredentialSource 改成 device-local overlay，server 不动 schema，sshHost.create payload 仅含 metadata，不含 CredentialSource 完整状态；(M1) known_hosts hybrid 双文件（Caterm 写 + ~/.ssh 读继承）；(M2) 三路认证选项隔离（password 禁 pubkey / keyFile 禁 password+kbd / agent BatchMode=yes）；(M3) Keychain API 改 SecItemAdd/CopyMatching/Delete + kSecAttrAccessGroup，弃用 SecKeychain* legacy；同时删除 LANG=C / DISPLAY=:0 env（前者污染远端 locale，后者 FORCE 模式用不上）；R11 加 shell injection 风险 |
+| 2026-04-27 | **Phase 1 v1 实施计划写好**（12 Tasks，TDD 节奏；spec §6.1 step 1.0-1.11 一一对应）：1.0 Package.swift 改 9 targets + 删 spike；1.1 TerminalEngine；1.2 SSHCommandBuilder + 60+ 个 fuzz 注入用例；1.3 AskpassHelper + KeychainStore + dev-codesign 端到端；1.4 单 tab connect + 双信号 child-exit 验证；1.5 NSWindow 多 tab；1.6 HostListSidebar + 表单 + JSON 持久化；1.7 KeychainStore 接 UI；1.8 ReconnectScheduler + overlay；1.9 ConfigStore；1.10 菜单/快捷键/About；1.11 release.sh + 双 binary codesign + notarize + Sparkle + Tauri banner。等开 fresh 仓 / 进 1.0 实施 |
 
 ---
 
 ## 产出物路径
 
-- 设计文档：`docs/superpowers/specs/2026-04-27-tauri-to-swift-migration-design.md` ✅（三轮 review 通过）
+- 设计文档：`docs/superpowers/specs/2026-04-27-tauri-to-swift-migration-design.md` ✅（三轮 review 通过 + spike 后大改 + 7 处 review 修复）
 - Phase 0 spike 计划：`docs/superpowers/plans/2026-04-27-phase-0-spike-plan.md` ✅
-- Phase 1 v1 计划：待 spike 通过后写
+- Phase 1 v1 计划：`docs/superpowers/plans/2026-04-27-phase-1-v1-implementation.md` ✅（12 Tasks，TDD 节奏，bite-sized 步骤，每 Task 末尾 commit + 进度日志）
 - v1.1 同步计划：待 v1 ship 后写
 - v2 SFTP 计划：待 v1.1 ship 后写
 - 本进度文件：`docs/superpowers/plans/2026-04-27-swift-migration-progress.md`

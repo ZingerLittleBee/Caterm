@@ -1,0 +1,6 @@
+{
+    "host": "127.0.0.1",
+    "port": 2222,
+    "user": "spike",
+    "password": "your-password-or-omit-for-agent-auth"
+}
