@@ -2,10 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "CatermSpike",
+    name: "Caterm",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "CatermSpike", targets: ["CatermSpike"])
+        .executable(name: "caterm", targets: ["Caterm"]),
+        .executable(name: "caterm-askpass", targets: ["CatermAskpass"]),
     ],
     dependencies: [],
     targets: [
@@ -13,10 +14,43 @@ let package = Package(
             name: "GhosttyKit",
             path: "Frameworks/GhosttyKit.xcframework"
         ),
-        .executableTarget(
-            name: "CatermSpike",
+
+        // --- Libraries ---
+        .target(
+            name: "TerminalEngine",
             dependencies: ["GhosttyKit"],
-            path: "Sources/CatermSpike",
+            path: "Sources/TerminalEngine"
+        ),
+        .target(
+            name: "SSHCommandBuilder",
+            path: "Sources/SSHCommandBuilder"
+        ),
+        .target(
+            name: "KeychainStore",
+            path: "Sources/KeychainStore"
+        ),
+        .target(
+            name: "ConfigStore",
+            path: "Sources/ConfigStore"
+        ),
+        .target(
+            name: "SessionStore",
+            dependencies: ["SSHCommandBuilder", "KeychainStore"],
+            path: "Sources/SessionStore"
+        ),
+
+        // --- Executables ---
+        .executableTarget(
+            name: "Caterm",
+            dependencies: [
+                "TerminalEngine",
+                "SSHCommandBuilder",
+                "SessionStore",
+                "KeychainStore",
+                "ConfigStore",
+            ],
+            path: "Sources/Caterm",
+            resources: [.copy("../../Resources/Caterm.entitlements")],
             linkerSettings: [
                 .linkedFramework("Carbon"),
                 .linkedFramework("Metal"),
@@ -31,6 +65,33 @@ let package = Package(
                 .linkedLibrary("bz2"),
                 .linkedLibrary("iconv"),
             ]
-        )
+        ),
+        .executableTarget(
+            name: "CatermAskpass",
+            dependencies: ["KeychainStore"],
+            path: "Sources/CatermAskpass"
+        ),
+
+        // --- Tests ---
+        .testTarget(
+            name: "SSHCommandBuilderTests",
+            dependencies: ["SSHCommandBuilder"],
+            path: "Tests/SSHCommandBuilderTests"
+        ),
+        .testTarget(
+            name: "KeychainStoreTests",
+            dependencies: ["KeychainStore"],
+            path: "Tests/KeychainStoreTests"
+        ),
+        .testTarget(
+            name: "SessionStoreTests",
+            dependencies: ["SessionStore"],
+            path: "Tests/SessionStoreTests"
+        ),
+        .testTarget(
+            name: "ConfigStoreTests",
+            dependencies: ["ConfigStore"],
+            path: "Tests/ConfigStoreTests"
+        ),
     ]
 )
