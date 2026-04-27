@@ -1,4 +1,5 @@
 import SwiftUI
+import GhosttyKit
 
 @main
 struct CatermSpikeApp: App {
@@ -12,8 +13,20 @@ struct CatermSpikeApp: App {
 
 struct ContentView: View {
     var body: some View {
-        Text("Spike alive")
-            .font(.system(size: 24, design: .monospaced))
-            .padding()
+        VStack(spacing: 8) {
+            Text("Spike alive")
+                .font(.system(size: 24, design: .monospaced))
+            Text("libghostty linked: \(libghosttyVersion())")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+    }
+
+    private func libghosttyVersion() -> String {
+        if let cString = ghostty_info().version {
+            return String(cString: cString)
+        }
+        return "unknown"
     }
 }
