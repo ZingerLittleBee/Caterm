@@ -42,6 +42,15 @@ public final class SessionStore: ObservableObject {
         return tab.id
     }
 
+    /// Remove a tab from the store. The actual libghostty surface destruction
+    /// (and resulting SIGHUP to the ssh subprocess) happens automatically when
+    /// SwiftUI removes the corresponding `GhosttySurfaceNSView` from its view
+    /// hierarchy — `deinit` calls `ghostty_surface_free`. This method only
+    /// keeps the store in sync with the UI.
+    public func closeTab(tabId: UUID) {
+        tabs.removeAll { $0.id == tabId }
+    }
+
     /// Build the (commandString, env) pair for a given tab.
     public func surfaceConfig(for tabId: UUID) -> (command: String, env: [(String, String)])? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
