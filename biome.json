@@ -9,8 +9,10 @@
     "ignoreUnknown": false,
     "includes": [
       "!**/.next",
+      "!**/.build",
       "!**/dist",
       "!**/dev-dist",
+      "!apps/macos/Vendor",
       "!**/.zed",
       "!**/.vscode",
       "!**/routeTree.gen.ts",
