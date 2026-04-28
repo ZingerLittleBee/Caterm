@@ -13,6 +13,7 @@ struct HostListSidebar: View {
 	@State var showingAddSheet = false
 	@State var editingHost: SSHHost?
 	@State var errorMessage: String?
+	@State var pendingCredentialHost: SSHHost?
 
 	var body: some View {
 		List(selection: $selectedHostId) {
@@ -80,6 +81,28 @@ struct HostListSidebar: View {
 			}
 			.environmentObject(store)
 		}
+		.sheet(item: $pendingCredentialHost) { host in
+			CredentialSetupView(host: host) { cred, secret in
+				// Order is intentional: Keychain (the operation that can fail
+				// for legitimate reasons — locked Keychain, denied prompt) goes
+				// FIRST. If it throws, no SessionStore mutation has happened
+				// yet, so a subsequent Cancel is a clean no-op.
+				if let secret, let kind = secretKind(for: cred) {
+					try store.setHostSecret(secret, hostId: host.id, kind: kind)
+				}
+				try store.setCredentialOnly(cred, for: host.id)
+				// Both writes succeeded — dismiss and re-enter connect with
+				// the refreshed host (now needsCredentialSetup == false).
+				if let refreshed = store.hosts.first(where: { $0.id == host.id }) {
+					await MainActor.run {
+						pendingCredentialHost = nil
+						connect(refreshed)
+					}
+				}
+			} onCancel: {
+				pendingCredentialHost = nil
+			}
+		}
 		.alert(
 			"Error",
 			isPresented: Binding(
@@ -108,11 +131,27 @@ struct HostListSidebar: View {
 		}
 	}
 
+	/// Map a CredentialSource to the keychain SecretKind that stores its
+	/// secret material. Returns nil for cases that have no secret (.agent,
+	/// keyFile without passphrase) — callers must guard on this.
+	private func secretKind(for cred: CredentialSource) -> SessionStore.SecretKind? {
+		switch cred {
+		case .password: return .password
+		case .keyFile(_, hasPassphrase: true): return .keyPassphrase
+		default: return nil
+		}
+	}
+
 	private func connect(_ host: SSHHost) {
-		let tabId = store.openTab(host: host)
-		NotificationCenter.default.post(
-			name: .catermOpenTab, object: nil, userInfo: ["tabId": tabId]
-		)
+		switch resolveConnectIntent(for: host, in: store) {
+		case .promptCredentials:
+			pendingCredentialHost = host
+		case .openTab:
+			let tabId = store.openTab(host: host)
+			NotificationCenter.default.post(
+				name: .catermOpenTab, object: nil, userInfo: ["tabId": tabId]
+			)
+		}
 	}
 }
 
