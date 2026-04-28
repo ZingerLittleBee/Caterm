@@ -115,5 +115,10 @@ let package = Package(
             dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore"],
             path: "Tests/HostSyncStoreTests"
         ),
+        .testTarget(
+            name: "CatermTests",
+            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore"],
+            path: "Tests/CatermTests"
+        ),
     ]
 )
