@@ -1,5 +1,7 @@
 import ConfigStore
+import HostSyncStore
 import KeychainStore
+import ServerSyncClient
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
@@ -9,6 +11,15 @@ import TerminalEngine
 struct CatermApp: App {
 	@NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 	@StateObject var store: SessionStore = makeStore()
+	@State private var showSyncSettings = false
+	@State private var serverURLText: String = ServerURL.current.absoluteString
+	private let authSession = AuthSession(baseURL: ServerURL.current)
+	private let syncClient: ServerSyncClient = URLSessionServerSyncClient(baseURL: ServerURL.current)
+
+	@MainActor
+	private var syncStore: HostSyncStore {
+		HostSyncStore(client: syncClient, sessionStore: store)
+	}
 
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
@@ -32,6 +43,18 @@ struct CatermApp: App {
 			}
 			.environmentObject(store)
 			.background(OpenTabBridge(store: store))
+			.sheet(isPresented: $showSyncSettings) {
+				SyncSettingsView(
+					authSession: authSession,
+					syncStore: syncStore,
+					serverURL: $serverURLText
+				)
+				.onChange(of: serverURLText) { _, newValue in
+					if let url = URL(string: newValue), !newValue.isEmpty {
+						ServerURL.set(url)
+					}
+				}
+			}
 		}
 		.commands {
 			// ⌘N opens a fresh LandingView window (OpenTabBridge handles the
@@ -53,6 +76,10 @@ struct CatermApp: App {
 					ConfigStore.revealInFinder(ConfigStore.defaultPath)
 				}
 				.keyboardShortcut(",", modifiers: .command)
+			}
+			CommandGroup(after: .appSettings) {
+				Button("Sync Settings…") { showSyncSettings = true }
+					.keyboardShortcut(",", modifiers: [.command, .shift])
 			}
 			// Help menu → GitHub documentation page.
 			CommandGroup(replacing: .help) {

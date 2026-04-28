@@ -117,6 +117,7 @@ struct HostListSidebar: View {
 }
 
 struct HostRow: View {
+	@EnvironmentObject var store: SessionStore
 	let host: SSHHost
 
 	var body: some View {
@@ -129,6 +130,16 @@ struct HostRow: View {
 				Text("\(host.username)@\(host.hostname):\(host.port)")
 					.font(.caption)
 					.foregroundColor(.secondary)
+			}
+			Spacer()
+			if store.needsCredentialSetup(host) {
+				Image(systemName: "lock")
+					.foregroundColor(.orange)
+					.help("Credentials not configured on this device")
+			} else if host.serverId != nil {
+				Image(systemName: "icloud")
+					.foregroundColor(.secondary)
+					.help("Synced from server")
 			}
 		}
 		.padding(.vertical, 2)
