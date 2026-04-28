@@ -35,7 +35,7 @@ let package = Package(
         ),
         .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "KeychainStore"],
+            dependencies: ["SSHCommandBuilder", "KeychainStore", "ServerSyncClient"],
             path: "Sources/SessionStore"
         ),
         .target(

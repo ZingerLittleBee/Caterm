@@ -2,6 +2,7 @@ import Combine
 import Foundation
 import KeychainStore
 import SSHCommandBuilder
+import ServerSyncClient
 
 // We deliberately import Combine (not SwiftUI/AppKit) here so the public `Host`
 // from SSHCommandBuilder doesn't collide with Foundation.NSHost. ObservableObject
@@ -162,5 +163,61 @@ public final class SessionStore: ObservableObject {
         var tab = tabs[idx]
         mutate(&tab)
         tabs[idx] = tab
+    }
+
+    // MARK: - Sync support (v1.1)
+
+    /// True when this host has no usable local credential. Pulled hosts always
+    /// fall here (no Keychain item under their local UUID). Local-only `.agent`
+    /// hosts are always false. See spec §7.1.2 needsCredentialSetup.
+    public func needsCredentialSetup(_ host: SSHHost) -> Bool {
+        switch host.credential {
+        case .agent:
+            return false
+        case .password:
+            return (try? keychain.get(account: "\(host.id.uuidString).password")) == nil
+        case let .keyFile(keyPath, hasPassphrase):
+            if !FileManager.default.fileExists(atPath: keyPath) { return true }
+            if hasPassphrase {
+                return (try? keychain.get(account: "\(host.id.uuidString).keyPassphrase")) == nil
+            }
+            return false
+        }
+    }
+
+    /// Replace the `serverId` of an existing host in-memory and persist.
+    public func setServerId(_ serverId: String, for hostId: UUID) throws {
+        guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
+        hosts[idx].serverId = serverId
+        hosts[idx].updatedAt = Date()
+        try HostPersistence.save(hosts, to: hostsURL)
+    }
+
+    /// Replace metadata fields (name/hostname/port/username/updatedAt) without
+    /// touching credential or serverId. Used when a remote update lands.
+    public func applyRemoteMetadata(localHostId: UUID, remote: RemoteHost) throws {
+        guard let idx = hosts.firstIndex(where: { $0.id == localHostId }) else { return }
+        hosts[idx].name = remote.name
+        hosts[idx].hostname = remote.hostname
+        hosts[idx].port = remote.port
+        hosts[idx].username = remote.username
+        hosts[idx].updatedAt = remote.updatedAt
+        try HostPersistence.save(hosts, to: hostsURL)
+    }
+
+    /// Insert a host fetched from the server. Allocates a fresh local UUID,
+    /// stamps `serverId` from `remote.id`, defaults credential to `.password`
+    /// (so first connect prompts the user — see needsCredentialSetup).
+    public func addRemoteHost(_ remote: RemoteHost) throws {
+        let h = SSHHost(
+            id: UUID(),
+            serverId: remote.id,
+            name: remote.name, hostname: remote.hostname,
+            port: remote.port, username: remote.username,
+            credential: .password,
+            createdAt: remote.createdAt, updatedAt: remote.updatedAt
+        )
+        hosts.append(h)
+        try HostPersistence.save(hosts, to: hostsURL)
     }
 }
