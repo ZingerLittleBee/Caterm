@@ -1,6 +1,7 @@
 import HostSyncStore
 import ServerSyncClient
 import SwiftUI
+import UserNotifications
 
 /// Tri-state derivation for the Account section. Internal so CatermTests
 /// can reach it via `@testable import Caterm`.
@@ -16,9 +17,15 @@ enum AccountState: Equatable {
 /// Pure derivation — no SwiftUI state. Tested directly in
 /// `SyncSettingsAccountStateTests` without any view harness.
 func accountState(isSignedIn: Bool,
-                  lastSyncError: ServerSyncError?) -> AccountState {
-    if isAuthFailure(lastSyncError) { return .sessionExpired }
-    return isSignedIn ? .signedIn : .signedOut
+                  lastSyncError: ServerSyncError?,
+                  lastSyncErrorKind: SyncErrorKind?) -> AccountState {
+    guard isSignedIn else { return .signedOut }
+    if isAuthFailure(lastSyncError) || lastSyncErrorKind == .auth { return .sessionExpired }
+    return .signedIn
+}
+
+func shouldShowSyncFailureDetails(for accountState: AccountState) -> Bool {
+    accountState == .signedIn
 }
 
 private func isAuthFailure(_ err: ServerSyncError?) -> Bool {
@@ -33,14 +40,20 @@ private func isAuthFailure(_ err: ServerSyncError?) -> Bool {
 }
 
 /// Renders a "Last sync: …" relative phrase, or "Never synced" when nil.
-/// Resolves against `Date()` at call time, so the SyncSettingsView
+/// Resolves against `Date()` by default, so the SyncSettingsView
 /// wraps the `Text` invocation in a `TimelineView(.periodic(...))` to
 /// keep the phrase advancing while auto-sync is failing (spec §3.3).
-func formatLastSyncedAt(_ date: Date?) -> String {
+func formatLastSyncedAt(_ date: Date?, now: Date = Date()) -> String {
     guard let date else { return "Never synced" }
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .full
-    return formatter.localizedString(for: date, relativeTo: Date())
+    return formatter.localizedString(for: date, relativeTo: now)
+}
+
+func formatFailingSince(_ since: Date, now: Date) -> String {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .full
+    return formatter.localizedString(for: since, relativeTo: now)
 }
 
 struct SyncSettingsView: View {
@@ -52,8 +65,12 @@ struct SyncSettingsView: View {
     @State private var isSyncing = false
     @State private var lastSyncError: ServerSyncError?
     @State private var showSignIn = false
+    @State private var notifyToggleRequestID = 0
 
     var body: some View {
+        let derivedAccountState = accountState(isSignedIn: authSession.isSignedIn,
+                                               lastSyncError: lastSyncError,
+                                               lastSyncErrorKind: syncStore.lastSyncErrorKind)
         Form {
             Section("Server") {
                 TextField("URL", text: $serverURL)
@@ -62,8 +79,7 @@ struct SyncSettingsView: View {
                     .font(.caption).foregroundColor(.secondary)
             }
             Section("Account") {
-                switch accountState(isSignedIn: authSession.isSignedIn,
-                                    lastSyncError: lastSyncError) {
+                switch derivedAccountState {
                 case .signedOut:
                     Button("Sign In…") { showSignIn = true }
                 case .signedIn:
@@ -85,6 +101,13 @@ struct SyncSettingsView: View {
             }
             Section("Sync") {
                 Toggle("Background sync", isOn: $preferences.periodicSyncEnabled)
+                Toggle("Notify when sync fails", isOn: Binding(
+                    get: { preferences.notifyOnFailureEnabled },
+                    set: { newValue in
+                        Task { await handleNotifyToggle(newValue) }
+                    }
+                ))
+                .disabled(!preferences.periodicSyncEnabled)
                 Text("Syncs every 15 minutes and on wake from sleep.")
                     .font(.caption).foregroundColor(.secondary)
                 Button("Sync Now") { Task { await syncNow() } }
@@ -97,11 +120,22 @@ struct SyncSettingsView: View {
                 // notice). 30 s cadence is responsive enough to feel
                 // live but coarse enough not to thrash. Spec §3.3 / §5.5
                 // invariant 9.
-                TimelineView(.periodic(from: .now, by: 30)) { _ in
-                    Text("Last sync: \(formatLastSyncedAt(syncStore.lastSyncedAt))")
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text("Last sync: \(formatLastSyncedAt(syncStore.lastSyncedAt, now: context.date))")
                         .font(.caption).foregroundColor(.secondary)
+                    let failure = currentFailureState(now: context.date)
+                    if shouldShowSyncFailureDetails(for: derivedAccountState),
+                       case let .failing(_, attempted) = failure {
+                        let displaySince = syncStore.failingSince ?? attempted
+                        Text("Sync failing since \(formatFailingSince(displaySince, now: context.date))")
+                            .foregroundColor(.red).font(.caption)
+                        if !preferences.notifyOnFailureEnabled {
+                            Text("Turn on 'Notify when sync fails' to be alerted next time.")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                    }
                 }
-                if let lastSyncError {
+                if shouldShowSyncFailureDetails(for: derivedAccountState), let lastSyncError {
                     Text(lastSyncError.description)
                         .foregroundColor(.red).font(.caption)
                 }
@@ -112,6 +146,8 @@ struct SyncSettingsView: View {
         .sheet(isPresented: $showSignIn) {
             SignInView(authSession: authSession, onSignedIn: {
                 showSignIn = false
+                syncStore.clearAuthError()
+                syncStore.syncIfSignedIn()
             })
         }
     }
@@ -120,6 +156,38 @@ struct SyncSettingsView: View {
         isSigningOut = true
         defer { isSigningOut = false }
         try? await authSession.signOut()
+        syncStore.clearAuthError()
+        lastSyncError = nil
+    }
+
+    @MainActor
+    private func handleNotifyToggle(_ newValue: Bool) async {
+        notifyToggleRequestID += 1
+        let requestID = notifyToggleRequestID
+        guard newValue else {
+            preferences.notifyOnFailureEnabled = false
+            return
+        }
+        do {
+            let granted = try await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound])
+            guard requestID == notifyToggleRequestID else { return }
+            preferences.notifyOnFailureEnabled = granted
+        } catch {
+            guard requestID == notifyToggleRequestID else { return }
+            preferences.notifyOnFailureEnabled = false
+        }
+    }
+
+    private func currentFailureState(now: Date) -> SyncFailureState {
+        syncFailureState(
+            now: now,
+            lastSyncedAt: syncStore.lastSyncedAt,
+            lastSyncAttemptedAt: syncStore.lastSyncAttemptedAt,
+            lastSyncErrorKind: syncStore.lastSyncErrorKind,
+            periodicSyncEnabled: preferences.periodicSyncEnabled,
+            failingThreshold: syncStore.periodicInterval
+        )
     }
 
     private func syncNow() async {
