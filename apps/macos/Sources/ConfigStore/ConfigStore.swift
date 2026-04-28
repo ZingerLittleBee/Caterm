@@ -11,7 +11,7 @@ public enum ConfigStore {
 
 		font-family = SF Mono
 		font-size = 13
-		theme = catppuccin-mocha
+		theme = Catppuccin Mocha
 		cursor-style = block
 		macos-titlebar-style = tabs
 		"""

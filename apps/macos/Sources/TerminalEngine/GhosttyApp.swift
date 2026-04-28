@@ -1,3 +1,4 @@
+import ConfigStore
 import Foundation
 import GhosttyKit
 
@@ -32,9 +33,7 @@ public final class GhosttyApp {
 			throw GhosttyError.initFailed
 		}
 
-		let catermConfigPath = FileManager.default
-			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-			.appendingPathComponent("Caterm/config").path
+		let catermConfigPath = ConfigStore.defaultPath.path
 		let config = try GhosttyConfig(catermConfigPath: catermConfigPath)
 
 		// Runtime config: a struct of C function pointers libghostty calls
