@@ -220,4 +220,21 @@ public final class SessionStore: ObservableObject {
         hosts.append(h)
         try HostPersistence.save(hosts, to: hostsURL)
     }
+
+    /// Replace the credential overlay for an existing host. Does NOT bump
+    /// `updatedAt` — credential is a device-local concept that never propagates
+    /// to the server, so it must not trigger reconciler `.updateRemote` ops.
+    ///
+    /// Atomicity: persists to a local copy first; only assigns to `self.hosts`
+    /// after `HostPersistence.save` returns. A disk-write failure throws
+    /// without mutating in-memory state, so callers can treat the call as
+    /// all-or-nothing for SessionStore-side state.
+    public func setCredentialOnly(_ source: CredentialSource,
+                                  for hostId: UUID) throws {
+        guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
+        var updated = hosts
+        updated[idx].credential = source
+        try HostPersistence.save(updated, to: hostsURL)
+        hosts = updated
+    }
 }
