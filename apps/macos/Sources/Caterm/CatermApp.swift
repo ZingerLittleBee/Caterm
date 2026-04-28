@@ -10,19 +10,29 @@ import TerminalEngine
 @main
 struct CatermApp: App {
 	@NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-	@StateObject var store: SessionStore = makeStore()
+	@StateObject var store: SessionStore
+	@StateObject var syncStore: HostSyncStore
 	@State private var showSyncSettings = false
 	@State private var serverURLText: String = ServerURL.current.absoluteString
-	private let authSession = AuthSession(baseURL: ServerURL.current)
-	private let syncClient: ServerSyncClient = URLSessionServerSyncClient(baseURL: ServerURL.current)
-
-	@MainActor
-	private var syncStore: HostSyncStore {
-		HostSyncStore(client: syncClient, sessionStore: store, authSession: authSession)
-	}
+	private let authSession: AuthSession
+	private let syncClient: ServerSyncClient
 
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
+		let session = makeStore()
+		let auth = AuthSession(baseURL: ServerURL.current)
+		let client = URLSessionServerSyncClient(baseURL: ServerURL.current)
+		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
+		// property-wrapper init — required because `@StateObject` cannot be
+		// assigned via the synthesized `self.store = ...` syntax in `init`.
+		_store = StateObject(wrappedValue: session)
+		_syncStore = StateObject(wrappedValue: HostSyncStore(
+			client: client,
+			sessionStore: session,
+			authSession: auth
+		))
+		self.authSession = auth
+		self.syncClient = client
 	}
 
 	var body: some Scene {
@@ -43,6 +53,12 @@ struct CatermApp: App {
 			}
 			.environmentObject(store)
 			.background(OpenTabBridge(store: store))
+			// .task closure is sync — syncIfSignedIn() returns immediately;
+			// the actual sync work runs as an unstructured Task owned by
+			// HostSyncStore.inFlight (NOT by this .task modifier). View
+			// disappearance does not cancel the sync — that's intentional;
+			// cancellation lives in the chain (spec §3.5).
+			.task { syncStore.syncIfSignedIn() }
 			.sheet(isPresented: $showSyncSettings) {
 				SyncSettingsView(
 					authSession: authSession,
