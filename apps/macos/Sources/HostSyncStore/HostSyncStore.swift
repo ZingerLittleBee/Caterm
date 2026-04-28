@@ -4,6 +4,50 @@ import Foundation
 import ServerSyncClient
 import SSHCommandBuilder
 import SessionStore
+import UserNotifications
+
+public enum SyncErrorKind: Equatable, Sendable {
+    case auth
+    case other
+}
+
+public enum SyncFailureState: Equatable, Sendable {
+    case normal
+    case failing(reason: SyncErrorKind, since: Date)
+}
+
+public protocol NotificationDelivering: Sendable {
+    func add(_ request: UNNotificationRequest) async throws
+}
+
+public struct LiveNotificationCenter: NotificationDelivering {
+    public init() {}
+
+    public func add(_ request: UNNotificationRequest) async throws {
+        try await UNUserNotificationCenter.current().add(request)
+    }
+}
+
+/// Derives user-visible sync failure state from timestamps.
+///
+/// The threshold is based on `now - lastSyncedAt`; returned `.failing(... since:)`
+/// uses `lastSyncAttemptedAt`. Store-level `failingSince` is handled separately.
+public func syncFailureState(
+    now: Date,
+    lastSyncedAt: Date?,
+    lastSyncAttemptedAt: Date?,
+    lastSyncErrorKind: SyncErrorKind?,
+    periodicSyncEnabled: Bool,
+    failingThreshold: TimeInterval
+) -> SyncFailureState {
+    guard periodicSyncEnabled else { return .normal }
+    guard let attempted = lastSyncAttemptedAt else { return .normal }
+    guard let succeeded = lastSyncedAt else { return .normal }
+    guard attempted > succeeded else { return .normal }
+    guard now.timeIntervalSince(succeeded) > failingThreshold else { return .normal }
+    let reason = lastSyncErrorKind ?? .other
+    return .failing(reason: reason, since: attempted)
+}
 
 /// Coordinates sync passes: list remote → reconcile → apply ops.
 ///
@@ -19,17 +63,29 @@ import SessionStore
 @MainActor
 public final class HostSyncStore: ObservableObject {
     private static let lastSyncedAtKey = "catermLastSyncedAt"
+    private static let lastSyncAttemptedAtKey = "catermLastSyncAttemptedAt"
+    // lastSyncErrorKind and failingSince are NOT persisted; cold start falls back
+    // to .other when failure can be derived from timestamps.
 
     private let client: ServerSyncClient
     private let sessionStore: SessionStore
     private let authSession: AuthSessionProtocol
     private let preferences: SyncPreferences
     private let userDefaults: UserDefaults
-    private let periodicInterval: TimeInterval
+    /// The view layer reads the same threshold used by failure detection.
+    public let periodicInterval: TimeInterval
     private var cancellables: Set<AnyCancellable> = []
     private var periodicTimerCancellable: AnyCancellable?
     private var inFlight: Task<Void, Error>?
     private var manualInProgress: Bool = false
+    /// Edge tracker: was the previous sync cycle in the failing state?
+    /// Transient (not persisted, not @Published). Cold-start re-evaluates
+    /// via isCurrentlyFailing() and lets the next cycle trigger the edge
+    /// naturally. Spec §2.2.3.
+    private var wasFailing: Bool = false
+    private var failureStateResetToken: Int = 0
+
+    private let notificationCenter: NotificationDelivering
     private var pendingAutoAfterManual: Bool = false
     private var currentManualTask: Task<Void, Error>?
 
@@ -37,6 +93,9 @@ public final class HostSyncStore: ObservableObject {
     /// loop without throwing. NOT updated when listHosts fails or any
     /// apply(op) throws — see spec §4.2.
     @Published public private(set) var lastSyncedAt: Date?
+    @Published public private(set) var lastSyncAttemptedAt: Date?
+    @Published public private(set) var lastSyncErrorKind: SyncErrorKind?
+    @Published public private(set) var failingSince: Date?
 
     public init(client: ServerSyncClient,
                 sessionStore: SessionStore,
@@ -44,7 +103,8 @@ public final class HostSyncStore: ObservableObject {
                 preferences: SyncPreferences,
                 debounceInterval: TimeInterval = 2.0,
                 periodicInterval: TimeInterval = 15 * 60,
-                userDefaults: UserDefaults = .standard) {
+                userDefaults: UserDefaults = .standard,
+                notificationCenter: NotificationDelivering = LiveNotificationCenter()) {
         self.client = client
         self.sessionStore = sessionStore
         self.authSession = authSession
@@ -54,6 +114,8 @@ public final class HostSyncStore: ObservableObject {
 
         // Hydrate from persistence.
         self.lastSyncedAt = userDefaults.object(forKey: Self.lastSyncedAtKey) as? Date
+        self.lastSyncAttemptedAt = userDefaults.object(forKey: Self.lastSyncAttemptedAtKey) as? Date
+        self.notificationCenter = notificationCenter
 
         sessionStore.mutationsForSync
             .debounce(for: .seconds(debounceInterval),
@@ -115,6 +177,16 @@ public final class HostSyncStore: ObservableObject {
         scheduleAutoSync()
     }
 
+    public func clearAuthError() {
+        guard lastSyncErrorKind == .auth else { return }
+        failureStateResetToken += 1
+        lastSyncErrorKind = nil
+        wasFailing = false
+        failingSince = nil
+        lastSyncAttemptedAt = nil
+        userDefaults.removeObject(forKey: Self.lastSyncAttemptedAtKey)
+    }
+
     // MARK: - Internal serialization
 
     /// Schedule an auto sync. Skipped (and deferred) while a manual sync
@@ -142,7 +214,15 @@ public final class HostSyncStore: ObservableObject {
     private func handlePeriodicEnabled(_ enabled: Bool) {
         periodicTimerCancellable?.cancel()
         periodicTimerCancellable = nil
-        guard enabled else { return }
+        guard enabled else {
+            failureStateResetToken += 1
+            wasFailing = false
+            failingSince = nil
+            lastSyncErrorKind = nil
+            lastSyncAttemptedAt = nil
+            userDefaults.removeObject(forKey: Self.lastSyncAttemptedAtKey)
+            return
+        }
         periodicTimerCancellable = Timer.publish(every: periodicInterval,
                                                   on: .main,
                                                   in: .common)
@@ -186,19 +266,89 @@ public final class HostSyncStore: ObservableObject {
     // MARK: - Sync work
 
     private func performSync() async throws {
-        let remote = try await client.listHosts()
-        try Task.checkCancellation()
-        let ops = HostSyncReconciler.reconcile(local: sessionStore.hosts,
-                                                remote: remote)
-        for op in ops {
+        let failureStateToken = failureStateResetToken
+        let attempted = Date()
+        lastSyncAttemptedAt = attempted
+        userDefaults.set(attempted, forKey: Self.lastSyncAttemptedAtKey)
+
+        do {
+            let remote = try await client.listHosts()
             try Task.checkCancellation()
-            try await apply(op)
+            let ops = HostSyncReconciler.reconcile(local: sessionStore.hosts,
+                                                    remote: remote)
+            for op in ops {
+                try Task.checkCancellation()
+                try await apply(op)
+            }
+            // Spec §4.2: only update after the op loop completes without
+            // throwing. Partial-apply failures must NOT advance freshness.
+            let now = Date()
+            lastSyncedAt = now
+            userDefaults.set(now, forKey: Self.lastSyncedAtKey)
+            lastSyncErrorKind = nil
+            wasFailing = false
+            failingSince = nil
+        } catch {
+            if isCancellation(error) { throw CancellationError() }
+            if failureStateToken != failureStateResetToken { throw error }
+            lastSyncErrorKind = classifySyncError(error)
+            let nowFailing = isCurrentlyFailing()
+            if !wasFailing && nowFailing {
+                failingSince = lastSyncAttemptedAt
+                if !manualInProgress && authSession.isSignedIn && preferences.notifyOnFailureEnabled {
+                    await fireFailureNotification()
+                }
+            }
+            if failureStateToken != failureStateResetToken { throw error }
+            wasFailing = nowFailing
+            throw error
         }
-        // Spec §4.2: only update after the op loop completes without
-        // throwing. Partial-apply failures must NOT advance freshness.
-        let now = Date()
-        lastSyncedAt = now
-        userDefaults.set(now, forKey: Self.lastSyncedAtKey)
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return Task.isCancelled
+    }
+
+    private func classifySyncError(_ error: Error) -> SyncErrorKind {
+        guard let serverError = error as? ServerSyncError else { return .other }
+        switch serverError {
+        case .http(status: 401, body: _),
+             .orpc(code: _, status: 401, message: _),
+             .authFailed,
+             .notSignedIn:
+            return .auth
+        case .http,
+             .orpc,
+             .decode:
+            return .other
+        }
+    }
+
+    private func isCurrentlyFailing() -> Bool {
+        let state = syncFailureState(
+            now: Date(),
+            lastSyncedAt: lastSyncedAt,
+            lastSyncAttemptedAt: lastSyncAttemptedAt,
+            lastSyncErrorKind: lastSyncErrorKind,
+            periodicSyncEnabled: preferences.periodicSyncEnabled,
+            failingThreshold: periodicInterval
+        )
+        guard case .failing = state else { return false }
+        return true
+    }
+
+    private func fireFailureNotification() async {
+        let content = UNMutableNotificationContent()
+        content.title = "Caterm sync is failing"
+        content.body = "Click Sync Now in Sync Settings, or check your connection."
+        let request = UNNotificationRequest(
+            identifier: "caterm.sync.failing.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        try? await notificationCenter.add(request)
     }
 
     private func apply(_ op: SyncOperation) async throws {

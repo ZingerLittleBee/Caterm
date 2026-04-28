@@ -117,6 +117,8 @@ final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
     var listHostsDelay: TimeInterval = 0
     /// Set true if the listHosts() sleep was interrupted by Task.cancel().
     var listHostsTaskWasCancelled = false
+    /// Optional error thrown after `listHostsDelay` completes.
+    var listHostsErrorAfterDelay: Error?
     /// Timestamps for ordering assertions in chain-serialization tests.
     var listHostsStartedAt: [Date] = []
     var listHostsFinishedAt: [Date] = []
@@ -140,6 +142,7 @@ final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
                 throw error
             }
         }
+        if let err = listHostsErrorAfterDelay { throw err }
         listHostsFinishedAt.append(Date())
         return listResult
     }
