@@ -9,6 +9,12 @@ public final class AuthSession {
     private let baseURL: URL
     private let session: URLSession
     private let cookieName = "better-auth.session_token"
+    // better-auth's originCheck middleware runs whenever the request carries
+    // a Cookie header (origin-check.mjs:95). URLSession on macOS attaches
+    // cookies by default, so we must send an Origin in trustedOrigins or the
+    // server returns FORBIDDEN("Missing or null Origin"). We reuse one of the
+    // origins already trusted server-side (packages/auth/src/index.ts).
+    private let trustedOrigin = "tauri://localhost"
 
     public init(baseURL: URL, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -27,6 +33,7 @@ public final class AuthSession {
         var req = URLRequest(url: baseURL.appendingPathComponent("/api/auth/sign-in/email"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(trustedOrigin, forHTTPHeaderField: "Origin")
         req.httpBody = try JSONEncoder().encode(Input(email: email, password: password))
 
         let (data, resp) = try await session.data(for: req)
@@ -46,6 +53,7 @@ public final class AuthSession {
         var req = URLRequest(url: baseURL.appendingPathComponent("/api/auth/sign-out"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(trustedOrigin, forHTTPHeaderField: "Origin")
         // Best-effort server call; even if it fails we clear cookies locally.
         _ = try? await session.data(for: req)
         let store = session.configuration.httpCookieStorage ?? .shared
