@@ -59,6 +59,15 @@ public final class HostSyncStore: ObservableObject {
                       scheduler: DispatchQueue.main)
             .sink { [weak self] in self?.scheduleAutoSync() }
             .store(in: &cancellables)
+
+        // Spec §3.2: track preferences.periodicSyncEnabled — start/stop
+        // the periodic timer. @Published .sink fires synchronously with
+        // the current value, so on init this invokes
+        // handlePeriodicEnabled(true) and starts the timer when the
+        // default is true.
+        preferences.$periodicSyncEnabled
+            .sink { [weak self] enabled in self?.handlePeriodicEnabled(enabled) }
+            .store(in: &cancellables)
     }
 
     // MARK: - Public entry points
@@ -114,6 +123,21 @@ public final class HostSyncStore: ObservableObject {
             return
         }
         _ = startSync()
+    }
+
+    /// Start (or stop) the 15-minute periodic timer based on the user's
+    /// toggle setting. Idempotent — cancels and recreates the
+    /// subscription each call, so re-arming on wake (§3.2 handleSystemWake)
+    /// is safe.
+    private func handlePeriodicEnabled(_ enabled: Bool) {
+        periodicTimerCancellable?.cancel()
+        periodicTimerCancellable = nil
+        guard enabled else { return }
+        periodicTimerCancellable = Timer.publish(every: periodicInterval,
+                                                  on: .main,
+                                                  in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in self?.scheduleAutoSync() }
     }
 
     /// Append a new sync onto the serialized chain. The new task cancels
