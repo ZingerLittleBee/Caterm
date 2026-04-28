@@ -13,6 +13,7 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
     var fakeAuth: FakeAuthSession!
     var sessionStore: SessionStore!
     var tmpHostsURL: URL!
+    var isolatedDefaults: UserDefaults!
 
     override func setUp() async throws {
         tmpHostsURL = FileManager.default.temporaryDirectory
@@ -24,10 +25,14 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
                                      hostsURL: tmpHostsURL, keychain: kc)
         fakeClient = FakeServerSyncClient()
         fakeAuth = FakeAuthSession(isSignedIn: true)
+        isolatedDefaults = UserDefaults(suiteName: "caterm-test-\(UUID().uuidString)")!
+        let prefs = SyncPreferences(defaults: isolatedDefaults)
         sut = HostSyncStore(client: fakeClient,
                             sessionStore: sessionStore,
                             authSession: fakeAuth,
-                            debounceInterval: 0.05)
+                            preferences: prefs,
+                            debounceInterval: 0.05,
+                            userDefaults: isolatedDefaults)
     }
 
     override func tearDown() async throws {

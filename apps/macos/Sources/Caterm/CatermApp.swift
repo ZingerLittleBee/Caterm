@@ -26,10 +26,14 @@ struct CatermApp: App {
 		// property-wrapper init — required because `@StateObject` cannot be
 		// assigned via the synthesized `self.store = ...` syntax in `init`.
 		_store = StateObject(wrappedValue: session)
+		// TODO(v1.2.6): pass @StateObject SyncPreferences + isolated defaults.
+		// Temporary stub keeps Caterm compiling while HostSyncStore.init
+		// gains the preferences: parameter (v1.2.2). Real wiring lands in v1.2.6.
 		_syncStore = StateObject(wrappedValue: HostSyncStore(
 			client: client,
 			sessionStore: session,
-			authSession: auth
+			authSession: auth,
+			preferences: SyncPreferences()
 		))
 		self.authSession = auth
 		self.syncClient = client

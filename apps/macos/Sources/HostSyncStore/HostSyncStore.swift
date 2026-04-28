@@ -17,22 +17,42 @@ import SessionStore
 /// writing any of the bookkeeping state.
 @MainActor
 public final class HostSyncStore: ObservableObject {
+    private static let lastSyncedAtKey = "catermLastSyncedAt"
+
     private let client: ServerSyncClient
     private let sessionStore: SessionStore
     private let authSession: AuthSessionProtocol
+    private let preferences: SyncPreferences
+    private let userDefaults: UserDefaults
+    private let periodicInterval: TimeInterval
     private var cancellables: Set<AnyCancellable> = []
+    private var periodicTimerCancellable: AnyCancellable?
     private var inFlight: Task<Void, Error>?
     private var manualInProgress: Bool = false
     private var pendingAutoAfterManual: Bool = false
     private var currentManualTask: Task<Void, Error>?
 
+    /// "Last fully-applied sync." Set after performSync() completes the op
+    /// loop without throwing. NOT updated when listHosts fails or any
+    /// apply(op) throws — see spec §4.2.
+    @Published public private(set) var lastSyncedAt: Date?
+
     public init(client: ServerSyncClient,
                 sessionStore: SessionStore,
                 authSession: AuthSessionProtocol,
-                debounceInterval: TimeInterval = 2.0) {
+                preferences: SyncPreferences,
+                debounceInterval: TimeInterval = 2.0,
+                periodicInterval: TimeInterval = 15 * 60,
+                userDefaults: UserDefaults = .standard) {
         self.client = client
         self.sessionStore = sessionStore
         self.authSession = authSession
+        self.preferences = preferences
+        self.periodicInterval = periodicInterval
+        self.userDefaults = userDefaults
+
+        // Hydrate from persistence.
+        self.lastSyncedAt = userDefaults.object(forKey: Self.lastSyncedAtKey) as? Date
 
         sessionStore.mutationsForSync
             .debounce(for: .seconds(debounceInterval),
@@ -81,7 +101,14 @@ public final class HostSyncStore: ObservableObject {
     /// Schedule an auto sync. Skipped (and deferred) while a manual sync
     /// is in progress — the deferred fire is replayed in manual's `defer`
     /// (see `sync()`).
+    ///
+    /// Auth gate (spec §3.2): all auto-paths (periodic, wake,
+    /// mutation-debounce) inherit this gate. Signed-out users do not
+    /// generate background server traffic. Manual `sync()` is intentionally
+    /// exempt — its 401 surfacing is the recovery path for "session
+    /// expired (cookie still present)" — see spec §4.4.1.
     private func scheduleAutoSync() {
+        guard authSession.isSignedIn else { return }
         guard !manualInProgress else {
             pendingAutoAfterManual = true
             return
@@ -118,6 +145,11 @@ public final class HostSyncStore: ObservableObject {
             try Task.checkCancellation()
             try await apply(op)
         }
+        // Spec §4.2: only update after the op loop completes without
+        // throwing. Partial-apply failures must NOT advance freshness.
+        let now = Date()
+        lastSyncedAt = now
+        userDefaults.set(now, forKey: Self.lastSyncedAtKey)
     }
 
     private func apply(_ op: SyncOperation) async throws {

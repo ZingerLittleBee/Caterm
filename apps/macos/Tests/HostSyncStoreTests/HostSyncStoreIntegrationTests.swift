@@ -11,6 +11,7 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
     var fakeClient: FakeServerSyncClient!
     var sessionStore: SessionStore!
     var tmpHostsURL: URL!
+    var isolatedDefaults: UserDefaults!
 
     override func setUp() async throws {
         tmpHostsURL = FileManager.default.temporaryDirectory
@@ -21,9 +22,13 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
                                      knownHostsUser: "/B", accessGroup: nil,
                                      hostsURL: tmpHostsURL, keychain: kc)
         fakeClient = FakeServerSyncClient()
+        isolatedDefaults = UserDefaults(suiteName: "caterm-test-\(UUID().uuidString)")!
+        let prefs = SyncPreferences(defaults: isolatedDefaults)
         sut = HostSyncStore(client: fakeClient,
                             sessionStore: sessionStore,
-                            authSession: FakeAuthSession(isSignedIn: true))
+                            authSession: FakeAuthSession(isSignedIn: true),
+                            preferences: prefs,
+                            userDefaults: isolatedDefaults)
     }
 
     override func tearDown() async throws {
@@ -92,6 +97,12 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 /// Optional `listHostsDelay` lets tests simulate a hung sync (used by
 /// chain-serialization and manual-vs-auto coordination tests in
 /// HostSyncStoreAutoSyncTests). Default 0 preserves existing behavior.
+///
+/// Per-method error flags (`listHostsError`, `createHostError`,
+/// `updateHostError`, `deleteHostError`) let tests distinguish "list
+/// failed" from "list succeeded but apply[k] failed" — the partial-apply
+/// branch in spec §4.2 that the older single `shouldThrow` flag could not
+/// reach. Default nil = no error.
 final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
     var listResult: [RemoteHost] = []
     var createResult = RemoteHostCreateOutput(id: "srv-default")
@@ -110,9 +121,17 @@ final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
     var listHostsStartedAt: [Date] = []
     var listHostsFinishedAt: [Date] = []
 
+    /// Per-method error flags. Set non-nil to make the corresponding
+    /// method throw the given error before doing any work.
+    var listHostsError: Error?
+    var createHostError: Error?
+    var updateHostError: Error?
+    var deleteHostError: Error?
+
     func listHosts() async throws -> [RemoteHost] {
         listCallCount += 1
         listHostsStartedAt.append(Date())
+        if let err = listHostsError { throw err }
         if listHostsDelay > 0 {
             do {
                 try await Task.sleep(nanoseconds: UInt64(listHostsDelay * 1_000_000_000))
@@ -125,12 +144,16 @@ final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
         return listResult
     }
     func createHost(_ input: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
-        createCallCount += 1; return createResult
+        createCallCount += 1
+        if let err = createHostError { throw err }
+        return createResult
     }
     func updateHost(_ input: RemoteHostUpdateInput) async throws {
         updateCallCount += 1
+        if let err = updateHostError { throw err }
     }
     func deleteHost(id: String) async throws {
         deleteCallCount += 1
+        if let err = deleteHostError { throw err }
     }
 }
