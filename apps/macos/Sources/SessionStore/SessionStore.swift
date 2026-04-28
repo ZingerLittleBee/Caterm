@@ -14,6 +14,9 @@ public final class SessionStore: ObservableObject {
         public var host: SSHHost
         public var state: ConnectionState
         public var hadConnected: Bool = false
+        public var reconnectAttempts: Int = 0
+        public var lastFailure: FailureKind?
+        public var surfaceGeneration: Int = 0
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
@@ -124,6 +127,7 @@ public final class SessionStore: ObservableObject {
         update(tabId) {
             $0.state = .connected(connectedAt: Date())
             $0.hadConnected = true
+            $0.reconnectAttempts = 0
         }
     }
 
@@ -131,7 +135,24 @@ public final class SessionStore: ObservableObject {
         update(tabId) { tab in
             let kind = FailureKind.classify(exitCode: exitCode,
                                             hadConnected: tab.hadConnected)
-            tab.state = .failed(kind)
+            tab.lastFailure = kind
+            let attempt = tab.reconnectAttempts + 1
+            if ReconnectScheduler.shouldReconnect(failureKind: kind, attempt: attempt) {
+                tab.reconnectAttempts = attempt
+                let nextRetry = Date().addingTimeInterval(ReconnectScheduler.backoff(attempt: attempt))
+                tab.state = .reconnecting(attempt: attempt, nextRetryAt: nextRetry)
+                scheduleReconnect(tabId: tabId, after: ReconnectScheduler.backoff(attempt: attempt))
+            } else {
+                tab.state = .failed(kind)
+            }
+        }
+    }
+
+    private func scheduleReconnect(tabId: UUID, after seconds: TimeInterval) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let self else { return }
+            self.update(tabId) { $0.surfaceGeneration += 1; $0.state = .connecting(startedAt: Date()) }
         }
     }
 
