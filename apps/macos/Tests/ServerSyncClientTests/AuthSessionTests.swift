@@ -9,7 +9,6 @@ final class AuthSessionTests: XCTestCase {
         MockURLProtocol.reset()
         let cfg = URLSessionConfiguration.ephemeral
         cfg.protocolClasses = [MockURLProtocol.self]
-        cfg.httpCookieStorage = HTTPCookieStorage()
         cfg.httpShouldSetCookies = true
         urlSession = URLSession(configuration: cfg)
         session = AuthSession(
