@@ -18,7 +18,7 @@ struct CatermApp: App {
 
 	@MainActor
 	private var syncStore: HostSyncStore {
-		HostSyncStore(client: syncClient, sessionStore: store)
+		HostSyncStore(client: syncClient, sessionStore: store, authSession: authSession)
 	}
 
 	init() {

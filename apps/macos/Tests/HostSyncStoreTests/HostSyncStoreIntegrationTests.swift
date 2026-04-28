@@ -21,7 +21,9 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
                                      knownHostsUser: "/B", accessGroup: nil,
                                      hostsURL: tmpHostsURL, keychain: kc)
         fakeClient = FakeServerSyncClient()
-        sut = HostSyncStore(client: fakeClient, sessionStore: sessionStore)
+        sut = HostSyncStore(client: fakeClient,
+                            sessionStore: sessionStore,
+                            authSession: FakeAuthSession(isSignedIn: true))
     }
 
     override func tearDown() async throws {
@@ -87,6 +89,9 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 }
 
 /// In-memory fake for tests. Records calls; returns canned responses.
+/// Optional `listHostsDelay` lets tests simulate a hung sync (used by
+/// chain-serialization and manual-vs-auto coordination tests in
+/// HostSyncStoreAutoSyncTests). Default 0 preserves existing behavior.
 final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
     var listResult: [RemoteHost] = []
     var createResult = RemoteHostCreateOutput(id: "srv-default")
@@ -95,8 +100,29 @@ final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
     var updateCallCount = 0
     var deleteCallCount = 0
 
+    /// If > 0, listHosts() sleeps this many seconds before returning.
+    /// Tests use this to keep a sync "in flight" while exercising
+    /// chain serialization and manual-vs-auto coordination.
+    var listHostsDelay: TimeInterval = 0
+    /// Set true if the listHosts() sleep was interrupted by Task.cancel().
+    var listHostsTaskWasCancelled = false
+    /// Timestamps for ordering assertions in chain-serialization tests.
+    var listHostsStartedAt: [Date] = []
+    var listHostsFinishedAt: [Date] = []
+
     func listHosts() async throws -> [RemoteHost] {
-        listCallCount += 1; return listResult
+        listCallCount += 1
+        listHostsStartedAt.append(Date())
+        if listHostsDelay > 0 {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(listHostsDelay * 1_000_000_000))
+            } catch {
+                listHostsTaskWasCancelled = true
+                throw error
+            }
+        }
+        listHostsFinishedAt.append(Date())
+        return listResult
     }
     func createHost(_ input: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
         createCallCount += 1; return createResult
