@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import ServerSyncClient
@@ -67,6 +68,15 @@ public final class HostSyncStore: ObservableObject {
         // default is true.
         preferences.$periodicSyncEnabled
             .sink { [weak self] enabled in self?.handlePeriodicEnabled(enabled) }
+            .store(in: &cancellables)
+
+        // Spec §3.2: listen for system wake (laptop opened from sleep).
+        // NSWorkspace notifications post to NSWorkspace.shared.notificationCenter,
+        // NOT NotificationCenter.default — using the wrong center silently
+        // misses every wake event.
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in self?.handleSystemWake() }
             .store(in: &cancellables)
     }
 
@@ -138,6 +148,21 @@ public final class HostSyncStore: ObservableObject {
                                                   in: .common)
             .autoconnect()
             .sink { [weak self] _ in self?.scheduleAutoSync() }
+    }
+
+    /// Handle wake from sleep. Toggle-gated (spec §4.4) so a metered-
+    /// connection user who turned off Background sync does not get a
+    /// spontaneous network call when opening the lid.
+    ///
+    /// Re-arms the periodic timer so the next fire is `wake + interval`
+    /// rather than the leftover schedule from before sleep. Sleep
+    /// notification is deliberately ignored — Timer.publish naturally
+    /// pauses across sleep (the runloop is suspended), and any spurious
+    /// post-wake double-fire is absorbed by the chained cancel-and-drain.
+    private func handleSystemWake() {
+        guard preferences.periodicSyncEnabled else { return }
+        scheduleAutoSync()
+        handlePeriodicEnabled(true)
     }
 
     /// Append a new sync onto the serialized chain. The new task cancels

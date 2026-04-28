@@ -197,6 +197,42 @@ final class HostSyncStorePeriodicTests: XCTestCase {
             "Signed-out periodic timer fires must hit the auth gate, not the network (spec §3.2)")
     }
 
+    // MARK: - Wake-from-sleep (spec §3.2 handleSystemWake)
+
+    func testDidWakeNotificationTriggersSync() async throws {
+        // Toggle is on (default), authSession is signedIn (default).
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification,
+            object: nil)
+        try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount == 1 }
+        XCTAssertEqual(fakeClient.listCallCount, 1,
+            "Wake notification must fire scheduleAutoSync (spec §3.2)")
+    }
+
+    func testTogglingDisabledStopsWakeFires() async throws {
+        prefs.periodicSyncEnabled = false
+        // Allow the @Published sink to propagate the disabled state.
+        try await Task.sleep(nanoseconds: 50_000_000)  // 0.05 s
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification,
+            object: nil)
+        try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s
+        XCTAssertEqual(fakeClient.listCallCount, 0,
+            "Wake handler must honor preferences.periodicSyncEnabled (spec §4.4)")
+    }
+
+    func testSignedOutWakeNoOps() async throws {
+        fakeAuth.isSignedIn = false
+        // Toggle stays on so wake handler reaches scheduleAutoSync;
+        // the auth gate inside scheduleAutoSync is the short-circuit.
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification,
+            object: nil)
+        try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s
+        XCTAssertEqual(fakeClient.listCallCount, 0,
+            "Wake fire when signed out must short-circuit at the auth gate (spec §3.2 / §4.4.1)")
+    }
+
     // Polls `condition` on the @MainActor every 10 ms up to `timeout`.
     private func waitFor(timeout: TimeInterval,
                          _ condition: @MainActor () -> Bool) async throws {
