@@ -1,5 +1,12 @@
 import Foundation
 
+/// Auth dependency surface for components that only need to observe sign-in
+/// state. `HostSyncStore` consumes this so tests can inject a stub without
+/// constructing a real URL-bound `AuthSession`.
+public protocol AuthSessionProtocol: AnyObject {
+    var isSignedIn: Bool { get }
+}
+
 /// Email/password sign-in against better-auth. Session is a HTTP cookie
 /// (`better-auth.session_token`) stored in the URLSession's cookie jar.
 /// Persistence across app launches comes from using
@@ -60,3 +67,5 @@ public final class AuthSession {
         store.cookies(for: baseURL)?.forEach { store.deleteCookie($0) }
     }
 }
+
+extension AuthSession: AuthSessionProtocol {}
