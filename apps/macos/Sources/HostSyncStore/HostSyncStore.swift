@@ -44,13 +44,28 @@ public final class HostSyncStore: ObservableObject {
     // MARK: - Public entry points
 
     /// Manual entry point ("Sync Now" button — and any future caller).
-    /// Throws on failure so the caller can display the error.
+    /// Concurrent callers share the in-flight task's outcome instead of
+    /// starting a second pass, so the public API is safe to call without
+    /// external `disabled(isSyncing)`-style guards.
     public func sync() async throws {
-        // Concurrent-manual lock + manual coordination land in Task 2.10.3d.
-        // This intermediate version routes manual through the same chain
-        // as auto so a hung auto is cancelled-and-drained before manual
-        // runs (testManualDrainsAuto).
-        try await startSync().value
+        if let existing = currentManualTask {
+            try await existing.value
+            return
+        }
+        let task = Task<Void, Error> { [self] in
+            manualInProgress = true
+            defer {
+                manualInProgress = false
+                currentManualTask = nil
+                if pendingAutoAfterManual {
+                    pendingAutoAfterManual = false
+                    scheduleAutoSync()
+                }
+            }
+            try await startSync().value
+        }
+        currentManualTask = task
+        try await task.value
     }
 
     /// Startup entry point. No-op when signed out; otherwise schedule a sync.
@@ -63,9 +78,14 @@ public final class HostSyncStore: ObservableObject {
 
     // MARK: - Internal serialization
 
-    /// Schedule an auto sync. Manual-coordination gate lands in Task 2.10.3d;
-    /// for now this funnels through `startSync()` so the chain is exercised.
+    /// Schedule an auto sync. Skipped (and deferred) while a manual sync
+    /// is in progress — the deferred fire is replayed in manual's `defer`
+    /// (see `sync()`).
     private func scheduleAutoSync() {
+        guard !manualInProgress else {
+            pendingAutoAfterManual = true
+            return
+        }
         _ = startSync()
     }
 

@@ -148,6 +148,59 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
             "Both auto (cancelled) and manual (succeeded) should have entered listHosts")
     }
 
+    // MARK: - Task 2.10.3d: manual coordination (defer + concurrent-manual lock)
+
+    func testAutoSyncDeferredAndReplayedAroundManual() async throws {
+        // Manual will hang in listHosts — long enough that we can fire a
+        // mutation during it and observe that the debounced auto schedule
+        // is deferred (pendingAutoAfterManual), then replayed after manual exits.
+        fakeClient.listHostsDelay = 0.3
+
+        let manualTask = Task<Void, Error> { try await self.sut.sync() }
+        // Wait for manual to enter listHosts.
+        try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount == 1 }
+
+        // Mutate while manual is in flight. The debounce sink will fire
+        // 0.05 s later and call scheduleAutoSync — which must skip due
+        // to manualInProgress and set pendingAutoAfterManual instead.
+        let h = SSHHost(name: "during-manual", hostname: "x", username: "u", credential: .agent)
+        try sessionStore.addHost(h)
+
+        // Wait past the debounce window.
+        try await Task.sleep(nanoseconds: 100_000_000)  // 0.1 s
+        XCTAssertEqual(fakeClient.listCallCount, 1,
+            "Debounced schedule must be DEFERRED while manual is in progress")
+
+        // Now release manual by clearing the delay (already running call still
+        // sleeps the original 0.3 s; future calls don't).
+        fakeClient.listHostsDelay = 0
+
+        // Wait for manual to finish.
+        _ = try await manualTask.value
+
+        // The replay must fire — listCallCount goes to 2.
+        try await waitFor(timeout: 2.0) { self.fakeClient.listCallCount == 2 }
+        XCTAssertEqual(fakeClient.listCallCount, 2,
+            "Deferred auto must REPLAY in manual's defer (pendingAutoAfterManual)")
+    }
+
+    func testConcurrentManualSyncSharesOutcome() async throws {
+        // Two callers invoke sync() concurrently. The second must await the
+        // first's task (currentManualTask lock) — only one performSync runs.
+        fakeClient.listHostsDelay = 0.2
+
+        let a = Task<Void, Error> { try await self.sut.sync() }
+        // Yield so caller A reaches the inside of sync() and assigns currentManualTask.
+        try await Task.sleep(nanoseconds: 20_000_000)  // 0.02 s
+        let b = Task<Void, Error> { try await self.sut.sync() }
+
+        _ = try await a.value
+        _ = try await b.value
+
+        XCTAssertEqual(fakeClient.listCallCount, 1,
+            "Concurrent manual callers must share a single in-flight pass (currentManualTask lock)")
+    }
+
     // Polls `condition` on the @MainActor every 10 ms up to `timeout`.
     // XCTestCase doesn't auto-pump @MainActor work between awaits without
     // explicit yields, so this small helper is the standard pattern across
