@@ -33,4 +33,17 @@ final class SyncPreferencesTests: XCTestCase {
         XCTAssertEqual(received, [true, false],
             "@Published sink fires once with current value (true), then with the new value (false)")
     }
+
+    func testNotifyOnFailureRoundtripsThroughUserDefaults() {
+        let defaults = UserDefaults(suiteName: "caterm-test-\(UUID().uuidString)")!
+        let prefs = SyncPreferences(defaults: defaults)
+        XCTAssertFalse(prefs.notifyOnFailureEnabled,
+            "Failure notifications must be opt-in when no key has been written yet")
+
+        prefs.notifyOnFailureEnabled = true
+
+        let prefs2 = SyncPreferences(defaults: defaults)
+        XCTAssertTrue(prefs2.notifyOnFailureEnabled,
+            "didSet must persist notifyOnFailureEnabled to UserDefaults so a fresh init reads it back")
+    }
 }

@@ -10,6 +10,7 @@ import Foundation
 @MainActor
 public final class SyncPreferences: ObservableObject {
     private static let periodicEnabledKey = "catermPeriodicSyncEnabled"
+    public static let notifyOnFailureKey = "catermNotifyOnFailureEnabled"
     private let defaults: UserDefaults
 
     @Published public var periodicSyncEnabled: Bool {
@@ -18,9 +19,17 @@ public final class SyncPreferences: ObservableObject {
         }
     }
 
+    @Published public var notifyOnFailureEnabled: Bool {
+        didSet {
+            defaults.set(notifyOnFailureEnabled, forKey: Self.notifyOnFailureKey)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let stored = defaults.object(forKey: Self.periodicEnabledKey) as? Bool
         self.periodicSyncEnabled = stored ?? true
+        let storedNotifyOnFailure = defaults.object(forKey: Self.notifyOnFailureKey) as? Bool
+        self.notifyOnFailureEnabled = storedNotifyOnFailure ?? false
     }
 }
