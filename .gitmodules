@@ -1,0 +1,3 @@
+[submodule "apps/macos/Vendor/ghostty"]
+	path = apps/macos/Vendor/ghostty
+	url = https://github.com/ghostty-org/ghostty
