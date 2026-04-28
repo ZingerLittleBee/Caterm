@@ -47,8 +47,10 @@ public final class HostSyncStore: ObservableObject {
     /// Throws on failure so the caller can display the error.
     public func sync() async throws {
         // Concurrent-manual lock + manual coordination land in Task 2.10.3d.
-        // For now, behave like the original v1.1 entry point.
-        try await performSync()
+        // This intermediate version routes manual through the same chain
+        // as auto so a hung auto is cancelled-and-drained before manual
+        // runs (testManualDrainsAuto).
+        try await startSync().value
     }
 
     /// Startup entry point. No-op when signed out; otherwise schedule a sync.
@@ -61,24 +63,39 @@ public final class HostSyncStore: ObservableObject {
 
     // MARK: - Internal serialization
 
-    /// Schedule a fire-and-forget auto sync. Manual-coordination gate
-    /// lands in Task 2.10.3d; for 2.10.3a this just kicks off a Task.
+    /// Schedule an auto sync. Manual-coordination gate lands in Task 2.10.3d;
+    /// for now this funnels through `startSync()` so the chain is exercised.
     private func scheduleAutoSync() {
-        // Chain serialization lands in Task 2.10.3c; for 2.10.3a we just
-        // spawn an unobserved Task so syncIfSignedIn returns immediately.
-        Task { [weak self] in
+        _ = startSync()
+    }
+
+    /// Append a new sync onto the serialized chain. The new task cancels
+    /// the previous one and waits for it to fully exit (drain) before
+    /// running its own work — guarantees mutual exclusion across
+    /// consecutive sync passes.
+    @discardableResult
+    private func startSync() -> Task<Void, Error> {
+        let prev = inFlight
+        let new = Task { [weak self] in
             guard let self else { return }
-            try? await self.performSync()
+            prev?.cancel()
+            _ = await prev?.result   // drain — always resolves (success / throw / CancellationError)
+            try Task.checkCancellation()  // we may have been replaced too
+            try await self.performSync()
         }
+        inFlight = new
+        return new
     }
 
     // MARK: - Sync work
 
     private func performSync() async throws {
         let remote = try await client.listHosts()
+        try Task.checkCancellation()
         let ops = HostSyncReconciler.reconcile(local: sessionStore.hosts,
                                                 remote: remote)
         for op in ops {
+            try Task.checkCancellation()
             try await apply(op)
         }
     }
