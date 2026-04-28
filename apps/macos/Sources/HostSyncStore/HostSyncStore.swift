@@ -34,8 +34,11 @@ public final class HostSyncStore: ObservableObject {
         self.sessionStore = sessionStore
         self.authSession = authSession
 
-        // Debounce subscription wired up in Task 2.10.3b.
-        _ = debounceInterval  // silence unused-parameter warning until 2.10.3b lands
+        sessionStore.mutationsForSync
+            .debounce(for: .seconds(debounceInterval),
+                      scheduler: DispatchQueue.main)
+            .sink { [weak self] in self?.scheduleAutoSync() }
+            .store(in: &cancellables)
     }
 
     // MARK: - Public entry points

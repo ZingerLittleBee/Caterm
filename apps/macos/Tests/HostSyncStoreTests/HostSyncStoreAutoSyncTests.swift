@@ -55,6 +55,48 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
         XCTAssertEqual(fakeClient.listCallCount, 1)
     }
 
+    // MARK: - Task 2.10.3b: debounce subscription
+
+    func testMutationTriggersDebouncedSync() async throws {
+        // debounceInterval is 0.05 from setUp.
+        let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
+        try sessionStore.addHost(h)
+
+        // Immediately after addHost, debounce timer hasn't fired yet.
+        XCTAssertEqual(fakeClient.listCallCount, 0,
+            "Debounce should delay the sync — no listHosts yet")
+
+        // Wait past the debounce window.
+        try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount == 1 }
+        XCTAssertEqual(fakeClient.listCallCount, 1)
+    }
+
+    func testRapidMutationsCoalesce() async throws {
+        for i in 0..<5 {
+            let h = SSHHost(name: "h\(i)", hostname: "x", username: "u", credential: .agent)
+            try sessionStore.addHost(h)
+        }
+        // 5 rapid sends within the 0.05 s debounce window → 1 fire.
+        try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount >= 1 }
+        // Give a little extra time to ensure no second fire arrives.
+        try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s
+        XCTAssertEqual(fakeClient.listCallCount, 1,
+            "5 mutations within debounce window must coalesce into 1 sync")
+    }
+
+    func testCredentialOnlyDoesNotTriggerSync() async throws {
+        let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
+        try sessionStore.addHost(h)
+        // Wait for the addHost-triggered sync.
+        try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount == 1 }
+
+        try sessionStore.setCredentialOnly(.password, for: h.id)
+        // Wait past the debounce window.
+        try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s
+        XCTAssertEqual(fakeClient.listCallCount, 1,
+            "Credential-only change must NOT trigger sync (no .send() in setCredentialOnly)")
+    }
+
     // Polls `condition` on the @MainActor every 10 ms up to `timeout`.
     // XCTestCase doesn't auto-pump @MainActor work between awaits without
     // explicit yields, so this small helper is the standard pattern across
