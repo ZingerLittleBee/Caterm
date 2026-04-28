@@ -31,6 +31,15 @@ public final class SessionStore: ObservableObject {
     /// won't trigger persistence.
     @Published public private(set) var hosts: [SSHHost] = []
 
+    /// Combine signal for "user-driven local hosts mutation just persisted".
+    /// `HostSyncStore` debounces this to drive auto-sync. Only `addHost`,
+    /// `updateHost`, and `deleteHost` emit — credential-only changes and
+    /// the apply ops from a sync pass deliberately do NOT (spec §3.2).
+    private let mutationsForSyncSubject = PassthroughSubject<Void, Never>()
+    public var mutationsForSync: AnyPublisher<Void, Never> {
+        mutationsForSyncSubject.eraseToAnyPublisher()
+    }
+
     public let askpassPath: String
     public let knownHostsCaterm: String
     public let knownHostsUser: String
@@ -66,6 +75,7 @@ public final class SessionStore: ObservableObject {
     public func addHost(_ host: SSHHost) throws {
         hosts.append(host)
         try HostPersistence.save(hosts, to: hostsURL)
+        mutationsForSyncSubject.send()
     }
 
     public func updateHost(_ host: SSHHost) throws {
@@ -74,6 +84,7 @@ public final class SessionStore: ObservableObject {
         updated.updatedAt = Date()
         hosts[idx] = updated
         try HostPersistence.save(hosts, to: hostsURL)
+        mutationsForSyncSubject.send()
     }
 
     public func deleteHost(id: UUID) throws {
@@ -81,6 +92,7 @@ public final class SessionStore: ObservableObject {
         try HostPersistence.save(hosts, to: hostsURL)
         // Best-effort keychain cleanup; Task 1.7 expands this with explicit kind enumeration.
         try? keychain.deleteAll(prefix: "\(id.uuidString).")
+        mutationsForSyncSubject.send()
     }
 
     /// Persist a per-host secret (password or key passphrase) to Keychain
