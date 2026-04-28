@@ -139,9 +139,10 @@ public final class SessionStore: ObservableObject {
             let attempt = tab.reconnectAttempts + 1
             if ReconnectScheduler.shouldReconnect(failureKind: kind, attempt: attempt) {
                 tab.reconnectAttempts = attempt
-                let nextRetry = Date().addingTimeInterval(ReconnectScheduler.backoff(attempt: attempt))
+                let delay = ReconnectScheduler.backoff(attempt: attempt)
+                let nextRetry = Date().addingTimeInterval(delay)
                 tab.state = .reconnecting(attempt: attempt, nextRetryAt: nextRetry)
-                scheduleReconnect(tabId: tabId, after: ReconnectScheduler.backoff(attempt: attempt))
+                scheduleReconnect(tabId: tabId, after: delay)
             } else {
                 tab.state = .failed(kind)
             }

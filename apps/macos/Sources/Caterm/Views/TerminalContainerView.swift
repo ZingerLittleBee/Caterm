@@ -15,7 +15,7 @@ struct TerminalContainerView: View {
 	var body: some View {
 		ZStack {
 			if let tab = store.tabs.first(where: { $0.id == tabId }) {
-				TerminalSurfaceRepresentable(tabId: tabId, generation: tab.surfaceGeneration)
+				TerminalSurfaceRepresentable(tabId: tabId)
 					.id("\(tabId)-\(tab.surfaceGeneration)")
 				if case let .reconnecting(attempt, nextRetryAt) = tab.state {
 					ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
@@ -33,13 +33,13 @@ struct TerminalContainerView: View {
 /// so we poll briefly until it's available before attaching the `onChildExit`
 /// callback.
 ///
-/// The `generation` parameter is forwarded as `.id(...)` from `TerminalContainerView`
-/// so SwiftUI destroys and recreates this representable (and thus the underlying
-/// `GhosttySurfaceNSView`) when `surfaceGeneration` increments on reconnect.
+/// Recreation is driven by the `.id("\(tabId)-\(tab.surfaceGeneration)")` modifier in
+/// `TerminalContainerView` — when `surfaceGeneration` increments, SwiftUI tears down
+/// and recreates this representable (and thus the underlying `GhosttySurfaceNSView`),
+/// kicking off a fresh ssh subprocess.
 struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	@EnvironmentObject var store: SessionStore
 	let tabId: UUID
-	let generation: Int
 
 	func makeNSView(context _: Context) -> GhosttySurfaceNSView {
 		guard let cfg = store.surfaceConfig(for: tabId) else {
