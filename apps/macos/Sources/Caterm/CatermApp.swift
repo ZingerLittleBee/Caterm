@@ -34,19 +34,30 @@ struct CatermApp: App {
 			.background(OpenTabBridge(store: store))
 		}
 		.commands {
-			// ⌘T now means "add a new host" (the sidebar listens for this
-			// notification and opens its add-sheet). Connecting to a host
-			// happens via the sidebar (Connect / double-click).
+			// ⌘N opens a fresh LandingView window (OpenTabBridge handles the
+			// notification by calling openWindow(value: UUID())).
+			// ⌘T adds a new host (the sidebar listens and opens its add-sheet).
 			CommandGroup(replacing: .newItem) {
+				Button("New Window") {
+					NotificationCenter.default.post(name: .catermNewWindow, object: nil)
+				}
+				.keyboardShortcut("n", modifiers: .command)
 				Button("New Host…") {
 					NotificationCenter.default.post(name: .catermAddHost, object: nil)
 				}
 				.keyboardShortcut("t", modifiers: .command)
 			}
-			CommandGroup(after: .appSettings) {
-				Button("Open Configuration File…") {
+			// ⌘, opens (reveals) the TOML config file in Finder.
+			CommandGroup(replacing: .appSettings) {
+				Button("Settings…") {
 					ConfigStore.revealInFinder(ConfigStore.defaultPath)
 				}
+				.keyboardShortcut(",", modifiers: .command)
+			}
+			// Help menu → GitHub documentation page.
+			CommandGroup(replacing: .help) {
+				Link("Caterm Documentation",
+				     destination: URL(string: "https://github.com/ZingerLittleBee/Caterm")!)
 			}
 		}
 	}
@@ -55,6 +66,7 @@ struct CatermApp: App {
 extension Notification.Name {
 	static let catermOpenTab = Notification.Name("CatermOpenTabNotification")
 	static let catermAddHost = Notification.Name("CatermAddHostNotification")
+	static let catermNewWindow = Notification.Name("CatermNewWindowNotification")
 }
 
 /// Invisible bridge view that lets us call `openWindow(value:)` (which needs
@@ -74,6 +86,12 @@ struct OpenTabBridge: View {
 			.onReceive(NotificationCenter.default.publisher(for: .catermOpenTab)) { note in
 				guard let tabId = note.userInfo?["tabId"] as? UUID else { return }
 				openWindow(value: tabId)
+			}
+			.onReceive(NotificationCenter.default.publisher(for: .catermNewWindow)) { _ in
+				// A fresh UUID that is not in store.tabs causes WindowGroup to
+				// render LandingView rather than MainWindow — effectively a new
+				// blank window in the tab bar.
+				openWindow(value: UUID())
 			}
 	}
 }
