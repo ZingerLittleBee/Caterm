@@ -32,9 +32,21 @@ private func isAuthFailure(_ err: ServerSyncError?) -> Bool {
     }
 }
 
+/// Renders a "Last sync: …" relative phrase, or "Never synced" when nil.
+/// Resolves against `Date()` at call time, so the SyncSettingsView
+/// wraps the `Text` invocation in a `TimelineView(.periodic(...))` to
+/// keep the phrase advancing while auto-sync is failing (spec §3.3).
+func formatLastSyncedAt(_ date: Date?) -> String {
+    guard let date else { return "Never synced" }
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .full
+    return formatter.localizedString(for: date, relativeTo: Date())
+}
+
 struct SyncSettingsView: View {
     let authSession: AuthSession
-    let syncStore: HostSyncStore
+    @ObservedObject var syncStore: HostSyncStore
+    @ObservedObject var preferences: SyncPreferences
     @Binding var serverURL: String
     @State private var isSigningOut = false
     @State private var isSyncing = false
@@ -72,8 +84,23 @@ struct SyncSettingsView: View {
                 }
             }
             Section("Sync") {
+                Toggle("Background sync", isOn: $preferences.periodicSyncEnabled)
+                Text("Syncs every 15 minutes and on wake from sleep.")
+                    .font(.caption).foregroundColor(.secondary)
                 Button("Sync Now") { Task { await syncNow() } }
                     .disabled(!authSession.isSignedIn || isSyncing)
+                // TimelineView is load-bearing for failure visibility:
+                // formatLastSyncedAt resolves against Date() at body-eval
+                // time, so without the periodic re-render the phrase
+                // freezes when lastSyncedAt doesn't advance (i.e. when
+                // auto-sync is failing — the case we WANT the user to
+                // notice). 30 s cadence is responsive enough to feel
+                // live but coarse enough not to thrash. Spec §3.3 / §5.5
+                // invariant 9.
+                TimelineView(.periodic(from: .now, by: 30)) { _ in
+                    Text("Last sync: \(formatLastSyncedAt(syncStore.lastSyncedAt))")
+                        .font(.caption).foregroundColor(.secondary)
+                }
                 if let lastSyncError {
                     Text(lastSyncError.description)
                         .foregroundColor(.red).font(.caption)

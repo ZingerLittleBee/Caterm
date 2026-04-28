@@ -67,6 +67,9 @@ struct CatermApp: App {
 				SyncSettingsView(
 					authSession: authSession,
 					syncStore: syncStore,
+					// TODO(v1.2.6): pass @StateObject SyncPreferences from CatermApp.
+					// Temporary stub — real wiring lands in v1.2.6.
+					preferences: SyncPreferences(),
 					serverURL: $serverURLText
 				)
 				.onChange(of: serverURLText) { _, newValue in
