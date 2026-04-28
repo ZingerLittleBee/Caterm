@@ -8,21 +8,26 @@
 
 ## 当前阶段
 
-**Phase 1 v1 — 7/12 Tasks COMPLETE (2026-04-27)**
+**Phase 1 v1: 10/12 + Phase 2 v1.1: 11/11 + Phase 2 v1.2: 6/6 COMPLETE (2026-04-28)**
 
-分支：`feature/phase-1-v1`（基于 `e9dc32a` Merge spike/phase-0）。最近 commit `5b907c9`。
+分支：`feature/phase-1-v1`。最近 commit `89b140c feat(macos): wire SyncPreferences into CatermApp`。
 
-完成：1.0 scaffold / 1.1 TerminalEngine / 1.2 SSHCommandBuilder + fuzz / 1.3 KeychainStore + askpass + dev-codesign / 1.4 端到端 SSH（Docker target 跑通） / 1.5 NSWindow native multi-tab / 1.6 HostListSidebar + 表单 + JSON 持久化 / 1.7 KeychainIntegrationTests。49 tests 全绿（1 Docker skip）。
+**测试**：134 tests 全绿（1 Docker E2E skip without `CATERM_E2E_DOCKER=1`）。从 60 → 91 (Phase 2 v1.1 baseline) → 97 (2.9) → 117 (2.10) → 134 (v1.2 +17)。
 
-剩余 5 Tasks：1.8 重连 FSM + overlay / 1.9 ConfigStore / 1.10 菜单/快捷键/About / 1.11 Release（packaging + Sparkle + provisioning profile + Tauri banner）。
+**Phase 1 v1 完成**：1.0–1.10。**剩余 1.11**（Release packaging + Sparkle + provisioning profile + Tauri banner）卡 Apple Developer 后台拉证书。
+
+**Phase 2 v1.1 完成**：2.0–2.10（云同步 baseline + 启动 sync + mutation-debounce sync + manual/auto 协调 + needsCredentialSetup UX）。
+
+**Phase 2 v1.2 完成**：v1.2.1 SyncPreferences ObservableObject + persistence；v1.2.2 HostSyncStore lastSyncedAt @Published + scheduleAutoSync auth gate + FakeServerSyncClient per-method error flags；v1.2.3 周期 15-min Timer.publish；v1.2.4 NSWorkspace.didWakeNotification handler；v1.2.5 SyncSettingsView Background sync toggle + caption + TimelineView-wrapped Last sync row + formatLastSyncedAt；v1.2.6 CatermApp 接入 @StateObject SyncPreferences 替换 stub。
 
 **关键技术状态（必读）**：
 - AMFI 在 Apple Silicon 上拒绝无 provisioning profile 的 `keychain-access-groups` restricted entitlement → dev 路径走 `accessGroup: nil`（login keychain）；production .app 需在 1.11 加 provisioning profile 嵌入或 Developer ID + Notarization。
 - 真实 TeamID 是 `9VM4RM39R3`（cert OU），不是 CN 后缀的 `4GH398M5WH`。dev-codesign.sh 自动从 cert 提取。
 - `CATERM_ASKPASS_STUFF=1` dev-only bootstrap：同一签名 binary 写 + 读 Keychain item 走 partition list trust，免去 macOS "Always Allow" 对话框。每次 codesign 重做后需重跑。
 - `SSHHost = Host` typealias 在 SSHCommandBuilder/Host.swift 里（解决 SessionStore 引入 Combine 后 Foundation `NSHost` 名称冲突）。
+- v1.2 load-bearing invariants（详见 spec §5.5）：`scheduleAutoSync` 顶部的 `authSession.isSignedIn` gate 让 periodic / wake / mutation-debounce 三路 auto silent no-op；`performSync` 末尾 `lastSyncedAt = Date()` 必须在 op 循环 **全部成功后** 才执行（partial-apply 失败时不前进）；`SyncSettingsView` 的 Last sync 行必须包 `TimelineView(.periodic(by: 30))`，否则失败时 `lastSyncedAt` 不变 → 短语冻结 → 失败可见性丢失；`NSWorkspace.shared.notificationCenter`（不是 `NotificationCenter.default`）才接得到 wake 事件；UserDefaults 测试隔离 mandatory（`UserDefaults(suiteName: "caterm-test-\(UUID().uuidString)")!`）。
 
-下一会话起点：用户做端到端视觉 smoke 验证（add host → connect → multi-tab → close），通过后进 Task 1.8。
+下一会话起点：1.11 Release（要 Apple Developer 证书）或 v1.3 follow-ups（refresh-token / lastSyncAttemptedAt failing 徽章 / configurable interval）。
 
 ---
 
@@ -85,6 +90,8 @@
 | 2026-04-27 | Task 1.6 通过：HostListSidebar + HostFormView + ConnectSecretDialog；hosts.json 持久化 0600 权限；CredentialSource enum 三路 UI 全打通；不再硬编码主机；NavigationSplitView 接入 MainWindow + LandingView。SessionStore 新增 hosts/hostsURL/keychain + addHost/updateHost/deleteHost/setHostSecret(SecretKind enum)；HostPersistence enum 静态 load/save (chmod 0600 + sortedKeys 输出)；HostListSidebar 用 List+selection / overlay 空态 / contextMenu (Connect/Edit/Delete) / 双击 Connect / sheet 双 mode (.add/.edit) / .onReceive(.catermAddHost) 桥。HostFormView segmented Picker 三路 + NSOpenPanel 浏览 + SecureField 条件渲染。⌘T 改为 New Host…（不再硬编码 Docker smoke）；既有 .catermOpenTab 桥保留。HostPersistenceTests 5 个（roundtrip/missing/perm/overwrite/SessionStore CRUD）。45 tests 全绿（1 docker skip）。osascript probe：window=1000x652（NavigationSplitView 1000 min 生效）|
 | 2026-04-27 | Task 1.7 通过（实际工作大部分被 1.6 一并消化）：KeychainIntegrationTests 4 个新增（password roundtrip / passphrase roundtrip / deleteHost wipes single / deleteHost wipes both kinds），覆盖 SessionStore.setHostSecret + deleteHost 的 keychain 通配清理路径。49 tests 全绿（1 docker skip） |
 | 2026-04-28 | Task 2.10 通过 (Phase 2 v1.1 follow-up)：auto-sync triggers 落地。(a) 启动时 .task { syncStore.syncIfSignedIn() } 走 WindowGroup root；(b) post-mutation 通过 SessionStore.mutationsForSync (PassthroughSubject + 公开 AnyPublisher，addHost/updateHost/deleteHost 在 HostPersistence.save 后 send，setCredentialOnly + 远端 apply ops 不发) → HostSyncStore .debounce(.seconds(2), .main) → scheduleAutoSync。Manual/auto coexistence 三 flag：manualInProgress 闸门 / pendingAutoAfterManual defer 重放 / currentManualTask 锁让并发 sync() 共享同一 in-flight。Chained cancel-and-drain 串行化（prev?.cancel(); await prev?.result; checkCancellation; performSync）保证 cooperative-cancel 间隙不会让两轮 apply 同时跑；checkCancellation 关键约束：performSync 里 listHosts 之后 + op loop 顶部各一次，绝对不在 apply(.createRemote) 里 createHost 和 setServerId 之间（那段窗口 cancel 会造成 server 有 host / 本地无 serverId → 下次 sync 重复 create）。HostSyncStore 改 ObservableObject 由 CatermApp 持成 @StateObject — 长寿命是 inFlight chain / cancellables / debounce timer 全部 invariant 的 load-bearing 前提。AuthSessionProtocol（仅 isSignedIn）从 AuthSession 抽出来给测试注入，FakeAuthSession 没 URL 包袱。SyncSettingsView 错误类型 String? → ServerSyncError?，Account section 三态（signedOut / signedIn / sessionExpired）由 internal accountState(isSignedIn:lastSyncError:) 派生；isAuthFailure 同时匹配 .http(401) 和 .orpc(_, 401, _)（oRPC 路由 401 包在 envelope 不是 .http，pin by ServerSyncClientHTTPTests:58）。Session-expired 出 "Sign In Again…" 短路两步登出登入。+20 tests（5 SessionStoreMutationPublisher / 9 HostSyncStoreAutoSync / 6 SyncSettingsAccountState），suite 97 → 117 全绿。Spec: 2026-04-28-task-2.10-auto-sync-triggers-design.md；Plan: 2026-04-28-task-2.10-auto-sync-triggers.md。Commits: eaf8fdf / 888e58e / ca49bd8 / 1342dec / d0d6b7c / f76bac6 / 1c72b4d / 2b6383e |
+| 2026-04-28 | **v1.2 Brainstorm + Spec：周期 sync (c) + freshness display**。两轮 review 修复（4+2 处）：(P1) `scheduleAutoSync` 顶部加 `authSession.isSignedIn` gate — periodic / wake / mutation-debounce 三路 auto 全部走 funnel，signed-out 时静默 no-op；manual 故意豁免（cookie-still-present-but-server-401 是 `.sessionExpired` 恢复路径）。(P2) "Background sync" toggle 同时管 timer **和** wake — wake handler 加 `guard preferences.periodicSyncEnabled` 让 metered-connection 用户的预期成立；caption 改 "Syncs every 15 minutes and on wake from sleep." 让 UI 文案与行为一致。(P3) `lastSyncedAt` 必须在 op 循环全部成功**后**写，partial-apply 失败（`listHosts` 成功但 `createHost` throw）不前进 freshness — 加 `testLastSyncedAtUnchangedOnPartialApplyFailure` 用 `FakeServerSyncClient.createHostError` per-method flag 钉死。(P4) 测试 UserDefaults 隔离从 "for hygiene, prefer" 改 mandatory：`UserDefaults(suiteName: "caterm-test-\(UUID().uuidString)")!` 强制写入，否则测试污染开发者 `~/Library/Preferences`。第二轮：(P3-1) Last sync 行包 `TimelineView(.periodic(from: .now, by: 30))` — `RelativeDateTimeFormatter` 在 body-eval 时 resolve `Date()`，没 timeline 时失败的 `lastSyncedAt` 不变 → 短语冻结 → 失败可见性丢失（load-bearing for failure visibility）。(P3-2) 措辞修正：`Sync Now` 按钮的 `.disabled(!authSession.isSignedIn || isSyncing)` 必须保留，manual sync 的 auth-exempt 只覆盖 *cookie 还在但 server 401* 场景，不是 fully signed out（fully signed out 用户根本到不了 SyncSettingsView，看到 SignInView 了）。Spec: `2026-04-28-task-v1.2-periodic-sync-and-freshness-design.md`，commit `060f4f3` + `179293a` |
+| 2026-04-28 | **Phase 2 v1.2 6/6 通过**：(v1.2.1 `f5b0a28`) `SyncPreferences` ObservableObject — `@Published periodicSyncEnabled: Bool` 默认 true，`didSet` 写 UserDefaults `catermPeriodicSyncEnabled` key；`@MainActor public final class`；CatermApp 持成 `@StateObject`，注入 HostSyncStore + SyncSettingsView 共享一份。+3 tests。(v1.2.2 `eda9855`) HostSyncStore 加 `preferences/periodicInterval/userDefaults` init params；`@Published lastSyncedAt: Date?` hydrate from UserDefaults `catermLastSyncedAt`；`scheduleAutoSync` 加 `authSession.isSignedIn` 闸；`performSync` 末尾 `lastSyncedAt = Date()` 写在 op 循环之后；`FakeServerSyncClient` 加 per-method error flags（`listHostsError/createHostError/updateHostError/deleteHostError`）；测试 setUps 强制 `UserDefaults(suiteName: "caterm-test-\(UUID().uuidString)")!`。+6 tests。(v1.2.3 `bbadeab`) `preferences.$periodicSyncEnabled.sink → handlePeriodicEnabled` + `Timer.publish(every: periodicInterval, on: .main, in: .common).autoconnect()`；`@Published .sink` current-value 语义保证 default-true 在 init 同步 fire 启动 timer；`handlePeriodicEnabled` 幂等（cancel-and-recreate）让 wake re-arm 安全。+3 tests。(v1.2.4 `c5c2202`) `import AppKit` + `NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)`（**不是 NotificationCenter.default**，wake 走另一个 center） + `handleSystemWake` toggle-gated（`guard preferences.periodicSyncEnabled`）+ 调 `handlePeriodicEnabled(true)` 重新 arm 让下次 fire = wake + 15min。+3 tests。(v1.2.5 `ec2658d`) SyncSettingsView：`let syncStore` → `@ObservedObject var syncStore` + 加 `@ObservedObject var preferences`；Sync section 加 `Toggle("Background sync", isOn: $preferences.periodicSyncEnabled)` + caption "Syncs every 15 minutes and on wake from sleep." + `TimelineView(.periodic(from: .now, by: 30)) { _ in Text("Last sync: \(formatLastSyncedAt(syncStore.lastSyncedAt))") }`；`formatLastSyncedAt(_: Date?) -> String` free function 用 `RelativeDateTimeFormatter`（locale-tolerant）。Sync Now 按钮保留 `.disabled(!authSession.isSignedIn || isSyncing)`。+2 tests。(v1.2.6 `89b140c`) CatermApp 加 `@StateObject var preferences: SyncPreferences`，init 实例化一次串入 HostSyncStore.init 和 SyncSettingsView，替换 v1.2.2/v1.2.5 的 `TODO(v1.2.6)` stub。**Suite 117 → 134 全绿**（1 Docker skip）。Plan: `2026-04-28-task-v1.2-periodic-sync-and-freshness-implementation.md`（commit `458e0a2`）。subagent-driven-development 节奏：sonnet implementer + 每 task verbatim plan transcribe + 检查 diff，无 fixup（v1.2.2/v1.2.5 的 stub 不算）|
 
 ---
 
@@ -93,6 +100,10 @@
 - 设计文档：`docs/superpowers/specs/2026-04-27-tauri-to-swift-migration-design.md` ✅（三轮 review 通过 + spike 后大改 + 7 处 review 修复）
 - Phase 0 spike 计划：`docs/superpowers/plans/2026-04-27-phase-0-spike-plan.md` ✅
 - Phase 1 v1 计划：`docs/superpowers/plans/2026-04-27-phase-1-v1-implementation.md` ✅（12 Tasks，TDD 节奏，bite-sized 步骤，每 Task 末尾 commit + 进度日志）
-- v1.1 同步计划：待 v1 ship 后写
-- v2 SFTP 计划：待 v1.1 ship 后写
+- Phase 2 v1.1 计划：`docs/superpowers/plans/2026-04-28-phase-2-v1.1-host-sync-implementation.md` ✅
+- 2.10 设计 spec：`docs/superpowers/specs/2026-04-28-task-2.10-auto-sync-triggers-design.md` ✅
+- 2.10 实施计划：`docs/superpowers/plans/2026-04-28-task-2.10-auto-sync-triggers.md` ✅
+- v1.2 设计 spec：`docs/superpowers/specs/2026-04-28-task-v1.2-periodic-sync-and-freshness-design.md` ✅（两轮 review 通过，4+2 处修复）
+- v1.2 实施计划：`docs/superpowers/plans/2026-04-28-task-v1.2-periodic-sync-and-freshness-implementation.md` ✅（6 Tasks）
+- v2 SFTP 计划：待 v1 ship 后写
 - 本进度文件：`docs/superpowers/plans/2026-04-27-swift-migration-progress.md`
