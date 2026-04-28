@@ -12,6 +12,7 @@ struct CatermApp: App {
 	@NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 	@StateObject var store: SessionStore
 	@StateObject var syncStore: HostSyncStore
+	@StateObject var preferences: SyncPreferences
 	@State private var showSyncSettings = false
 	@State private var serverURLText: String = ServerURL.current.absoluteString
 	private let authSession: AuthSession
@@ -22,18 +23,17 @@ struct CatermApp: App {
 		let session = makeStore()
 		let auth = AuthSession(baseURL: ServerURL.current)
 		let client = URLSessionServerSyncClient(baseURL: ServerURL.current)
+		let prefs = SyncPreferences()
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
 		// property-wrapper init — required because `@StateObject` cannot be
 		// assigned via the synthesized `self.store = ...` syntax in `init`.
 		_store = StateObject(wrappedValue: session)
-		// TODO(v1.2.6): pass @StateObject SyncPreferences + isolated defaults.
-		// Temporary stub keeps Caterm compiling while HostSyncStore.init
-		// gains the preferences: parameter (v1.2.2). Real wiring lands in v1.2.6.
+		_preferences = StateObject(wrappedValue: prefs)
 		_syncStore = StateObject(wrappedValue: HostSyncStore(
 			client: client,
 			sessionStore: session,
 			authSession: auth,
-			preferences: SyncPreferences()
+			preferences: prefs
 		))
 		self.authSession = auth
 		self.syncClient = client
@@ -67,9 +67,7 @@ struct CatermApp: App {
 				SyncSettingsView(
 					authSession: authSession,
 					syncStore: syncStore,
-					// TODO(v1.2.6): pass @StateObject SyncPreferences from CatermApp.
-					// Temporary stub — real wiring lands in v1.2.6.
-					preferences: SyncPreferences(),
+					preferences: preferences,
 					serverURL: $serverURLText
 				)
 				.onChange(of: serverURLText) { _, newValue in
