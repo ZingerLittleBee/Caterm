@@ -1,3 +1,4 @@
+import ConfigStore
 import KeychainStore
 import SessionStore
 import SSHCommandBuilder
@@ -8,6 +9,10 @@ import TerminalEngine
 struct CatermApp: App {
 	@NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 	@StateObject var store: SessionStore = makeStore()
+
+	init() {
+		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
+	}
 
 	var body: some Scene {
 		// Each tab in the OS-provided native tab bar is one window in this
@@ -37,6 +42,11 @@ struct CatermApp: App {
 					NotificationCenter.default.post(name: .catermAddHost, object: nil)
 				}
 				.keyboardShortcut("t", modifiers: .command)
+			}
+			CommandGroup(after: .appSettings) {
+				Button("Open Configuration File…") {
+					ConfigStore.revealInFinder(ConfigStore.defaultPath)
+				}
 			}
 		}
 	}

@@ -10,11 +10,16 @@ import GhosttyKit
 public final class GhosttyConfig {
 	public let raw: ghostty_config_t
 
-	public init() throws {
+	public init(catermConfigPath: String? = nil) throws {
 		guard let cfg = ghostty_config_new() else {
 			throw GhosttyError.configCreateFailed
 		}
 		ghostty_config_load_default_files(cfg)
+		if let path = catermConfigPath,
+			FileManager.default.fileExists(atPath: path)
+		{
+			ghostty_config_load_file(cfg, path)
+		}
 		ghostty_config_finalize(cfg)
 		self.raw = cfg
 	}
