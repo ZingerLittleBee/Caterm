@@ -38,6 +38,16 @@ let package = Package(
             dependencies: ["SSHCommandBuilder", "KeychainStore"],
             path: "Sources/SessionStore"
         ),
+        .target(
+            name: "ServerSyncClient",
+            dependencies: ["SSHCommandBuilder"],
+            path: "Sources/ServerSyncClient"
+        ),
+        .target(
+            name: "HostSyncStore",
+            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder"],
+            path: "Sources/HostSyncStore"
+        ),
 
         // --- Executables ---
         .executableTarget(
@@ -48,6 +58,8 @@ let package = Package(
                 "SessionStore",
                 "KeychainStore",
                 "ConfigStore",
+                "ServerSyncClient",
+                "HostSyncStore",
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
@@ -92,6 +104,16 @@ let package = Package(
             name: "ConfigStoreTests",
             dependencies: ["ConfigStore"],
             path: "Tests/ConfigStoreTests"
+        ),
+        .testTarget(
+            name: "ServerSyncClientTests",
+            dependencies: ["ServerSyncClient"],
+            path: "Tests/ServerSyncClientTests"
+        ),
+        .testTarget(
+            name: "HostSyncStoreTests",
+            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore"],
+            path: "Tests/HostSyncStoreTests"
         ),
     ]
 )
