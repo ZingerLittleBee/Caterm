@@ -115,23 +115,29 @@ public final class GhosttySurfaceNSView: NSView {
 			super.keyDown(with: event)
 			return
 		}
-		// "ghostty-key-first" strategy: forward the raw NSEvent to libghostty
-		// BEFORE letting AppKit's IME engine see it. libghostty looks at the
-		// `composing` flag to decide whether to swallow the key (when an IME
-		// composition is active) or treat it as a normal keystroke.
-		let composing = hasMarkedText()
-		surface.sendKey(event, composing: composing)
-
-		// 5.5-OQ-2: AppKit may interpret some Ctrl-chords (e.g. ⌃A → "go to
-		// start of line") and double-emit. We've already sent the raw event
-		// to libghostty above; only call `interpretKeyEvents` when IME might
-		// compose. The `composing` short-circuit ensures dead-key sequences
-		// (e.g. ⌥e + e → é, where Option counts as a Ctrl-class chord but
-		// must reach the IME) still flow through `interpretKeyEvents`.
-		let isCtrlChord = event.modifierFlags.contains(.control) && !composing
-		if !isCtrlChord {
-			interpretKeyEvents([event])
-		}
+		// Probe the IME via `inputContext.handleEvent` instead of
+		// `interpretKeyEvents`. The difference matters:
+		//
+		//   - `handleEvent` only routes to the input method server. If the IME
+		//     consumes the event (composition start / continue / commit) it
+		//     synchronously calls `setMarkedText` or `insertText` (which we
+		//     bridge to libghostty's preedit / text APIs) and returns true.
+		//     If no IME wants it, it returns false and is a noop.
+		//
+		//   - `interpretKeyEvents` additionally translates non-IME keys into
+		//     `NSResponder` selectors (e.g. Backspace → `deleteBackward:`) and
+		//     dispatches them up the responder chain. With no responder
+		//     overriding those, AppKit calls `NSBeep()`. It also calls
+		//     `insertText` for plain printables even without an active IME,
+		//     which double-emits with our `surface.sendKey` text path.
+		//
+		// So: ask the IME first. If it took the keystroke, send the raw event
+		// to libghostty with `composing: true` so the keystroke is tracked for
+		// keyboard-protocol encoding without re-emitting any text. If the IME
+		// passed, send with `composing: false` and let libghostty handle
+		// binding matching + text emission as the single source of truth.
+		let imeConsumed = inputContext?.handleEvent(event) ?? false
+		surface.sendKey(event, composing: imeConsumed)
 	}
 
 	public override func cursorUpdate(with event: NSEvent) {
