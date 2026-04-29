@@ -120,5 +120,10 @@ let package = Package(
             dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore"],
             path: "Tests/CatermTests"
         ),
+        .testTarget(
+            name: "TerminalEngineTests",
+            dependencies: ["TerminalEngine"],
+            path: "Tests/TerminalEngineTests"
+        ),
     ]
 )
