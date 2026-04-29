@@ -32,6 +32,15 @@ public struct LiveNotificationCenter: NotificationDelivering {
 ///
 /// The threshold is based on `now - lastSyncedAt`; returned `.failing(... since:)`
 /// uses `lastSyncAttemptedAt`. Store-level `failingSince` is handled separately.
+///
+/// Never-synced-with-error case: when `lastSyncedAt == nil` but a sync was
+/// attempted and produced a known error kind, we surface `.failing` using
+/// `lastSyncAttemptedAt` as `since`. Without this, a freshly-signed-in user
+/// hitting an auth/network error on their first sync would render as
+/// "Never synced" (healthy bucket) and silently miss the recovery affordance.
+/// The threshold doesn't apply here — there's no successful baseline to
+/// debounce against, and `lastSyncErrorKind` is only set after at least one
+/// classified failure, so a stray nil-error transient can't flip us.
 public func syncFailureState(
     now: Date,
     lastSyncedAt: Date?,
@@ -42,7 +51,12 @@ public func syncFailureState(
 ) -> SyncFailureState {
     guard periodicSyncEnabled else { return .normal }
     guard let attempted = lastSyncAttemptedAt else { return .normal }
-    guard let succeeded = lastSyncedAt else { return .normal }
+    guard let succeeded = lastSyncedAt else {
+        if let kind = lastSyncErrorKind {
+            return .failing(reason: kind, since: attempted)
+        }
+        return .normal
+    }
     guard attempted > succeeded else { return .normal }
     guard now.timeIntervalSince(succeeded) > failingThreshold else { return .normal }
     let reason = lastSyncErrorKind ?? .other

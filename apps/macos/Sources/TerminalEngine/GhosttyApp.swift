@@ -184,7 +184,8 @@ public final class GhosttyApp {
 	// needs the current clipboard contents (paste, OSC 52 read). We must
 	// fulfill before returning, so this callback cannot defer to a later
 	// runloop turn. The `pendingLocalPaste` token disambiguates a local
-	// ⌘V/drag (allow) from a remote OSC 52 read (deny per 5.4-OQ-1).
+	// ⌘V/drag (allow) from a remote OSC 52 read (blanket deny per
+	// spec §5.4 policy B / 5.4-OQ-1 resolved as deny).
 	//
 	// The `Thread.isMainThread` assert from the 2.0 spike stays as a
 	// tripwire — if libghostty ever fires this off-main the design needs
@@ -209,17 +210,20 @@ public final class GhosttyApp {
 				return true
 			}
 
-			// Remote OSC 52 read — conservative deny per 5.4-OQ-1.
+			// Remote OSC 52 read — blanket deny per spec §5.4 policy B
+			// (5.4-OQ-1 resolved as deny).
 			ghostty_surface_complete_clipboard_request(surface.raw, nil, state, false)
 			return false
 		}
 	}
 
-	// libghostty calls `confirm_read_clipboard_cb` for both PASTE-confirm
-	// and OSC 52 read/write requests. Per spec §5.4 policy B:
+	// libghostty calls `confirm_read_clipboard_cb` for PASTE-confirm and OSC
+	// 52 write requests. Per spec §5.4 policy B (resolved via 5.4-OQ-1):
 	//   - PASTE                   → auto-confirm (we already gated via pendingLocalPaste)
 	//   - OSC_52_WRITE            → auto-confirm (writes are low-risk, just push to clipboard)
-	//   - OSC_52_READ             → ask the user with a sheet (Deny default)
+	//   - OSC_52_READ             → blanket deny (also denied earlier in
+	//                               readClipboardCallback so this branch is
+	//                               only a defense-in-depth no-op)
 	//
 	// The C string `dataCStr` is only valid for the synchronous duration of
 	// this callback, so we snapshot it before any async hop.
@@ -239,18 +243,8 @@ public final class GhosttyApp {
 					ghostty_surface_complete_clipboard_request(surface.raw, ptr, request, true)
 				}
 
-			case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
-				ClipboardConfirm.present(on: view.window) { allowed in
-					if allowed {
-						snapshot.withCString { ptr in
-							ghostty_surface_complete_clipboard_request(surface.raw, ptr, request, true)
-						}
-					} else {
-						ghostty_surface_complete_clipboard_request(surface.raw, nil, request, false)
-					}
-				}
-
 			default:
+				// OSC_52_READ and any future request kind: deny by default.
 				ghostty_surface_complete_clipboard_request(surface.raw, nil, request, false)
 			}
 		}
