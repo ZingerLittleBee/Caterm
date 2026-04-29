@@ -60,6 +60,14 @@ public enum ConfigStore {
 	private static let managedConfigContent = """
 		# Caterm-managed; do not edit. Override in your user config at:
 		#   ~/Library/Application Support/Caterm/config
+
+		# Default to xterm-256color so SSH sessions to hosts without the
+		# xterm-ghostty terminfo entry installed don't fail with
+		# "unknown terminal type" on clear / tput / vim / tmux. Users who
+		# install Ghostty's terminfo on their remotes can override with
+		# `term = xterm-ghostty` in their user config.
+		term = xterm-256color
+
 		keybind = super+up=scroll_page_lines:-1
 		keybind = super+down=scroll_page_lines:1
 		keybind = super+page_up=scroll_page_fractional:-1
