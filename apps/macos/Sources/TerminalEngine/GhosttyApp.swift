@@ -1,3 +1,4 @@
+import AppKit
 import ConfigStore
 import Foundation
 import GhosttyKit
@@ -125,17 +126,109 @@ public final class GhosttyApp {
 		}
 	}
 
-	private static let readClipboardCallback: ghostty_runtime_read_clipboard_cb = { _, _, _ in
-		assert(Thread.isMainThread, "read_clipboard_cb fired off-main; revisit 6-OQ-2 fallback")
-		return false
+	// libghostty calls `write_clipboard_cb` when a remote OSC 52 sequence
+	// (or some other surface action) wants to push text onto the host
+	// clipboard. We cherry-pick the first text/* MIME entry and copy it onto
+	// `NSPasteboard.general`. The hop to main is conservative — `NSPasteboard`
+	// is thread-safe for `setString` but UI state observers may not be.
+	private static let writeClipboardCallback: ghostty_runtime_write_clipboard_cb = {
+		_, kind, contentsPtr, count, _ in
+		guard kind == GHOSTTY_CLIPBOARD_STANDARD,
+		      let contentsPtr else { return }
+
+		var picked: String?
+		for i in 0..<Int(count) {
+			let entry = contentsPtr[i]
+			guard let dataCStr = entry.data else { continue }
+			let mime = entry.mime.map { String(cString: $0) } ?? ""
+			if mime.isEmpty || mime.hasPrefix("text/") {
+				picked = String(cString: dataCStr)
+				break
+			}
+		}
+		guard let str = picked else { return }
+
+		DispatchQueue.main.async {
+			let pb = NSPasteboard.general
+			pb.clearContents()
+			pb.setString(str, forType: .string)
+		}
 	}
 
-	private static let confirmReadClipboardCallback: ghostty_runtime_confirm_read_clipboard_cb = { _, _, _, kind in
-		NSLog("[v1.5 spike] confirm_read_clipboard_cb fired kind=\(kind.rawValue) thread=\(Thread.isMainThread ? "main" : "bg")")
+	// libghostty calls `read_clipboard_cb` synchronously when the surface
+	// needs the current clipboard contents (paste, OSC 52 read). We must
+	// fulfill before returning, so this callback cannot defer to a later
+	// runloop turn. The `pendingLocalPaste` token disambiguates a local
+	// ⌘V/drag (allow) from a remote OSC 52 read (deny per 5.4-OQ-1).
+	//
+	// The `Thread.isMainThread` assert from the 2.0 spike stays as a
+	// tripwire — if libghostty ever fires this off-main the design needs
+	// the change-count-based pre-cache fallback (spec §6).
+	private static let readClipboardCallback: ghostty_runtime_read_clipboard_cb = {
+		userdata, _, state in
+		assert(Thread.isMainThread, "read_clipboard_cb off-main — see 6-OQ-2 fallback")
+		guard let userdata else { return false }
+		return MainActor.assumeIsolated {
+			let view = Unmanaged<GhosttySurfaceNSView>.fromOpaque(userdata).takeUnretainedValue()
+			guard let surface = view.surface else { return false }
+
+			if surface.pendingLocalPaste {
+				surface.pendingLocalPaste = false
+				let text = surface.pendingPasteText
+					?? NSPasteboard.general.string(forType: .string)
+					?? ""
+				surface.pendingPasteText = nil
+				text.withCString { ptr in
+					ghostty_surface_complete_clipboard_request(surface.raw, ptr, state, false)
+				}
+				return true
+			}
+
+			// Remote OSC 52 read — conservative deny per 5.4-OQ-1.
+			ghostty_surface_complete_clipboard_request(surface.raw, nil, state, false)
+			return false
+		}
 	}
 
-	private static let writeClipboardCallback: ghostty_runtime_write_clipboard_cb = { _, _, _, _, _ in
-		NSLog("[v1.5 spike] write_clipboard_cb fired thread=\(Thread.isMainThread ? "main" : "bg")")
+	// libghostty calls `confirm_read_clipboard_cb` for both PASTE-confirm
+	// and OSC 52 read/write requests. Per spec §5.4 policy B:
+	//   - PASTE                   → auto-confirm (we already gated via pendingLocalPaste)
+	//   - OSC_52_WRITE            → auto-confirm (writes are low-risk, just push to clipboard)
+	//   - OSC_52_READ             → ask the user with a sheet (Deny default)
+	//
+	// The C string `dataCStr` is only valid for the synchronous duration of
+	// this callback, so we snapshot it before any async hop.
+	private static let confirmReadClipboardCallback: ghostty_runtime_confirm_read_clipboard_cb = {
+		userdata, dataCStr, request, requestKind in
+		guard let userdata else { return }
+		let snapshot = dataCStr.map { String(cString: $0) } ?? ""
+
+		DispatchQueue.main.async {
+			let view = Unmanaged<GhosttySurfaceNSView>.fromOpaque(userdata).takeUnretainedValue()
+			guard let surface = view.surface else { return }
+
+			switch requestKind {
+			case GHOSTTY_CLIPBOARD_REQUEST_PASTE,
+			     GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE:
+				snapshot.withCString { ptr in
+					ghostty_surface_complete_clipboard_request(surface.raw, ptr, request, true)
+				}
+
+			case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
+				ClipboardConfirm.present(on: view.window) { allowed in
+					if allowed {
+						snapshot.withCString { ptr in
+							ghostty_surface_complete_clipboard_request(surface.raw, ptr, request, true)
+						}
+					} else {
+						ghostty_surface_complete_clipboard_request(surface.raw, nil, request, false)
+					}
+				}
+
+			default:
+				ghostty_surface_complete_clipboard_request(surface.raw, nil, request, false)
+			}
+		}
 	}
 
 	private static let closeSurfaceCallback: ghostty_runtime_close_surface_cb = { _, _ in

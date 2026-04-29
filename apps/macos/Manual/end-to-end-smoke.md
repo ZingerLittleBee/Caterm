@@ -101,6 +101,32 @@ section.
    back to arrow when the pointer leaves the view. This proves the
    `GHOSTTY_ACTION_MOUSE_SHAPE` action is round-tripping through the
    action callback into `NSCursor`.
+5. **Copy / Paste end-to-end (⌘C / ⌘V)** — Drag-select some terminal
+   output, ⌘C, then run `pbpaste` outside Caterm — the selected text
+   should appear. Then `printf hello | pbcopy` outside Caterm, focus the
+   terminal, ⌘V — `hello` should reach the SSH prompt. Edit menu items
+   should grey-out correctly: Copy disabled when there is no selection,
+   Paste disabled when the system clipboard is empty.
+6. **Right-click context menu** — Right-click in the terminal; a small
+   menu with "Copy" and "Paste" should appear. Their enable state should
+   match the Edit menu (Copy iff selection, Paste iff clipboard string).
+7. **OSC 52 write (auto-allow)** — On the remote SSH host, run:
+   `printf '\e]52;c;%s\a' "$(printf hello | base64)"`. Locally, `pbpaste`
+   should now return `hello` — no confirm sheet appears (writes are
+   auto-confirmed per spec §5.4 policy B).
+8. **OSC 52 read (confirm sheet)** — On the remote, run
+   `printf '\e]52;c;?\a'`. A modal sheet should appear with **Deny** as
+   the default button (Enter or Esc denies). "Allow Once" should deliver
+   the current clipboard contents; "Deny" should reply with no data.
+9. **Drag-drop file path** — Drag a file from Finder into the terminal.
+   The PTY should receive a shell-quoted version of the absolute path
+   (single-quoted; spaces / quotes preserved). Multi-file drags should
+   produce space-separated quoted paths.
+10. **`read_clipboard_cb` thread tripwire** — In a debug build, exercise
+    all the above without ever tripping the `Thread.isMainThread` assert
+    in `GhosttyApp.readClipboardCallback`. If it fires, halt and revisit
+    spec §6 (6-OQ-2 fallback) — libghostty is calling read off-main and
+    the `MainActor.assumeIsolated` block becomes a deadlock risk.
 
 If any of these regress, the most common culprits are:
 
