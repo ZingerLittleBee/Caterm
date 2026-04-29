@@ -34,6 +34,14 @@ public final class GhosttySurfaceNSView: NSView {
 	/// be at least `internal`, not `private`).
 	var hoveredURL: String?
 
+	/// Set to `true` by `insertText` / `setMarkedText` (the
+	/// `NSTextInputClient` bridge in `+TextInput.swift`) when AppKit's IME
+	/// pipeline produced text or preedit during the current `keyDown`. Read
+	/// by `keyDown` to decide the `composing` flag on the libghostty
+	/// `sendKey` call: when AppKit already routed the text via the IME
+	/// path, libghostty must not re-emit it.
+	var imeConsumedThisEvent: Bool = false
+
 	public init(command: String?, env: [(String, String)] = []) {
 		self.pendingCommand = command
 		self.pendingEnv = env
@@ -115,29 +123,43 @@ public final class GhosttySurfaceNSView: NSView {
 			super.keyDown(with: event)
 			return
 		}
-		// Probe the IME via `inputContext.handleEvent` instead of
-		// `interpretKeyEvents`. The difference matters:
+		// Run AppKit's text-input pipeline FIRST. `interpretKeyEvents` will:
+		//   - call `insertText` for plain printables AND for IME commits,
+		//   - call `setMarkedText` while an IME composition is in flight,
+		//   - dispatch named selectors (`deleteBackward:`, `insertNewline:`,
+		//     `moveToBeginningOfLine:`, …) via `doCommand(by:)` for non-text
+		//     keys.
 		//
-		//   - `handleEvent` only routes to the input method server. If the IME
-		//     consumes the event (composition start / continue / commit) it
-		//     synchronously calls `setMarkedText` or `insertText` (which we
-		//     bridge to libghostty's preedit / text APIs) and returns true.
-		//     If no IME wants it, it returns false and is a noop.
+		// Our `+TextInput.swift` bridge sets `imeConsumedThisEvent = true`
+		// inside `insertText` / `setMarkedText` so we can tell, on return,
+		// whether AppKit already produced text for this keystroke. Our
+		// `doCommand(by:)` override is a true noop — that silences the
+		// system beep AppKit emits when no responder handles a selector,
+		// while letting the same physical key reach the PTY through the
+		// `sendKey` call below.
+		imeConsumedThisEvent = false
+		interpretKeyEvents([event])
+
+		// Forward the raw event to libghostty.
 		//
-		//   - `interpretKeyEvents` additionally translates non-IME keys into
-		//     `NSResponder` selectors (e.g. Backspace → `deleteBackward:`) and
-		//     dispatches them up the responder chain. With no responder
-		//     overriding those, AppKit calls `NSBeep()`. It also calls
-		//     `insertText` for plain printables even without an active IME,
-		//     which double-emits with our `surface.sendKey` text path.
-		//
-		// So: ask the IME first. If it took the keystroke, send the raw event
-		// to libghostty with `composing: true` so the keystroke is tracked for
-		// keyboard-protocol encoding without re-emitting any text. If the IME
-		// passed, send with `composing: false` and let libghostty handle
-		// binding matching + text emission as the single source of truth.
-		let imeConsumed = inputContext?.handleEvent(event) ?? false
-		surface.sendKey(event, composing: imeConsumed)
+		// `composing: true` when AppKit's IME path already produced text or
+		// is mid-composition — libghostty tracks the keystroke for the
+		// keyboard protocol but does not re-emit text or run binding lookup.
+		// `composing: false` otherwise — libghostty owns binding matching
+		// and PTY emission for that key (Backspace → DEL, Enter → CR,
+		// Ctrl-A → \x01, etc.).
+		let imeInvolved = imeConsumedThisEvent || hasMarkedText()
+		surface.sendKey(event, composing: imeInvolved)
+	}
+
+	public override func doCommand(by selector: Selector) {
+		// Silently consume every AppKit text-action selector
+		// (`deleteBackward:`, `insertNewline:`, `cancelOperation:`,
+		// `moveLeft:`, `moveToBeginningOfLine:`, etc.). The corresponding
+		// PTY action is delivered by the `surface.sendKey(...)` call in
+		// `keyDown`; libghostty owns binding matching and protocol encoding
+		// for these keys. If we instead inherited NSResponder's default,
+		// AppKit would beep when nothing handles the selector.
 	}
 
 	public override func cursorUpdate(with event: NSEvent) {

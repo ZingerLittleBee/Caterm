@@ -30,6 +30,10 @@ extension GhosttySurfaceNSView: NSTextInputClient {
 			surface?.setPreedit("")
 		}
 		markedString = ""
+		// Tell the surrounding `keyDown` not to also let libghostty emit
+		// this character via `sendKey` — AppKit's IME path is the
+		// authoritative producer for any text it commits, IME-active or not.
+		imeConsumedThisEvent = true
 	}
 
 	public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -43,6 +47,7 @@ extension GhosttySurfaceNSView: NSTextInputClient {
 		}
 		markedString = s
 		surface?.setPreedit(s)
+		imeConsumedThisEvent = true
 	}
 
 	public func unmarkText() {
@@ -79,9 +84,10 @@ extension GhosttySurfaceNSView: NSTextInputClient {
 		return win.convertToScreen(winRect)
 	}
 
-	// `doCommand(by:)` is inherited from `NSResponder` (which provides the
-	// default no-op-ish implementation). We deliberately do NOT override
-	// it: we send keys to `surface_key` BEFORE `interpretKeyEvents` in our
-	// `keyDown` override, so doCommand fallbacks would only re-send the
-	// same key.
+	// `doCommand(by:)` is overridden as a true noop on `GhosttySurfaceNSView`
+	// itself (see `GhosttySurfaceNSView.swift`). We can't put the override in
+	// this extension because `NSTextInputClient` already declares
+	// `doCommand(by:)`, and Swift requires the override to live on the
+	// primary class to mark the method as overriding the `NSResponder`
+	// default rather than introducing a fresh protocol-method definition.
 }
