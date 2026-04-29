@@ -99,4 +99,89 @@ final class TerminfoInstallTests: XCTestCase {
         XCTAssertFalse(bundleMissing.command.contains(" -t "))
         XCTAssertFalse(bundleMissing.env.contains(where: { $0.0 == "TERM" }))
     }
+
+    /// End-to-end: hand the assembled command to a real `/bin/sh -c`,
+    /// configure `sshPath:` to point at a stub script that NUL-dumps its argv,
+    /// and assert the inner `ssh` argv contains the expected pieces. This
+    /// validates `ShellQuote.posix` survives a 3-KB heredoc-containing
+    /// wrapper through real shell parsing — not just internal round-trip.
+    func testEndToEndArgvThroughBinSh() throws {
+        // 1. Create the temp stub directory and the stub script.
+        let tmpDir = try FileManager.default.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: URL(fileURLWithPath: NSTemporaryDirectory()),
+            create: true
+        )
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let argvDump = tmpDir.appendingPathComponent("argv.dump").path
+        let stubURL = tmpDir.appendingPathComponent("ssh-stub.sh")
+
+        // `printf '%s\0' "$0" "$@"` — `$0` is the script path, `$@` is argv[1..].
+        // Without `$0` the argv[0] entry would silently be missing. NUL
+        // separation is required because the wrapper itself contains newlines.
+        let stubBody = """
+        #!/bin/sh
+        printf '%s\\0' "$0" "$@" > "\(argvDump)"
+        """
+        try stubBody.write(to: stubURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: stubURL.path
+        )
+
+        // 2. Build the command pointing at the stub instead of /usr/bin/ssh.
+        guard let dump = TerminfoSource.terminfoDump() else {
+            XCTFail("bundled dump is nil — TerminfoSourceTests should have caught this earlier")
+            return
+        }
+        let out = SSHCommandBuilder._build(
+            host: sampleHost(),
+            askpassPath: Self.askpassPath,
+            knownHostsCaterm: Self.knownHostsCaterm,
+            knownHostsUser: Self.knownHostsUser,
+            installTerminfo: true,
+            sshPath: stubURL.path,
+            terminfoDump: dump
+        )
+
+        // 3. Run the assembled command via real /bin/sh -c.
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", out.command]
+        let stderrPipe = Pipe()
+        proc.standardError = stderrPipe
+        try proc.run()
+        proc.waitUntilExit()
+        let stderr = String(
+            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        XCTAssertEqual(proc.terminationStatus, 0, "shell rejected the command. stderr: \(stderr)")
+
+        // 4. Read the argv dump and split on NUL. `printf '%s\0' a b c` emits
+        // `a\0b\0c\0` (a trailing NUL after each entry, including the last),
+        // so splitting non-empty drops the trailing empty token cleanly.
+        let dumpData = try Data(contentsOf: URL(fileURLWithPath: argvDump))
+        let argv = String(data: dumpData, encoding: .utf8)?
+            .split(separator: "\0", omittingEmptySubsequences: true)
+            .map(String.init) ?? []
+
+        // 5. Assertions.
+        XCTAssertGreaterThan(argv.count, 5, "expected substantial argv, got: \(argv)")
+        XCTAssertEqual(argv.first, stubURL.path, "argv[0] should be the stub script path")
+        XCTAssertTrue(argv.contains("-t"), "expected -t flag among argv: \(argv)")
+
+        // The wrapper must arrive as a single argv entry (the heredoc body
+        // and embedded newlines must NOT have been split by the outer shell).
+        let wrapperCandidate = argv.last
+        XCTAssertNotNil(wrapperCandidate)
+        XCTAssertTrue(wrapperCandidate?.contains("infocmp xterm-ghostty") ?? false,
+                      "last argv entry should be the wrapper containing infocmp probe")
+        XCTAssertTrue(wrapperCandidate?.contains("xterm-ghostty|") ?? false,
+                      "wrapper must contain terminfo dump body")
+        XCTAssertTrue(wrapperCandidate?.contains("exec \"${SHELL:-/bin/sh}\" -l") ?? false,
+                      "wrapper must contain exec line")
+    }
 }
