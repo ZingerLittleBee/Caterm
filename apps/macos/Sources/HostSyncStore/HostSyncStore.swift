@@ -350,18 +350,10 @@ public final class HostSyncStore: ObservableObject {
     }
 
     private func classifySyncError(_ error: Error) -> SyncErrorKind {
-        guard let serverError = error as? ServerSyncError else { return .other }
-        switch serverError {
-        case .http(status: 401, body: _),
-             .orpc(code: _, status: 401, message: _),
-             .authFailed,
-             .notSignedIn:
+        if let serverError = error as? ServerSyncError, isAuthShape(serverError) {
             return .auth
-        case .http,
-             .orpc,
-             .decode:
-            return .other
         }
+        return .other
     }
 
     private func isCurrentlyFailing() -> Bool {
