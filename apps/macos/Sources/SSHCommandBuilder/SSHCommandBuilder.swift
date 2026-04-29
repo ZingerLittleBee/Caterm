@@ -117,7 +117,7 @@ public enum SSHCommandBuilder {
 			let wrapper = """
 			if ! infocmp xterm-ghostty >/dev/null 2>&1; then
 			  if command -v tic >/dev/null 2>&1; then
-			    tic -x - <<'TERMINFO_EOF'
+			    tic -x - 2>/dev/null <<'TERMINFO_EOF'
 			\(dump)
 			TERMINFO_EOF
 			    [ $? -ne 0 ] && export TERM=xterm-256color
