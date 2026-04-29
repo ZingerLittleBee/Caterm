@@ -98,6 +98,28 @@ public final class GhosttyApp {
 				wrapper.handleChildExited(exitCode: info.exit_code)
 			}
 			return true
+
+		case GHOSTTY_ACTION_MOUSE_SHAPE:
+			let shape = action.action.mouse_shape
+			MainActor.assumeIsolated {
+				wrapper.handleMouseShape(shape)
+			}
+			return true
+
+		case GHOSTTY_ACTION_MOUSE_VISIBILITY:
+			let visibility = action.action.mouse_visibility
+			MainActor.assumeIsolated {
+				wrapper.handleMouseVisibility(visibility)
+			}
+			return true
+
+		case GHOSTTY_ACTION_CELL_SIZE:
+			let size = action.action.cell_size
+			MainActor.assumeIsolated {
+				wrapper.updateCellSize(width: Double(size.width), height: Double(size.height))
+			}
+			return true
+
 		default:
 			return false
 		}

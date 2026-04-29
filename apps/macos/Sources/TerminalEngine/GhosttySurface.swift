@@ -27,6 +27,14 @@ public final class GhosttySurface {
 	/// `$SHELL` (which doesn't exit on its own).
 	public var onChildExit: ((Int32) -> Void)?
 
+	/// Fired when libghostty asks the apprt to change the mouse cursor shape
+	/// (`GHOSTTY_ACTION_MOUSE_SHAPE`). The host view translates this into an
+	/// `NSCursor`.
+	public var onMouseShape: ((ghostty_action_mouse_shape_e) -> Void)?
+	/// Fired when libghostty asks the apprt to hide / show the cursor
+	/// (`GHOSTTY_ACTION_MOUSE_VISIBILITY`).
+	public var onMouseVisibility: ((ghostty_action_mouse_visibility_e) -> Void)?
+
 	private(set) public var processExited: Bool = false
 
 	/// Pixel dimensions of one terminal cell, updated by
@@ -185,6 +193,14 @@ public final class GhosttySurface {
 
 	func updateCellSize(width: Double, height: Double) {
 		cellSize = NSSize(width: width, height: height)
+	}
+
+	func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {
+		onMouseShape?(shape)
+	}
+
+	func handleMouseVisibility(_ visibility: ghostty_action_mouse_visibility_e) {
+		onMouseVisibility?(visibility)
 	}
 
 }
