@@ -86,3 +86,15 @@ public func scrollMods(precise: Bool, momentum: NSEvent.Phase) -> ghostty_input_
 public func shellEscape(_ raw: String) -> String {
 	"'" + raw.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
+
+/// Whitelist of URL schemes Caterm will hand to `NSWorkspace.open` without
+/// prompting the user. Anything outside this set (e.g. `file:`, `javascript:`,
+/// `x-apple-data-detectors:`) goes through the confirm sheet so a remote SSH
+/// host can't trick the user into opening something destructive just by
+/// printing a hyperlink. Comparison is case-insensitive — `URL.scheme` is
+/// already lowercased by `URLComponents`, but a few code paths surface the
+/// raw scheme as typed.
+public func isSafeURLScheme(_ scheme: String) -> Bool {
+	let allowed: Set<String> = ["http", "https", "mailto", "ssh", "ftp", "ftps"]
+	return allowed.contains(scheme.lowercased())
+}
