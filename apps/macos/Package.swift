@@ -23,7 +23,11 @@ let package = Package(
         ),
         .target(
             name: "SSHCommandBuilder",
-            path: "Sources/SSHCommandBuilder"
+            path: "Sources/SSHCommandBuilder",
+            exclude: ["Resources/README.md"],
+            resources: [
+                .copy("Resources/xterm-ghostty.terminfo"),
+            ]
         ),
         .target(
             name: "KeychainStore",
@@ -119,6 +123,11 @@ let package = Package(
             name: "CatermTests",
             dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore"],
             path: "Tests/CatermTests"
+        ),
+        .testTarget(
+            name: "TerminalEngineTests",
+            dependencies: ["TerminalEngine"],
+            path: "Tests/TerminalEngineTests"
         ),
     ]
 )

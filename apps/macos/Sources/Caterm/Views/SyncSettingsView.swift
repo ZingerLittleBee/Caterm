@@ -20,23 +20,14 @@ func accountState(isSignedIn: Bool,
                   lastSyncError: ServerSyncError?,
                   lastSyncErrorKind: SyncErrorKind?) -> AccountState {
     guard isSignedIn else { return .signedOut }
-    if isAuthFailure(lastSyncError) || lastSyncErrorKind == .auth { return .sessionExpired }
+    if (lastSyncError.map(isAuthShape) ?? false) || lastSyncErrorKind == .auth {
+        return .sessionExpired
+    }
     return .signedIn
 }
 
 func shouldShowSyncFailureDetails(for accountState: AccountState) -> Bool {
     accountState == .signedIn
-}
-
-private func isAuthFailure(_ err: ServerSyncError?) -> Bool {
-    guard let err else { return false }
-    switch err {
-    case .http(status: 401, _):       return true
-    case .orpc(_, status: 401, _):    return true   // oRPC envelope wraps 401, NOT .http
-    case .authFailed:                  return true
-    case .notSignedIn:                 return true
-    default:                           return false
-    }
 }
 
 /// Renders a "Last sync: …" relative phrase, or "Never synced" when nil.
@@ -139,6 +130,15 @@ struct SyncSettingsView: View {
                     Text(lastSyncError.description)
                         .foregroundColor(.red).font(.caption)
                 }
+            }
+            Section("Terminal") {
+                Toggle(
+                    "Install Ghostty terminfo on remote hosts",
+                    isOn: $preferences.installTerminfoEnabled
+                )
+                Text("Provides full Ghostty rendering features (true colors, hyperlinks). Falls back to standard terminfo automatically if installation isn't possible.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(24)

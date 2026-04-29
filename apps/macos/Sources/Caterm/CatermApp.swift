@@ -56,6 +56,8 @@ struct CatermApp: App {
 				}
 			}
 			.environmentObject(store)
+			.environmentObject(syncStore)        // NEW (v1.4)
+			.environmentObject(preferences)      // NEW (v1.4)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -63,6 +65,10 @@ struct CatermApp: App {
 			// disappearance does not cancel the sync — that's intentional;
 			// cancellation lives in the chain (spec §3.5).
 			.task { syncStore.syncIfSignedIn() }
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermOpenSyncSettings)) { _ in   // NEW (v1.4)
+				showSyncSettings = true
+			}
 			.sheet(isPresented: $showSyncSettings) {
 				SyncSettingsView(
 					authSession: authSession,
@@ -101,6 +107,26 @@ struct CatermApp: App {
 			CommandGroup(after: .appSettings) {
 				Button("Sync Settings…") { showSyncSettings = true }
 					.keyboardShortcut(",", modifiers: [.command, .shift])
+			}
+			// Edit menu pasteboard commands. Selectors are the standard
+			// `NSText.copy/paste/pasteAsPlainText`, which AppKit
+			// responder-chain-dispatches; whichever view is first responder
+			// (e.g. GhosttySurfaceNSView) handles them.
+			CommandGroup(replacing: .pasteboard) {
+				Button("Copy") {
+					NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+				}
+				.keyboardShortcut("c", modifiers: [.command])
+
+				Button("Paste") {
+					NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+				}
+				.keyboardShortcut("v", modifiers: [.command])
+
+				Button("Paste and Match Style") {
+					NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: nil, from: nil)
+				}
+				.keyboardShortcut("v", modifiers: [.command, .option, .shift])
 			}
 			// Help menu → GitHub documentation page.
 			CommandGroup(replacing: .help) {

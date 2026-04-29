@@ -46,4 +46,34 @@ final class SyncPreferencesTests: XCTestCase {
         XCTAssertTrue(prefs2.notifyOnFailureEnabled,
             "didSet must persist notifyOnFailureEnabled to UserDefaults so a fresh init reads it back")
     }
+
+    func testInstallTerminfoEnabledDefaultsFalseWhenKeyAbsent() {
+        let suiteName = "caterm-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let prefs = SyncPreferences(defaults: defaults)
+        XCTAssertFalse(prefs.installTerminfoEnabled,
+                       "default must be false — opt-in only (spec §3, Decision #3)")
+    }
+
+    func testInstallTerminfoEnabledRoundTripsThroughUserDefaults() {
+        let suiteName = "caterm-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let prefs = SyncPreferences(defaults: defaults)
+        prefs.installTerminfoEnabled = true
+
+        // didSet should have written through.
+        XCTAssertTrue(defaults.bool(forKey: "catermInstallTerminfoEnabled"))
+
+        // A fresh instance reads the persisted value.
+        let prefs2 = SyncPreferences(defaults: defaults)
+        XCTAssertTrue(prefs2.installTerminfoEnabled)
+
+        // Toggling back persists too.
+        prefs2.installTerminfoEnabled = false
+        XCTAssertFalse(defaults.bool(forKey: "catermInstallTerminfoEnabled"))
+    }
 }

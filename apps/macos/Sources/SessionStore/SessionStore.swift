@@ -118,14 +118,17 @@ public final class SessionStore: ObservableObject {
         tabs.removeAll { $0.id == tabId }
     }
 
-    /// Build the (commandString, env) pair for a given tab.
-    public func surfaceConfig(for tabId: UUID) -> (command: String, env: [(String, String)])? {
+    /// Build the (commandString, env) pair for a given tab. `installTerminfo`
+    /// (v1.6) drives whether the resulting command appends an inline
+    /// terminfo-install wrapper and a `TERM=xterm-ghostty` env override.
+    public func surfaceConfig(for tabId: UUID, installTerminfo: Bool = false) -> (command: String, env: [(String, String)])? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
         let cmd = SSHCommandBuilder.build(
             host: tab.host,
             askpassPath: askpassPath,
             knownHostsCaterm: knownHostsCaterm,
-            knownHostsUser: knownHostsUser
+            knownHostsUser: knownHostsUser,
+            installTerminfo: installTerminfo
         )
         var env = cmd.env
         if let accessGroup { env.append(("CATERM_ACCESS_GROUP", accessGroup)) }

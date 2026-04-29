@@ -27,7 +27,41 @@ public final class GhosttySurface {
 	/// `$SHELL` (which doesn't exit on its own).
 	public var onChildExit: ((Int32) -> Void)?
 
+	/// Fired when libghostty asks the apprt to change the mouse cursor shape
+	/// (`GHOSTTY_ACTION_MOUSE_SHAPE`). The host view translates this into an
+	/// `NSCursor`.
+	public var onMouseShape: ((ghostty_action_mouse_shape_e) -> Void)?
+	/// Fired when libghostty asks the apprt to hide / show the cursor
+	/// (`GHOSTTY_ACTION_MOUSE_VISIBILITY`).
+	public var onMouseVisibility: ((ghostty_action_mouse_visibility_e) -> Void)?
+
+	/// Fired when the pointer hovers over (or leaves) a detected URL in the
+	/// terminal grid (`GHOSTTY_ACTION_MOUSE_OVER_LINK`). The payload is the
+	/// URL string, or `nil` when the hover ends. The host view uses this to
+	/// flip to `NSCursor.pointingHand` when the user holds ⌘.
+	public var onHoverURL: ((String?) -> Void)?
+	/// Fired when libghostty asks the apprt to open a URL
+	/// (`GHOSTTY_ACTION_OPEN_URL`), typically after a ⌘-click on a hovered
+	/// link. The host view routes this to `NSWorkspace.open` after a scheme
+	/// whitelist check.
+	public var onOpenURL: ((String, ghostty_action_open_url_kind_e) -> Void)?
+
+	/// Drag-drop bridge: when set, `read_clipboard_cb` returns this string
+	/// instead of reading the system pasteboard. Cleared after each consume.
+	public var pendingPasteText: String?
+
+	/// Token raised right before triggering libghostty's
+	/// `paste_from_clipboard` binding action. Distinguishes a local paste
+	/// (consume the system pasteboard or `pendingPasteText`) from a remote
+	/// OSC 52 read (denied in v1.5).
+	public var pendingLocalPaste: Bool = false
+
 	private(set) public var processExited: Bool = false
+
+	/// Pixel dimensions of one terminal cell, updated by
+	/// `GHOSTTY_ACTION_CELL_SIZE`. The default is a sane fallback used for
+	/// imprecise wheel-scroll deltas before libghostty reports a real value.
+	public private(set) var cellSize: NSSize = .init(width: 8, height: 16)
 
 	/// Heap-allocated C strings whose pointers were stuffed into the surface
 	/// config. Held here so we can free them when the surface dies.
@@ -150,9 +184,15 @@ public final class GhosttySurface {
 	/// mapping: keycode + modifier flags + raw text payload, plus the
 	/// unshifted codepoint. libghostty handles binding lookup, IME, and PTY
 	/// write internally.
-	public func sendKey(_ event: NSEvent) {
+	///
+	/// `composing` should be `true` when the host view has marked text
+	/// (i.e. the user is in the middle of an IME composition session). When
+	/// set, libghostty knows the key is part of the IME flow and will not
+	/// double-emit it as text — the actual commit comes through
+	/// `sendText` from `NSTextInputClient.insertText`.
+	public func sendKey(_ event: NSEvent, composing: Bool = false) {
 		let chars = event.characters ?? ""
-		let mods = Self.ghosttyMods(event.modifierFlags)
+		let mods = ghosttyMods(event.modifierFlags)
 		let action: ghostty_input_action_e = event.isARepeat
 			? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
 
@@ -166,7 +206,7 @@ public final class GhosttySurface {
 			k.keycode = UInt32(event.keyCode)
 			k.text = chars.isEmpty ? nil : textPtr
 			k.unshifted_codepoint = chars.unicodeScalars.first.map { UInt32($0.value) } ?? 0
-			k.composing = false
+			k.composing = composing
 			return ghostty_surface_key(raw, k)
 		}
 	}
@@ -178,15 +218,24 @@ public final class GhosttySurface {
 		onChildExit?(Int32(bitPattern: exitCode))
 	}
 
-	// MARK: - Helpers
-
-	private static func ghosttyMods(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
-		var raw: UInt32 = 0
-		if flags.contains(.shift) { raw |= GHOSTTY_MODS_SHIFT.rawValue }
-		if flags.contains(.control) { raw |= GHOSTTY_MODS_CTRL.rawValue }
-		if flags.contains(.option) { raw |= GHOSTTY_MODS_ALT.rawValue }
-		if flags.contains(.command) { raw |= GHOSTTY_MODS_SUPER.rawValue }
-		if flags.contains(.capsLock) { raw |= GHOSTTY_MODS_CAPS.rawValue }
-		return ghostty_input_mods_e(raw)
+	func updateCellSize(width: Double, height: Double) {
+		cellSize = NSSize(width: width, height: height)
 	}
+
+	func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {
+		onMouseShape?(shape)
+	}
+
+	func handleMouseVisibility(_ visibility: ghostty_action_mouse_visibility_e) {
+		onMouseVisibility?(visibility)
+	}
+
+	func handleHoverURL(_ url: String?) {
+		onHoverURL?(url)
+	}
+
+	func handleOpenURL(_ url: String, kind: ghostty_action_open_url_kind_e) {
+		onOpenURL?(url, kind)
+	}
+
 }

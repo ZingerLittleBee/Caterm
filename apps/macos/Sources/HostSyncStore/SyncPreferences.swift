@@ -7,10 +7,15 @@ import Foundation
 /// `SyncSettingsView`. Owned by `CatermApp` as a `@StateObject` and
 /// injected into `HostSyncStore` so the store can react to toggle
 /// changes via `$periodicSyncEnabled`.
+///
+/// v1.6 added `installTerminfoEnabled` — the naming-mismatch with the
+/// type is acknowledged tech debt; rename to `Preferences` deferred to
+/// v1.7 (see v1.6 spec §2 non-goals).
 @MainActor
 public final class SyncPreferences: ObservableObject {
     private static let periodicEnabledKey = "catermPeriodicSyncEnabled"
     public static let notifyOnFailureKey = "catermNotifyOnFailureEnabled"
+    private static let installTerminfoEnabledKey = "catermInstallTerminfoEnabled"
     private let defaults: UserDefaults
 
     @Published public var periodicSyncEnabled: Bool {
@@ -25,11 +30,24 @@ public final class SyncPreferences: ObservableObject {
         }
     }
 
+    /// v1.6 — when true, every SSH session emits an inline wrapper that
+    /// idempotently installs `xterm-ghostty` terminfo on the remote and
+    /// sends `TERM=xterm-ghostty`. Default false (opt-in: we don't mutate
+    /// remote filesystems without consent).
+    @Published public var installTerminfoEnabled: Bool {
+        didSet {
+            defaults.set(installTerminfoEnabled, forKey: Self.installTerminfoEnabledKey)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let stored = defaults.object(forKey: Self.periodicEnabledKey) as? Bool
         self.periodicSyncEnabled = stored ?? true
         let storedNotifyOnFailure = defaults.object(forKey: Self.notifyOnFailureKey) as? Bool
         self.notifyOnFailureEnabled = storedNotifyOnFailure ?? false
+        // `bool(forKey:)` returns false when the key is absent — that IS the
+        // default we want (opt-in), so no `?? false` fallback needed.
+        self.installTerminfoEnabled = defaults.bool(forKey: Self.installTerminfoEnabledKey)
     }
 }
