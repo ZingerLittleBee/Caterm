@@ -225,3 +225,13 @@ If any of these regress, the most common culprits are:
 | `Permission denied (password,publickey)` | secret not in keychain | run KeychainStore set via Task 1.7 UI; or re-add via signed test harness |
 | Exit code 3 with osStatus -25243 | access group entitlement mismatch | re-check Resources/CatermAskpass.entitlements |
 | Exit code 3 with osStatus -25291 | login keychain locked | unlock via Keychain Access |
+
+## Terminfo install (v1.6)
+
+Run after toggling **Settings → Sync → Terminal → Install Ghostty terminfo on remote hosts** ON.
+
+- [ ] On a fresh remote that previously errored with `'xterm-ghostty': unknown terminal type` (e.g. the user's GEN2 host): connect once, then run `clear`, `vim`, `tmux new`, `ls --color`. All four must work without the original error.
+- [ ] On the same remote, disconnect and reconnect: the second connect should be visibly faster than the first (no `tic` write — the idempotent `infocmp xterm-ghostty` probe short-circuits).
+- [ ] Toggle OFF, reconnect: `echo $TERM` returns `xterm-256color`. Stale `~/.terminfo/x/xterm-ghostty` from the prior connect is harmless and intentionally not cleaned up.
+- [ ] On a busybox-only / Alpine-without-ncurses container (`docker run -it alpine:latest sh` accessible via SSH): connect with toggle ON. Prompt must appear; `echo $TERM` returns `xterm-256color`; one-line `tic: ...` stderr flash before the prompt is acceptable.
+- [ ] **Shell matrix**: with toggle ON, log into hosts whose login shell is each of: `bash`, `zsh`, `dash`, `ash`, `busybox sh`. For each: prompt appears, `echo $TERM` returns `xterm-ghostty`, `clear` works. If any shell rejects the `-l` flag in `exec "${SHELL:-/bin/sh}" -l`, file as v1.6.x patch.
