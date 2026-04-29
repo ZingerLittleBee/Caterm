@@ -51,4 +51,39 @@ final class InputMappingTests: XCTestCase {
 		XCTAssertEqual(bits & 0x1, 0, "precise bit should be unset")
 		XCTAssertEqual((bits >> 1) & 0x7, 1, "momentum phase bits should encode 1 for .began")
 	}
+
+	// Each AppKit `NSEvent.Phase` flag must map to the matching numeric value
+	// of `ghostty_input_mouse_momentum_e` in ghostty.h:107-115. If these
+	// drift, libghostty will silently misinterpret the phase (e.g., decode
+	// CHANGED as STATIONARY). See I-1 in the v1.5 review.
+
+	func testScrollMods_momentumNone() {
+		let bits = scrollMods(precise: false, momentum: [])
+		XCTAssertEqual((bits >> 1) & 0x7, 0)
+	}
+
+	func testScrollMods_momentumStationary() {
+		let bits = scrollMods(precise: false, momentum: .stationary)
+		XCTAssertEqual((bits >> 1) & 0x7, 2)
+	}
+
+	func testScrollMods_momentumChanged() {
+		let bits = scrollMods(precise: false, momentum: .changed)
+		XCTAssertEqual((bits >> 1) & 0x7, 3)
+	}
+
+	func testScrollMods_momentumEnded() {
+		let bits = scrollMods(precise: false, momentum: .ended)
+		XCTAssertEqual((bits >> 1) & 0x7, 4)
+	}
+
+	func testScrollMods_momentumCancelled() {
+		let bits = scrollMods(precise: false, momentum: .cancelled)
+		XCTAssertEqual((bits >> 1) & 0x7, 5)
+	}
+
+	func testScrollMods_momentumMayBegin() {
+		let bits = scrollMods(precise: false, momentum: .mayBegin)
+		XCTAssertEqual((bits >> 1) & 0x7, 6)
+	}
 }

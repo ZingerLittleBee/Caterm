@@ -36,23 +36,40 @@ public func ghosttyMouseButton(buttonNumber: Int) -> ghostty_input_mouse_button_
 /// libghostty packs these as bit flags (see `src/input/mouse.zig` and the
 /// header comment near `ghostty_input_scroll_mods_t`):
 ///   - bit 0 .......... precise scrolling (trackpad / Magic Mouse)
-///   - bits 1..3 ...... momentum phase (3-bit value, mapped from AppKit's
-///                      `NSEvent.momentumPhase`)
+///   - bits 1..3 ...... momentum phase as a 3-bit `ghostty_input_mouse_momentum_e`
+///                      value:
+///                        0 = NONE
+///                        1 = BEGAN
+///                        2 = STATIONARY
+///                        3 = CHANGED
+///                        4 = ENDED
+///                        5 = CANCELLED
+///                        6 = MAY_BEGIN
 ///
-/// Keep this layout in sync if libghostty is upgraded.
+/// AppKit's `NSEvent.momentumPhase` is an `NS_OPTIONS` set, so we check each
+/// flag in turn and emit the matching ghostty enum value. Keep this layout in
+/// sync if libghostty is upgraded — the enum order is the contract.
 public func scrollMods(precise: Bool, momentum: NSEvent.Phase) -> ghostty_input_scroll_mods_t {
 	var bits: Int32 = 0
 	if precise { bits |= 0x1 }
-	// `NSEvent.Phase` is an `NS_OPTIONS` set; check membership in priority
-	// order. Only one of these bits should be set at a time in practice.
+
+	let phase: Int32
 	if momentum.contains(.began) {
-		bits |= (1 << 1)
+		phase = 1 // GHOSTTY_MOUSE_MOMENTUM_BEGAN
+	} else if momentum.contains(.stationary) {
+		phase = 2 // GHOSTTY_MOUSE_MOMENTUM_STATIONARY
 	} else if momentum.contains(.changed) {
-		bits |= (2 << 1)
+		phase = 3 // GHOSTTY_MOUSE_MOMENTUM_CHANGED
 	} else if momentum.contains(.ended) {
-		bits |= (3 << 1)
+		phase = 4 // GHOSTTY_MOUSE_MOMENTUM_ENDED
 	} else if momentum.contains(.cancelled) {
-		bits |= (4 << 1)
+		phase = 5 // GHOSTTY_MOUSE_MOMENTUM_CANCELLED
+	} else if momentum.contains(.mayBegin) {
+		phase = 6 // GHOSTTY_MOUSE_MOMENTUM_MAY_BEGIN
+	} else {
+		phase = 0 // GHOSTTY_MOUSE_MOMENTUM_NONE
 	}
+
+	bits |= (phase & 0x7) << 1
 	return ghostty_input_scroll_mods_t(bits)
 }
