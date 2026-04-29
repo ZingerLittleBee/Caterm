@@ -17,6 +17,10 @@ enum TerminfoSource {
             forResource: "xterm-ghostty",
             withExtension: "terminfo"
         ) else {
+            // Spec §5.2: log once when the bundle is missing so the toggle
+            // silently degrading to no-op leaves a trace if anyone ships a
+            // build past the CI gate (`TerminfoSourceTests`).
+            NSLog("[Caterm] xterm-ghostty.terminfo bundle resource missing; installTerminfo toggle will degrade to off")
             return nil
         }
         return try? String(contentsOf: url, encoding: .utf8)
