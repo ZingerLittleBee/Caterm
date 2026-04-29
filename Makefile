@@ -1,7 +1,7 @@
 LAST_CHOICE_FILE := .claude/.last-make-choice
 
 .DEFAULT_GOAL := menu
-.PHONY: menu dev dev-server dev-op dev-server-op build check-types tauri tauri-dev tauri-build check fix install db-push db-generate db-studio db-migrate db-start db-stop env-sync
+.PHONY: menu dev dev-server dev-op dev-server-op build check-types tauri tauri-dev tauri-build check fix install db-push db-generate db-studio db-migrate db-start db-stop env-sync macos
 
 ITEMS := \
 	"dev           — Run Tauri desktop + server" \
@@ -15,6 +15,13 @@ ITEMS := \
 	"check-types   — Type check all packages" \
 	"check         — Lint check" \
 	"fix           — Lint fix" \
+	"macos-run     — Build + sign + launch macOS app" \
+	"macos-run-bg  — Launch macOS app in background" \
+	"macos-build   — Build macOS app (debug)" \
+	"macos-test    — Run macOS Swift tests" \
+	"macos-kill    — Kill running macOS dev process" \
+	"macos-clean   — Clean macOS .build" \
+	"macos-doctor  — Show macOS toolchain diagnostics" \
 	"db-start      — Start PostgreSQL (Docker)" \
 	"db-stop       — Stop PostgreSQL (Docker)" \
 	"db-push       — Push schema to database" \
@@ -95,6 +102,15 @@ dev-op:
 
 dev-server-op:
 	op run --env-file ./apps/server/.env.op -- bun run --filter server dev
+
+# macOS app — delegates everything to apps/macos/Makefile.
+# Usage: `make macos-run`, `make macos-test`, `make macos-clean`, ...
+# `make macos` shows the macOS Makefile help.
+macos:
+	@$(MAKE) -C apps/macos help
+
+macos-%:
+	@$(MAKE) -C apps/macos $*
 
 # Sync local .env to 1Password Caterm item
 env-sync:
