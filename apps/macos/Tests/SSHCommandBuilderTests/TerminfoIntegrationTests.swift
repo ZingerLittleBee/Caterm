@@ -53,15 +53,15 @@ final class TerminfoIntegrationTests: XCTestCase {
         return stdout
     }
 
-    /// Spin up a fresh `linuxserver/openssh-server` container with ncurses
-    /// installed; connect using the wrapper; verify
+    /// Spin up a fresh `linuxserver/openssh-server` container, with ncurses
+    /// installed at test setup time; connect using the wrapper; verify
     /// `~/.terminfo/x/xterm-ghostty` exists and `infocmp xterm-ghostty`
     /// exits zero on the remote.
     func testFreshContainerWithNcursesInstallsTerminfo() throws {
         let containerName = "caterm-terminfo-e2e-\(UUID().uuidString)"
         defer { _ = try? sh("docker rm -f \(containerName) 2>/dev/null") }
 
-        // Run sshd container; ncurses is preinstalled in linuxserver image.
+        // Run sshd container; ncurses gets installed below once sshd is up.
         try sh("""
         docker run -d --rm --name \(containerName) \
           -e PUID=1000 -e PGID=1000 -e TZ=UTC \
@@ -78,6 +78,13 @@ final class TerminfoIntegrationTests: XCTestCase {
         done
         exit 1
         """)
+
+        // The linuxserver/openssh-server image (Alpine-based) doesn't ship
+        // ncurses by default, so install it now to provide `tic`/`infocmp`
+        // — these are what the wrapper's install path actually exercises.
+        // Without this, the test would silently take the no-tic fallback
+        // and never validate the BSD/GNU tic parser drift gate (8-OQ-1).
+        try sh("docker exec \(containerName) apk add --no-cache ncurses")
 
         // Build the wrapper for a host that doesn't matter (we'll pipe into
         // docker exec instead of opening a real ssh).
@@ -99,8 +106,12 @@ final class TerminfoIntegrationTests: XCTestCase {
         echo TERM=$TERM
         """
 
-        // Hand the wrapper to the container's shell as if we were ssh.
-        let result = try sh("docker exec -i \(containerName) sh -c \(ShellQuote.posix(wrapper))")
+        // Hand the wrapper to the container's shell as if we were ssh. Pass
+        // `TERM=xterm-ghostty` to mirror production: SSHCommandBuilder sets
+        // TERM=xterm-ghostty in the ssh env, so the wrapper's role is to
+        // install terminfo (or fall back) — not to set TERM itself in the
+        // success path.
+        let result = try sh("docker exec -i -e TERM=xterm-ghostty \(containerName) sh -c \(ShellQuote.posix(wrapper))")
         XCTAssertTrue(result.contains("TERM=xterm-ghostty"),
                       "expected TERM=xterm-ghostty after install, got: \(result)")
 
@@ -136,7 +147,9 @@ final class TerminfoIntegrationTests: XCTestCase {
         echo TERM=$TERM
         """
 
-        let result = try sh("docker exec -i \(containerName) sh -c \(ShellQuote.posix(wrapper))")
+        // Mirror production env: ssh is invoked with TERM=xterm-ghostty, the
+        // wrapper detects no tic and downgrades to xterm-256color.
+        let result = try sh("docker exec -i -e TERM=xterm-ghostty \(containerName) sh -c \(ShellQuote.posix(wrapper))")
         XCTAssertTrue(result.contains("TERM=xterm-256color"),
                       "alpine without ncurses should fall back: \(result)")
     }
