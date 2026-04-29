@@ -35,6 +35,16 @@ public final class GhosttySurface {
 	/// (`GHOSTTY_ACTION_MOUSE_VISIBILITY`).
 	public var onMouseVisibility: ((ghostty_action_mouse_visibility_e) -> Void)?
 
+	/// Drag-drop bridge: when set, `read_clipboard_cb` returns this string
+	/// instead of reading the system pasteboard. Cleared after each consume.
+	public var pendingPasteText: String?
+
+	/// Token raised right before triggering libghostty's
+	/// `paste_from_clipboard` binding action. Distinguishes a local paste
+	/// (consume the system pasteboard or `pendingPasteText`) from a remote
+	/// OSC 52 read (denied in v1.5).
+	public var pendingLocalPaste: Bool = false
+
 	private(set) public var processExited: Bool = false
 
 	/// Pixel dimensions of one terminal cell, updated by
