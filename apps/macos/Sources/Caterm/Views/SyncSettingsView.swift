@@ -131,6 +131,15 @@ struct SyncSettingsView: View {
                         .foregroundColor(.red).font(.caption)
                 }
             }
+            Section("Terminal") {
+                Toggle(
+                    "Install Ghostty terminfo on remote hosts",
+                    isOn: $preferences.installTerminfoEnabled
+                )
+                Text("Provides full Ghostty rendering features (true colors, hyperlinks). Falls back to standard terminfo automatically if installation isn't possible.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(24)
         .frame(width: 480)
