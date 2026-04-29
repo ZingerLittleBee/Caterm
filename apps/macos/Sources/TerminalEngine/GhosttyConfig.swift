@@ -1,11 +1,14 @@
+import ConfigStore
 import Foundation
 import GhosttyKit
 
 /// Owns a `ghostty_config_t` handle. Loads the user's default config files and
 /// finalizes them. The handle is freed in `deinit`.
 ///
-/// Phase 1 wraps libghostty's defaults verbatim — no programmatic overrides.
-/// (Font / theme / palette config UI lands in later tasks.)
+/// Load order: libghostty defaults → Caterm-managed snapshot → user config.
+/// libghostty applies later loads on top of earlier ones, so the user's
+/// `~/Library/Application Support/Caterm/config` always wins over the
+/// Caterm-managed keybinds.
 @MainActor
 public final class GhosttyConfig {
 	public let raw: ghostty_config_t
@@ -15,6 +18,15 @@ public final class GhosttyConfig {
 			throw GhosttyError.configCreateFailed
 		}
 		ghostty_config_load_default_files(cfg)
+
+		// Caterm-managed snapshot — loaded BEFORE user file so user keybinds win.
+		do {
+			try ConfigStore.writeManagedConfig()
+			ghostty_config_load_file(cfg, ConfigStore.managedConfigPath.path)
+		} catch {
+			NSLog("[GhosttyConfig] managed config write failed: \(error)")
+		}
+
 		if let path = catermConfigPath,
 			FileManager.default.fileExists(atPath: path)
 		{

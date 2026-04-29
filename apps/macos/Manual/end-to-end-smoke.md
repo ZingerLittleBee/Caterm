@@ -127,6 +127,33 @@ section.
     in `GhosttyApp.readClipboardCallback`. If it fires, halt and revisit
     spec §6 (6-OQ-2 fallback) — libghostty is calling read off-main and
     the `MainActor.assumeIsolated` block becomes a deadlock risk.
+11. **Scrollback keybind round-trip (managed config)** — Exercises the
+    Caterm-managed keybind snapshot loaded between libghostty defaults
+    and the user config (spec §8 manual checklist item 12).
+    1. In a terminal: `yes | head -200` to fill the scrollback. Then:
+       - `⌘↑` scrolls up one line, `⌘↓` scrolls down one line
+         (`scroll_page_lines:-1` / `+1`).
+       - `⌘⇞` (PageUp) scrolls up one page, `⌘⇟` (PageDown) one page
+         (`scroll_page_fractional:-1` / `+1`).
+       - `⌘Home` jumps to the top of scrollback (`scroll_to_top`).
+       - `⌘End` jumps back to the bottom (`scroll_to_bottom`).
+       - `⌘K` clears the visible screen (`clear_screen`).
+    2. **Alt-screen passthrough** — Run `vim` (or `htop`); the
+       alt-screen takes over and there is no scrollback. The mouse wheel
+       should translate to ↑/↓ keystrokes (vim moves the cursor); the
+       seven keybinds above are scrollback-only and need not navigate
+       inside the alt-screen.
+    3. **User override wins** — Add a line to
+       `~/Library/Application Support/Caterm/config`, e.g.
+       `keybind = super+k=paste_from_clipboard`, restart Caterm, and
+       confirm `⌘K` now pastes instead of clearing the screen. This
+       proves the load order: defaults → managed → user, and that the
+       user file is the last write so its keybinds win.
+    4. Verify `~/Library/Application Support/Caterm/caterm-managed.config`
+       exists after launch and matches `ConfigStore.managedConfigContent`
+       byte-for-byte. The file is rewritten only when content drifts
+       (idempotency guard in `writeManagedConfig`), so repeated launches
+       should not bump its mtime.
 
 If any of these regress, the most common culprits are:
 
