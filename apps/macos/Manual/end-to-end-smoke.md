@@ -80,6 +80,36 @@ The `KeychainStore` API already supports both modes — pass `nil` for
 login-keychain (current dev mode), pass the access-group string for
 production mode.
 
+## Terminal Interaction (v1.5)
+
+Run after every change to the AppKit ↔ libghostty mouse / scroll / cursor
+plumbing. Requires the OpenSSH-in-Docker setup from the Prerequisites
+section.
+
+1. **Drag-select** — Connect to the smoke host, run `ls -la`, then click and
+   drag across some output. Selection highlight should follow the drag and
+   stop when you release.
+2. **Mouse-reporting (`htop`)** — `htop` on the remote, click the column
+   headers (CPU%, MEM%) at the top. The list should re-sort, proving libghostty
+   is forwarding mouse-button events under DECSET 1000/1002/1006.
+3. **Vim cursor positioning + Shift override** — `vim some-file`, click
+   somewhere in the buffer; the cursor should jump there. Then hold Shift
+   while drag-selecting — that should bypass mouse-reporting and produce a
+   normal terminal selection.
+4. **Cursor flips to I-beam on hover** — Move the mouse into the terminal
+   view; the cursor should change from the default arrow to an I-beam, and
+   back to arrow when the pointer leaves the view. This proves the
+   `GHOSTTY_ACTION_MOUSE_SHAPE` action is round-tripping through the
+   action callback into `NSCursor`.
+
+If any of these regress, the most common culprits are:
+
+- Tracking area not refreshed (resize doesn't re-call `updateTrackingAreas`)
+- Action callback firing off-main (the `Thread.isMainThread` assert in
+  `GhosttyApp.actionCallback` should catch this in debug)
+- Scroll deltas not multiplied by `cellSize` for imprecise wheels — symptom
+  is one mouse-wheel notch barely moves the buffer
+
 ## Failure modes
 
 | Symptom | Likely cause | Fix |

@@ -14,6 +14,11 @@ public final class GhosttySurfaceNSView: NSView {
 	private let pendingEnv: [(String, String)]
 	private var didCreateSurface = false
 
+	/// Last shape libghostty asked us to render. Updated by
+	/// `GhosttySurface.onMouseShape`; consumed by `cursorUpdate(with:)` to
+	/// pick an `NSCursor`.
+	var currentMouseShape: ghostty_action_mouse_shape_e = GHOSTTY_MOUSE_SHAPE_TEXT
+
 	public init(command: String?, env: [(String, String)] = []) {
 		self.pendingCommand = command
 		self.pendingEnv = env
@@ -43,6 +48,18 @@ public final class GhosttySurfaceNSView: NSView {
 			)
 			self.surface = surface
 			didCreateSurface = true
+			surface.onMouseShape = { [weak self] shape in
+				guard let self else { return }
+				self.currentMouseShape = shape
+				self.window?.invalidateCursorRects(for: self)
+			}
+			surface.onMouseVisibility = { visibility in
+				if visibility == GHOSTTY_MOUSE_HIDDEN {
+					NSCursor.hide()
+				} else {
+					NSCursor.unhide()
+				}
+			}
 			window?.makeFirstResponder(self)
 			propagateSize()
 			surface.setFocus(true)
@@ -75,6 +92,27 @@ public final class GhosttySurfaceNSView: NSView {
 			return
 		}
 		surface.sendKey(event)
+	}
+
+	public override func cursorUpdate(with event: NSEvent) {
+		nsCursor(for: currentMouseShape).set()
+	}
+
+	/// Map libghostty's cursor-shape enum onto `NSCursor`. Unmapped shapes
+	/// fall back to `.arrow`; see ghostty.h ~line 685 for the full list.
+	private func nsCursor(for shape: ghostty_action_mouse_shape_e) -> NSCursor {
+		switch shape {
+		case GHOSTTY_MOUSE_SHAPE_TEXT, GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT:
+			return .iBeam
+		case GHOSTTY_MOUSE_SHAPE_POINTER:
+			return .pointingHand
+		case GHOSTTY_MOUSE_SHAPE_CROSSHAIR:
+			return .crosshair
+		case GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED:
+			return .operationNotAllowed
+		default:
+			return .arrow
+		}
 	}
 
 	private func propagateSize() {
