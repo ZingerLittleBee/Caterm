@@ -74,6 +74,11 @@ public final class GhosttyApp {
 	}
 
 	private static let actionCallback: ghostty_runtime_action_cb = { _, target, action in
+		// We rely on libghostty calling us back on the main thread (see v1.5
+		// spec §6 / 6-OQ-1). All `MainActor.assumeIsolated` blocks below are
+		// assertions, not hops; if this assertion ever fires, the threading
+		// model needs revisiting before any of those blocks are safe.
+		assert(Thread.isMainThread, "actionCallback fired off-main; revisit threading model in §6")
 		// Dispatch to the surface wrapper, if any. Most actions are no-ops at
 		// Phase 1 (we don't yet implement tabs / splits / new-window). The one
 		// case we care about is GHOSTTY_ACTION_SHOW_CHILD_EXITED so SessionStore
