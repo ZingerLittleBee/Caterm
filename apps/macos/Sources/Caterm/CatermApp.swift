@@ -56,6 +56,8 @@ struct CatermApp: App {
 				}
 			}
 			.environmentObject(store)
+			.environmentObject(syncStore)        // NEW (v1.4)
+			.environmentObject(preferences)      // NEW (v1.4)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -63,6 +65,10 @@ struct CatermApp: App {
 			// disappearance does not cancel the sync — that's intentional;
 			// cancellation lives in the chain (spec §3.5).
 			.task { syncStore.syncIfSignedIn() }
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermOpenSyncSettings)) { _ in   // NEW (v1.4)
+				showSyncSettings = true
+			}
 			.sheet(isPresented: $showSyncSettings) {
 				SyncSettingsView(
 					authSession: authSession,
