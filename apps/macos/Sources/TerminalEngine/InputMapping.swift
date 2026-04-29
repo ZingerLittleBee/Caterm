@@ -73,3 +73,16 @@ public func scrollMods(precise: Bool, momentum: NSEvent.Phase) -> ghostty_input_
 	bits |= (phase & 0x7) << 1
 	return ghostty_input_scroll_mods_t(bits)
 }
+
+/// Quote a single string so a POSIX shell will treat it as one literal
+/// argument. Used to compose drag-dropped file paths into a PTY-bound
+/// command line where any space, glob, or quote in the path would
+/// otherwise break parsing.
+///
+/// Strategy: wrap the whole string in single quotes and rewrite each
+/// embedded `'` as `'\''` (close quote, literal escaped quote, reopen).
+/// Single-quoted POSIX strings are otherwise fully literal — no
+/// interpolation, no escaping needed for `$`, `\`, `"`, or whitespace.
+public func shellEscape(_ raw: String) -> String {
+	"'" + raw.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
