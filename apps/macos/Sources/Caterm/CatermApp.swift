@@ -108,6 +108,26 @@ struct CatermApp: App {
 				Button("Sync Settings…") { showSyncSettings = true }
 					.keyboardShortcut(",", modifiers: [.command, .shift])
 			}
+			// Edit menu pasteboard commands. Selectors are the standard
+			// `NSText.copy/paste/pasteAsPlainText`, which AppKit
+			// responder-chain-dispatches; whichever view is first responder
+			// (e.g. GhosttySurfaceNSView) handles them.
+			CommandGroup(replacing: .pasteboard) {
+				Button("Copy") {
+					NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+				}
+				.keyboardShortcut("c", modifiers: [.command])
+
+				Button("Paste") {
+					NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+				}
+				.keyboardShortcut("v", modifiers: [.command])
+
+				Button("Paste and Match Style") {
+					NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: nil, from: nil)
+				}
+				.keyboardShortcut("v", modifiers: [.command, .option, .shift])
+			}
 			// Help menu → GitHub documentation page.
 			CommandGroup(replacing: .help) {
 				Link("Caterm Documentation",
