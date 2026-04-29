@@ -127,7 +127,44 @@ section.
     in `GhosttyApp.readClipboardCallback`. If it fires, halt and revisit
     spec §6 (6-OQ-2 fallback) — libghostty is calling read off-main and
     the `MainActor.assumeIsolated` block becomes a deadlock risk.
-11. **Scrollback keybind round-trip (managed config)** — Exercises the
+11. **IME composition (Pinyin / Kotoeri / dead-keys)** — Covers spec §8 manual
+    checklist item 8 (IME composition with preedit + candidate anchor).
+    1. **Printable ASCII regression** — In a fresh prompt, run
+       `cat | xxd` and type `abc123`. The hex output must show
+       `61 62 63 31 32 33` exactly once (no duplicate bytes from the
+       ghostty-key-first + `interpretKeyEvents` path).
+    2. **US-International dead-key** — System Settings → Keyboard →
+       Input Sources, add "U.S. International - PC" and switch to it.
+       Press `⌥e` then `e`; the terminal should receive `é` (a single
+       composed character).
+    3. **Pinyin (Simplified Chinese)** — Add "Pinyin - Simplified" input
+       source and switch to it. Type `nihao`. While composing, an
+       underline preedit `nǐhǎo` should render inline at the terminal
+       cursor (preedit goes through `setPreedit`). Press space; the
+       commit `你好` reaches the PTY (via `sendText`) and the preedit
+       clears.
+    4. **Candidate panel anchor** — During the Pinyin composition above,
+       the candidate window should appear directly under the terminal
+       cursor (not in a screen corner). This proves
+       `firstRect(forCharacterRange:)` is converting libghostty's
+       view-local cursor rect to screen coordinates correctly.
+    5. **F-keys in `vim`** — Switch back to ABC input, run `vim`. F1
+       opens help; F2/F3/etc. should produce their expected escape
+       sequences (vim's `:nmap <F5>` etc. should fire). This proves the
+       Ctrl-chord short-circuit doesn't accidentally swallow the
+       function keys.
+12. **Ctrl-chord no-duplicate (5.5-OQ-2 mitigation)** — Covers spec §8
+    manual checklist item 7 (Ctrl-chord pass-through, no AppKit
+    interpretation duplicates). At a `cat | xxd` prompt:
+    - `⌃A` → output contains `01` exactly once (not `01 01`, which
+      would indicate AppKit's "moveToBeginningOfLine:" doCommand path
+      re-emitted on top of libghostty's raw key path).
+    - `⌃E` → `05` once.
+    - `⌃K` → `0b` once.
+    - `⌃Y` → `19` once.
+    If any chord produces duplicates, revisit the `isCtrlChord`
+    short-circuit in `GhosttySurfaceNSView.keyDown`.
+13. **Scrollback keybind round-trip (managed config)** — Exercises the
     Caterm-managed keybind snapshot loaded between libghostty defaults
     and the user config (spec §8 manual checklist item 12).
     1. In a terminal: `yes | head -200` to fill the scrollback. Then:

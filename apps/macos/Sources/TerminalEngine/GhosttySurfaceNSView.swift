@@ -107,7 +107,23 @@ public final class GhosttySurfaceNSView: NSView {
 			super.keyDown(with: event)
 			return
 		}
-		surface.sendKey(event)
+		// "ghostty-key-first" strategy: forward the raw NSEvent to libghostty
+		// BEFORE letting AppKit's IME engine see it. libghostty looks at the
+		// `composing` flag to decide whether to swallow the key (when an IME
+		// composition is active) or treat it as a normal keystroke.
+		let composing = hasMarkedText()
+		surface.sendKey(event, composing: composing)
+
+		// 5.5-OQ-2: AppKit may interpret some Ctrl-chords (e.g. ⌃A → "go to
+		// start of line") and double-emit. We've already sent the raw event
+		// to libghostty above; only call `interpretKeyEvents` when IME might
+		// compose. The `composing` short-circuit ensures dead-key sequences
+		// (e.g. ⌥e + e → é, where Option counts as a Ctrl-class chord but
+		// must reach the IME) still flow through `interpretKeyEvents`.
+		let isCtrlChord = event.modifierFlags.contains(.control) && !composing
+		if !isCtrlChord {
+			interpretKeyEvents([event])
+		}
 	}
 
 	public override func cursorUpdate(with event: NSEvent) {
