@@ -19,6 +19,14 @@ public final class GhosttySurfaceNSView: NSView {
 	/// pick an `NSCursor`.
 	var currentMouseShape: ghostty_action_mouse_shape_e = GHOSTTY_MOUSE_SHAPE_TEXT
 
+	/// In-flight IME composition string. Mirrored from AppKit's
+	/// `setMarkedText` so `keyDown` can decide whether to set the
+	/// `composing` flag on libghostty's key event. Lives on the class
+	/// (Swift extensions can't add stored properties) and is `internal`
+	/// rather than `private` because the `NSTextInputClient` conformance
+	/// reads/writes it from `GhosttySurfaceNSView+TextInput.swift`.
+	var markedString: String = ""
+
 	public init(command: String?, env: [(String, String)] = []) {
 		self.pendingCommand = command
 		self.pendingEnv = env
