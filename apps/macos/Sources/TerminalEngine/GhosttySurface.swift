@@ -29,6 +29,11 @@ public final class GhosttySurface {
 
 	private(set) public var processExited: Bool = false
 
+	/// Pixel dimensions of one terminal cell, updated by
+	/// `GHOSTTY_ACTION_CELL_SIZE`. The default is a sane fallback used for
+	/// imprecise wheel-scroll deltas before libghostty reports a real value.
+	public private(set) var cellSize: NSSize = .init(width: 8, height: 16)
+
 	/// Heap-allocated C strings whose pointers were stuffed into the surface
 	/// config. Held here so we can free them when the surface dies.
 	private var ownedCStrings: [UnsafeMutablePointer<CChar>] = []
@@ -176,6 +181,10 @@ public final class GhosttySurface {
 	func handleChildExited(exitCode: UInt32) {
 		processExited = true
 		onChildExit?(Int32(bitPattern: exitCode))
+	}
+
+	func updateCellSize(width: Double, height: Double) {
+		cellSize = NSSize(width: width, height: height)
 	}
 
 }
