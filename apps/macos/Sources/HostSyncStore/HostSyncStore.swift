@@ -88,6 +88,11 @@ public final class HostSyncStore: ObservableObject {
     private let notificationCenter: NotificationDelivering
     private var pendingAutoAfterManual: Bool = false
     private var currentManualTask: Task<Void, Error>?
+    /// Generation token gating the single isSyncing-clear site in startSync().
+    /// Each call to startSync() captures a snapshot; only the latest
+    /// generation's defer is permitted to clear isSyncing — preserves the
+    /// flag across chained cancel-and-drain handoffs (spec §2.1.2 / Decision #22).
+    private var syncGeneration: Int = 0
 
     /// "Last fully-applied sync." Set after performSync() completes the op
     /// loop without throwing. NOT updated when listHosts fails or any
@@ -96,6 +101,19 @@ public final class HostSyncStore: ObservableObject {
     @Published public private(set) var lastSyncAttemptedAt: Date?
     @Published public private(set) var lastSyncErrorKind: SyncErrorKind?
     @Published public private(set) var failingSince: Date?
+    @Published public private(set) var isSyncing: Bool = false
+
+    /// Computed proxy so SwiftUI views can read sign-in state without holding
+    /// a direct AuthSession reference (AuthSession is not ObservableObject).
+    /// Re-render relies on the app's coordinated sign-in / sign-out flows
+    /// touching at least one @Published property on this store
+    /// (sign-in → syncIfSignedIn → startSync flips isSyncing; auth-failure
+    /// 401 → classifySyncError flips lastSyncErrorKind; recovery →
+    /// clearAuthError flips failingSince/lastSyncErrorKind/lastSyncAttemptedAt).
+    /// A caller that mutates `authSession.isSignedIn` without one of these
+    /// store-side updates will leave this proxy stale until the next sync
+    /// (spec Decision #23).
+    public var isSignedIn: Bool { authSession.isSignedIn }
 
     public init(client: ServerSyncClient,
                 sessionStore: SessionStore,
@@ -252,8 +270,28 @@ public final class HostSyncStore: ObservableObject {
     @discardableResult
     private func startSync() -> Task<Void, Error> {
         let prev = inFlight
+        syncGeneration += 1
+        let myGeneration = syncGeneration
+        isSyncing = true
         let new = Task { [weak self] in
             guard let self else { return }
+            defer {
+                // The MainActor dispatch may itself race a third startSync()
+                // call landing between this defer firing and the inner Task
+                // running — that is safe because syncGeneration is re-read
+                // here, after dispatch, and the gate skips clear when an
+                // even-newer generation has taken over.
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    // Only the latest startSync() generation may clear the flag.
+                    // An older task draining after being cancelled must not
+                    // toggle isSyncing while a newer task is still running
+                    // (spec Decision #22).
+                    if self.syncGeneration == myGeneration {
+                        self.isSyncing = false
+                    }
+                }
+            }
             prev?.cancel()
             _ = await prev?.result   // drain — always resolves (success / throw / CancellationError)
             try Task.checkCancellation()  // we may have been replaced too
