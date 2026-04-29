@@ -126,13 +126,16 @@ public final class GhosttyApp {
 	}
 
 	private static let readClipboardCallback: ghostty_runtime_read_clipboard_cb = { _, _, _ in
-		false
+		assert(Thread.isMainThread, "read_clipboard_cb fired off-main; revisit 6-OQ-2 fallback")
+		return false
 	}
 
-	private static let confirmReadClipboardCallback: ghostty_runtime_confirm_read_clipboard_cb = { _, _, _, _ in
+	private static let confirmReadClipboardCallback: ghostty_runtime_confirm_read_clipboard_cb = { _, _, _, kind in
+		NSLog("[v1.5 spike] confirm_read_clipboard_cb fired kind=\(kind.rawValue) thread=\(Thread.isMainThread ? "main" : "bg")")
 	}
 
 	private static let writeClipboardCallback: ghostty_runtime_write_clipboard_cb = { _, _, _, _, _ in
+		NSLog("[v1.5 spike] write_clipboard_cb fired thread=\(Thread.isMainThread ? "main" : "bg")")
 	}
 
 	private static let closeSurfaceCallback: ghostty_runtime_close_surface_cb = { _, _ in
