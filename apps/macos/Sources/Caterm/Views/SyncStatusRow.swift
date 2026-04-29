@@ -46,6 +46,10 @@ struct SyncStatusRow: View {
         .buttonStyle(.plain)
         .background(Color.clear)
         .accessibilityLabel(accessibilityLabel(for: state, now: now))
+        .popover(isPresented: $popoverPresented,
+                 arrowEdge: .trailing) {
+            popoverContent(state: state, now: now)
+        }
     }
 
     private func handleTap(state: SyncIndicatorState) {
@@ -111,6 +115,64 @@ struct SyncStatusRow: View {
         }
     }
 
+    // MARK: - Popover content
+
+    @ViewBuilder
+    private func popoverContent(state: SyncIndicatorState, now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch state {
+            case .healthy(let lastSyncedAt):
+                Label(formatLastSynced(lastSyncedAt, now: now),
+                      systemImage: "checkmark.circle")
+                Text("Next sync \(formatNextSyncIn(syncStore: syncStore, now: now))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Button("Sync Now") { triggerSync() }
+                    .disabled(syncStore.isSyncing)
+
+            case .failing(reason: .other, since: let since):
+                Label("Last attempt failed \(formatRelativeShort(since: since, now: now)) ago",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                if let kind = syncStore.lastSyncErrorKind {
+                    Text("Most recent error: \(describe(errorKind: kind))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Divider()
+                Button("Try Again") { triggerSync() }
+                    .disabled(syncStore.isSyncing)
+                Button("Open Settings") {
+                    popoverPresented = false
+                    NotificationCenter.default.post(
+                        name: .catermOpenSyncSettings, object: nil)
+                }
+
+            case .syncing:
+                Label("Syncing…", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.secondary)
+
+            case .signedOut, .failing(reason: .auth, since: _):
+                // Should never render — these states route directly to the
+                // settings sheet via handleTap. Keep an EmptyView fallback in
+                // case a state transition lands here mid-render.
+                EmptyView()
+            }
+        }
+        .padding(14)
+        .frame(minWidth: 240)
+    }
+
+    private func triggerSync() {
+        popoverAutoCloseTask?.cancel()
+        Task { @MainActor in
+            try? await syncStore.sync()
+            popoverAutoCloseTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if !Task.isCancelled { popoverPresented = false }
+            }
+        }
+    }
+
     // MARK: - Accessibility
 
     private func accessibilityLabel(for state: SyncIndicatorState, now: Date) -> String {
@@ -147,6 +209,28 @@ public func formatRelativeShort(since: Date, now: Date) -> String {
     if elapsed < 60 { return "now" }
     if elapsed < 3600 { return "\(Int(elapsed / 60))m" }
     return "\(Int(elapsed / 3600))h"
+}
+
+/// "13m" / "soon" — short interval to the next periodic sync. Renders "soon"
+/// if `lastSyncedAt` is nil (fresh user) or the computed next-sync time has
+/// already passed (overdue periodic cycle).
+@MainActor
+public func formatNextSyncIn(syncStore: HostSyncStore, now: Date) -> String {
+    guard let lastSyncedAt = syncStore.lastSyncedAt else { return "soon" }
+    let nextSync = lastSyncedAt.addingTimeInterval(syncStore.periodicInterval)
+    let remaining = nextSync.timeIntervalSince(now)
+    if remaining <= 0 { return "soon" }
+    if remaining < 60 { return "in \(Int(remaining))s" }
+    return "in \(Int(remaining / 60))m"
+}
+
+/// "Authentication required" / "Network or server error" — describes a
+/// `SyncErrorKind` for popover display.
+public func describe(errorKind: SyncErrorKind) -> String {
+    switch errorKind {
+    case .auth:  return "Authentication required"
+    case .other: return "Network or server error"
+    }
 }
 
 // MARK: - Notification name
