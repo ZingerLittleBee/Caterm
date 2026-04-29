@@ -13,7 +13,7 @@ public enum SSHCommandBuilder {
 
 	/// One argument piece; either emitted raw (for ssh's own flags / constant
 	/// paths / numeric values) or single-quoted (for everything user-derived).
-	enum Arg {
+	private enum Arg {
 		case raw(String)
 		case quoted(String)
 		/// Pre-built composite (e.g. `'user'@'host'`) inserted verbatim.
