@@ -45,6 +45,9 @@ coverage
 .claude/worktrees/
 .worktrees/
 
+# Superpowers skill local state
+.superpowers/
+
 # Misc
 *.tgz
 .cache
