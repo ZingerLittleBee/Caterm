@@ -152,7 +152,7 @@ public final class GhosttySurface {
 	/// write internally.
 	public func sendKey(_ event: NSEvent) {
 		let chars = event.characters ?? ""
-		let mods = Self.ghosttyMods(event.modifierFlags)
+		let mods = ghosttyMods(event.modifierFlags)
 		let action: ghostty_input_action_e = event.isARepeat
 			? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
 
@@ -178,15 +178,4 @@ public final class GhosttySurface {
 		onChildExit?(Int32(bitPattern: exitCode))
 	}
 
-	// MARK: - Helpers
-
-	private static func ghosttyMods(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
-		var raw: UInt32 = 0
-		if flags.contains(.shift) { raw |= GHOSTTY_MODS_SHIFT.rawValue }
-		if flags.contains(.control) { raw |= GHOSTTY_MODS_CTRL.rawValue }
-		if flags.contains(.option) { raw |= GHOSTTY_MODS_ALT.rawValue }
-		if flags.contains(.command) { raw |= GHOSTTY_MODS_SUPER.rawValue }
-		if flags.contains(.capsLock) { raw |= GHOSTTY_MODS_CAPS.rawValue }
-		return ghostty_input_mods_e(raw)
-	}
 }
