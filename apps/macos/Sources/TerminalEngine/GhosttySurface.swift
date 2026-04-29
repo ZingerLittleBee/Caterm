@@ -173,7 +173,13 @@ public final class GhosttySurface {
 	/// mapping: keycode + modifier flags + raw text payload, plus the
 	/// unshifted codepoint. libghostty handles binding lookup, IME, and PTY
 	/// write internally.
-	public func sendKey(_ event: NSEvent) {
+	///
+	/// `composing` should be `true` when the host view has marked text
+	/// (i.e. the user is in the middle of an IME composition session). When
+	/// set, libghostty knows the key is part of the IME flow and will not
+	/// double-emit it as text — the actual commit comes through
+	/// `sendText` from `NSTextInputClient.insertText`.
+	public func sendKey(_ event: NSEvent, composing: Bool = false) {
 		let chars = event.characters ?? ""
 		let mods = ghosttyMods(event.modifierFlags)
 		let action: ghostty_input_action_e = event.isARepeat
@@ -189,7 +195,7 @@ public final class GhosttySurface {
 			k.keycode = UInt32(event.keyCode)
 			k.text = chars.isEmpty ? nil : textPtr
 			k.unshifted_codepoint = chars.unicodeScalars.first.map { UInt32($0.value) } ?? 0
-			k.composing = false
+			k.composing = composing
 			return ghostty_surface_key(raw, k)
 		}
 	}
