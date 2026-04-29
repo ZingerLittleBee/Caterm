@@ -25,6 +25,7 @@ public final class GhosttySurfaceNSView: NSView {
 		super.init(frame: .zero)
 		translatesAutoresizingMaskIntoConstraints = false
 		wantsLayer = true
+		registerForDraggedTypes([.fileURL, .string])
 	}
 
 	@available(*, unavailable)
