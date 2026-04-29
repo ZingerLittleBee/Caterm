@@ -23,7 +23,11 @@ let package = Package(
         ),
         .target(
             name: "SSHCommandBuilder",
-            path: "Sources/SSHCommandBuilder"
+            path: "Sources/SSHCommandBuilder",
+            exclude: ["Resources/README.md"],
+            resources: [
+                .copy("Resources/xterm-ghostty.terminfo"),
+            ]
         ),
         .target(
             name: "KeychainStore",
