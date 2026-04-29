@@ -51,7 +51,14 @@ public final class GhosttySurfaceNSView: NSView {
 			surface.onMouseShape = { [weak self] shape in
 				guard let self else { return }
 				self.currentMouseShape = shape
-				self.window?.invalidateCursorRects(for: self)
+				// Set the cursor right now rather than waiting for AppKit's
+				// next `cursorUpdate(with:)` call. `invalidateCursorRects`
+				// only schedules a `resetCursorRects()`, which we don't
+				// override — so without an explicit `.set()` here the
+				// cursor would lag by one mouse-motion event. The
+				// `cursorUpdate(with:)` override stays as the path for
+				// tracking-area entry events.
+				self.nsCursor(for: shape).set()
 			}
 			surface.onMouseVisibility = { visibility in
 				if visibility == GHOSTTY_MOUSE_HIDDEN {
