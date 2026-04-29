@@ -164,7 +164,22 @@ section.
     - `⌃Y` → `19` once.
     If any chord produces duplicates, revisit the `isCtrlChord`
     short-circuit in `GhosttySurfaceNSView.keyDown`.
-13. **Scrollback keybind round-trip (managed config)** — Exercises the
+13. **URL hover + ⌘-click open (whitelisted scheme)** — Covers spec §8 manual
+    checklist item 9 (URL hover cursor + open). On the SSH host run
+    `printf 'https://example.com\n'`. Move the pointer over the URL — the
+    text should pick up an underline (libghostty's link decoration). Hold
+    ⌘ while still hovering: the cursor flips from I-beam to pointing hand.
+    ⌘-click the URL — the system default browser opens
+    `https://example.com`. The cursor should return to I-beam when ⌘ is
+    released or the pointer leaves the link.
+14. **URL hover prompt (rejected scheme)** — Covers spec §8 manual
+    checklist item 10 (scheme whitelist confirm sheet). On the SSH host
+    run `printf 'file:///etc/passwd\n'`. ⌘-click the rendered URL — a
+    modal "Open this URL?" sheet should appear with **Cancel** as the
+    default button (Enter or Esc cancels). "Open" should hand the URL to
+    `NSWorkspace`, "Cancel" should suppress it. Repeat with
+    `javascript:alert(1)` and `x-apple-data-detectors:0` — same prompt.
+15. **Scrollback keybind round-trip (managed config)** — Exercises the
     Caterm-managed keybind snapshot loaded between libghostty defaults
     and the user config (spec §8 manual checklist item 12).
     1. In a terminal: `yes | head -200` to fill the scrollback. Then:

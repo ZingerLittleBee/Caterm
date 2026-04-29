@@ -27,6 +27,13 @@ public final class GhosttySurfaceNSView: NSView {
 	/// reads/writes it from `GhosttySurfaceNSView+TextInput.swift`.
 	var markedString: String = ""
 
+	/// URL the pointer is currently hovering over, as reported by
+	/// `GHOSTTY_ACTION_MOUSE_OVER_LINK`. `nil` when the pointer is not over
+	/// a link. Read by `cursorUpdate(with:)` to flip to `pointingHand` when
+	/// ⌘ is held; written by `GhosttySurfaceNSView+URL.swift` (so it must
+	/// be at least `internal`, not `private`).
+	var hoveredURL: String?
+
 	public init(command: String?, env: [(String, String)] = []) {
 		self.pendingCommand = command
 		self.pendingEnv = env
@@ -76,6 +83,7 @@ public final class GhosttySurfaceNSView: NSView {
 					NSCursor.unhide()
 				}
 			}
+			wireURLHandlers()
 			window?.makeFirstResponder(self)
 			propagateSize()
 			surface.setFocus(true)
@@ -127,7 +135,31 @@ public final class GhosttySurfaceNSView: NSView {
 	}
 
 	public override func cursorUpdate(with event: NSEvent) {
-		nsCursor(for: currentMouseShape).set()
+		// URL-hover takes priority over libghostty's mouse-shape: while ⌘ is
+		// held over a detected link the pointer must read as a click target
+		// (pointing hand) regardless of what shape libghostty is currently
+		// asking for. Otherwise fall back to the shape mapping from Task 1.
+		if hoveredURL != nil, NSEvent.modifierFlags.contains(.command) {
+			NSCursor.pointingHand.set()
+		} else {
+			nsCursor(for: currentMouseShape).set()
+		}
+	}
+
+	public override func flagsChanged(with event: NSEvent) {
+		// Re-publish pointer position with the new modifier set so
+		// libghostty can recompute hover state — pressing ⌘ over text that
+		// happens to be a URL must promote it to a hovered link, and
+		// releasing ⌘ must demote it. Without this, the user would have to
+		// also nudge the mouse for libghostty to notice the modifier flip.
+		if let surface {
+			let p = convert(event.locationInWindow, from: nil)
+			surface.sendMousePos(x: Double(p.x), y: Double(p.y), mods: event.modifierFlags)
+		}
+		// Nudge AppKit to re-call `cursorUpdate(with:)` so the pointing-hand
+		// flip happens promptly when ⌘ is pressed/released without motion.
+		window?.invalidateCursorRects(for: self)
+		super.flagsChanged(with: event)
 	}
 
 	/// Map libghostty's cursor-shape enum onto `NSCursor`. Unmapped shapes
