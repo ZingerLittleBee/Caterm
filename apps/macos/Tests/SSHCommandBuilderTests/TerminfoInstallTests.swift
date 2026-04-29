@@ -70,4 +70,33 @@ final class TerminfoInstallTests: XCTestCase {
             "expected TERM=xterm-ghostty in env, got: \(out.env)"
         )
     }
+
+    /// When the bundle resource is missing (build/packaging error caught by
+    /// the CI gate `TerminfoSourceTests` but defended at runtime too), the
+    /// builder degrades to the `installTerminfo: false` shape — never
+    /// advertise xterm-ghostty without a backing terminfo install.
+    func testBundleMissingFallbackEqualsToggleOff() {
+        let toggleOff = SSHCommandBuilder._build(
+            host: sampleHost(),
+            askpassPath: Self.askpassPath,
+            knownHostsCaterm: Self.knownHostsCaterm,
+            knownHostsUser: Self.knownHostsUser,
+            installTerminfo: false,
+            sshPath: "/usr/bin/ssh",
+            terminfoDump: nil
+        )
+        let bundleMissing = SSHCommandBuilder._build(
+            host: sampleHost(),
+            askpassPath: Self.askpassPath,
+            knownHostsCaterm: Self.knownHostsCaterm,
+            knownHostsUser: Self.knownHostsUser,
+            installTerminfo: true,           // toggle ON
+            sshPath: "/usr/bin/ssh",
+            terminfoDump: nil                // ...but bundle missing
+        )
+        XCTAssertEqual(toggleOff, bundleMissing,
+            "bundle-missing must produce identical Output to toggle-off — no -t, no TERM env override")
+        XCTAssertFalse(bundleMissing.command.contains(" -t "))
+        XCTAssertFalse(bundleMissing.env.contains(where: { $0.0 == "TERM" }))
+    }
 }
