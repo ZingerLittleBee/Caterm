@@ -35,6 +35,17 @@ public final class GhosttySurface {
 	/// (`GHOSTTY_ACTION_MOUSE_VISIBILITY`).
 	public var onMouseVisibility: ((ghostty_action_mouse_visibility_e) -> Void)?
 
+	/// Fired when the pointer hovers over (or leaves) a detected URL in the
+	/// terminal grid (`GHOSTTY_ACTION_MOUSE_OVER_LINK`). The payload is the
+	/// URL string, or `nil` when the hover ends. The host view uses this to
+	/// flip to `NSCursor.pointingHand` when the user holds ⌘.
+	public var onHoverURL: ((String?) -> Void)?
+	/// Fired when libghostty asks the apprt to open a URL
+	/// (`GHOSTTY_ACTION_OPEN_URL`), typically after a ⌘-click on a hovered
+	/// link. The host view routes this to `NSWorkspace.open` after a scheme
+	/// whitelist check.
+	public var onOpenURL: ((String, ghostty_action_open_url_kind_e) -> Void)?
+
 	/// Drag-drop bridge: when set, `read_clipboard_cb` returns this string
 	/// instead of reading the system pasteboard. Cleared after each consume.
 	public var pendingPasteText: String?
@@ -217,6 +228,14 @@ public final class GhosttySurface {
 
 	func handleMouseVisibility(_ visibility: ghostty_action_mouse_visibility_e) {
 		onMouseVisibility?(visibility)
+	}
+
+	func handleHoverURL(_ url: String?) {
+		onHoverURL?(url)
+	}
+
+	func handleOpenURL(_ url: String, kind: ghostty_action_open_url_kind_e) {
+		onOpenURL?(url, kind)
 	}
 
 }

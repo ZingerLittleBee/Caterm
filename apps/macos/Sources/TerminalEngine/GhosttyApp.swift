@@ -121,6 +121,31 @@ public final class GhosttyApp {
 			}
 			return true
 
+		case GHOSTTY_ACTION_MOUSE_OVER_LINK:
+			// `info.url` is a `const char*` valid for the duration of this
+			// callback only — snapshot into Swift before any hop. A NULL
+			// pointer means hover ended (libghostty fires this when the
+			// pointer leaves the link).
+			let info = action.action.mouse_over_link
+			let url: String? = info.url.map { String(cString: $0) }
+			MainActor.assumeIsolated {
+				wrapper.handleHoverURL(url)
+			}
+			return true
+
+		case GHOSTTY_ACTION_OPEN_URL:
+			// Sent on ⌘-click of a detected URL. `kind` tells us whether the
+			// payload is plain text or HTML; the host view ignores it for now
+			// and just hands the URL to NSWorkspace (after scheme whitelist).
+			let info = action.action.open_url
+			guard let cstr = info.url else { return false }
+			let url = String(cString: cstr)
+			let kind = info.kind
+			MainActor.assumeIsolated {
+				wrapper.handleOpenURL(url, kind: kind)
+			}
+			return true
+
 		default:
 			return false
 		}
