@@ -18,6 +18,7 @@ ITEMS := \
 	"macos-run     — Build + sign + launch macOS app" \
 	"macos-run-bg  — Launch macOS app in background" \
 	"macos-build   — Build macOS app (debug)" \
+	"macos-ghostty-kit — Init Ghostty submodule + build GhosttyKit" \
 	"macos-test    — Run macOS Swift tests" \
 	"macos-kill    — Kill running macOS dev process" \
 	"macos-clean   — Clean macOS .build" \

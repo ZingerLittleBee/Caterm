@@ -8,6 +8,15 @@ This project uses **Ultracite**, a zero-config preset that enforces strict code 
 - **Check for issues**: `bun x ultracite check`
 - **Diagnose setup**: `bun x ultracite doctor`
 
+## macOS GhosttyKit
+
+The macOS app depends on `apps/macos/Frameworks/GhosttyKit.xcframework`, which is generated from the Ghostty submodule at `apps/macos/Vendor/ghostty`.
+
+- **Build GhosttyKit**: `make macos-ghostty-kit`
+- **Initialize only the Ghostty submodule**: `make macos-ghostty-submodule`
+
+`make macos-ghostty-kit` initializes the submodule and then runs `apps/macos/Scripts/build-libghostty.sh`. That build requires Homebrew `zig@0.15`, expected by default at `/opt/homebrew/opt/zig@0.15/bin/zig`.
+
 Biome (the underlying engine) provides robust linting and formatting. Most issues are automatically fixable.
 
 ---

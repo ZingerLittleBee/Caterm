@@ -36,6 +36,14 @@ build: ## swift build (debug)
 build-release: ## swift build (release)
 	swift build -c release
 
+.PHONY: ghostty-submodule
+ghostty-submodule: ## init/update Ghostty submodule
+	git -C "$(ROOT)/../.." submodule update --init --recursive apps/macos/Vendor/ghostty
+
+.PHONY: ghostty-kit
+ghostty-kit: ghostty-submodule ## build Frameworks/GhosttyKit.xcframework
+	bash Scripts/build-libghostty.sh
+
 .PHONY: sign
 sign: build ## codesign caterm + caterm-askpass with dev identity
 	@if [ -z "$(CATERM_DEV_IDENTITY)" ]; then \
