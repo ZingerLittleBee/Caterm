@@ -23,17 +23,4 @@ public protocol CKDatabaseProtocol: Sendable {
     func save(_ zone: CKRecordZone) async throws -> CKRecordZone
 }
 
-extension CKDatabase: CKDatabaseProtocol {
-    public func records(matching query: CKQuery,
-                        inZoneWith zoneID: CKRecordZone.ID?,
-                        desiredKeys: [CKRecord.FieldKey]?,
-                        resultsLimit: Int)
-        async throws -> (matchResults: [(CKRecord.ID, Result<CKRecord, Error>)],
-                         queryCursor: CKQueryOperation.Cursor?)
-    {
-        try await self.records(matching: query,
-                               inZoneWith: zoneID,
-                               desiredKeys: desiredKeys,
-                               resultsLimit: resultsLimit)
-    }
-}
+extension CKDatabase: CKDatabaseProtocol {}
