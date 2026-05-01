@@ -57,8 +57,27 @@ cp -R "$SRC" "$XCFRAMEWORK"
 MACOS_DIR="$XCFRAMEWORK/macos-arm64_x86_64"
 if [ -f "$MACOS_DIR/ghostty-internal.a" ]; then
     mv "$MACOS_DIR/ghostty-internal.a" "$MACOS_DIR/libghostty-internal.a"
-    /usr/bin/plutil -replace 'AvailableLibraries.0.BinaryPath' -string 'libghostty-internal.a' "$XCFRAMEWORK/Info.plist"
-    /usr/bin/plutil -replace 'AvailableLibraries.0.LibraryPath' -string 'libghostty-internal.a' "$XCFRAMEWORK/Info.plist"
+
+    # Ghostty's xcframework slices aren't ordered consistently — the macOS
+    # entry isn't always at index 0 — so look it up by SupportedPlatform
+    # instead of hardcoding.
+    macos_idx=""
+    i=0
+    while platform=$(/usr/bin/plutil -extract "AvailableLibraries.$i.SupportedPlatform" raw -o - "$XCFRAMEWORK/Info.plist" 2>/dev/null); do
+        if [ "$platform" = "macos" ]; then
+            macos_idx=$i
+            break
+        fi
+        i=$((i+1))
+    done
+
+    if [ -z "$macos_idx" ]; then
+        echo "Error: could not find macOS slice in $XCFRAMEWORK/Info.plist"
+        exit 1
+    fi
+
+    /usr/bin/plutil -replace "AvailableLibraries.$macos_idx.BinaryPath"  -string 'libghostty-internal.a' "$XCFRAMEWORK/Info.plist"
+    /usr/bin/plutil -replace "AvailableLibraries.$macos_idx.LibraryPath" -string 'libghostty-internal.a' "$XCFRAMEWORK/Info.plist"
 fi
 
 echo "==> $XCFRAMEWORK ready"
