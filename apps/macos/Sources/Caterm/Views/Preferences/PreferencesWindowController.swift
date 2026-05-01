@@ -1,6 +1,28 @@
 import AppKit
+import HostSyncStore
+import ServerSyncClient
 import SettingsStore
 import SwiftUI
+
+/// Container the app injects into the window controller so the Sync tab can
+/// reach the live `AuthSession` / `HostSyncStore` / `SyncPreferences`.
+/// Bundled into a single tuple-like struct so unit tests can construct a
+/// bare controller without the entire sync stack wired up — the Sync tab
+/// then renders `SyncTabPlaceholderView` instead of crashing.
+@MainActor
+public struct SyncEnvironment {
+    public let authSession: AuthSession
+    public let syncStore: HostSyncStore
+    public let preferences: SyncPreferences
+
+    public init(authSession: AuthSession,
+                syncStore: HostSyncStore,
+                preferences: SyncPreferences) {
+        self.authSession = authSession
+        self.syncStore = syncStore
+        self.preferences = preferences
+    }
+}
 
 @MainActor
 public final class PreferencesWindowController: NSWindowController {
@@ -8,6 +30,12 @@ public final class PreferencesWindowController: NSWindowController {
     public private(set) var activeTabIndex: Int = 0
     private var hostingController: NSHostingController<AnyView>?
     private let settingsStore: SettingsStore
+    /// Set by the app once the sync stack is constructed; nil during tests.
+    /// Re-renders the active tab when assigned so a deferred wiring (e.g.
+    /// from `CatermApp`'s notification observer) takes effect immediately.
+    public var syncEnvironment: SyncEnvironment? {
+        didSet { renderActiveTab() }
+    }
 
     public convenience init() {
         let store = (try? SettingsStore.load(from: SettingsStore.defaultPlistPath))
@@ -59,8 +87,25 @@ public final class PreferencesWindowController: NSWindowController {
 
     private func renderActiveTab() {
         guard let window else { return }
-        let view = tabs[activeTabIndex].viewBuilder()
-        let rooted = view
+        let baseView: AnyView
+        // Sync tab is special: it needs the AuthSession/HostSyncStore/
+        // SyncPreferences trio. When the sync environment isn't injected
+        // (unit tests, early app boot before CatermApp wires it up) fall
+        // back to the placeholder so the controller is constructible
+        // without the sync stack. Once `syncEnvironment` is assigned the
+        // didSet re-renders this tab and the real Sync UI appears.
+        if activeTabIndex == 3, let env = syncEnvironment {
+            baseView = AnyView(
+                SyncSettingsTab(
+                    authSession: env.authSession,
+                    syncStore: env.syncStore,
+                    preferences: env.preferences
+                )
+            )
+        } else {
+            baseView = tabs[activeTabIndex].viewBuilder()
+        }
+        let rooted = baseView
             .frame(minWidth: 600, minHeight: 400)
             .environmentObject(settingsStore)
         let host = NSHostingController(rootView: AnyView(rooted))

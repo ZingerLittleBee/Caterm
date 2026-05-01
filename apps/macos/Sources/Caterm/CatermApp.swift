@@ -19,11 +19,17 @@ struct CatermApp: App {
 	@StateObject var preferences: SyncPreferences
 	@StateObject var fileTransferStore: FileTransferStore
 	@StateObject var settingsStore: SettingsStore
+	/// Lifetime-owned by the App so the Preferences "Sync" tab can reach
+	/// it. `AuthSession` is not `ObservableObject`, so we inject it via
+	/// `PreferencesWindowController.syncEnvironment` rather than as an env
+	/// object on the WindowGroup.
+	let authSession: AuthSession
 
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
 		let auth = AuthSession(baseURL: ServerURL.current)
+		self.authSession = auth
 		let client = URLSessionServerSyncClient(baseURL: ServerURL.current)
 		let prefs = SyncPreferences()
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
@@ -112,6 +118,11 @@ struct CatermApp: App {
 				// window (Task 25). SyncStatusRow still posts this
 				// notification when the user clicks the indicator; route
 				// it through to the unified Preferences surface.
+				PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
+					authSession: authSession,
+					syncStore: syncStore,
+					preferences: preferences
+				)
 				PreferencesWindowController.shared.activate(tabIndex: 3)
 				PreferencesWindowController.shared.showAndActivate()
 			}
@@ -135,6 +146,11 @@ struct CatermApp: App {
 			// config in Finder for power users, so no functionality is lost.
 			CommandGroup(replacing: .appSettings) {
 				Button("Settings…") {
+					PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
+						authSession: authSession,
+						syncStore: syncStore,
+						preferences: preferences
+					)
 					PreferencesWindowController.shared.showAndActivate()
 				}
 				.keyboardShortcut(",", modifiers: .command)

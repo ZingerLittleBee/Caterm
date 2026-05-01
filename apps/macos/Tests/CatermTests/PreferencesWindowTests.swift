@@ -21,4 +21,15 @@ extension PreferencesWindowTests {
         let second = PreferencesWindowController.shared
         XCTAssertTrue(first === second)
     }
+
+    func testSyncTabRendersExistingView() {
+        let ctrl = PreferencesWindowController()
+        ctrl.activate(tabIndex: 3)
+        // Visual smoke: hosted view exists. With no syncEnvironment injected
+        // the controller falls back to SyncTabPlaceholderView, so tests can
+        // still construct a bare PreferencesWindowController without the
+        // sync stack.
+        XCTAssertNotNil(ctrl.window?.contentViewController)
+        XCTAssertEqual(ctrl.activeTabIndex, 3)
+    }
 }
