@@ -15,70 +15,123 @@ enum HostFormMode {
 struct HostFormView: View {
 	let mode: HostFormMode
 	let onSubmit: (SSHHost, String?) -> Void
-	@Environment(\.dismiss) var dismiss
+	@Environment(\.dismiss) private var dismiss
 
-	@State var name = ""
-	@State var hostname = ""
-	@State var port = "22"
-	@State var username = ""
-	@State var credKind: CredKind = .password
-	@State var keyPath = ""
-	@State var hasPassphrase = false
-	@State var pendingSecret = ""
+	@State private var name = ""
+	@State private var hostname = ""
+	@State private var port = "22"
+	@State private var username = ""
+	@State private var credKind: CredKind = .password
+	@State private var keyPath = ""
+	@State private var hasPassphrase = false
+	@State private var pendingSecret = ""
 
-	enum CredKind: String, CaseIterable, Identifiable {
+	enum CredKind: CaseIterable, Identifiable {
 		case password
-		case keyFile = "key file"
+		case keyFile
 		case agent
-		var id: String { rawValue }
+
+		var id: Self { self }
+
+		var displayName: String {
+			switch self {
+			case .password: "Password"
+			case .keyFile: "Key File"
+			case .agent: "Agent"
+			}
+		}
 	}
 
 	var body: some View {
-		Form {
-			Section("Connection") {
-				TextField("Name (display)", text: $name)
-				TextField("Hostname", text: $hostname)
-				TextField("Port", text: $port)
-				TextField("Username", text: $username)
-			}
-
-			Section("Authentication") {
-				Picker("Method", selection: $credKind) {
-					ForEach(CredKind.allCases) { Text($0.rawValue).tag($0) }
-				}
-				.pickerStyle(.segmented)
-
-				if credKind == .keyFile {
-					HStack {
-						TextField("Private key path", text: $keyPath)
-						Button("Browse…") { browseKey() }
+		VStack(spacing: 0) {
+			Form {
+				Section("Connection") {
+					LabeledContent("Name") {
+						TextField("", text: $name)
 					}
-					Toggle("Key has passphrase", isOn: $hasPassphrase)
+					LabeledContent("Hostname") {
+						TextField("", text: $hostname)
+					}
+					LabeledContent("Port") {
+						TextField("", text: $port)
+					}
+					LabeledContent("Username") {
+						TextField("", text: $username)
+					}
 				}
 
-				if credKind == .password {
-					SecureField("Password (stored in Keychain)", text: $pendingSecret)
-				} else if credKind == .keyFile, hasPassphrase {
-					SecureField("Passphrase (stored in Keychain)", text: $pendingSecret)
-				}
-			}
+				Section("Authentication") {
+					Picker("Method", selection: $credKind) {
+						ForEach(CredKind.allCases) { kind in
+							Text(kind.displayName).tag(kind)
+						}
+					}
+					.pickerStyle(.segmented)
+					.labelsHidden()
 
-			Section {
-				HStack {
-					Button("Cancel") { dismiss() }
-					Spacer()
-					Button("Save") { submit() }
-						.keyboardShortcut(.return)
-						.disabled(!isValid)
+					authDetails
 				}
 			}
+			.formStyle(.grouped)
+			.scrollDisabled(true)
+
+			Divider()
+
+			HStack {
+				Button("Cancel") { dismiss() }
+					.keyboardShortcut(.cancelAction)
+				Spacer()
+				Button("Save") { submit() }
+					.keyboardShortcut(.defaultAction)
+					.disabled(!isValid)
+			}
+			.padding(.horizontal, 20)
+			.padding(.vertical, 14)
 		}
-		.padding(20)
-		.frame(width: 480)
+		.frame(width: 520, height: 460)
 		.onAppear { populate() }
 	}
 
-	var isValid: Bool {
+	/// Variable-content area for the chosen credential method. Reserves a
+	/// consistent minimum height across all variants so that switching
+	/// methods doesn't shift the buttons or other sections.
+	@ViewBuilder
+	private var authDetails: some View {
+		VStack(alignment: .leading, spacing: 8) {
+			switch credKind {
+			case .password:
+				SecureField("Password", text: $pendingSecret)
+					.textContentType(.password)
+				footnote("Stored in Keychain.")
+			case .keyFile:
+				HStack {
+					TextField("Private key path", text: $keyPath)
+					Button("Browse…") { browseKey() }
+				}
+				Toggle("Key has passphrase", isOn: $hasPassphrase)
+				if hasPassphrase {
+					SecureField("Passphrase", text: $pendingSecret)
+						.textContentType(.password)
+				}
+				footnote(
+					hasPassphrase
+						? "Path stored locally; passphrase stored in Keychain."
+						: "Path stored locally."
+				)
+			case .agent:
+				footnote("Caterm will use the running ssh-agent for authentication.")
+			}
+		}
+		.frame(minHeight: 96, alignment: .top)
+	}
+
+	private func footnote(_ text: String) -> some View {
+		Text(text)
+			.font(.caption)
+			.foregroundStyle(.secondary)
+	}
+
+	private var isValid: Bool {
 		!name.isEmpty
 			&& !hostname.isEmpty
 			&& !username.isEmpty
@@ -86,26 +139,25 @@ struct HostFormView: View {
 			&& Int(port) != nil
 	}
 
-	func populate() {
-		if case let .edit(host) = mode {
-			name = host.name
-			hostname = host.hostname
-			port = String(host.port)
-			username = host.username
-			switch host.credential {
-			case .password:
-				credKind = .password
-			case let .keyFile(p, hp):
-				credKind = .keyFile
-				keyPath = p
-				hasPassphrase = hp
-			case .agent:
-				credKind = .agent
-			}
+	private func populate() {
+		guard case let .edit(host) = mode else { return }
+		name = host.name
+		hostname = host.hostname
+		port = String(host.port)
+		username = host.username
+		switch host.credential {
+		case .password:
+			credKind = .password
+		case let .keyFile(p, hp):
+			credKind = .keyFile
+			keyPath = p
+			hasPassphrase = hp
+		case .agent:
+			credKind = .agent
 		}
 	}
 
-	func browseKey() {
+	private func browseKey() {
 		let panel = NSOpenPanel()
 		panel.canChooseFiles = true
 		panel.canChooseDirectories = false
@@ -117,7 +169,7 @@ struct HostFormView: View {
 		}
 	}
 
-	func submit() {
+	private func submit() {
 		let cred: CredentialSource
 		switch credKind {
 		case .password:
