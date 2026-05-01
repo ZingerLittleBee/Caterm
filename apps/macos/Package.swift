@@ -53,6 +53,14 @@ let package = Package(
             path: "Sources/HostSyncStore"
         ),
         .target(
+            name: "SettingsStore",
+            dependencies: [],
+            path: "Sources/SettingsStore",
+            resources: [
+                .process("Resources"),
+            ]
+        ),
+        .target(
             name: "FileTransferStore",
             dependencies: ["SSHCommandBuilder", "SFTPCommandBuilder"],
             path: "Sources/FileTransferStore"
@@ -150,6 +158,11 @@ let package = Package(
             name: "SFTPCommandBuilderTests",
             dependencies: ["SFTPCommandBuilder", "SSHCommandBuilder"],
             path: "Tests/SFTPCommandBuilderTests"
+        ),
+        .testTarget(
+            name: "SettingsStoreTests",
+            dependencies: ["SettingsStore"],
+            path: "Tests/SettingsStoreTests"
         ),
     ]
 )
