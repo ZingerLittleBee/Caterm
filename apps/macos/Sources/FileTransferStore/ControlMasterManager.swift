@@ -28,6 +28,18 @@ public final class ControlMasterManager {
     private let runner: ProcessRunner
     private var destinations: [UUID: String] = [:]
 
+    /// Process-wide ControlMaster manager backed by the standard
+    /// `~/Library/Caches/Caterm/cm/` directory. The UI layer uses this
+    /// shared instance so socket paths and liveness lookups stay
+    /// consistent across views (e.g. `MainWindow`'s `RemoteFileSystem`).
+    /// Force-unwrapping `try!` is acceptable: `controlMasterDir` only
+    /// fails if the user's `~/Library/Caches` is unwritable, in which
+    /// case the app cannot function.
+    public static let shared: ControlMasterManager = {
+        let dir = try! CacheDirectories.controlMasterDir()
+        return ControlMasterManager(cacheDir: dir)
+    }()
+
     public init(cacheDir: URL, runner: ProcessRunner = SystemProcessRunner()) {
         self.cacheDir = cacheDir
         self.runner = runner
@@ -62,3 +74,9 @@ public final class ControlMasterManager {
         for id in ids { await tearDown(hostId: id) }
     }
 }
+
+// `ControlMasterManager` already implements `isAlive(hostId:)` with a
+// matching signature, so the conformance is empty. `@MainActor` classes
+// are implicitly `Sendable`, satisfying the protocol's `Sendable`
+// requirement without further annotation.
+extension ControlMasterManager: ControlMasterLiveness {}

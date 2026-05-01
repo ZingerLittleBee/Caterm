@@ -131,6 +131,15 @@ struct CatermApp: App {
 				}
 				.keyboardShortcut("v", modifiers: [.command, .option, .shift])
 			}
+			// ⌘⇧F toggles the per-window Files drawer. The notification is
+			// observed by `MainWindow`; broadcasting via NotificationCenter
+			// avoids threading window-local @State through App scene.
+			CommandGroup(after: .toolbar) {
+				Button("Toggle Files Drawer") {
+					NotificationCenter.default.post(name: .toggleFileDrawer, object: nil)
+				}
+				.keyboardShortcut("f", modifiers: [.command, .shift])
+			}
 			// Help menu → GitHub documentation page.
 			CommandGroup(replacing: .help) {
 				Link("Caterm Documentation",
