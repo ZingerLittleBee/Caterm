@@ -130,8 +130,10 @@ struct MainWindow: View {
 						}
 						.frame(width: drawerTotal, height: geo.size.height)
 						.offset(x: navWidth, y: 0)
+						.transition(.move(edge: .trailing))
 					}
 				}
+				.animation(.easeInOut(duration: 0.22), value: fileDrawerOpen)
 			}
 		}
 		.frame(minWidth: 1000, minHeight: 600)
