@@ -176,26 +176,33 @@ struct HostRow: View {
 			Image(systemName: iconName)
 				.foregroundColor(.secondary)
 				.frame(width: 20)
+				.layoutPriority(1)
 			VStack(alignment: .leading, spacing: 2) {
 				Text(host.name)
 					.font(.headline)
 					.lineLimit(1)
 					.truncationMode(.tail)
+					.frame(maxWidth: .infinity, alignment: .leading)
 				Text("\(host.username)@\(host.hostname):\(host.port)")
 					.font(.caption)
 					.foregroundColor(.secondary)
 					.lineLimit(1)
 					.truncationMode(.tail)
+					.frame(maxWidth: .infinity, alignment: .leading)
 			}
-			.frame(maxWidth: .infinity, alignment: .leading)
+			// layoutPriority(0) is the default; written explicitly to make the
+			// "shrink me first when narrow" intent obvious.
+			.layoutPriority(0)
 			if store.needsCredentialSetup(host) {
 				Image(systemName: "lock")
 					.foregroundColor(.orange)
 					.help("Credentials not configured on this device")
+					.layoutPriority(1)
 			} else if host.serverId != nil {
 				Image(systemName: "icloud")
 					.foregroundColor(.secondary)
 					.help("Synced from server")
+					.layoutPriority(1)
 			}
 		}
 		.padding(.vertical, 2)
