@@ -29,9 +29,12 @@ struct FileDrawerView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			HStack {
-				Text(path).font(.system(.body, design: .monospaced))
-				Spacer()
+			HStack(spacing: 8) {
+				Text(path)
+					.font(.system(.body, design: .monospaced))
+					.lineLimit(1)
+					.truncationMode(.middle)
+				Spacer(minLength: 8)
 				Button { sheetMode = .mkdir } label: {
 					Image(systemName: "folder.badge.plus")
 				}
@@ -40,8 +43,15 @@ struct FileDrawerView: View {
 				.disabled(host == nil || fs == nil)
 				Button { Task { await refresh() } } label: {
 					Image(systemName: "arrow.clockwise")
-				}.buttonStyle(.borderless)
-			}.padding(8)
+				}
+				.buttonStyle(.borderless)
+				.help("Refresh")
+			}
+			// Match the List's trailing inset so the refresh button doesn't
+			// hide under the HSplitView resize handle.
+			.padding(.leading, 8)
+			.padding(.trailing, 12)
+			.padding(.vertical, 8)
 
 			Divider()
 

@@ -14,14 +14,20 @@ struct RemoteFileListView: View {
 
 	var body: some View {
 		List(entries, selection: $selection) { entry in
-			HStack {
+			HStack(spacing: 6) {
 				Image(systemName: entry.isDirectory ? "folder" : "doc")
-				Text(entry.name)
-				Spacer()
+				Text(entry.name).lineLimit(1).truncationMode(.middle)
+				Spacer(minLength: 8)
 				if !entry.isDirectory {
-					Text(byteString(entry.size)).foregroundStyle(.secondary)
+					Text(byteString(entry.size))
+						.foregroundStyle(.secondary)
+						.lineLimit(1)
+						.fixedSize(horizontal: true, vertical: false)
 				}
 			}
+			// Trailing inset clears macOS List's overlaid scroller area + the
+			// HSplitView resize handle so the size column doesn't get clipped.
+			.padding(.trailing, 12)
 			.contentShape(Rectangle())
 			.onTapGesture(count: 2) { onActivate(entry) }
 			.modifier(FolderDropModifier(entry: entry, onDropOnFolder: onDropOnFolder))
