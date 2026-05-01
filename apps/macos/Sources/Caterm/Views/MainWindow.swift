@@ -4,6 +4,7 @@ import SessionStore
 import SFTPCommandBuilder
 import SSHCommandBuilder
 import SwiftUI
+import TerminalEngine
 
 /// Content of one window in the multi-tab `WindowGroup(for: UUID.self)`. Each
 /// SwiftUI window represents one SessionStore tab; macOS merges them into
@@ -18,6 +19,8 @@ struct MainWindow: View {
 	@EnvironmentObject var fileTransferStore: FileTransferStore
 	@Environment(\.openWindow) private var openWindow
 	@State private var fileDrawerOpen = false
+	@State private var pendingUploadURLs: [URL] = []
+	@State private var showUploadSheet = false
 	let tabId: UUID
 
 	/// Host backing the active tab — `nil` once the tab has been closed.
@@ -93,6 +96,34 @@ struct MainWindow: View {
 		.onReceive(NotificationCenter.default
 			.publisher(for: .toggleFileDrawer)) { _ in
 			fileDrawerOpen.toggle()
+		}
+		.onReceive(NotificationCenter.default
+			.publisher(for: .catermOptionDragUpload)) { note in
+			guard let urls = note.userInfo?["urls"] as? [URL], !urls.isEmpty else { return }
+			pendingUploadURLs = urls
+			showUploadSheet = true
+		}
+		.sheet(isPresented: $showUploadSheet) {
+			SimpleTextSheet(
+				title: "Upload to remote directory",
+				prompt: "Path",
+				initialValue: "~",
+				onSubmit: { remoteDir in
+					showUploadSheet = false
+					if let host = activeHost, !pendingUploadURLs.isEmpty {
+						_ = fileTransferStore.enqueueUpload(
+							localPaths: pendingUploadURLs,
+							remoteDir: remoteDir,
+							host: host
+						)
+					}
+					pendingUploadURLs = []
+				},
+				onCancel: {
+					showUploadSheet = false
+					pendingUploadURLs = []
+				}
+			)
 		}
 		.onDisappear { store.closeTab(tabId: tabId) }
 	}
