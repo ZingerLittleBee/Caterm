@@ -52,7 +52,10 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
     func deleteRecord(withID recordID: CKRecord.ID) async throws -> CKRecord.ID {
         deleteCallCount += 1
         if let err = deleteError { throw err }
-        records.removeValue(forKey: recordID)
+        guard records.removeValue(forKey: recordID) != nil else {
+            // Match real CKDatabase semantics: deleting a missing id throws.
+            throw CKError(.unknownItem)
+        }
         return recordID
     }
 

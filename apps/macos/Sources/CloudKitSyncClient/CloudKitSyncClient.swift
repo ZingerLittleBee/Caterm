@@ -38,8 +38,10 @@ public final class CloudKitSyncClient: ServerSyncClient {
                 // "what the server has that I can interpret"; a corrupt record
                 // (e.g. missing fields from a future schema version) silently
                 // drops out and the pass continues.
-                // TODO(Task 10): log skipped records via os.Logger so schema-drift
-                // bugs are diagnosable in Console.app.
+                // TODO(post-migration): log skipped records via os.Logger so
+                // schema-drift bugs are diagnosable in Console.app. Tracked
+                // separately from Plan A — out of scope for the CloudKit
+                // migration itself.
             }
             return hosts
         } catch {
@@ -48,12 +50,12 @@ public final class CloudKitSyncClient: ServerSyncClient {
     }
 
     public func createHost(_ input: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
-        try await ensureZone()
-        let recordName = UUID().uuidString
-        let rec = CKRecordHostMapping.makeRecord(
-            recordName: recordName, zoneID: zoneID, input: input
-        )
         do {
+            try await ensureZone()
+            let recordName = UUID().uuidString
+            let rec = CKRecordHostMapping.makeRecord(
+                recordName: recordName, zoneID: zoneID, input: input
+            )
             let saved = try await database.save(rec)
             return RemoteHostCreateOutput(id: saved.recordID.recordName)
         } catch {
@@ -70,6 +72,13 @@ public final class CloudKitSyncClient: ServerSyncClient {
         _ = try await database.save(zone)
     }
 
+    /// `ensureZone()` is intentionally NOT called here. updateHost is only
+    /// reached after the host already exists somewhere in the user's
+    /// container (either via `createHost` on this device, or via
+    /// reconciler `.createLocal` adoption from a record another device
+    /// wrote). In both cases, the zone has been auto-created on the
+    /// server side already. Adding `ensureZone()` here would add a
+    /// per-edit zone-save round-trip with no functional benefit.
     public func updateHost(_ input: RemoteHostUpdateInput) async throws {
         let recID = CKRecord.ID(recordName: input.id, zoneID: zoneID)
         do {
@@ -80,6 +89,10 @@ public final class CloudKitSyncClient: ServerSyncClient {
             if let v = input.username { rec["username"] = v as CKRecordValue }
             if let v = input.authType { rec["authType"] = v as CKRecordValue }
             _ = try await database.save(rec)
+        // Two-catch pattern: pass through any ServerSyncError thrown by
+        // pre-condition validation that may be added inside the do block
+        // (none today — defensive against future additions). Map raw
+        // CKErrors / URLErrors to ServerSyncError uniformly.
         } catch let e as ServerSyncError {
             throw e
         } catch {
@@ -91,6 +104,12 @@ public final class CloudKitSyncClient: ServerSyncClient {
         let recID = CKRecord.ID(recordName: id, zoneID: zoneID)
         do {
             _ = try await database.deleteRecord(withID: recID)
+        } catch let ck as CKError where ck.code == .unknownItem {
+            // Idempotent: deleting an already-gone host is a no-op. Two
+            // races make this reachable: (a) reconciler-emitted deletes
+            // after another device removed the same host first, (b)
+            // double-fire from rapid local-delete + sync.
+            return
         } catch {
             throw CloudKitErrorMapping.map(error)
         }

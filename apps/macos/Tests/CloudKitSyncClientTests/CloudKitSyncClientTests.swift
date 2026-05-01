@@ -112,10 +112,29 @@ final class CloudKitSyncClientTests: XCTestCase {
     }
 
     func testDeleteHostMissingIsNoOp() async throws {
-        // FakeCloudDatabase.deleteRecord on a missing id removes nothing
-        // and does NOT throw — matches CKDatabase.deleteRecord production
-        // semantics. No throw expected here.
+        // CKDatabase throws CKError.unknownItem when deleting a record
+        // that does not exist. deleteHost catches that case and treats it
+        // as a successful no-op (idempotent semantics). FakeCloudDatabase
+        // mirrors the real throw-on-missing behavior.
         try await sut.deleteHost(id: "missing")
         XCTAssertEqual(fakeDb.deleteCallCount, 1)
+    }
+
+    func testCreateHostMapsZoneSaveAuthErrorToNotSignedIn() async {
+        // Regression guard: ensureZone() must run inside the same error
+        // mapping as the record save. Without this, a CKError thrown from
+        // zone creation escapes raw and HostSyncStore misclassifies the
+        // auth failure as .other.
+        fakeDb.saveZoneError = CKError(.notAuthenticated)
+        let input = RemoteHostCreateInput(name: "x", hostname: "y", port: 22, username: "u")
+        do {
+            _ = try await sut.createHost(input)
+            XCTFail("expected throw")
+        } catch let e as ServerSyncError {
+            XCTAssertEqual(e, .notSignedIn,
+                           "Zone-save auth failure must map to .notSignedIn so HostSyncStore classifies it as .auth")
+        } catch {
+            XCTFail("expected ServerSyncError, got \(error)")
+        }
     }
 }
