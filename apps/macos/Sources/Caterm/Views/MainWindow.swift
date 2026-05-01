@@ -100,8 +100,13 @@ struct MainWindow: View {
 								.foregroundColor(.secondary)
 						}
 					}
-					.frame(maxWidth: .infinity, maxHeight: .infinity)
-					.frame(minWidth: 400, minHeight: 500)
+					.frame(
+						minWidth: 400,
+						maxWidth: .infinity,
+						minHeight: 500,
+						maxHeight: .infinity
+					)
+					.layoutPriority(0)
 
 					if fileDrawerOpen {
 						DrawerDragHandle(
@@ -109,15 +114,23 @@ struct MainWindow: View {
 							minWidth: Self.drawerMinWidth,
 							maxWidth: Self.drawerMaxWidth
 						)
+						.layoutPriority(1)
 						FileDrawerView(
 							host: activeHost,
 							fs: activeRemoteFs,
 							fileTransferStore: fileTransferStore
 						)
-							.frame(width: drawerWidth)
-							.frame(minHeight: 500, maxHeight: .infinity)
+						.frame(width: drawerWidth, alignment: .leading)
+						.frame(minHeight: 500, maxHeight: .infinity)
+						.layoutPriority(1)
 					}
 				}
+				// Disable implicit animations on this subtree. NavigationSplitView's
+				// sidebar collapse/expand animates the detail container's frame;
+				// without this, SwiftUI animates the HStack children during that
+				// transition and the drawer briefly translates left then snaps
+				// back as the layout settles.
+				.transaction { $0.animation = nil }
 				// Detail floor: terminal min + drawer min + handle when drawer
 				// is open. Without it the NavigationSplitView lets the detail
 				// steal width from the sidebar's 220pt floor.
