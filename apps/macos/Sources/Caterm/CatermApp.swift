@@ -5,6 +5,7 @@ import HostSyncStore
 import KeychainStore
 import ServerSyncClient
 import SessionStore
+import SettingsStore
 import SFTPCommandBuilder
 import SSHCommandBuilder
 import SwiftUI
@@ -17,6 +18,7 @@ struct CatermApp: App {
 	@StateObject var syncStore: HostSyncStore
 	@StateObject var preferences: SyncPreferences
 	@StateObject var fileTransferStore: FileTransferStore
+	@StateObject var settingsStore: SettingsStore
 	@State private var showSyncSettings = false
 	@State private var serverURLText: String = ServerURL.current.absoluteString
 	private let authSession: AuthSession
@@ -49,6 +51,17 @@ struct CatermApp: App {
 		let askpass = URL(fileURLWithPath: session.askpassPath)
 		let knownCaterm = URL(fileURLWithPath: session.knownHostsCaterm)
 		let knownUser = URL(fileURLWithPath: session.knownHostsUser)
+		// SettingsStore: loaded eagerly so per-host theme overrides (Task 24)
+		// and the Preferences window (Task 25) share a single, observable
+		// instance. Falls back to a defaults-seeded in-memory store if the
+		// plist can't be read — `PreferencesWindowController` does the same.
+		let plistPath = SettingsStore.defaultPlistPath
+		let settings = (try? SettingsStore.load(from: plistPath))
+			?? SettingsStore(
+				settings: CatermSettings(global: CatermSettings.defaultsSeed),
+				path: plistPath
+			)
+		_settingsStore = StateObject(wrappedValue: settings)
 		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
 			controlPathFor: { hostId in
 				cmDir.appendingPathComponent("\(hostId.uuidString).sock")
@@ -91,6 +104,7 @@ struct CatermApp: App {
 			.environmentObject(syncStore)        // NEW (v1.4)
 			.environmentObject(preferences)      // NEW (v1.4)
 			.environmentObject(fileTransferStore)
+			.environmentObject(settingsStore)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by

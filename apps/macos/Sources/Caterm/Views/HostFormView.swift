@@ -1,5 +1,6 @@
 import AppKit
 import SessionStore
+import SettingsStore
 import SSHCommandBuilder
 import SwiftUI
 
@@ -70,6 +71,15 @@ struct HostFormView: View {
 					.labelsHidden()
 
 					authDetails
+				}
+
+				// Theme override only makes sense for an existing host —
+				// the override key is the host's UUID, which doesn't exist
+				// yet in the `.add` case.
+				if case let .edit(host) = mode {
+					Section("Theme Override") {
+						HostThemeOverridePicker(hostId: HostId(host.id.uuidString))
+					}
 				}
 			}
 			.formStyle(.grouped)
