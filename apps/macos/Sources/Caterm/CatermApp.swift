@@ -268,5 +268,6 @@ private func makeStore() -> SessionStore {
 	                    knownHostsUser: knownUser,
 	                    accessGroup: accessGroup,
 	                    hostsURL: hostsURL,
-	                    keychain: keychain)
+	                    keychain: keychain,
+	                    controlMasterManager: ControlMasterManager.shared)
 }

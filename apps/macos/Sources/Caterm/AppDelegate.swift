@@ -1,7 +1,21 @@
 import AppKit
+import FileTransferStore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	private var observer: NSObjectProtocol?
+
+	/// On app quit we synchronously tear down all live ControlMaster
+	/// sockets. Runs on a background dispatch group with a 1-second timeout
+	/// so a stuck `ssh -O exit` cannot block app termination indefinitely.
+	func applicationWillTerminate(_: Notification) {
+		let group = DispatchGroup()
+		group.enter()
+		Task { @MainActor in
+			await ControlMasterManager.shared.tearDownAll()
+			group.leave()
+		}
+		_ = group.wait(timeout: .now() + 1.0)
+	}
 
 	func applicationDidFinishLaunching(_: Notification) {
 		NSApp.setActivationPolicy(.regular)

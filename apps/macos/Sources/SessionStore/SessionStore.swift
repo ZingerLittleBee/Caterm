@@ -8,6 +8,15 @@ import ServerSyncClient
 // from SSHCommandBuilder doesn't collide with Foundation.NSHost. ObservableObject
 // lives in Combine. UI types (Caterm executable target) wrap us via @StateObject.
 
+/// Minimal protocol covering the ControlMaster lifecycle hooks SessionStore
+/// needs. Declared in SessionStore to avoid taking a hard dependency on
+/// FileTransferStore. The `Caterm` target supplies the real conformance via
+/// an extension on `ControlMasterManager`.
+public protocol ControlMasterTearDowning: Sendable {
+    func tearDown(hostId: UUID) async
+    func tearDownAll() async
+}
+
 @MainActor
 public final class SessionStore: ObservableObject {
     public struct Tab: Identifiable {
@@ -47,6 +56,22 @@ public final class SessionStore: ObservableObject {
     public let hostsURL: URL
     public let keychain: KeychainStore
 
+    /// Optional ControlMaster manager used to tear down per-host shared SSH
+    /// connections when the last tab for a host closes (after a grace
+    /// period). Tests can pass a spy implementing the protocol; production
+    /// passes `ControlMasterManager.shared` from the Caterm target.
+    private let controlMasterManager: ControlMasterTearDowning?
+
+    /// Pending teardown work items keyed by host id. We use
+    /// `DispatchWorkItem` so a re-opened tab for the same host can cancel
+    /// the scheduled teardown via `cancel()`.
+    private var teardownWorkItems: [UUID: DispatchWorkItem] = [:]
+
+    /// Grace period in seconds before tearing down ControlMaster after the
+    /// last tab for a host closes. Internal/mutable so tests can override
+    /// it through `@testable import` (default 30s in production).
+    var teardownGraceSeconds: Double = 30
+
     /// Per-host secret kind. Maps to the keychain account suffix
     /// (`<hostId>.<rawValue>`) so different secrets per host don't collide.
     public enum SecretKind: String {
@@ -56,13 +81,15 @@ public final class SessionStore: ObservableObject {
 
     public init(askpassPath: String, knownHostsCaterm: String,
                 knownHostsUser: String, accessGroup: String?,
-                hostsURL: URL, keychain: KeychainStore) {
+                hostsURL: URL, keychain: KeychainStore,
+                controlMasterManager: ControlMasterTearDowning? = nil) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
         self.knownHostsUser = knownHostsUser
         self.accessGroup = accessGroup
         self.hostsURL = hostsURL
         self.keychain = keychain
+        self.controlMasterManager = controlMasterManager
         do {
             self.hosts = try HostPersistence.load(from: hostsURL)
         } catch {
@@ -104,6 +131,11 @@ public final class SessionStore: ObservableObject {
     // MARK: - Tabs
 
     public func openTab(host: SSHHost) -> UUID {
+        // Re-opening a tab for the same host within the grace window
+        // cancels any pending ControlMaster teardown so we keep reusing
+        // the existing shared connection.
+        teardownWorkItems[host.id]?.cancel()
+        teardownWorkItems.removeValue(forKey: host.id)
         let tab = Tab(host: host)
         tabs.append(tab)
         return tab.id
@@ -114,8 +146,35 @@ public final class SessionStore: ObservableObject {
     /// SwiftUI removes the corresponding `GhosttySurfaceNSView` from its view
     /// hierarchy — `deinit` calls `ghostty_surface_free`. This method only
     /// keeps the store in sync with the UI.
+    ///
+    /// When the closed tab was the LAST tab referencing a given host, we
+    /// schedule a delayed ControlMaster teardown for that host. The delay
+    /// (`teardownGraceSeconds`, 30s in production) gives users a chance
+    /// to immediately re-open a tab to the same host without paying the
+    /// full SSH handshake cost again.
     public func closeTab(tabId: UUID) {
-        tabs.removeAll { $0.id == tabId }
+        guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let hostId = tabs[idx].host.id
+        tabs.remove(at: idx)
+        let stillReferenced = tabs.contains { $0.host.id == hostId }
+        if !stillReferenced {
+            scheduleTeardown(hostId: hostId)
+        }
+    }
+
+    private func scheduleTeardown(hostId: UUID) {
+        guard let manager = controlMasterManager else { return }
+        // Replace any prior pending teardown for this host.
+        teardownWorkItems[hostId]?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                await manager.tearDown(hostId: hostId)
+                self?.teardownWorkItems.removeValue(forKey: hostId)
+            }
+        }
+        teardownWorkItems[hostId] = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + teardownGraceSeconds,
+                                      execute: item)
     }
 
     /// Build the (commandString, env) pair for a given tab. `installTerminfo`
