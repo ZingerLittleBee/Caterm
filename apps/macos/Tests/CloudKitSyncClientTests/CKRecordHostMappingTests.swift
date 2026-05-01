@@ -47,4 +47,17 @@ final class CKRecordHostMappingTests: XCTestCase {
 		XCTAssertEqual(host.createdAt, .distantPast)
 		XCTAssertEqual(host.updatedAt, .distantPast)
 	}
+
+	func testDecodeMissingHostnameThrows() {
+		let recID = CKRecord.ID(recordName: "rec-bad", zoneID: zoneID)
+		let rec = CKRecord(recordType: "Host", recordID: recID)
+		rec["name"] = "x" as CKRecordValue
+		// hostname intentionally omitted
+		rec["port"] = 22 as CKRecordValue
+		rec["username"] = "u" as CKRecordValue
+		XCTAssertThrowsError(try CKRecordHostMapping.decode(rec)) { error in
+			XCTAssertEqual(error as? CKRecordHostMapping.DecodeError,
+						   .missingField("hostname"))
+		}
+	}
 }
