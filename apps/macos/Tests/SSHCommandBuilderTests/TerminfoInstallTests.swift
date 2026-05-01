@@ -20,14 +20,17 @@ final class TerminfoInstallTests: XCTestCase {
     /// Regression guard: the v1.5 baseline shape must be byte-for-byte preserved
     /// when `installTerminfo: false` (the default).
     func testInstallTerminfoFalseMatchesV15Baseline() {
+        // Reuse a single host so the host-id-derived ControlPath matches
+        // across both builds (sampleHost() returns fresh UUIDs each call).
+        let host = sampleHost()
         let baseline = SSHCommandBuilder.build(
-            host: sampleHost(),
+            host: host,
             askpassPath: Self.askpassPath,
             knownHostsCaterm: Self.knownHostsCaterm,
             knownHostsUser: Self.knownHostsUser
         )
         let withFalse = SSHCommandBuilder.build(
-            host: sampleHost(),
+            host: host,
             askpassPath: Self.askpassPath,
             knownHostsCaterm: Self.knownHostsCaterm,
             knownHostsUser: Self.knownHostsUser,
@@ -76,8 +79,11 @@ final class TerminfoInstallTests: XCTestCase {
     /// builder degrades to the `installTerminfo: false` shape — never
     /// advertise xterm-ghostty without a backing terminfo install.
     func testBundleMissingFallbackEqualsToggleOff() {
+        // Reuse a single host so the host-id-derived ControlPath matches
+        // across both builds (sampleHost() returns fresh UUIDs each call).
+        let host = sampleHost()
         let toggleOff = SSHCommandBuilder._build(
-            host: sampleHost(),
+            host: host,
             askpassPath: Self.askpassPath,
             knownHostsCaterm: Self.knownHostsCaterm,
             knownHostsUser: Self.knownHostsUser,
@@ -86,7 +92,7 @@ final class TerminfoInstallTests: XCTestCase {
             terminfoDump: nil
         )
         let bundleMissing = SSHCommandBuilder._build(
-            host: sampleHost(),
+            host: host,
             askpassPath: Self.askpassPath,
             knownHostsCaterm: Self.knownHostsCaterm,
             knownHostsUser: Self.knownHostsUser,
