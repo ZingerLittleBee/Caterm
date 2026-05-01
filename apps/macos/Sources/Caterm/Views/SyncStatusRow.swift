@@ -36,7 +36,9 @@ struct SyncStatusRow: View {
             HStack(spacing: 8) {
                 stateIcon(state)
                 stateLabel(state, now: now)
-                Spacer()
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 stateChevron(state)
             }
             .padding(.horizontal, 12)

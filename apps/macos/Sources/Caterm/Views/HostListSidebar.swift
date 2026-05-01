@@ -172,17 +172,22 @@ struct HostRow: View {
 	let host: SSHHost
 
 	var body: some View {
-		HStack {
+		HStack(spacing: 8) {
 			Image(systemName: iconName)
 				.foregroundColor(.secondary)
 				.frame(width: 20)
 			VStack(alignment: .leading, spacing: 2) {
-				Text(host.name).font(.headline)
+				Text(host.name)
+					.font(.headline)
+					.lineLimit(1)
+					.truncationMode(.tail)
 				Text("\(host.username)@\(host.hostname):\(host.port)")
 					.font(.caption)
 					.foregroundColor(.secondary)
+					.lineLimit(1)
+					.truncationMode(.tail)
 			}
-			Spacer()
+			.frame(maxWidth: .infinity, alignment: .leading)
 			if store.needsCredentialSetup(host) {
 				Image(systemName: "lock")
 					.foregroundColor(.orange)
