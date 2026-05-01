@@ -5,6 +5,9 @@ import Foundation
 /// Test double for `CKDatabaseProtocol`. Stores records in an in-memory
 /// dictionary keyed by recordName. Per-method error knobs let tests
 /// exercise both happy paths and CKError surfacing.
+// @unchecked Sendable: mutable state accessed only from the XCTest serial
+// executor. If this double is ever used from a concurrent test harness,
+// replace the stored properties with actors or locks.
 final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
     var records: [CKRecord.ID: CKRecord] = [:]
     var savedZones: [CKRecordZone.ID: CKRecordZone] = [:]
@@ -19,6 +22,7 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
     var saveError: Error?
     var deleteError: Error?
     var recordFetchError: Error?
+    var saveZoneError: Error?
 
     func records(matching query: CKQuery,
                  inZoneWith zoneID: CKRecordZone.ID?,
@@ -29,6 +33,8 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
     {
         recordsCallCount += 1
         if let err = recordsError { throw err }
+        // resultsLimit intentionally ignored — tests use small fixtures and never
+        // exercise pagination. Add a paginating fake if that ever changes.
         let filtered = records.values.filter { $0.recordType == query.recordType }
         let pairs = filtered.map { rec in
             (rec.recordID, Result<CKRecord, Error>.success(rec))
@@ -61,6 +67,7 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
 
     func save(_ zone: CKRecordZone) async throws -> CKRecordZone {
         saveZoneCallCount += 1
+        if let err = saveZoneError { throw err }
         savedZones[zone.zoneID] = zone
         return zone
     }
