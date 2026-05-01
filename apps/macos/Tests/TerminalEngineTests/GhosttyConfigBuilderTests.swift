@@ -36,3 +36,25 @@ final class GhosttyConfigBuilderTests: XCTestCase {
         XCTAssertEqual(result.diagnostics.map(\.message), ["warning: a", "warning: b"])
     }
 }
+
+extension GhosttyConfigBuilderTests {
+    func testHostScopedConfigIncludesPerHostPath() {
+        var loaded: [String] = []
+        let builder = GhosttyConfigBuilder(
+            loadDefaults: { loaded.append("defaults") },
+            loadFile: { loaded.append($0) },
+            finalize: { loaded.append("finalize") },
+            diagnosticsCount: { 0 },
+            getDiagnostic: { _ in "" }
+        )
+        _ = builder.build(
+            managedPath: "/tmp/m",
+            userPath: "/tmp/u",
+            perHostPath: "/tmp/per-host/h.config"
+        )
+        XCTAssertTrue(loaded.contains("/tmp/per-host/h.config"))
+        let userIdx = loaded.firstIndex(of: "/tmp/u")!
+        let hostIdx = loaded.firstIndex(of: "/tmp/per-host/h.config")!
+        XCTAssertLessThan(userIdx, hostIdx)
+    }
+}
