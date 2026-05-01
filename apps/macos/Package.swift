@@ -52,6 +52,12 @@ let package = Package(
             dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder"],
             path: "Sources/HostSyncStore"
         ),
+        .target(
+            name: "FileTransferStore",
+            dependencies: ["SSHCommandBuilder", "SFTPCommandBuilder"],
+            path: "Sources/FileTransferStore"
+        ),
+        .target(name: "SFTPCommandBuilder", path: "Sources/SFTPCommandBuilder"),
 
         // --- Executables ---
         .executableTarget(
@@ -128,6 +134,11 @@ let package = Package(
             name: "TerminalEngineTests",
             dependencies: ["TerminalEngine"],
             path: "Tests/TerminalEngineTests"
+        ),
+        .testTarget(
+            name: "FileTransferStoreTests",
+            dependencies: ["FileTransferStore", "SSHCommandBuilder", "SFTPCommandBuilder"],
+            path: "Tests/FileTransferStoreTests"
         ),
     ]
 )
