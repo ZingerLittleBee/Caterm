@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# dev-run-app.sh — wrap the signed dev binary in a minimal Caterm.app
+# bundle and launch it.
+#
+# Why this exists:
+#   `make run` launches `.build/debug/caterm` directly. That binary is
+#   codesigned and has entitlements, but it has no Info.plist and no
+#   CFBundleIdentifier — i.e. no bundle identity. Several Apple frameworks
+#   refuse to operate without a bundle identity and raise an *uncatchable*
+#   Obj-C NSException when called:
+#
+#       UNUserNotificationCenter.current()  →  bundleProxyForCurrentProcess is nil
+#       NSWorkspace.frontmostApplication.bundleIdentifier  →  nil
+#       LSCopyApplicationURLsForBundleIdentifier            →  empty
+#
+#   Hardened Runtime + AMFI on Apple Silicon also gate certain entitlements
+#   on a real .app structure. So when the dev needs to test anything that
+#   touches UserNotifications, NSUserActivity, App Groups handoff, etc. —
+#   running the bare binary will crash on first use.
+#
+#   This script assembles the smallest possible .app shell around the
+#   already-signed binaries from `make sign` and re-seals the bundle, then
+#   launches it via `open`. The bundle identifier is stable so Keychain
+#   ACLs and Launch Services state survive between runs.
+#
+# Required env:
+#   CATERM_DEV_IDENTITY  — signing identity (same one `make run` uses).
+
+: "${CATERM_DEV_IDENTITY:?CATERM_DEV_IDENTITY env var required}"
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN_DIR="$ROOT/.build/debug"
+APP="$BIN_DIR/Caterm.app"
+APP_BUNDLE_ID="${CATERM_DEV_BUNDLE_ID:-app.caterm.dev}"
+
+if [[ ! -x "$BIN_DIR/caterm" || ! -x "$BIN_DIR/caterm-askpass" ]]; then
+    echo "Error: signed binaries not found in $BIN_DIR. Run \`make sign\` first." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Build the bundle layout.
+# ---------------------------------------------------------------------------
+echo "==> Assembling $APP"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Resources"
+
+# Copy the already-signed binaries. Their inner signatures (with hardened
+# runtime + the right entitlements) are preserved when we seal the outer
+# bundle without `--deep`.
+cp "$BIN_DIR/caterm" "$APP/Contents/MacOS/caterm"
+cp "$BIN_DIR/caterm-askpass" "$APP/Contents/MacOS/caterm-askpass"
+
+# Carry over GhosttyKit if Caterm uses it as a runtime-loaded resource.
+# (Static-linked .a inside the xcframework needs no runtime copy.)
+
+# Pick an icon if one is checked in (optional).
+if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
+    cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+fi
+
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>${APP_BUNDLE_ID}</string>
+    <key>CFBundleName</key>
+    <string>Caterm</string>
+    <key>CFBundleDisplayName</key>
+    <string>Caterm (dev)</string>
+    <key>CFBundleExecutable</key>
+    <string>caterm</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.0-dev</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+</dict>
+</plist>
+EOF
+
+# ---------------------------------------------------------------------------
+# Re-sign the bundle. The inner binaries were signed by dev-codesign.sh with
+# the correct entitlements; we don't want to re-sign them and lose those
+# entitlements, so we omit --deep and let codesign just produce the bundle
+# seal that references the existing inner signatures.
+# ---------------------------------------------------------------------------
+echo "==> Signing $APP"
+codesign --force --options runtime \
+    --sign "$CATERM_DEV_IDENTITY" \
+    "$APP"
+
+codesign -dvv "$APP" 2>&1 | grep -E "TeamIdentifier|Authority|Identifier" || true
+
+# ---------------------------------------------------------------------------
+# Launch via Launch Services so macOS treats the process as a real .app
+# and frameworks like UserNotifications resolve a bundle identity.
+# ---------------------------------------------------------------------------
+echo "==> Launching $APP"
+open "$APP"
+echo "Logs: tail -f \$TMPDIR/caterm-dev.log  # if you set CFBundleDocumentTypes/log redirect"
+echo "Force quit if needed: pkill -f Caterm.app/Contents/MacOS/caterm"

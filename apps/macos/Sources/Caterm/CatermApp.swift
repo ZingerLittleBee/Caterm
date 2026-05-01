@@ -52,7 +52,10 @@ struct CatermApp: App {
 				if let id = tabId, store.tabs.contains(where: { $0.id == id }) {
 					MainWindow(tabId: id)
 				} else {
-					LandingView()
+					// Pass the tabId binding so connecting from this Landing
+					// window converts it into the new tab in place instead of
+					// spawning a sibling blank tab.
+					LandingView(tabId: $tabId)
 				}
 			}
 			.environmentObject(store)
@@ -138,18 +141,20 @@ struct CatermApp: App {
 }
 
 extension Notification.Name {
-	static let catermOpenTab = Notification.Name("CatermOpenTabNotification")
 	static let catermAddHost = Notification.Name("CatermAddHostNotification")
 	static let catermNewWindow = Notification.Name("CatermNewWindowNotification")
 }
 
 /// Invisible bridge view that lets us call `openWindow(value:)` (which needs
-/// the `@Environment(\.openWindow)` from inside a SwiftUI View) in response to
-/// a NotificationCenter post from anywhere (HostListSidebar's Connect action).
+/// `@Environment(\.openWindow)` from inside a SwiftUI View) in response to
+/// the `.catermNewWindow` notification (⌘N).
 ///
-/// Mounted in every window's `.background` so any window's environment can
-/// drive the new-tab opening — macOS auto-tabbing then merges the resulting
-/// new window into the active window's tab bar.
+/// Tab opening from the host list is NOT routed through here — it goes
+/// through `HostListSidebar.onOpenTab`, so the owning window can decide
+/// whether to swap its own tab identity (Landing case) or spawn a sibling
+/// (MainWindow case). Routing it through a global notification used to
+/// always spawn a sibling, which left the Landing window around as a blank
+/// tab next to the new SSH terminal tab.
 struct OpenTabBridge: View {
 	@Environment(\.openWindow) var openWindow
 	let store: SessionStore
@@ -157,10 +162,6 @@ struct OpenTabBridge: View {
 	var body: some View {
 		Color.clear
 			.frame(width: 0, height: 0)
-			.onReceive(NotificationCenter.default.publisher(for: .catermOpenTab)) { note in
-				guard let tabId = note.userInfo?["tabId"] as? UUID else { return }
-				openWindow(value: tabId)
-			}
 			.onReceive(NotificationCenter.default.publisher(for: .catermNewWindow)) { _ in
 				// A fresh UUID that is not in store.tabs causes WindowGroup to
 				// render LandingView rather than MainWindow — effectively a new
@@ -172,11 +173,15 @@ struct OpenTabBridge: View {
 
 /// Initial landing view shown when a "fresh" (tabId-less) window opens.
 /// Embeds the host list sidebar so users can manage hosts before any tab
-/// is open.
+/// is open. When the user picks a host, swap our own `tabId` binding to
+/// the new tab id — this morphs the current window from Landing into
+/// MainWindow rather than spawning a separate window/tab.
 struct LandingView: View {
+	@Binding var tabId: UUID?
+
 	var body: some View {
 		NavigationSplitView {
-			HostListSidebar()
+			HostListSidebar(onOpenTab: { newId in tabId = newId })
 				.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
 		} detail: {
 			VStack(spacing: 12) {

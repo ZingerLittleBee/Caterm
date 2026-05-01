@@ -1,9 +1,24 @@
 # Caterm macOS dev Makefile
 #
 # Quick start:
-#   make run         # build + codesign + launch
+#   make run         # build + codesign + launch the bare binary (fastest dev loop)
+#   make run-app     # wrap the signed binary in a Caterm.app bundle and launch it
+#                    # (REQUIRED to test UserNotifications, NSWorkspace bundle
+#                    # identity, App Groups, etc. — those frameworks raise an
+#                    # uncatchable Obj-C NSException when there is no .app
+#                    # bundle / CFBundleIdentifier around the binary)
 #   make test        # swift test
 #   make clean       # nuke .build
+#
+# When to use which:
+#   - `make run`     — default. Faster, no bundle assembly. Anything that doesn't
+#                      need a bundle identity (terminal, SSH, sync, keychain via
+#                      access groups) works fine.
+#   - `make run-app` — needed when you're touching code that calls
+#                      UNUserNotificationCenter, NSWorkspace bundle APIs,
+#                      LSCopyApplication*, NSUserActivity / Handoff, App Groups,
+#                      or anything that asserts a CFBundleIdentifier exists.
+#                      The bare binary will crash on first such call.
 #
 # Codesign identity is auto-detected from the login keychain. Override with:
 #   make run CATERM_DEV_IDENTITY="Apple Development: Other Name (XXXXXXXX)"
@@ -53,9 +68,33 @@ sign: build ## codesign caterm + caterm-askpass with dev identity
 	CATERM_DEV_IDENTITY="$(CATERM_DEV_IDENTITY)" bash Scripts/dev-codesign.sh
 
 .PHONY: run
-run: sign ## build + sign + launch caterm in foreground
+run: sign ## build + sign + launch caterm in foreground (no .app bundle — UserNotifications etc. will crash)
 	@echo "Launching $(CATERM_BIN)"
 	@"$(CATERM_BIN)"
+
+.PHONY: run-app
+run-app: sign ## build + sign + wrap in Caterm.app + launch — use this for anything needing bundle identity
+	# Why a separate target?
+	#   `make run` launches the bare `caterm` binary, which has no Info.plist
+	#   and no CFBundleIdentifier. Several Apple frameworks (most notably
+	#   UserNotifications, NSWorkspace, App Groups) raise an uncatchable
+	#   Obj-C NSException ("bundleProxyForCurrentProcess is nil") when called
+	#   from a process with no bundle identity, killing the whole app.
+	#
+	#   This target wraps the already-signed binaries in a minimal Caterm.app
+	#   shell, writes an Info.plist with CFBundleIdentifier=app.caterm.dev,
+	#   re-seals the bundle, and launches it via `open` so Launch Services
+	#   treats it as a real app. See Scripts/dev-run-app.sh for details.
+	#
+	# Override the bundle id (e.g. to share Keychain state with another build):
+	#   make run-app CATERM_DEV_BUNDLE_ID=app.caterm.dev2
+	@if [ -z "$(CATERM_DEV_IDENTITY)" ]; then \
+	    echo "No codesign identity detected. Set CATERM_DEV_IDENTITY=..."; \
+	    exit 1; \
+	fi
+	CATERM_DEV_IDENTITY="$(CATERM_DEV_IDENTITY)" \
+	    CATERM_DEV_BUNDLE_ID="$(CATERM_DEV_BUNDLE_ID)" \
+	    bash Scripts/dev-run-app.sh
 
 .PHONY: run-bg
 run-bg: sign ## build + sign + launch caterm in background (logs to /tmp/caterm.log)
