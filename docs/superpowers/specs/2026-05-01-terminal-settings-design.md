@@ -14,18 +14,39 @@ Replace the current "⌘, opens config in Finder" behavior with a proper macOS P
 
 ### 2.0 Config file format (NOT TOML)
 
-Ghostty uses its own line-based configuration syntax, not TOML. The default file `font-family = SF Mono` (`ConfigStore.swift:8`) would fail TOML parsing because `SF Mono` is unquoted. The actual grammar is:
+Ghostty uses its own line-based configuration syntax, not TOML. The default file `font-family = SF Mono` (`ConfigStore.swift:8`) would fail TOML parsing because `SF Mono` is unquoted. The high-level shape (sufficient to scope this spec; the canonical parser is Ghostty itself):
 
 ```
 ghostty-config := { line }
 line           := comment | blank | entry
 comment        := '#' { any } NL
-entry          := key WS '=' WS value NL
+entry          := key WS? '=' WS? value NL
 key            := [a-z][a-z0-9-]*
-value          := { any except NL }       (no escaping; multi-value via repeated lines, e.g. keybind = ...)
+value          := <free-form text up to NL; some keys (theme, palette, font-family, …)
+                   accept optional outer double-quotes that the parser strips, and some
+                   accept comma-separated sub-fields. The exact tokenization is
+                   delegated to GhosttyConfigParser (§2.0.1).>
 ```
 
-All Caterm code that reads or writes these files (`SettingsRenderer`, `MigrationStep`, `ThemeCatalog` build script) **must use this line-based parser**, not a TOML parser. We provide a small `GhosttyConfigParser` utility (single file, ~80 LOC) and unit-test it against fixtures harvested from the Ghostty submodule.
+Notable real-world cases observed via `ghostty +show-config --default`:
+- `foreground = #ffffff` (plain unquoted)
+- `selection-word-chars = … ` followed by literal punctuation including `'"`
+- `command-palette-entry = title:"Change Tab Title…",description:"…",action:"…"` (inner quoting as part of value semantics)
+- `font-family = ` (empty value)
+- Repeated `font-family = X` lines build a fallback chain (multi-value semantics)
+- `theme = light:Catppuccin Latte,dark:Catppuccin Mocha` (system-appearance switching)
+
+#### 2.0.1 GhosttyConfigParser
+
+A small Swift utility (single file in the `ConfigStore` target, ~120 LOC) responsible for:
+
+- **Reading**: tokenize a config file into `[ConfigEntry { key, rawValue, sourceLine }]`. Comments and blank lines are dropped. Outer double-quotes around `rawValue` are stripped if present (matches Ghostty's tolerant behavior). Repeated keys are preserved in order (callers decide whether to merge or treat as multi-value).
+- **Writing**: emit entries with idiomatic spacing (`key = value`, no quotes unless the original had them and we're preserving). The renderer emits unquoted values; users round-trip whatever they typed.
+- **Lossless edit**: when removing a specific key from an existing user config (Branch B migration), preserve all other lines, comments, blank lines, and ordering byte-for-byte.
+
+The parser is **not** a full Ghostty config validator. It is deliberately tolerant: unrecognized keys pass through unchanged. Invalid Ghostty-side semantics surface only when libghostty's own parser produces diagnostics (§2.4.2). This avoids divergence between Caterm's understanding and Ghostty's.
+
+All Caterm code that reads or writes these files (`SettingsRenderer`, `SettingsMigrationStep`, `ThemeCatalogBuilder`) goes through `GhosttyConfigParser` — never a TOML parser. Tests fixture against `ghostty +show-config --default` output captured at a known version.
 
 ### 2.1 Current state of config layering (verified)
 
@@ -167,7 +188,7 @@ public enum SettingsChangeScope {
 |---|---|
 | `.globalLive` | Render new managed snapshot. Build new config + call `surface_update_config` for every open surface. Newly-created surfaces also see the change. |
 | `.globalNewSurface` | Render new managed snapshot. **No** `surface_update_config` calls. Show a one-time non-modal banner: "Some settings (scrollback / titlebar) apply to new tabs only." |
-| `.hostOverride(id)` | Write/delete the per-host patch file at `~/Library/Caches/Caterm/per-host/<id>.config`. **No** `surface_update_config` on existing surfaces (existing tabs keep their current theme until reconnect, per Q4a). New surfaces to that host pick up the patch via §2.4.3. |
+| `.hostOverride(id)` | Write/delete the per-host patch file at `~/Library/Application Support/Caterm/per-host/<id>.config` (see §2.4.3 for storage rationale and boot regeneration). **No** `surface_update_config` on existing surfaces (existing tabs keep their current theme until reconnect, per Q4a). New surfaces to that host pick up the patch via §2.4.3. |
 
 If a single user action changes both live and new-surface fields (debounced together), scope is `.globalLive` (covers both: live fields apply now, new-surface fields take effect on next `surface_new`).
 
@@ -192,9 +213,18 @@ This explicit scoping resolves three conflicts in the original §2.4: scrollback
 
 #### 2.4.3 Reload sequence (scope = `.hostOverride(id)`) and per-host patch application
 
+**Storage location.** Per-host patch files live in **Application Support**, not Caches:
+`~/Library/Application Support/Caterm/per-host/<id>.config`. Reason: macOS cleans `~/Library/Caches/` opportunistically (and on iCloud syncing settings, can wipe it), but the source of truth is `settings.plist`, so a wiped cache would silently restore "no override" for hosts whose plist still has a theme. Application Support is where Caterm already keeps `settings.plist`; using the same root keeps backup/restore semantics consistent.
+
+**Boot regeneration (idempotent).** On every app start, after `SettingsStore.load()` succeeds, `SettingsStore.regeneratePerHostPatchesFromPlist()` is called:
+1. For each `(hostId, override)` in `settings.hostOverrides` where `override.theme != nil`: write/overwrite the patch file deterministically.
+2. Delete any patch file in `per-host/` whose hostId is not in `settings.hostOverrides` (orphan cleanup).
+This guarantees the on-disk patches always reflect the plist, even after manual deletes, file-system corruption, or `xattr` quarantine.
+
+**On settings change:**
 1. `SettingsStore.update(...)` writes plist + bumps revision.
 2. Compute new value:
-   - If `settings.hostOverrides[id]?.theme` is non-nil, write `~/Library/Caches/Caterm/per-host/<id>.config` containing exactly one line: `theme = <name>` (Ghostty config syntax).
+   - If `settings.hostOverrides[id]?.theme` is non-nil, write `~/Library/Application Support/Caterm/per-host/<id>.config` containing exactly one line: `theme = <name>` (Ghostty config syntax).
    - Else, delete the file if present.
 3. **No surface_update_config calls** for existing surfaces.
 
@@ -290,19 +320,41 @@ All Themes  (300+)
   ┌─────────┐ ┌─────────┐ ...
 ```
 
-- **Source: bundled catalog generated at build time from `apps/macos/Vendor/ghostty/resources/themes/`.** Not a runtime CLI call.
+- **Source: bundled catalog generated at build time from the Ghostty submodule.** Not a runtime CLI call.
 - Each card shows ANSI color swatches (parsed from theme files at build time, stored as RGB tuples) + name.
 - Click → set as global theme + live reload.
 - Search filters the "All Themes" grid (favorites always visible above the fold).
 
-Build-time pipeline:
-1. `Scripts/build-theme-catalog.sh` runs as part of the `make macos-ghostty-kit` step (or as a SwiftPM build phase) after the Ghostty submodule is initialized.
-2. Reads `Vendor/ghostty/resources/themes/*` (one theme file per name; format is the same Ghostty config syntax subset).
-3. Parses `palette = N=#rgb`, `background`, `foreground`, `cursor-color`, `selection-background` keys.
-4. Emits `Sources/SettingsStore/Resources/themes.json` with `{ name, palette: [hex×16], background, foreground }` per theme.
+**Build-time pipeline.** The exact location of theme files inside the Ghostty submodule is **not stable across upstream releases** (the path `Vendor/ghostty/resources/themes/` claimed by an earlier draft does not exist; themes are emitted under `zig-out/share/ghostty/themes/` after a `zig build install`, or live in the source under different paths in different versions). The pipeline therefore *discovers* themes at build time:
+
+1. `Scripts/build-theme-catalog.sh` runs as part of `make macos-ghostty-kit` after `make macos-ghostty-submodule` initializes `Vendor/ghostty/`. The build of GhosttyKit (`build-libghostty.sh`) already runs `zig build` which populates `zig-out/`.
+2. The script searches for theme files under `Vendor/ghostty/` using a fixed list of candidate roots (in order):
+   - `Vendor/ghostty/zig-out/share/ghostty/themes/`
+   - `Vendor/ghostty/zig-out/themes/`
+   - `Vendor/ghostty/src/config/themes/` (older versions)
+   - `Vendor/ghostty/pkg/iterm2-themes/themes/` (git-subtree fallback)
+   The first directory containing recognizable theme files (parseable `palette = N=#rgb` lines) wins. The chosen path is logged to stderr at build time so it surfaces in CI on regression.
+3. Each file is parsed via `GhosttyConfigParser` (§2.0.1). We extract: `palette = N=#rgb` (16 entries), `background`, `foreground`, `cursor-color`, `selection-background`.
+4. Output: `Sources/SettingsStore/Resources/themes.json` with `{ name, palette: [hex×16], background, foreground, cursorColor?, selectionBackground? }` per theme. Theme name = file's basename (no canonicalization), so it round-trips into `theme = <name>` exactly as Ghostty expects.
 5. Bundle is loaded once at app start into an in-memory `ThemeCatalog` actor.
 
-If the submodule is not initialized at build time, the build emits a warning and falls back to a small embedded catalog of the 9 favorites (so dev builds still work).
+**Fallback when discovery fails.** If no candidate root contains parseable themes, the build emits a non-fatal warning and writes `themes.json` from a small **vendored** fallback set (nine theme files committed directly into `Sources/SettingsStore/Resources/fallback-themes/`) so development builds without an initialized submodule still produce a usable app.
+
+**Favorites list — verified against actual Ghostty catalog.** The names below are the **exact** names returned by `ghostty +list-themes` (verified locally against Ghostty 1.3.x; the v3 spec list contained `Default`, `One Dark`, `Solarized Dark`, `Solarized Light`, and bare `Monokai`, which are **not** in the catalog under those exact names):
+
+| # | Display name (favorites tab) | Exact Ghostty theme name |
+|---|---|---|
+| 1 | Catppuccin Mocha (matches current managed-config default) | `Catppuccin Mocha` |
+| 2 | Catppuccin Latte | `Catppuccin Latte` |
+| 3 | Dracula | `Dracula` |
+| 4 | Gruvbox Dark | `Gruvbox Dark` |
+| 5 | Gruvbox Light | `Gruvbox Light` |
+| 6 | Nord | `Nord` |
+| 7 | One Dark Two | `One Dark Two` |
+| 8 | Solarized Dark Higher Contrast | `Solarized Dark Higher Contrast` |
+| 9 | Monokai Classic | `Monokai Classic` |
+
+`ThemeCatalog.favorites: [String]` holds these nine names. If the build-time catalog is missing any (upstream rename/removal), the missing entry is silently dropped from the favorites grid. `ThemeCatalogTests.testFavoritesPresentInCatalog` asserts the build emits all nine when run against the pinned Ghostty version in the submodule.
 
 ### 3.5 Tab: Sync (existing `SyncSettingsView`)
 
@@ -380,7 +432,7 @@ let effectiveTheme = settings.hostOverrides[hostId]?.theme   // wins if present
                   ?? "Catppuccin Mocha"                        // ultimate fallback
 ```
 
-The patch file written for the surface contains only the `theme` line when a host override is set; absence of the file means "use the chain as-is" (and resolution above happens implicitly via the loaded TOMLs).
+The patch file written for the surface contains only the `theme` line when a host override is set; absence of the file means "use the chain as-is" (and resolution above happens implicitly via the loaded config files).
 
 ## 6. Field → Ghostty config mapping
 
@@ -486,18 +538,31 @@ After this, GUI changes flow correctly: managed wins over defaults, user config 
 
 **Branch B — fingerprint does NOT match (user has edited):**
 
-1. Parse user config with `GhosttyConfigParser` (the line-based parser from §2.0; not a TOML parser — that would fail on `font-family = SF Mono`).
-2. For each key that maps to a `PartialSettings` field (font-family, font-size, line-height, cursor-style, cursor-style-blink, bell-features, scrollback-limit, background-opacity, window-padding-x/y, macos-titlebar-style, theme), copy the value into `settings.plist.global`.
-3. **Do not modify** user config.
-4. Render managed snapshot from `settings.plist`.
-5. Insert `"settings-gui-v1"` into `settings.migrationsCompleted`.
-6. On next Preferences open (or via a one-time modal at app start), show an informational banner:
+1. Parse user config with `GhosttyConfigParser` (§2.0.1; not a TOML parser).
+2. For each key that maps to a `PartialSettings` field, attempt **lossless extraction** (`PartialSettings.tryExtract(key:rawValue:) -> ExtractResult`):
+   - `ExtractResult.ok(value)` — the line maps cleanly into a single `PartialSettings` field (e.g. `font-family = SF Mono` → `fontFamily = "SF Mono"`).
+   - `ExtractResult.unrepresentable(reason:)` — the value cannot be losslessly represented. Examples (verified from Ghostty docs):
+     - `font-family = X` followed by another `font-family = Y` (Ghostty fallback chain; `PartialSettings.fontFamily: String?` is single-valued).
+     - `theme = light:Catppuccin Latte,dark:Catppuccin Mocha` (system-appearance switching; not modeled).
+     - `bell-features = audio,attention` (custom feature combination not matching any of our four `BellMode` cases).
+     - `palette = 0=#000000` and other deeper customizations.
+3. For every line that yields `.ok`, copy the value into `settings.plist.global` (so the GUI shows what the user already had).
+4. **Do not modify** user config.
+5. Render managed snapshot from `settings.plist`.
+6. Insert `"settings-gui-v1"` into `settings.migrationsCompleted`.
+7. On next Preferences open (or a one-time modal at app start), show an informational banner whose text reflects the extraction result:
 
-> Your user config at `~/.../Caterm/config` overrides Caterm Preferences for **theme, font-family, font-size, cursor-style**. Caterm read these into Preferences; further changes here will not take effect until the user config is updated.
+> Your user config at `~/.../Caterm/config` overrides Caterm Preferences for **<list of representable keys>**. Caterm imported these into Preferences.
 >
-> [ Move to Preferences (clear from user config) ] [ Keep as-is ] [ Open user config ]
+> **<N>** other override(s) — including <bullet list of unrepresentable lines, e.g. "fallback font chain (3 entries)", "light/dark theme switching", "custom bell-features"> — remain in your user config and continue to apply. They cannot be edited from Preferences.
+>
+> [ Import representable keys (clear from user config) ] [ Keep as-is ] [ Open user config ]
 
-Choosing "Move to Preferences" removes those specific lines from the user config (using `GhosttyConfigParser` to preserve unrelated lines and comments) and re-renders. "Keep as-is" dismisses the banner but preserves the override hint count in the Terminal tab footer.
+Choosing **Import representable keys** removes only the `.ok` lines from user config (using `GhosttyConfigParser`'s lossless edit; preserves all other lines, comments, blank lines, and ordering). Unrepresentable lines stay in user config untouched, ensuring the user does not silently lose `font-family` fallback chains, `theme = light:...,dark:...`, custom `bell-features`, or anything else outside our v1 schema.
+
+"Keep as-is" preserves the override hint count in the Terminal tab footer; the user can act on it later.
+
+`SettingsMigrationTests.testBranchB_unrepresentableLinesPreserved` covers each `unrepresentable` reason with a golden user config.
 
 **Branch C — user config missing or unreadable:**
 
@@ -525,7 +590,7 @@ We never silently overwrite user content. Many Caterm users in the wild have cus
   - each field renders to expected config line
   - `lineHeight = 1.1` → `adjust-cell-height = 10%`
   - `bell = .both` → both flags true
-  - `theme` with quotes/spaces is escaped
+  - theme name with spaces (e.g. `Catppuccin Mocha`) round-trips correctly: rendered as `theme = Catppuccin Mocha` (no quoting needed; Ghostty parser accepts unquoted multi-word values)
   - empty `PartialSettings` → only the legacy block + header comment is emitted (no field lines)
   - **legacy block always present** (term=xterm-256color + 7 keybinds) regardless of `PartialSettings` content
 

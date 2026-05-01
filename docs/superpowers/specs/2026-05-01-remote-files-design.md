@@ -22,7 +22,31 @@ This brings macOS to feature parity with the web app on file operations, while s
   - Subsequent `sftp` invocations reuse the socket — no re-authentication, no MFA prompts.
 - Credential flow continues through the existing `caterm-askpass` helper (only invoked on the first session that establishes the master).
 - We always **force-override** the user's `~/.ssh/config` ControlMaster settings via explicit `-o ControlPath=...` flags on every invocation, so the socket location is deterministic.
-- ControlMaster sockets are cleaned up on app quit (via existing SessionStore lifecycle hook).
+- ControlMaster sockets are cleaned up on app quit. There is no existing app-quit hook for this in `SessionStore` (it only has `closeTab`), so this spec mandates a new component:
+
+### 2.1.1 ControlMasterManager (new component)
+
+A small `@MainActor` actor in the `SessionStore` target (or a sibling target if dependency rules prefer). Responsibilities:
+
+```swift
+@MainActor
+public final class ControlMasterManager {
+    public init(cacheDir: URL)                                // ~/Library/Caches/Caterm/cm/
+    public func socketPath(for hostId: HostId) -> URL         // deterministic; one per host
+    public func register(hostId: HostId, destination: String) // remember <user@host> for liveness checks
+    public func isAlive(hostId: HostId) async -> Bool         // runs `ssh -S <sock> -O check <user@host>`
+    public func tearDown(hostId: HostId) async                // runs `ssh -S <sock> -O exit <user@host>`
+    public func tearDownAll() async                           // called from AppDelegate on quit
+}
+```
+
+Hooks added in this spec (new code, not assumed-existing):
+
+- `AppDelegate.applicationWillTerminate(_:)` → calls `ControlMasterManager.shared.tearDownAll()` synchronously (best-effort; we wait up to 1 second per socket then orphan).
+- `SessionStore.closeTab(_:)` → on the **last** tab for a host, schedules `tearDown(hostId:)` after a 30-second grace period (allows quick reconnect to reuse the master). If a new tab opens for that host within the grace, the teardown is cancelled.
+- `RemoteFileSystem` consults `isAlive(hostId:)` instead of checking file existence (§4.3).
+
+The cache directory and socket file naming follow §2.1; this component just centralizes the lifecycle so SFTP-related code doesn't reach into SessionStore internals.
 
 ### 2.2 Connection-state contract (no transparent re-auth)
 
@@ -73,7 +97,8 @@ Sources/
 ├─ FileTransferStore/                         ← NEW target
 │   ├─ FileTransferStore.swift                (queue, progress, cancel)
 │   ├─ TransferTask.swift
-│   └─ RemoteFileSystem.swift                 (list/mkdir/rm/rename/get/put — wraps SFTPCommandBuilder)
+│   ├─ RemoteFileSystem.swift                 (list/mkdir/rm/rename/get/put — wraps SFTPCommandBuilder)
+│   └─ ControlMasterManager.swift             (per-host socket lifecycle; isAlive / tearDown; see §2.1.1)
 └─ Caterm/Views/
     ├─ FileDrawerView.swift                   ← NEW
     ├─ RemoteFileListView.swift               ← NEW
@@ -177,10 +202,21 @@ public struct SFTPCredentials {
     public let knownHostsCaterm: URL           // first path joined into UserKnownHostsFile=
     public let knownHostsUser: URL             // second path; matches SSHCommandBuilder.swift:61
     public let strictHostKeyChecking: SSHCommandBuilder.StrictHostKeyChecking
-    public let extraSSHOptions: [String: String]   // forward through -o (note: no-fallback
-                                                   //   options are added by the builder, not
-                                                   //   read from this map)
+    public let extraSSHOptions: [String: String]   // forward through -o; see denylist below
 }
+
+// Denylist: keys the builder MUST silently drop from extraSSHOptions, because
+// allowing them would break the no-fallback contract. Builder asserts in debug.
+public let SFTPCredentialsDenylist: Set<String> = [
+    "ControlMaster",                  // we always set =no
+    "ControlPath",                    // we always set our own
+    "ControlPersist",                 // managed by SSHCommandBuilder for terminal
+    "BatchMode",                      // we always set =yes
+    "PreferredAuthentications",       // we always set =none
+    "ProxyCommand",                   // we always set =none
+    "ProxyJump",                      // alternate fallback path
+    "Hostname",                       // would re-target the connection
+]
 
 public enum SFTPCommandBuilder {
     /// Build a sftp invocation. `credentials` provides host-key and identity
@@ -208,6 +244,13 @@ public enum SFTPOperation {
 `resume: Bool` controls the `-a` flag. v1 only sets `resume: true` when the user clicks Retry on a failed transfer (§4.2 `FileTransferStore.retry`). New transfers always start fresh.
 
 Key change vs v1 spec: `credentials` parameter is **required**, but is used solely to set host-key, known-hosts, and identity-file policy (`-o UserKnownHostsFile=`, `-o StrictHostKeyChecking=`, `-i …`). `BatchMode=yes` in the argv guarantees no interactive auth ever happens, so credentials are policy-only, not auth-driving.
+
+**Argv ordering matters.** OpenSSH applies the **first** value seen for any repeated `-o` key (verified locally with `ssh -G -o "PreferredAuthentications=none" -o "PreferredAuthentications=publickey" host` → returns `none`). The builder must therefore emit the four no-fallback options *first* in argv, then the `extraSSHOptions` (filtered by `SFTPCredentialsDenylist`), then everything else. A user who sneaks `PreferredAuthentications=publickey` into `extraSSHOptions` cannot override our `=none` because ours appears earlier in argv — and the denylist also drops it explicitly so it never even reaches argv.
+
+`SFTPCommandBuilderTests.testExtraOptionsCannotOverrideNoFallback`:
+- Construct credentials with `extraSSHOptions: ["PreferredAuthentications": "publickey", "BatchMode": "no", "ControlMaster": "auto", "ProxyJump": "bastion"]`.
+- Assert the resulting argv contains exactly one occurrence of each no-fallback key with our values.
+- Assert none of the denylisted user-supplied values appear anywhere.
 
 `SSHCommandBuilder` is refactored to expose a `credentials(for: Host)` factory so both builders share construction logic.
 
