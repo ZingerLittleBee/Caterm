@@ -18,6 +18,7 @@ struct MainWindow: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var fileTransferStore: FileTransferStore
 	@Environment(\.openWindow) private var openWindow
+	@StateObject private var bannerState = SettingsBannerState()
 	@State private var fileDrawerOpen = false
 	@State private var pendingUploadURLs: [URL] = []
 	@State private var showUploadSheet = false
@@ -53,34 +54,52 @@ struct MainWindow: View {
 	}
 
 	var body: some View {
-		NavigationSplitView {
-			// Already a tab — connecting from this sidebar should spawn a
-			// sibling tabbed window (auto-merged by macOS into the current
-			// tab bar), not replace this window's session.
-			HostListSidebar(onOpenTab: { newId in openWindow(value: newId) })
-				.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
-		} detail: {
-			HSplitView {
-				Group {
-					if store.tabs.contains(where: { $0.id == tabId }) {
-						TerminalContainerView(tabId: tabId)
-					} else {
-						Text("Tab closed")
-							.foregroundColor(.secondary)
+		VStack(spacing: 0) {
+			// Banners collapse to nothing when their state is empty, so for
+			// the common case the layout is identical to the pre-banner
+			// version. They sit above the split view so users see them
+			// regardless of which sidebar/drawer is open.
+			if !bannerState.diagnosticMessages.isEmpty {
+				DiagnosticBanner(
+					messages: bannerState.diagnosticMessages,
+					onDismiss: bannerState.dismissDiagnostics
+				)
+			}
+			if bannerState.showNewSurfaceBanner {
+				Banner(
+					text: "Some settings (scrollback / titlebar) apply to new tabs only.",
+					onDismiss: bannerState.dismissNewSurface
+				)
+			}
+			NavigationSplitView {
+				// Already a tab — connecting from this sidebar should spawn a
+				// sibling tabbed window (auto-merged by macOS into the current
+				// tab bar), not replace this window's session.
+				HostListSidebar(onOpenTab: { newId in openWindow(value: newId) })
+					.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+			} detail: {
+				HSplitView {
+					Group {
+						if store.tabs.contains(where: { $0.id == tabId }) {
+							TerminalContainerView(tabId: tabId)
+						} else {
+							Text("Tab closed")
+								.foregroundColor(.secondary)
+						}
+					}
+					.frame(minWidth: 400, minHeight: 500)
+
+					if fileDrawerOpen {
+						FileDrawerView(
+							host: activeHost,
+							fs: activeRemoteFs,
+							fileTransferStore: fileTransferStore
+						)
+							.frame(minWidth: 240, idealWidth: 320, maxWidth: 600)
 					}
 				}
-				.frame(minWidth: 400, minHeight: 500)
-
-				if fileDrawerOpen {
-					FileDrawerView(
-						host: activeHost,
-						fs: activeRemoteFs,
-						fileTransferStore: fileTransferStore
-					)
-						.frame(minWidth: 240, idealWidth: 320, maxWidth: 600)
-				}
+				.frame(minHeight: 500)
 			}
-			.frame(minHeight: 500)
 		}
 		.frame(minWidth: 1000, minHeight: 600)
 		.toolbar {
@@ -126,5 +145,64 @@ struct MainWindow: View {
 			)
 		}
 		.onDisappear { store.closeTab(tabId: tabId) }
+	}
+}
+
+/// Single-line yellow banner shown at the top of MainWindow when a setting
+/// only takes effect on new surfaces (scrollback / titlebar). The user can
+/// dismiss it with the trailing close button.
+struct Banner: View {
+	let text: String
+	let onDismiss: () -> Void
+
+	var body: some View {
+		HStack(spacing: 8) {
+			Image(systemName: "info.circle.fill")
+				.foregroundStyle(.yellow)
+			Text(text)
+				.font(.callout)
+			Spacer()
+			Button(action: onDismiss) {
+				Image(systemName: "xmark")
+			}
+			.buttonStyle(.plain)
+			.help("Dismiss")
+		}
+		.padding(.horizontal, 12)
+		.padding(.vertical, 6)
+		.background(Color.yellow.opacity(0.15))
+	}
+}
+
+/// Red banner listing Ghostty config diagnostics (e.g. "unknown key: foo").
+/// Shown above MainWindow content while messages are present; dismissed by
+/// the user once they have acknowledged the issues.
+struct DiagnosticBanner: View {
+	let messages: [String]
+	let onDismiss: () -> Void
+
+	var body: some View {
+		HStack(alignment: .top, spacing: 8) {
+			Image(systemName: "exclamationmark.triangle.fill")
+				.foregroundStyle(.red)
+			VStack(alignment: .leading, spacing: 2) {
+				Text("Config diagnostics")
+					.font(.callout.weight(.semibold))
+				ForEach(messages, id: \.self) { message in
+					Text(message)
+						.font(.caption)
+						.foregroundStyle(.secondary)
+				}
+			}
+			Spacer()
+			Button(action: onDismiss) {
+				Image(systemName: "xmark")
+			}
+			.buttonStyle(.plain)
+			.help("Dismiss")
+		}
+		.padding(.horizontal, 12)
+		.padding(.vertical, 6)
+		.background(Color.red.opacity(0.12))
 	}
 }
