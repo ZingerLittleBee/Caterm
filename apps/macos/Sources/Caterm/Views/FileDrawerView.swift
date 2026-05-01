@@ -45,53 +45,63 @@ struct FileDrawerView: View {
 
 			Divider()
 
-			if host == nil {
-				ContentUnavailableView(
-					"Not connected",
-					systemImage: "wifi.slash",
-					description: Text("Connect to a host to browse files.")
-				)
-			} else if let err = error {
-				if err == "Reconnect host to browse files" {
-					ContentUnavailableView {
-						Label("Reconnect host", systemImage: "arrow.clockwise")
-					} description: {
-						Text("Master connection expired. Reconnect the terminal session, then click Try Again.")
-					} actions: {
-						Button("Try Again") { Task { await refresh() } }
-					}
-				} else {
+			// Each branch is wrapped to fill the drawer's available space. Without
+			// this, ContentUnavailableView's content-driven intrinsic width (much
+			// larger than the path bar's) propagates up the VStack and pushes the
+			// HSplitView to give the drawer more horizontal space, squashing the
+			// terminal on the other side. List (used when entries exist) doesn't
+			// have that issue, which is why the squashing only showed in the empty
+			// / error / not-connected states.
+			Group {
+				if host == nil {
 					ContentUnavailableView(
-						"Error",
-						systemImage: "exclamationmark.triangle",
-						description: Text(err)
+						"Not connected",
+						systemImage: "wifi.slash",
+						description: Text("Connect to a host to browse files.")
+					)
+				} else if let err = error {
+					if err == "Reconnect host to browse files" {
+						ContentUnavailableView {
+							Label("Reconnect host", systemImage: "arrow.clockwise")
+						} description: {
+							Text("Master connection expired. Reconnect the terminal session, then click Try Again.")
+						} actions: {
+							Button("Try Again") { Task { await refresh() } }
+						}
+					} else {
+						ContentUnavailableView(
+							"Error",
+							systemImage: "exclamationmark.triangle",
+							description: Text(err)
+						)
+					}
+				} else if entries.isEmpty {
+					ContentUnavailableView(
+						"Empty folder",
+						systemImage: "folder"
+					)
+				} else {
+					RemoteFileListView(
+						entries: entries,
+						selection: $selection,
+						onActivate: { entry in
+							if entry.isDirectory {
+								path = (path as NSString).appendingPathComponent(entry.name)
+								Task { await refresh() }
+							}
+						},
+						onDropOnFolder: { entry, urls in
+							let folderPath = (path as NSString).appendingPathComponent(entry.name)
+							handleDrop(urls: urls, remoteDir: folderPath)
+						},
+						onDownload: { entry in handleDownload(entry) },
+						onRename: { entry in sheetMode = .rename(entry) },
+						onDelete: { entry in handleDelete(entry) },
+						onCopyPath: { entry in handleCopyPath(entry) }
 					)
 				}
-			} else if entries.isEmpty {
-				ContentUnavailableView(
-					"Empty folder",
-					systemImage: "folder"
-				)
-			} else {
-				RemoteFileListView(
-					entries: entries,
-					selection: $selection,
-					onActivate: { entry in
-						if entry.isDirectory {
-							path = (path as NSString).appendingPathComponent(entry.name)
-							Task { await refresh() }
-						}
-					},
-					onDropOnFolder: { entry, urls in
-						let folderPath = (path as NSString).appendingPathComponent(entry.name)
-						handleDrop(urls: urls, remoteDir: folderPath)
-					},
-					onDownload: { entry in handleDownload(entry) },
-					onRename: { entry in sheetMode = .rename(entry) },
-					onDelete: { entry in handleDelete(entry) },
-					onCopyPath: { entry in handleCopyPath(entry) }
-				)
 			}
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
 
 			if let fts = fileTransferStore {
 				Divider()
