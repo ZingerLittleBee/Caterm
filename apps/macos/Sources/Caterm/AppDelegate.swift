@@ -1,7 +1,30 @@
 import AppKit
+import FileTransferStore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	private var observer: NSObjectProtocol?
+
+	/// On app quit, tear down all live ControlMaster sockets so the
+	/// shared `ssh -M` masters exit cleanly instead of being killed by
+	/// SIGTERM. We dispatch into a detached Task and block the calling
+	/// thread (the AppKit termination thread) on a semaphore with a
+	/// 1-second timeout so a stuck `ssh -O exit` cannot block app
+	/// termination indefinitely.
+	///
+	/// The earlier `Task { @MainActor in … } + DispatchGroup.wait()`
+	/// pattern deadlocked once sockets actually existed: this method is
+	/// invoked on the main thread, so the inner `Task { @MainActor }` is
+	/// scheduled to run on the same thread we're blocking via
+	/// `group.wait`. A `Task.detached` (with `await` hopping back onto
+	/// the main actor inside `tearDownAll`) avoids that inversion.
+	func applicationWillTerminate(_: Notification) {
+		let semaphore = DispatchSemaphore(value: 0)
+		Task.detached {
+			await ControlMasterManager.shared.tearDownAll()
+			semaphore.signal()
+		}
+		_ = semaphore.wait(timeout: .now() + 1.0)
+	}
 
 	func applicationDidFinishLaunching(_: Notification) {
 		NSApp.setActivationPolicy(.regular)

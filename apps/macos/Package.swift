@@ -18,7 +18,7 @@ let package = Package(
         // --- Libraries ---
         .target(
             name: "TerminalEngine",
-            dependencies: ["GhosttyKit", "ConfigStore"],
+            dependencies: ["GhosttyKit", "ConfigStore", "SettingsStore"],
             path: "Sources/TerminalEngine"
         ),
         .target(
@@ -35,6 +35,7 @@ let package = Package(
         ),
         .target(
             name: "ConfigStore",
+            dependencies: ["SettingsStore"],
             path: "Sources/ConfigStore"
         ),
         .target(
@@ -52,6 +53,24 @@ let package = Package(
             dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder"],
             path: "Sources/HostSyncStore"
         ),
+        .target(
+            name: "SettingsStore",
+            dependencies: [],
+            path: "Sources/SettingsStore",
+            resources: [
+                .process("Resources"),
+            ]
+        ),
+        .target(
+            name: "FileTransferStore",
+            dependencies: ["SSHCommandBuilder", "SFTPCommandBuilder"],
+            path: "Sources/FileTransferStore"
+        ),
+        .target(
+            name: "SFTPCommandBuilder",
+            dependencies: ["SSHCommandBuilder"],
+            path: "Sources/SFTPCommandBuilder"
+        ),
 
         // --- Executables ---
         .executableTarget(
@@ -64,6 +83,8 @@ let package = Package(
                 "ConfigStore",
                 "ServerSyncClient",
                 "HostSyncStore",
+                "FileTransferStore",
+                "SFTPCommandBuilder",
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
@@ -106,7 +127,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ConfigStoreTests",
-            dependencies: ["ConfigStore"],
+            dependencies: ["ConfigStore", "SettingsStore"],
             path: "Tests/ConfigStoreTests"
         ),
         .testTarget(
@@ -121,13 +142,28 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermTests",
-            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore"],
+            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore"],
             path: "Tests/CatermTests"
         ),
         .testTarget(
             name: "TerminalEngineTests",
-            dependencies: ["TerminalEngine"],
+            dependencies: ["TerminalEngine", "SettingsStore"],
             path: "Tests/TerminalEngineTests"
+        ),
+        .testTarget(
+            name: "FileTransferStoreTests",
+            dependencies: ["FileTransferStore", "SSHCommandBuilder", "SFTPCommandBuilder"],
+            path: "Tests/FileTransferStoreTests"
+        ),
+        .testTarget(
+            name: "SFTPCommandBuilderTests",
+            dependencies: ["SFTPCommandBuilder", "SSHCommandBuilder"],
+            path: "Tests/SFTPCommandBuilderTests"
+        ),
+        .testTarget(
+            name: "SettingsStoreTests",
+            dependencies: ["SettingsStore"],
+            path: "Tests/SettingsStoreTests"
         ),
     ]
 )

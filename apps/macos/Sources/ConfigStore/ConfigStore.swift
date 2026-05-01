@@ -1,4 +1,5 @@
 import Foundation
+import SettingsStore
 
 #if canImport(AppKit)
 	import AppKit
@@ -82,4 +83,65 @@ public enum ConfigStore {
 			NSWorkspace.shared.activateFileViewerSelecting([url])
 		}
 	#endif
+}
+
+public extension ConfigStore {
+	static var perHostPatchDirectory: URL {
+		FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("Caterm/per-host")
+	}
+
+	static func perHostPatchPath(for hostId: HostId) -> URL {
+		perHostPatchDirectory.appendingPathComponent("\(hostId.rawValue).config")
+	}
+
+	@MainActor
+	static func renderManagedSnapshot(
+		from settings: PartialSettings,
+		to path: URL = managedConfigPath
+	) throws {
+		try FileManager.default.createDirectory(
+			at: path.deletingLastPathComponent(),
+			withIntermediateDirectories: true
+		)
+		let desired = SettingsRenderer.render(settings)
+		if let existing = try? String(contentsOf: path, encoding: .utf8), existing == desired {
+			return
+		}
+		try desired.write(to: path, atomically: true, encoding: .utf8)
+	}
+}
+
+public extension ConfigStore {
+	@MainActor
+	static func writePerHostPatch(theme: String, to path: URL) throws {
+		try FileManager.default.createDirectory(
+			at: path.deletingLastPathComponent(),
+			withIntermediateDirectories: true
+		)
+		try "theme = \(theme)\n".write(to: path, atomically: true, encoding: .utf8)
+	}
+
+	@MainActor
+	static func regeneratePerHostPatches(
+		from settings: CatermSettings,
+		in directory: URL = perHostPatchDirectory
+	) throws {
+		try FileManager.default.createDirectory(
+			at: directory, withIntermediateDirectories: true
+		)
+		let needed: [HostId: String] = settings.hostOverrides.compactMapValues { $0.theme }
+			.reduce(into: [:]) { acc, kv in acc[kv.key] = kv.value }
+
+		for (id, theme) in needed {
+			try writePerHostPatch(theme: theme, to: directory.appendingPathComponent("\(id.rawValue).config"))
+		}
+
+		let neededFilenames = Set(needed.keys.map { "\($0.rawValue).config" })
+		let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+		for name in entries where !neededFilenames.contains(name) {
+			try FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+		}
+	}
 }

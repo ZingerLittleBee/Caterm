@@ -110,6 +110,14 @@ dev-server-op:
 macos:
 	@$(MAKE) -C apps/macos help
 
+.PHONY: macos-theme-catalog
+macos-theme-catalog: macos-ghostty-submodule
+	bash apps/macos/Scripts/build-theme-catalog.sh
+
+.PHONY: macos-ghostty-kit
+macos-ghostty-kit: macos-theme-catalog
+	@$(MAKE) -C apps/macos ghostty-kit
+
 macos-%:
 	@$(MAKE) -C apps/macos $*
 

@@ -1,8 +1,13 @@
+import AppKit
 import ConfigStore
+import FileTransferStore
+import Foundation
 import HostSyncStore
 import KeychainStore
 import ServerSyncClient
 import SessionStore
+import SettingsStore
+import SFTPCommandBuilder
 import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
@@ -13,15 +18,23 @@ struct CatermApp: App {
 	@StateObject var store: SessionStore
 	@StateObject var syncStore: HostSyncStore
 	@StateObject var preferences: SyncPreferences
-	@State private var showSyncSettings = false
-	@State private var serverURLText: String = ServerURL.current.absoluteString
-	private let authSession: AuthSession
-	private let syncClient: ServerSyncClient
+	@StateObject var fileTransferStore: FileTransferStore
+	@StateObject var settingsStore: SettingsStore
+	/// Lifetime-owned by the App so the Preferences "Sync" tab can reach
+	/// it. `AuthSession` is not `ObservableObject`, so we inject it via
+	/// `PreferencesWindowController.syncEnvironment` rather than as an env
+	/// object on the WindowGroup.
+	let authSession: AuthSession
+
+	/// Holds the live-reload dispatcher and its NotificationCenter
+	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
+	let liveReload: LiveReloadCoordinator
 
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
 		let auth = AuthSession(baseURL: ServerURL.current)
+		self.authSession = auth
 		let client = URLSessionServerSyncClient(baseURL: ServerURL.current)
 		let prefs = SyncPreferences()
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
@@ -35,8 +48,65 @@ struct CatermApp: App {
 			authSession: auth,
 			preferences: prefs
 		))
-		self.authSession = auth
-		self.syncClient = client
+		// Per-app FileTransferStore. Closures capture plain value types
+		// (URLs / paths) rather than `ControlMasterManager` itself so the
+		// closure body remains nonisolated-callable. Liveness goes through
+		// `ControlMasterManager.shared`'s async `isAlive(hostId:)`, which
+		// crosses isolation properly.
+		let cmDir = (try? CacheDirectories.controlMasterDir())
+			?? URL(fileURLWithPath: NSTemporaryDirectory())
+		let askpass = URL(fileURLWithPath: session.askpassPath)
+		let knownCaterm = URL(fileURLWithPath: session.knownHostsCaterm)
+		let knownUser = URL(fileURLWithPath: session.knownHostsUser)
+		// SettingsStore: loaded eagerly through `BootSequence.run` so the
+		// legacy → plist migration (Branch A/B/C), managed-snapshot render,
+		// and per-host patch regeneration all run on launch. Per-host theme
+		// overrides (Task 24) and the Preferences window (Task 25) share
+		// this observable instance. If BootSequence throws (disk fault,
+		// permissions issue, etc.), fall back to a defaults-seeded
+		// in-memory store so the app still launches — same shape as
+		// `PreferencesWindowController`'s fallback.
+		let plistPath = SettingsStore.defaultPlistPath
+		let settings: SettingsStore
+		do {
+			settings = try BootSequence.run(
+				settingsPlistURL: plistPath,
+				userConfigURL: ConfigStore.defaultPath,
+				managedSnapshotURL: ConfigStore.managedConfigPath,
+				perHostDirectory: ConfigStore.perHostPatchDirectory
+			)
+		} catch {
+			NSLog("[CatermApp] BootSequence failed, using in-memory defaults: \(error)")
+			settings = SettingsStore(
+				settings: CatermSettings(global: CatermSettings.defaultsSeed),
+				path: plistPath
+			)
+		}
+		_settingsStore = StateObject(wrappedValue: settings)
+		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
+			controlPathFor: { hostId in
+				cmDir.appendingPathComponent("\(hostId.uuidString).sock")
+			},
+			credentialsFor: { _ in
+				SFTPCredentials(
+					askpassPath: askpass,
+					identityFiles: [],
+					knownHostsCaterm: knownCaterm,
+					knownHostsUser: knownUser,
+					strictHostKeyChecking: .acceptNew
+				)
+			},
+			liveness: ControlMasterManager.shared
+		))
+		// Wire the live-reload pipeline. `LiveReloadDispatcher` already
+		// posts `catermNewSurfaceBanner` / `catermConfigDiagnostics`
+		// notifications internally — `SettingsBannerState` listens to
+		// both — so banner + managed-snapshot rerender works today.
+		// Per-surface live application of font/theme/cursor onto
+		// already-mounted Ghostty surfaces is deferred (no surface
+		// registry yet); new surfaces still pick up changes via the
+		// next render of the managed snapshot.
+		self.liveReload = LiveReloadCoordinator(settingsStore: settings)
 	}
 
 	var body: some Scene {
@@ -61,6 +131,8 @@ struct CatermApp: App {
 			.environmentObject(store)
 			.environmentObject(syncStore)        // NEW (v1.4)
 			.environmentObject(preferences)      // NEW (v1.4)
+			.environmentObject(fileTransferStore)
+			.environmentObject(settingsStore)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -69,21 +141,18 @@ struct CatermApp: App {
 			// cancellation lives in the chain (spec §3.5).
 			.task { syncStore.syncIfSignedIn() }
 			.onReceive(NotificationCenter.default
-				.publisher(for: .catermOpenSyncSettings)) { _ in   // NEW (v1.4)
-				showSyncSettings = true
-			}
-			.sheet(isPresented: $showSyncSettings) {
-				SyncSettingsView(
+				.publisher(for: .catermOpenSyncSettings)) { _ in
+				// Sync settings now live as a tab inside the Preferences
+				// window (Task 25). SyncStatusRow still posts this
+				// notification when the user clicks the indicator; route
+				// it through to the unified Preferences surface.
+				PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
 					authSession: authSession,
 					syncStore: syncStore,
-					preferences: preferences,
-					serverURL: $serverURLText
+					preferences: preferences
 				)
-				.onChange(of: serverURLText) { _, newValue in
-					if let url = URL(string: newValue), !newValue.isEmpty {
-						ServerURL.set(url)
-					}
-				}
+				PreferencesWindowController.shared.activate(tabIndex: 3)
+				PreferencesWindowController.shared.showAndActivate()
 			}
 		}
 		.commands {
@@ -100,16 +169,19 @@ struct CatermApp: App {
 				}
 				.keyboardShortcut("t", modifiers: .command)
 			}
-			// ⌘, opens (reveals) the TOML config file in Finder.
+			// ⌘, opens the unified Preferences window (Task 25).
+			// "Edit Advanced Config…" inside General still reveals the TOML
+			// config in Finder for power users, so no functionality is lost.
 			CommandGroup(replacing: .appSettings) {
 				Button("Settings…") {
-					ConfigStore.revealInFinder(ConfigStore.defaultPath)
+					PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
+						authSession: authSession,
+						syncStore: syncStore,
+						preferences: preferences
+					)
+					PreferencesWindowController.shared.showAndActivate()
 				}
 				.keyboardShortcut(",", modifiers: .command)
-			}
-			CommandGroup(after: .appSettings) {
-				Button("Sync Settings…") { showSyncSettings = true }
-					.keyboardShortcut(",", modifiers: [.command, .shift])
 			}
 			// Edit menu pasteboard commands. Selectors are the standard
 			// `NSText.copy/paste/pasteAsPlainText`, which AppKit
@@ -130,6 +202,32 @@ struct CatermApp: App {
 					NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: nil, from: nil)
 				}
 				.keyboardShortcut("v", modifiers: [.command, .option, .shift])
+			}
+			// ⌘B toggles the host-list sidebar. NavigationSplitView
+			// installs an `NSSplitViewController` in the responder chain
+			// that handles `toggleSidebar:`. Use `NSApp.sendAction(_:to:
+			// from:)` with `to: nil` so AppKit walks the responder chain
+			// from the key window — `firstResponder?.tryToPerform(...)`
+			// alone misses the split-view controller because the chain
+			// starts a few links above first responder.
+			CommandGroup(after: .sidebar) {
+				Button("Toggle Sidebar") {
+					NSApp.sendAction(
+						#selector(NSSplitViewController.toggleSidebar(_:)),
+						to: nil,
+						from: nil
+					)
+				}
+				.keyboardShortcut("b", modifiers: .command)
+			}
+			// ⌘⇧F toggles the per-window Files drawer. The notification is
+			// observed by `MainWindow`; broadcasting via NotificationCenter
+			// avoids threading window-local @State through App scene.
+			CommandGroup(after: .toolbar) {
+				Button("Toggle Files Drawer") {
+					NotificationCenter.default.post(name: .toggleFileDrawer, object: nil)
+				}
+				.keyboardShortcut("f", modifiers: [.command, .shift])
 			}
 			// Help menu → GitHub documentation page.
 			CommandGroup(replacing: .help) {
@@ -229,5 +327,6 @@ private func makeStore() -> SessionStore {
 	                    knownHostsUser: knownUser,
 	                    accessGroup: accessGroup,
 	                    hostsURL: hostsURL,
-	                    keychain: keychain)
+	                    keychain: keychain,
+	                    controlMasterManager: ControlMasterManager.shared)
 }

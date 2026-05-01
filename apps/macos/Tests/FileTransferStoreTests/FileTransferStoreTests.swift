@@ -1,0 +1,109 @@
+import XCTest
+@testable import FileTransferStore
+import SFTPCommandBuilder
+import SSHCommandBuilder
+
+@MainActor
+final class FileTransferStoreTests: XCTestCase {
+	final class ScriptedRunner: SFTPRunner, @unchecked Sendable {
+		var script: [(stdout: String, exit: Int32)] = []
+		var calls: [SFTPInvocation] = []
+		func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
+			calls.append(inv)
+			return script.isEmpty ? ("", 0) : script.removeFirst()
+		}
+	}
+	final class AlwaysAlive: ControlMasterLiveness, @unchecked Sendable {
+		func isAlive(hostId: UUID) async -> Bool { true }
+	}
+
+	func makeHost(_ id: UUID = UUID()) -> SSHHost {
+		SSHHost(id: id, name: "x", hostname: "h", port: 22, username: "u", credential: .agent)
+	}
+
+	func testSerialFifoForOneHost() async throws {
+		let runner = ScriptedRunner()
+		runner.script = [("", 0), ("", 0), ("", 0)]
+		let store = FileTransferStore(
+			controlPathFor: { _ in URL(fileURLWithPath: "/sock") },
+			credentialsFor: { _ in defaultCreds() },
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let host = makeHost()
+		let ids = store.enqueueUpload(
+			localPaths: [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b"), URL(fileURLWithPath: "/c")],
+			remoteDir: "/srv", host: host
+		)
+		XCTAssertEqual(ids.count, 3)
+		try await store.waitIdle()
+		let kinds = runner.calls.map { $0.scriptStdin }.map { String($0.prefix(3)) }
+		XCTAssertEqual(kinds, ["put", "put", "put"])
+		for id in ids {
+			XCTAssertEqual(store.task(id: id)?.status, .completed)
+		}
+	}
+
+	func testTwoHostsRunInParallel() async throws {
+		let runner = ScriptedRunner()
+		let store = FileTransferStore(
+			controlPathFor: { _ in URL(fileURLWithPath: "/sock") },
+			credentialsFor: { _ in defaultCreds() },
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let h1 = makeHost(); let h2 = makeHost()
+		_ = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/a")], remoteDir: "/", host: h1)
+		_ = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/b")], remoteDir: "/", host: h2)
+		try await store.waitIdle()
+		XCTAssertEqual(runner.calls.count, 2)
+	}
+
+	func testRetryUsesResumeFlag() async throws {
+		let runner = ScriptedRunner()
+		runner.script = [("permission denied", 1)]
+		let store = FileTransferStore(
+			controlPathFor: { _ in URL(fileURLWithPath: "/sock") },
+			credentialsFor: { _ in defaultCreds() },
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let host = makeHost()
+		let ids = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/a")], remoteDir: "/", host: host)
+		try await store.waitIdle()
+		XCTAssertEqual(store.task(id: ids[0])?.status, .failed)
+		runner.script = [("", 0)]
+		store.retry(ids[0])
+		try await store.waitIdle()
+		XCTAssertEqual(store.task(id: ids[0])?.status, .completed)
+		XCTAssertTrue(runner.calls.last!.scriptStdin.hasPrefix("put -pa"))
+	}
+
+	func testCancelMidQueueRemovesPending() async throws {
+		let runner = ScriptedRunner()
+		runner.script = [("", 0), ("", 0)]
+		let store = FileTransferStore(
+			controlPathFor: { _ in URL(fileURLWithPath: "/sock") },
+			credentialsFor: { _ in defaultCreds() },
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let host = makeHost()
+		let ids = store.enqueueUpload(
+			localPaths: [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b"), URL(fileURLWithPath: "/c")],
+			remoteDir: "/", host: host
+		)
+		store.cancel(ids[2])
+		try await store.waitIdle()
+		XCTAssertEqual(store.task(id: ids[0])?.status, .completed)
+		XCTAssertEqual(store.task(id: ids[1])?.status, .completed)
+		XCTAssertEqual(store.task(id: ids[2])?.status, .cancelled)
+	}
+}
+
+private func defaultCreds() -> SFTPCredentials {
+	SFTPCredentials(askpassPath: nil, identityFiles: [],
+	                knownHostsCaterm: URL(fileURLWithPath: "/k1"),
+	                knownHostsUser: URL(fileURLWithPath: "/k2"),
+	                strictHostKeyChecking: .acceptNew)
+}

@@ -172,27 +172,49 @@ struct HostRow: View {
 	let host: SSHHost
 
 	var body: some View {
-		HStack {
+		// Truncation strategy: three rounds of pure-SwiftUI defensive layout
+		// (3a8f66d, b5ed2e8, e9fa0a6) — frame(maxWidth: .infinity), minWidth: 0,
+		// fixedSize, clipped, layoutPriority — failed to make `.tail`
+		// truncation work inside a NavigationSplitView sidebar's List row on
+		// macOS 14. The user kept seeing trailing characters with the leading
+		// portion clipped (e.g. "27:22" instead of "root@…").
+		//
+		// Replaced the SwiftUI Text + truncationMode(.tail) pattern with an
+		// NSTextField bridge (TruncatingLabel) that uses the AppKit-native
+		// single-line truncating cell (usesSingleLineMode = true,
+		// lineBreakMode = .byTruncatingTail, lowered horizontal compression
+		// resistance). This has worked reliably on macOS for 15+ years.
+		HStack(spacing: 8) {
 			Image(systemName: iconName)
 				.foregroundColor(.secondary)
 				.frame(width: 20)
+				.layoutPriority(1)
 			VStack(alignment: .leading, spacing: 2) {
-				Text(host.name).font(.headline)
-				Text("\(host.username)@\(host.hostname):\(host.port)")
-					.font(.caption)
-					.foregroundColor(.secondary)
+				TruncatingLabel(
+					text: host.name,
+					font: NSFont.preferredFont(forTextStyle: .headline),
+					color: .labelColor
+				)
+				TruncatingLabel(
+					text: "\(host.username)@\(host.hostname):\(host.port)",
+					font: NSFont.preferredFont(forTextStyle: .caption1),
+					color: .secondaryLabelColor
+				)
 			}
-			Spacer()
+			.frame(maxWidth: .infinity, alignment: .leading)
 			if store.needsCredentialSetup(host) {
 				Image(systemName: "lock")
 					.foregroundColor(.orange)
 					.help("Credentials not configured on this device")
+					.layoutPriority(1)
 			} else if host.serverId != nil {
 				Image(systemName: "icloud")
 					.foregroundColor(.secondary)
 					.help("Synced from server")
+					.layoutPriority(1)
 			}
 		}
+		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.vertical, 2)
 	}
 

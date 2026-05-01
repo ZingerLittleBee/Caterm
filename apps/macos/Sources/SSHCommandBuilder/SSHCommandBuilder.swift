@@ -63,6 +63,11 @@ public enum SSHCommandBuilder {
 		args += [.raw("-o"), .quoted("StrictHostKeyChecking=accept-new")]
 		args += [.raw("-o"), .quoted("UserKnownHostsFile=\(knownHostsValue)")]
 
+		let controlPath = "~/Library/Caches/Caterm/cm/\(host.id.uuidString).sock"
+		args += [.raw("-o"), .quoted("ControlMaster=auto")]
+		args += [.raw("-o"), .quoted("ControlPersist=10m")]
+		args += [.raw("-o"), .quoted("ControlPath=\(controlPath)")]
+
 		var env: [(String, String)] = []
 
 		switch host.credential {

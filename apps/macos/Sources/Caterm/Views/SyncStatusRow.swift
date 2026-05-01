@@ -32,13 +32,19 @@ struct SyncStatusRow: View {
 
     @ViewBuilder
     private func statusRowBody(state: SyncIndicatorState, now: Date) -> some View {
+        // Truncation strategy: see HostRow.body. SwiftUI Text +
+        // truncationMode(.tail) does not reliably truncate from the trailing
+        // edge inside a sidebar — the user kept seeing "to sync" instead of
+        // "Sign in…". stateLabel now returns a TruncatingLabel
+        // (NSTextField bridge) which AppKit truncates correctly.
         Button(action: { handleTap(state: state) }) {
             HStack(spacing: 8) {
                 stateIcon(state)
                 stateLabel(state, now: now)
-                Spacer()
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 stateChevron(state)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .contentShape(Rectangle())
@@ -84,22 +90,38 @@ struct SyncStatusRow: View {
 
     @ViewBuilder
     private func stateLabel(_ state: SyncIndicatorState, now: Date) -> some View {
+        let captionFont = NSFont.preferredFont(forTextStyle: .caption1)
         switch state {
         case .signedOut:
-            Text("Sign in to sync")
-                .foregroundStyle(.tint).font(.caption)
+            TruncatingLabel(
+                text: "Sign in to sync",
+                font: captionFont,
+                color: .controlAccentColor
+            )
         case .syncing:
-            Text("Syncing…")
-                .foregroundStyle(.secondary).font(.caption)
+            TruncatingLabel(
+                text: "Syncing…",
+                font: captionFont,
+                color: .secondaryLabelColor
+            )
         case .failing(reason: .auth, since: _):
-            Text("Sign in again")
-                .foregroundStyle(.red).font(.caption)
+            TruncatingLabel(
+                text: "Sign in again",
+                font: captionFont,
+                color: .systemRed
+            )
         case .failing(reason: .other, since: let since):
-            Text("Sync failed · \(formatRelativeShort(since: since, now: now))")
-                .foregroundStyle(.red).font(.caption)
+            TruncatingLabel(
+                text: "Sync failed · \(formatRelativeShort(since: since, now: now))",
+                font: captionFont,
+                color: .systemRed
+            )
         case .healthy(let lastSyncedAt):
-            Text(formatLastSynced(lastSyncedAt, now: now))
-                .foregroundStyle(.secondary).font(.caption)
+            TruncatingLabel(
+                text: formatLastSynced(lastSyncedAt, now: now),
+                font: captionFont,
+                color: .secondaryLabelColor
+            )
         }
     }
 

@@ -1,6 +1,8 @@
 import AppKit
+import ConfigStore
 import Foundation
 import GhosttyKit
+import SettingsStore
 
 /// Wraps a single libghostty surface. Each surface owns its own PTY (started
 /// by libghostty itself, not by us) and renders into the host `NSView` via
@@ -170,6 +172,28 @@ public final class GhosttySurface {
 
 	public func setSize(width: UInt32, height: UInt32) {
 		ghostty_surface_set_size(raw, width, height)
+	}
+
+	/// Applies the per-host theme patch on top of the user/managed config to
+	/// the live surface. No-op when the per-host patch file is absent.
+	///
+	/// Load order (matches Task 17 ordering): defaults → managed → user → per-host.
+	/// Callers invoke this AFTER constructing the surface (Task 18). It is
+	/// not auto-called from `init` to keep the trigger explicit and to match
+	/// the production wiring where the host id is known at the call site.
+	public func applyPerHostPatch(hostId: HostId, userConfigPath: String? = nil) {
+		let path = ConfigStore.perHostPatchPath(for: hostId)
+		guard FileManager.default.fileExists(atPath: path.path) else { return }
+		guard let cfg = ghostty_config_new() else { return }
+		ghostty_config_load_default_files(cfg)
+		ghostty_config_load_file(cfg, ConfigStore.managedConfigPath.path)
+		if let userConfigPath, FileManager.default.fileExists(atPath: userConfigPath) {
+			ghostty_config_load_file(cfg, userConfigPath)
+		}
+		ghostty_config_load_file(cfg, path.path)
+		ghostty_config_finalize(cfg)
+		ghostty_surface_update_config(raw, cfg)
+		ghostty_config_free(cfg)
 	}
 
 	public func setContentScale(_ scale: CGFloat) {
