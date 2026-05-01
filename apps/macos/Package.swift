@@ -35,6 +35,7 @@ let package = Package(
         ),
         .target(
             name: "ConfigStore",
+            dependencies: ["SettingsStore"],
             path: "Sources/ConfigStore"
         ),
         .target(
@@ -126,7 +127,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ConfigStoreTests",
-            dependencies: ["ConfigStore"],
+            dependencies: ["ConfigStore", "SettingsStore"],
             path: "Tests/ConfigStoreTests"
         ),
         .testTarget(
