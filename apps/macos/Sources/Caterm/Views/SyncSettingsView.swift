@@ -168,6 +168,15 @@ struct SyncSettingsView: View {
             preferences.notifyOnFailureEnabled = false
             return
         }
+        // UNUserNotificationCenter.current() raises an uncatchable Obj-C
+        // NSException (`bundleProxyForCurrentProcess is nil`) when the host
+        // process has no bundle identity — i.e., when running the bare debug
+        // binary (`make run`) instead of an .app bundle. Bail out cleanly so
+        // the toggle simply stays off rather than crashing the whole app.
+        guard Bundle.main.bundleIdentifier != nil else {
+            preferences.notifyOnFailureEnabled = false
+            return
+        }
         do {
             let granted = try await UNUserNotificationCenter.current()
                 .requestAuthorization(options: [.alert, .sound])

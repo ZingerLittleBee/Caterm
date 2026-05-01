@@ -24,6 +24,10 @@ public struct LiveNotificationCenter: NotificationDelivering {
     public init() {}
 
     public func add(_ request: UNNotificationRequest) async throws {
+        // UNUserNotificationCenter.current() raises an uncatchable Obj-C
+        // NSException when the process has no bundle identity (dev-mode
+        // bare-binary launches via `make run`). Skip cleanly there.
+        guard Bundle.main.bundleIdentifier != nil else { return }
         try await UNUserNotificationCenter.current().add(request)
     }
 }
