@@ -158,8 +158,16 @@ public enum SFTPPathEncodingError: Error {
     case empty                                  // empty string after trim
     case containsControlChar(Character)         // \n, \0, \r, \t, etc.
     case containsGlob(Character)                // *, ?, [
-    case lineTooLong(bytes: Int)                // exceeds SFTP_MAX_LSARGS (1023)
+    case pathTooLong(bytes: Int)                // single path > 1023 bytes (SFTP_MAX_LSARGS guard)
     case leadingDashUnnormalized                // path starts with '-' and caller did not normalize
+}
+```
+
+The path-level `pathTooLong` check is necessary but **not sufficient** for two-path operations (`rename`, `put`, `get`). Two paths each at 600 bytes individually pass `pathTooLong` but their combined batch line (`put -p "<600B>" "<600B>"\n` = ~1212 bytes) exceeds OpenSSH's `SFTP_MAX_LSARGS`. The whole-line guard is enforced one layer up, in `SFTPCommandBuilder` (see §3.4 below):
+
+```swift
+public enum SFTPBatchLineError: Error {
+    case lineTooLong(bytes: Int, limit: Int)    // assembled batch line ≥ 1023 bytes
 }
 ```
 
@@ -183,7 +191,8 @@ Test vectors (all in `SFTPPathEncoderTests`):
 - `*.txt` → throws `containsGlob('*')`
 - `[abc].txt` → throws `containsGlob('[')`
 - `""` → throws `empty`
-- `/legit/path/that/is/very/long…` (1024+ bytes) → throws `lineTooLong(bytes:)`
+- `/legit/path/that/is/very/long…` (1024+ bytes) → throws `pathTooLong(bytes:)` (single-path guard)
+- Two paths each ~600 bytes used together in `put -p A B` → `SFTPCommandBuilder` throws `SFTPBatchLineError.lineTooLong` (combined-line guard)
 - `/empty/` (path with trailing slash, non-empty) → `"/empty/"` (accepted)
 
 ### 3.4 SFTPInvocation API (revised — full auth surface)
@@ -207,15 +216,22 @@ public struct SFTPCredentials {
 
 // Denylist: keys the builder MUST silently drop from extraSSHOptions, because
 // allowing them would break the no-fallback contract. Builder asserts in debug.
+//
+// IMPORTANT: OpenSSH config keys are case-insensitive (verified locally:
+//   `ssh -G -o batchmode=no -o BatchMode=yes …` reports `batchmode no` —
+//   the lowercase variant counts as the first occurrence and wins under
+//   first-value-wins semantics). The denylist therefore stores keys in
+//   lowercase form, and the builder lowercases every user-supplied key
+//   before lookup. Tests cover mixed-case bypass attempts.
 public let SFTPCredentialsDenylist: Set<String> = [
-    "ControlMaster",                  // we always set =no
-    "ControlPath",                    // we always set our own
-    "ControlPersist",                 // managed by SSHCommandBuilder for terminal
-    "BatchMode",                      // we always set =yes
-    "PreferredAuthentications",       // we always set =none
-    "ProxyCommand",                   // we always set =none
-    "ProxyJump",                      // alternate fallback path
-    "Hostname",                       // would re-target the connection
+    "controlmaster",                  // we always set =no
+    "controlpath",                    // we always set our own
+    "controlpersist",                 // managed by SSHCommandBuilder for terminal
+    "batchmode",                      // we always set =yes
+    "preferredauthentications",       // we always set =none
+    "proxycommand",                   // we always set =none
+    "proxyjump",                      // alternate fallback path
+    "hostname",                       // would re-target the connection
 ]
 
 public enum SFTPCommandBuilder {
@@ -243,6 +259,10 @@ public enum SFTPOperation {
 
 `resume: Bool` controls the `-a` flag. v1 only sets `resume: true` when the user clicks Retry on a failed transfer (§4.2 `FileTransferStore.retry`). New transfers always start fresh.
 
+**Line-level length validation.** After `SFTPCommandBuilder` assembles the batch script for a given operation, it checks every line against `SFTP_MAX_LSARGS` (1023 bytes). If any line is too long it throws `SFTPBatchLineError.lineTooLong(bytes:limit:)` and the operation fails before any subprocess is spawned. This is the only safe place to catch combined-length overflow because `SFTPPathEncoder` only sees one path at a time (`pathTooLong` is a per-path guard). Tests:
+- `SFTPCommandBuilderTests.testCombinedPathLengthRejected`: build a `rename(from: aboutToTip, to: aboutToTip)` where each path is 600 bytes; assembled `rename "<600B>" "<600B>"\n` ≈ 1212 bytes; expect `lineTooLong(bytes: 1212, limit: 1023)`.
+- `SFTPCommandBuilderTests.testPutAndGetEnforceLineLimit`: same with `put` and `get` (both have `-p` flag and optional `-R` / `-a`).
+
 Key change vs v1 spec: `credentials` parameter is **required**, but is used solely to set host-key, known-hosts, and identity-file policy (`-o UserKnownHostsFile=`, `-o StrictHostKeyChecking=`, `-i …`). `BatchMode=yes` in the argv guarantees no interactive auth ever happens, so credentials are policy-only, not auth-driving.
 
 **Argv ordering matters.** OpenSSH applies the **first** value seen for any repeated `-o` key (verified locally with `ssh -G -o "PreferredAuthentications=none" -o "PreferredAuthentications=publickey" host` → returns `none`). The builder must therefore emit the four no-fallback options *first* in argv, then the `extraSSHOptions` (filtered by `SFTPCredentialsDenylist`), then everything else. A user who sneaks `PreferredAuthentications=publickey` into `extraSSHOptions` cannot override our `=none` because ours appears earlier in argv — and the denylist also drops it explicitly so it never even reaches argv.
@@ -251,6 +271,11 @@ Key change vs v1 spec: `credentials` parameter is **required**, but is used sole
 - Construct credentials with `extraSSHOptions: ["PreferredAuthentications": "publickey", "BatchMode": "no", "ControlMaster": "auto", "ProxyJump": "bastion"]`.
 - Assert the resulting argv contains exactly one occurrence of each no-fallback key with our values.
 - Assert none of the denylisted user-supplied values appear anywhere.
+
+`SFTPCommandBuilderTests.testDenylistIsCaseInsensitive` (lock against the case-bypass attack):
+- Construct credentials with `extraSSHOptions: ["preferredauthentications": "publickey", "batchmode": "no", "BATCHMODE": "no", "Hostname": "evil.example", "PROXYCOMMAND": "nc evil 22"]`.
+- Assert none of those values appear in argv (the builder lowercases every key before consulting the denylist).
+- Assert the rendered argv still contains our enforced `BatchMode=yes`, `PreferredAuthentications=none`, `ProxyCommand=none`, and the original host destination — *not* `evil.example`.
 
 `SSHCommandBuilder` is refactored to expose a `credentials(for: Host)` factory so both builders share construction logic.
 

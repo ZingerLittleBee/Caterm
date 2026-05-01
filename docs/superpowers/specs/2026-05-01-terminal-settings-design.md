@@ -194,7 +194,7 @@ If a single user action changes both live and new-surface fields (debounced toge
 
 This explicit scoping resolves three conflicts in the original §2.4: scrollback-as-live-reload, titlebar-as-live-reload, and per-host-as-broadcast.
 
-#### 2.4.2 Reload sequence (scope = `.global`)
+#### 2.4.2 Reload sequence (scope = `.globalLive` or `.globalNewSurface`)
 
 1. `SettingsStore.update(...)` writes plist + bumps revision.
 2. `ConfigStore.renderManagedSnapshot(from: settings.global)` rewrites the managed snapshot file.
@@ -216,10 +216,13 @@ This explicit scoping resolves three conflicts in the original §2.4: scrollback
 **Storage location.** Per-host patch files live in **Application Support**, not Caches:
 `~/Library/Application Support/Caterm/per-host/<id>.config`. Reason: macOS cleans `~/Library/Caches/` opportunistically (and on iCloud syncing settings, can wipe it), but the source of truth is `settings.plist`, so a wiped cache would silently restore "no override" for hosts whose plist still has a theme. Application Support is where Caterm already keeps `settings.plist`; using the same root keeps backup/restore semantics consistent.
 
-**Boot regeneration (idempotent).** On every app start, after `SettingsStore.load()` succeeds, `SettingsStore.regeneratePerHostPatchesFromPlist()` is called:
-1. For each `(hostId, override)` in `settings.hostOverrides` where `override.theme != nil`: write/overwrite the patch file deterministically.
-2. Delete any patch file in `per-host/` whose hostId is not in `settings.hostOverrides` (orphan cleanup).
-This guarantees the on-disk patches always reflect the plist, even after manual deletes, file-system corruption, or `xattr` quarantine.
+**Boot regeneration (idempotent).** On every app start, after `SettingsStore.load()` succeeds, `SettingsStore.regeneratePerHostPatchesFromPlist()` is called as part of the §5.1 boot sequence:
+1. Build the set of "patch-needed" host ids: `{ id | hostOverrides[id]?.theme != nil }`.
+2. For each id in the patch-needed set: write/overwrite `per-host/<id>.config` deterministically.
+3. Enumerate every file under `per-host/`. **Delete** any file whose host id is NOT in the patch-needed set. This covers two stale states symmetrically:
+   - hostOverrides entry absent (host removed)
+   - hostOverrides[id] exists but `theme == nil` (override cleared via the host form's "Use global"; the entry persists as `PartialSettings()` until the host is removed)
+This guarantees on-disk patches always reflect the plist, even after manual file deletes, filesystem corruption, `xattr` quarantine, or a user setting an override and then clearing it.
 
 **On settings change:**
 1. `SettingsStore.update(...)` writes plist + bumps revision.
@@ -410,8 +413,9 @@ Scripts/
 1. `SettingsStore.load()` reads `settings.plist`. If absent → seed defaults using values that match the **current** observed defaults in production (SF Mono, size 13, theme Catppuccin Mocha, block cursor) so an empty plist produces no visual change.
 2. `MigrationStep.runIfNeeded()` (§8) executes once per install version; may rewrite user config and seed `settings.plist`.
 3. `ConfigStore.renderManagedSnapshot(from: settings.global)` writes the managed snapshot — **always preserving the existing `term` + scrollback keybinds block** (Section 6.4).
-4. `ThemeCatalog.load()` reads bundled `themes.json` into memory.
-5. Ghostty surfaces are constructed with the standard config chain.
+4. `SettingsStore.regeneratePerHostPatchesFromPlist()` (§2.4.3) writes all needed `per-host/<id>.config` files and prunes stale ones, so on-disk state matches `settings.plist` before any surface is created.
+5. `ThemeCatalog.load()` reads bundled `themes.json` into memory.
+6. Ghostty surfaces are constructed with the standard config chain.
 
 ### 5.2 Write path (user edits in Preferences)
 
@@ -538,31 +542,60 @@ After this, GUI changes flow correctly: managed wins over defaults, user config 
 
 **Branch B — fingerprint does NOT match (user has edited):**
 
-1. Parse user config with `GhosttyConfigParser` (§2.0.1; not a TOML parser).
-2. For each key that maps to a `PartialSettings` field, attempt **lossless extraction** (`PartialSettings.tryExtract(key:rawValue:) -> ExtractResult`):
-   - `ExtractResult.ok(value)` — the line maps cleanly into a single `PartialSettings` field (e.g. `font-family = SF Mono` → `fontFamily = "SF Mono"`).
-   - `ExtractResult.unrepresentable(reason:)` — the value cannot be losslessly represented. Examples (verified from Ghostty docs):
-     - `font-family = X` followed by another `font-family = Y` (Ghostty fallback chain; `PartialSettings.fontFamily: String?` is single-valued).
-     - `theme = light:Catppuccin Latte,dark:Catppuccin Mocha` (system-appearance switching; not modeled).
-     - `bell-features = audio,attention` (custom feature combination not matching any of our four `BellMode` cases).
-     - `palette = 0=#000000` and other deeper customizations.
-3. For every line that yields `.ok`, copy the value into `settings.plist.global` (so the GUI shows what the user already had).
-4. **Do not modify** user config.
-5. Render managed snapshot from `settings.plist`.
-6. Insert `"settings-gui-v1"` into `settings.migrationsCompleted`.
-7. On next Preferences open (or a one-time modal at app start), show an informational banner whose text reflects the extraction result:
+Per-line classification is insufficient: a fallback `font-family` chain (`font-family = X` then `font-family = Y`) consists of two lines that *individually* look ok-extractable (each is a valid `font-family` value) but *together* express semantics our schema can't represent. Classification therefore runs at config level, after pre-grouping repeated keys.
+
+1. Parse user config with `GhosttyConfigParser` (§2.0.1) into `entries: [ConfigEntry]` (preserving order and source-line numbers).
+2. **Pre-group** entries by lowercased key into `keyGroups: [String: [ConfigEntry]]`. Multi-occurrence keys are now visible as such.
+3. Run `PartialSettings.classifyConfig(_ keyGroups:) -> ConfigClassification`:
+   ```swift
+   public struct ConfigClassification {
+       public var representable: [(field: PartialSettingsKeyPath, value: Any, sourceLines: [Int])]
+       public var unrepresentable: [UnrepresentableEntry]
+   }
+   public struct UnrepresentableEntry {
+       public let key: String           // e.g. "font-family"
+       public let sourceLines: [Int]    // all line numbers contributing
+       public let reason: Reason
+       public enum Reason {
+           case fallbackChain(count: Int)            // font-family appears > 1 time
+           case lightDarkSplit                       // theme = light:X,dark:Y
+           case customBellFeatures(rendered: String) // bell-features value not matching .none/.audio/.visual/.both
+           case unmodeledKey(key: String)            // see step 4
+       }
+   }
+   ```
+   Logic per group:
+   - **Single occurrence + key in `PartialSettings` mapping table (§6) + value parses losslessly** → push to `representable`.
+   - **Single occurrence + key in mapping but value can't round-trip** (e.g. `theme = light:X,dark:Y`, `bell-features = audio,attention,no-title`) → push to `unrepresentable` with the matching `Reason`.
+   - **Multi-occurrence + key supports fallback (currently only `font-family`)** → push as `fallbackChain(count:)`.
+4. **Unmodeled-key scan (separate from mapping)**: any group whose key is in a fixed `unmodeledTrackedKeys` set — currently `["palette", "theme-light", "theme-dark", "background-image", "keybind", "command-palette-entry"]` — is added to `unrepresentable` with `unmodeledKey(key:)`. This explicitly covers `palette = N=#rgb` and similar customizations that the mapping table doesn't claim. Other unrecognized keys are ignored (Caterm doesn't try to be exhaustive — anything not in either set just stays in user config and Ghostty applies it).
+5. For every entry in `representable`, copy the value into `settings.plist.global` (so the GUI shows what the user already had).
+6. **Do not modify** user config.
+7. Render managed snapshot from `settings.plist`.
+8. Insert `"settings-gui-v1"` into `settings.migrationsCompleted`.
+9. On next Preferences open (or a one-time modal at app start), show an informational banner whose text reflects the classification:
 
 > Your user config at `~/.../Caterm/config` overrides Caterm Preferences for **<list of representable keys>**. Caterm imported these into Preferences.
 >
-> **<N>** other override(s) — including <bullet list of unrepresentable lines, e.g. "fallback font chain (3 entries)", "light/dark theme switching", "custom bell-features"> — remain in your user config and continue to apply. They cannot be edited from Preferences.
+> **<N>** other override(s) remain in your user config and continue to apply. They cannot be edited from Preferences:
+> • fallback font chain (<count> entries)
+> • light/dark theme switching
+> • custom bell-features (`<value>`)
+> • palette overrides (<count> entries)
+> • <other unmodeled keys, one bullet per group>
 >
 > [ Import representable keys (clear from user config) ] [ Keep as-is ] [ Open user config ]
 
-Choosing **Import representable keys** removes only the `.ok` lines from user config (using `GhosttyConfigParser`'s lossless edit; preserves all other lines, comments, blank lines, and ordering). Unrepresentable lines stay in user config untouched, ensuring the user does not silently lose `font-family` fallback chains, `theme = light:...,dark:...`, custom `bell-features`, or anything else outside our v1 schema.
+Choosing **Import representable keys** removes ONLY the lines whose source-line numbers came from `representable` entries (using `GhosttyConfigParser`'s lossless edit; preserves all other lines, comments, blank lines, and ordering). All `unrepresentable` entries — including every line of any fallback chain — stay in user config untouched. This guarantees a fallback chain is never partially deleted.
 
 "Keep as-is" preserves the override hint count in the Terminal tab footer; the user can act on it later.
 
-`SettingsMigrationTests.testBranchB_unrepresentableLinesPreserved` covers each `unrepresentable` reason with a golden user config.
+`SettingsMigrationTests`:
+- `testBranchB_fallbackChainKeptIntact`: golden user config with two `font-family` lines; expect **neither** removed by Import.
+- `testBranchB_lightDarkThemeKept`: `theme = light:Catppuccin Latte,dark:Catppuccin Mocha`; expect line preserved.
+- `testBranchB_customBellFeaturesKept`: `bell-features = audio,attention,no-title`; expect line preserved.
+- `testBranchB_paletteKept`: a few `palette = N=#rgb` lines; expect all preserved.
+- `testBranchB_representableImportedAndCleared`: single-occurrence representable lines disappear from user config after Import; non-representable lines untouched.
 
 **Branch C — user config missing or unreadable:**
 
@@ -624,7 +657,7 @@ We never silently overwrite user content. Many Caterm users in the wild have cus
 10. Click "Edit Advanced Config" → user config opens in Finder
 11. Quit while typing in stepper → no data loss (debounce flushes on quit)
 12. **Migration A:** start with legacy default user config → upgrade → user config replaced with minimal placeholder; backup file created; settings.plist contains the legacy values
-13. **Migration B:** start with edited user config → upgrade → user config untouched; banner shown; clicking "Move to Preferences" clears those keys and re-renders
+13. **Migration B:** start with edited user config → upgrade → user config untouched; banner shown listing representable + unrepresentable overrides; clicking "Import representable keys" clears only the representable single-line keys (fallback `font-family` chains, `theme = light:…,dark:…`, custom `bell-features`, `palette` lines all stay) and re-renders
 14. Theme picker shows favorites + scrollable full catalog; search filters correctly; clicking a card live-applies
 
 ## 10. Out of Scope (v2)
@@ -647,5 +680,5 @@ We never silently overwrite user content. Many Caterm users in the wild have cus
 - `apps/macos/Sources/Caterm/AppDelegate.swift` — current ⌘, handler
 - `apps/macos/Sources/Caterm/Views/SyncSettingsView.swift` — sheet to migrate into tab
 - `apps/macos/Frameworks/GhosttyKit.xcframework/macos-arm64_x86_64/Headers/ghostty.h` — verified config/surface API surface (lines 1069-1108)
-- `apps/macos/Vendor/ghostty/resources/themes/` — build-time theme source (requires `make macos-ghostty-submodule`)
+- `apps/macos/Vendor/ghostty/zig-out/share/ghostty/themes/` — build-time theme source (populated by `make macos-ghostty-kit` after `make macos-ghostty-submodule`); see §3.4 for the discovery candidate list and fallback when this path is not populated
 - Web app reference: `apps/web/src/components/settings/`, `apps/web/src/lib/terminal-themes.ts`
