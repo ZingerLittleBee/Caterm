@@ -74,6 +74,8 @@ let package = Package(
                 "ConfigStore",
                 "ServerSyncClient",
                 "HostSyncStore",
+                "FileTransferStore",
+                "SFTPCommandBuilder",
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
