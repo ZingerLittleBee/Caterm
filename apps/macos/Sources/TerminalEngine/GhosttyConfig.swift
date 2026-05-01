@@ -56,3 +56,42 @@ public enum GhosttyError: Error, CustomStringConvertible {
 		}
 	}
 }
+
+@MainActor
+public struct GhosttyConfigBuilder {
+	public let loadDefaults: () -> Void
+	public let loadFile: (String) -> Void
+	public let finalize: () -> Void
+	public let diagnosticsCount: () -> UInt32
+	public let getDiagnostic: (UInt32) -> String
+
+	public init(
+		loadDefaults: @escaping () -> Void,
+		loadFile: @escaping (String) -> Void,
+		finalize: @escaping () -> Void,
+		diagnosticsCount: @escaping () -> UInt32,
+		getDiagnostic: @escaping (UInt32) -> String
+	) {
+		self.loadDefaults = loadDefaults
+		self.loadFile = loadFile
+		self.finalize = finalize
+		self.diagnosticsCount = diagnosticsCount
+		self.getDiagnostic = getDiagnostic
+	}
+
+	public struct Built {
+		public let diagnostics: [ConfigDiagnostic]
+	}
+
+	public func build(managedPath: String, userPath: String?, perHostPath: String?) -> Built {
+		loadDefaults()
+		loadFile(managedPath)
+		if let userPath { loadFile(userPath) }
+		if let perHostPath { loadFile(perHostPath) }
+		finalize()
+		let diagnostics = ConfigDiagnostic.collect(rawCount: diagnosticsCount()) { i in
+			getDiagnostic(i)
+		}
+		return Built(diagnostics: diagnostics)
+	}
+}
