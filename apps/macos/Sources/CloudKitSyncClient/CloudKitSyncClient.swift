@@ -88,6 +88,11 @@ public final class CloudKitSyncClient: ServerSyncClient {
     }
 
     public func deleteHost(id: String) async throws {
-        throw ServerSyncError.http(status: 501, body: "not implemented: Task 9")
+        let recID = CKRecord.ID(recordName: id, zoneID: zoneID)
+        do {
+            _ = try await database.deleteRecord(withID: recID)
+        } catch {
+            throw CloudKitErrorMapping.map(error)
+        }
     }
 }

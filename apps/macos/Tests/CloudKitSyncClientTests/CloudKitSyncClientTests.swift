@@ -101,4 +101,21 @@ final class CloudKitSyncClientTests: XCTestCase {
             XCTFail("expected .http, got \(e)")
         }
     }
+
+    func testDeleteHostRemovesRecord() async throws {
+        let recID = CKRecord.ID(recordName: "h-1", zoneID: zoneID)
+        let rec = CKRecord(recordType: "Host", recordID: recID)
+        fakeDb.records[recID] = rec
+        try await sut.deleteHost(id: "h-1")
+        XCTAssertNil(fakeDb.records[recID])
+        XCTAssertEqual(fakeDb.deleteCallCount, 1)
+    }
+
+    func testDeleteHostMissingIsNoOp() async throws {
+        // FakeCloudDatabase.deleteRecord on a missing id removes nothing
+        // and does NOT throw — matches CKDatabase.deleteRecord production
+        // semantics. No throw expected here.
+        try await sut.deleteHost(id: "missing")
+        XCTAssertEqual(fakeDb.deleteCallCount, 1)
+    }
 }
