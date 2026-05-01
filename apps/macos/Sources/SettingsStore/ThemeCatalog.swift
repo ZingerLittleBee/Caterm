@@ -8,10 +8,28 @@ public struct ThemeRecord: Codable, Equatable, Identifiable {
     public let foreground: String
     public let cursorColor: String?
     public let selectionBackground: String?
+
+    public init(
+        name: String,
+        palette: [String],
+        background: String,
+        foreground: String,
+        cursorColor: String?,
+        selectionBackground: String?
+    ) {
+        self.name = name
+        self.palette = palette
+        self.background = background
+        self.foreground = foreground
+        self.cursorColor = cursorColor
+        self.selectionBackground = selectionBackground
+    }
 }
 
 public struct ThemeCatalog {
     public let themes: [ThemeRecord]
+
+    public init(themes: [ThemeRecord]) { self.themes = themes }
 
     public static let favoriteNames: [String] = [
         "Catppuccin Mocha",

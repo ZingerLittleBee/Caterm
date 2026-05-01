@@ -1,4 +1,5 @@
 import AppKit
+import SettingsStore
 import SwiftUI
 
 @MainActor
@@ -6,8 +7,19 @@ public final class PreferencesWindowController: NSWindowController {
     public private(set) var tabs: [PreferencesTab] = []
     public private(set) var activeTabIndex: Int = 0
     private var hostingController: NSHostingController<AnyView>?
+    private let settingsStore: SettingsStore
 
     public convenience init() {
+        let store = (try? SettingsStore.load(from: SettingsStore.defaultPlistPath))
+            ?? SettingsStore(
+                settings: CatermSettings(global: CatermSettings.defaultsSeed),
+                path: SettingsStore.defaultPlistPath
+            )
+        self.init(settingsStore: store)
+    }
+
+    public init(settingsStore: SettingsStore) {
+        self.settingsStore = settingsStore
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -15,7 +27,7 @@ public final class PreferencesWindowController: NSWindowController {
         )
         window.title = "Caterm Preferences"
         window.setFrameAutosaveName("PreferencesWindowFrame")
-        self.init(window: window)
+        super.init(window: window)
         self.tabs = [
             PreferencesTab(title: "General", systemImage: "gearshape") { GeneralSettingsView() },
             PreferencesTab(title: "Terminal", systemImage: "terminal") { TerminalSettingsView() },
@@ -24,6 +36,11 @@ public final class PreferencesWindowController: NSWindowController {
         ]
         installToolbar()
         renderActiveTab()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     public func activate(tabIndex: Int) {
@@ -43,7 +60,10 @@ public final class PreferencesWindowController: NSWindowController {
     private func renderActiveTab() {
         guard let window else { return }
         let view = tabs[activeTabIndex].viewBuilder()
-        let host = NSHostingController(rootView: AnyView(view.frame(minWidth: 600, minHeight: 400)))
+        let rooted = view
+            .frame(minWidth: 600, minHeight: 400)
+            .environmentObject(settingsStore)
+        let host = NSHostingController(rootView: AnyView(rooted))
         window.contentViewController = host
         hostingController = host
     }
