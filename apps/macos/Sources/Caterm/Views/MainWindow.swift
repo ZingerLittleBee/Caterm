@@ -130,7 +130,13 @@ struct MainWindow: View {
 							.frame(width: drawerWidth)
 						}
 						.frame(width: drawerTotal, height: geo.size.height)
-						.background(Color(NSColor.windowBackgroundColor))
+						// Use a material rather than windowBackgroundColor so
+						// the drawer's vibrancy matches the title bar's
+						// NSVisualEffectView. With a flat fill there was a
+						// visible seam at the title-bar bottom edge where the
+						// drawer's flat color met the title bar's translucent
+						// gray.
+						.background(.regularMaterial)
 						.offset(x: geo.size.width - drawerTotal, y: 0)
 						.transition(.move(edge: .trailing))
 					}
