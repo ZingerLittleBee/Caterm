@@ -44,5 +44,7 @@ final class CKRecordHostMappingTests: XCTestCase {
 		XCTAssertEqual(host.port, 22)
 		XCTAssertEqual(host.username, "u")
 		XCTAssertEqual(host.authType, "key")
+		XCTAssertEqual(host.createdAt, .distantPast)
+		XCTAssertEqual(host.updatedAt, .distantPast)
 	}
 }
