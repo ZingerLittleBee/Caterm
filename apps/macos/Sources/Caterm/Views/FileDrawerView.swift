@@ -53,6 +53,12 @@ struct FileDrawerView: View {
 					}
 				)
 			}
+
+			if let fts = fileTransferStore {
+				Divider()
+				TransferQueueView(store: fts)
+					.background(.thickMaterial)
+			}
 		}
 		.frame(minWidth: 240)
 		.task(id: host?.id) { await refresh() }
