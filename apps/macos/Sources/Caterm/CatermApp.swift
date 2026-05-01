@@ -1,4 +1,6 @@
 import AppKit
+import CloudKit
+import CloudKitSyncClient
 import ConfigStore
 import FileTransferStore
 import Foundation
@@ -33,9 +35,15 @@ struct CatermApp: App {
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
-		let auth = AuthSession(baseURL: ServerURL.current)
-		self.authSession = auth
-		let client = URLSessionServerSyncClient(baseURL: ServerURL.current)
+		// CloudKit-backed sync (replaces the URLSession + better-auth pair).
+		// `AuthSession` reference kept on `CatermApp` for compatibility with
+		// `PreferencesWindowController.syncEnvironment` which still expects
+		// a typed `AuthSession`. Plan E removes the typed reference along
+		// with the login UI.
+		let cloudContainer = CKContainer(identifier: "iCloud.com.caterm.app")
+		let icloudSession = iCloudAccountSession(provider: cloudContainer)
+		self.authSession = AuthSession(baseURL: ServerURL.current)  // unwired
+		let client = CloudKitSyncClient(database: cloudContainer.privateCloudDatabase)
 		let prefs = SyncPreferences()
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
 		// property-wrapper init — required because `@StateObject` cannot be
@@ -45,9 +53,20 @@ struct CatermApp: App {
 		_syncStore = StateObject(wrappedValue: HostSyncStore(
 			client: client,
 			sessionStore: session,
-			authSession: auth,
+			authSession: icloudSession,
 			preferences: prefs
 		))
+		// Refresh CloudKit account status asynchronously. HostSyncStore.syncIfSignedIn
+		// (called from .task in body) handles the case where refresh hasn't completed
+		// yet — it sees isSignedIn=false and skips; the .CKAccountChanged observer
+		// re-triggers sync once the status flips.
+		Task { @MainActor in
+			await icloudSession.refresh()
+			NotificationCenter.default.post(
+				name: .catermICloudAccountChanged, object: nil
+			)
+		}
+		icloudSession.startObservingAccountChanges()
 		// Per-app FileTransferStore. Closures capture plain value types
 		// (URLs / paths) rather than `ControlMasterManager` itself so the
 		// closure body remains nonisolated-callable. Liveness goes through
@@ -140,6 +159,10 @@ struct CatermApp: App {
 			// disappearance does not cancel the sync — that's intentional;
 			// cancellation lives in the chain (spec §3.5).
 			.task { syncStore.syncIfSignedIn() }
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermICloudAccountChanged)) { _ in
+				syncStore.syncIfSignedIn()
+			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermOpenSyncSettings)) { _ in
 				// Sync settings now live as a tab inside the Preferences
