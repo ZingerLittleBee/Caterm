@@ -26,15 +26,19 @@ This brings macOS to feature parity with the web app on file operations, while s
 
 ### 2.2 Connection-state contract (no transparent re-auth)
 
-If the ControlMaster socket is missing (TTL expired, app restarted, ssh subprocess crashed) we **do not** silently re-authenticate from `sftp`. The drawer is a passive consumer of an already-authenticated session. Specific behavior:
+If the ControlMaster is not actively serving (TTL expired, app restarted, ssh subprocess crashed, OS killed it) we **do not** silently re-authenticate from `sftp`. The drawer is a passive consumer of an already-authenticated session.
 
-- `RemoteFileSystem` checks for socket existence (`access(path, F_OK)`) before invoking `sftp`.
-- Missing socket → operation fails with `.sessionGone`; UI shows banner "Reconnect host to browse files" with action button that triggers the existing reconnect FSM in `SessionStore`.
-- This avoids two failure modes:
-  1. sftp prompting for credentials in a non-interactive subprocess (would hang)
-  2. sftp bypassing the `StrictHostKeyChecking` / `UserKnownHostsFile` policy that the original ssh invocation set
+**Liveness check is required, not just file existence.** OpenSSH's ssh client falls back to a normal connection when ControlPath points at a missing or non-listening socket — meaning a stale `.sock` file plus a sftp invocation would re-auth via askpass. We block this with two layered defenses:
 
-The downside (a few extra clicks after Mac sleep / network blip) is acceptable for v1 and matches the explicit reconnect overlay UX users already see.
+1. **`ssh -O check -S <socket>`** before each `sftp` invocation. Per `ssh(1)`, `-O check` "check that the master process is running"; non-zero exit → master is gone.
+2. **`-o BatchMode=yes`** on every `sftp` invocation. This disables all interactive prompts (passwords, passphrases, host-key TOFU). If the master is somehow gone after our check, sftp fails fast instead of hanging or prompting.
+
+Behavior on missing master:
+- `RemoteFileSystem` runs the `ssh -O check` first; non-zero → throw `.sessionGone`.
+- UI shows banner "Reconnect host to browse files" with an action button that triggers the existing reconnect FSM in `SessionStore`.
+- The full credential surface (§3.4) is still passed to `SFTPCommandBuilder` so that `BatchMode=yes` enforces identical host-key policy as the original ssh — but no actual interactive auth ever happens from sftp.
+
+This resolves the apparent contradiction with §3.4: the credential surface is supplied for **policy parity** (host key checking, identity files), not for re-authentication. Re-auth is impossible because BatchMode is on.
 
 ### 2.3 Foreground: SwiftUI/AppKit drawer in MainWindow
 
@@ -113,9 +117,11 @@ public enum SFTPPathEncoder {
 }
 
 public enum SFTPPathEncodingError: Error {
-    case containsControlChar(Character)        // \n, \0, \r, \t, etc.
-    case containsBackslashOrQuoteWithoutEscape // safety net
-    case empty
+    case empty                                  // empty string after trim
+    case containsControlChar(Character)         // \n, \0, \r, \t, etc.
+    case containsGlob(Character)                // *, ?, [
+    case lineTooLong(bytes: Int)                // exceeds SFTP_MAX_LSARGS (1023)
+    case leadingDashUnnormalized                // path starts with '-' and caller did not normalize
 }
 ```
 
@@ -133,10 +139,14 @@ Test vectors (all in `SFTPPathEncoderTests`):
 - `/path/with space/file` → `"/path/with space/file"`
 - `/path/"quoted"` → `"/path/\"quoted\""`
 - `/path\with\back` → `"/path\\with\\back"`
-- `-rf` → throws (leading dash; caller should normalize to `./-rf`)
+- `-rf` → throws `leadingDashUnnormalized` (caller should normalize to `./-rf` before calling)
+- `./-rf` → `"./-rf"` (accepted; leading character is `.`)
 - `file\nname` → throws `containsControlChar('\n')`
-- `*.txt` → throws `containsGlob`
-- `/empty/` (empty after split) → throws `empty`
+- `*.txt` → throws `containsGlob('*')`
+- `[abc].txt` → throws `containsGlob('[')`
+- `""` → throws `empty`
+- `/legit/path/that/is/very/long…` (1024+ bytes) → throws `lineTooLong(bytes:)`
+- `/empty/` (path with trailing slash, non-empty) → `"/empty/"` (accepted)
 
 ### 3.4 SFTPInvocation API (revised — full auth surface)
 
@@ -156,10 +166,10 @@ public struct SFTPCredentials {
 }
 
 public enum SFTPCommandBuilder {
-    /// Build a sftp invocation. `credentials` is the same surface SSHCommandBuilder
-    /// uses, since sftp must authenticate identically when the master socket is
-    /// missing (rare per §2.2 but possible for the first sftp call before a
-    /// terminal session is opened).
+    /// Build a sftp invocation. `credentials` provides host-key and identity
+    /// policy that mirrors SSHCommandBuilder so the resulting subprocess never
+    /// applies a weaker policy than the active session — even though
+    /// BatchMode=yes (set in argv) prevents any actual interactive auth.
     public static func invocation(
         host: Host,
         controlPath: URL,
@@ -170,16 +180,17 @@ public enum SFTPCommandBuilder {
 
 public enum SFTPOperation {
     case list(remoteDir: String)
-    case put(localPath: URL, remotePath: String, recursive: Bool)
-    case get(remotePath: String, localPath: URL, recursive: Bool)
+    case put(localPath: URL, remotePath: String, recursive: Bool, resume: Bool)
+    case get(remotePath: String, localPath: URL, recursive: Bool, resume: Bool)
     case mkdir(remotePath: String)
     case remove(remotePath: String, isDirectory: Bool)
     case rename(from: String, to: String)
-    case retryPut(localPath: URL, remotePath: String, recursive: Bool)   // adds -a
 }
 ```
 
-Key change vs v1 spec: `credentials` parameter is **required**. It is constructed once per host from the same source the active SSH session uses (the host's stored credentials → `caterm-askpass` config). This guarantees that if sftp ever does need to reauthenticate, it follows identical host-key and credential policy.
+`resume: Bool` controls the `-a` flag. v1 only sets `resume: true` when the user clicks Retry on a failed transfer (§4.2 `FileTransferStore.retry`). New transfers always start fresh.
+
+Key change vs v1 spec: `credentials` parameter is **required**, but is used solely to set host-key, known-hosts, and identity-file policy (`-o UserKnownHostsFile=`, `-o StrictHostKeyChecking=`, `-i …`). `BatchMode=yes` in the argv guarantees no interactive auth ever happens, so credentials are policy-only, not auth-driving.
 
 `SSHCommandBuilder` is refactored to expose a `credentials(for: Host)` factory so both builders share construction logic.
 
@@ -322,7 +333,7 @@ No automatic retry of failed transfers (user explicitly clicks retry). Avoids un
 - **`SFTPCommandBuilderTests`**
   - argv contains correct `-o ControlPath`
   - batch script for each `SFTPOperation` matches expected format byte-for-byte
-  - lowercase `-p` flag; `-R` only when `recursive: true`; `-a` only on `retryPut`
+  - lowercase `-p` flag always; `-R` only when `recursive: true`; `-a` only when `resume: true` (set by `FileTransferStore.retry`)
   - credentials surface produces correct `-i`, `-o UserKnownHostsFile=...`, `SSH_ASKPASS` env
 
 - **`FileTransferStoreTests`**

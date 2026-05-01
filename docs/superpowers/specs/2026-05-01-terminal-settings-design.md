@@ -8,9 +8,24 @@
 
 ## 1. Goal
 
-Replace the current "⌘, opens TOML in Finder" behavior with a proper macOS Preferences window covering Font, Cursor, Bell, Scrollback, Window, and Theme settings. Add a theme picker (bundled theme catalog with 9 curated favorites). Support **per-host theme override** (other fields are global only in v1).
+Replace the current "⌘, opens config in Finder" behavior with a proper macOS Preferences window covering Font, Cursor, Bell, Scrollback, Window, and Theme settings. Add a theme picker (bundled theme catalog with 9 curated favorites). Support **per-host theme override** (other fields are global only in v1).
 
 ## 2. Architecture
+
+### 2.0 Config file format (NOT TOML)
+
+Ghostty uses its own line-based configuration syntax, not TOML. The default file `font-family = SF Mono` (`ConfigStore.swift:8`) would fail TOML parsing because `SF Mono` is unquoted. The actual grammar is:
+
+```
+ghostty-config := { line }
+line           := comment | blank | entry
+comment        := '#' { any } NL
+entry          := key WS '=' WS value NL
+key            := [a-z][a-z0-9-]*
+value          := { any except NL }       (no escaping; multi-value via repeated lines, e.g. keybind = ...)
+```
+
+All Caterm code that reads or writes these files (`SettingsRenderer`, `MigrationStep`, `ThemeCatalog` build script) **must use this line-based parser**, not a TOML parser. We provide a small `GhosttyConfigParser` utility (single file, ~80 LOC) and unit-test it against fixtures harvested from the Ghostty submodule.
 
 ### 2.1 Current state of config layering (verified)
 
@@ -18,7 +33,7 @@ The codebase today (`apps/macos/Sources/ConfigStore/ConfigStore.swift`) maintain
 
 | File | Role | Current contents |
 |---|---|---|
-| `~/Library/Application Support/Caterm/config` (user TOML) | Seeded on first launch via `defaultConfig`; user edits freely | `font-family = SF Mono`, `font-size = 13`, `theme = Catppuccin Mocha`, `cursor-style = block`, `macos-titlebar-style = tabs` |
+| `~/Library/Application Support/Caterm/config` (user config) | Seeded on first launch via `defaultConfig`; user edits freely | `font-family = SF Mono`, `font-size = 13`, `theme = Catppuccin Mocha`, `cursor-style = block`, `macos-titlebar-style = tabs` |
 | `~/Library/Application Support/Caterm/caterm-managed.config` (managed snapshot) | Caterm-owned, written by `ConfigStore.writeManagedConfig()` | `term = xterm-256color`, 6× scroll/clear keybinds (⌘↑/⌘↓/⌘⇞/⌘⇟/⌘home/⌘end/⌘k) |
 
 `Sources/TerminalEngine/GhosttyConfig.swift` loads them in this order:
@@ -26,30 +41,30 @@ The codebase today (`apps/macos/Sources/ConfigStore/ConfigStore.swift`) maintain
 ```
 ghostty_config_load_default_files(cfg)            // ghostty defaults
 ghostty_config_load_file(cfg, managedPath)        // term + keybinds
-ghostty_config_load_file(cfg, userPath)           // user TOML — wins
+ghostty_config_load_file(cfg, userPath)           // user config — wins
 ghostty_config_finalize(cfg)
 ```
 
-**Critical implication:** because user TOML wins, and the seeded default user TOML already contains font/theme/cursor/titlebar lines, simply moving GUI writes into the managed snapshot **will be silently overridden** on every existing install. Section 8 details the migration that solves this.
+**Critical implication:** because user config wins, and the seeded default user config already contains font/theme/cursor/titlebar lines, simply moving GUI writes into the managed snapshot **will be silently overridden** on every existing install. Section 8 details the migration that solves this.
 
 ### 2.2 New persistence: Caterm-owned plist + rendered managed snapshot
 
 ```
 [Ghostty defaults]
         ↓
-[managed snapshot TOML]   ← rewritten on every settings change; contains:
+[managed snapshot]        ← Ghostty config syntax; rewritten on every settings change; contains:
                               • the legacy term + keybind block (preserved)
-                              • the new fields rendered from settings.plist (font, cursor, bell, scrollback, window, theme)
+                              • the new fields rendered from settings.plist (font, cursor, bell, scrollback, window, theme, macos-titlebar-style)
         ↓
-[user config TOML]         ← unchanged for new fields; existing customizations preserved
+[user config]              ← unchanged for new fields; existing customizations preserved
         ↓
 [per-host patch file]     ← optional, only for the surface; written when host has theme override
 ```
 
 - New file: `~/Library/Application Support/Caterm/settings.plist` (Codable, Caterm-owned).
 - `ConfigStore` is extended to render `settings.plist` into the managed snapshot on every write.
-- The user TOML is no longer edited by Caterm after the migration (§8).
-- Per-host theme override loads as an additional file **after** user TOML, scoped to the surface only — see §2.4.
+- The user config file is no longer edited by Caterm after the migration (§8).
+- Per-host theme override loads as an additional file **after** user config, scoped to the surface only — see §2.4.
 
 ### 2.3 Settings schema (Codable)
 
@@ -64,14 +79,19 @@ public struct CatermSettings: Codable, Equatable {
 public struct PartialSettings: Codable, Equatable {
     public var fontFamily: String?            // system monospaced fonts only
     public var fontSize: Int?                 // 8..32
-    public var lineHeight: Double?            // 0.8..2.0  → adjust-cell-height
+    public var lineHeight: Double?            // 0.8..2.0  → adjust-cell-height (% form)
     public var cursorStyle: CursorStyle?      // .block | .bar | .underline
     public var cursorBlink: Bool?
     public var bell: BellMode?                // .none | .audio | .visual | .both
-    public var scrollbackLines: Int?          // default 10000
+    public var scrollbackBytes: Int?          // memory budget; default 10_000_000 (10 MB)
+                                              // Ghostty's scrollback-limit is bytes, not lines
+                                              // and only takes effect on new surfaces (per docs)
     public var windowOpacity: Double?         // 0.7..1.0
     public var windowPaddingX: Int?
     public var windowPaddingY: Int?
+    public var titlebarStyle: TitlebarStyle?  // .tabs | .transparent | .native | .hidden
+                                              // → macos-titlebar-style; required to preserve
+                                              // existing default's `macos-titlebar-style = tabs`
     public var theme: String?                 // theme name (matches bundled catalog)
 }
 ```
@@ -83,43 +103,66 @@ In v1 only `theme` is read from `hostOverrides[hostId]`; other fields in `Partia
 The framework header (`Frameworks/GhosttyKit.xcframework/.../ghostty.h`) exposes:
 
 ```
-ghostty_config_t ghostty_config_new();
-void ghostty_config_load_default_files(ghostty_config_t);
-void ghostty_config_load_file(ghostty_config_t, const char*);
-void ghostty_config_finalize(ghostty_config_t);
-void ghostty_config_free(ghostty_config_t);
-void ghostty_app_update_config(ghostty_app_t, ghostty_config_t);
-void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
+ghostty_config_t ghostty_config_new();                                    // line 1069
+void ghostty_config_load_default_files(ghostty_config_t);                 // line 1074
+void ghostty_config_load_file(ghostty_config_t, const char*);             // line 1073
+void ghostty_config_finalize(ghostty_config_t);                           // line 1076
+uint32_t ghostty_config_diagnostics_count(ghostty_config_t);              // line 1081
+ghostty_diagnostic_s ghostty_config_get_diagnostic(ghostty_config_t,      // line 1082
+                                                   uint32_t);
+void ghostty_config_free(ghostty_config_t);                               // line 1070
+void ghostty_app_update_config(ghostty_app_t, ghostty_config_t);          // line 1095 — VOID
+void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);  // line 1108 — VOID
 ```
 
-Note: `ghostty_surface_reload_config` and `ghostty_config_load_string` (mentioned in v1 spec) **do not exist**. Reload must go through new config object construction.
+Note: `ghostty_surface_reload_config` and `ghostty_config_load_string` (mentioned in v1 spec) **do not exist**. Reload goes through new-config construction. Both `update_config` calls return `void`, so success/failure must be detected via the **diagnostics API** before the apply, not via return value.
 
-**Reload sequence on settings change:**
+#### 2.4.1 Settings-change scope (explicit)
+
+```swift
+public enum SettingsChangeScope {
+    case global                                // any field in settings.global changed
+    case hostOverride(HostId)                  // settings.hostOverrides[id].theme changed
+}
+```
+
+`SettingsStore` posts `Notification.Name.catermSettingsChanged` with the scope in `userInfo`. Surface listeners use the scope to decide whether to apply:
+
+| Scope | Action |
+|---|---|
+| `.global` | All open surfaces rebuild config and call `surface_update_config` |
+| `.hostOverride(id)` | Update **only** the per-host patch file at `~/Library/Caches/Caterm/per-host/<id>.config`. Do NOT call `surface_update_config` on any existing surface (existing tabs keep their current theme until reconnect, per Q4a). New surfaces created later pick up the new patch at construction. |
+
+This explicit scoping resolves the apparent conflict in the original §2.4: per-host theme is a deliberately deferred change.
+
+#### 2.4.2 Reload sequence (scope = `.global`)
 
 1. `SettingsStore.update(...)` writes plist + bumps revision.
-2. `ConfigStore.renderManagedSnapshot(from: settings.global)` rewrites managed TOML.
-3. For each open `GhosttySurfaceNSView`:
-   - Compute effective per-host theme: `settings.hostOverrides[surface.hostId]?.theme`.
-   - If present, write a per-host patch file to `~/Library/Caches/Caterm/per-host/<hostId>.config` containing only `theme = <name>`. Else, delete the file if present.
-   - Build a new `ghostty_config_t`:
-     ```
-     cfg = ghostty_config_new()
-     ghostty_config_load_default_files(cfg)
-     ghostty_config_load_file(cfg, managedPath)
-     ghostty_config_load_file(cfg, userPath)
-     if perHostPatchExists: ghostty_config_load_file(cfg, perHostPath)
-     ghostty_config_finalize(cfg)
-     ```
-   - Call `ghostty_surface_update_config(surface, cfg)`.
-   - Free the previous config object after the call returns.
-4. Also call `ghostty_app_update_config(app, cfgFromGlobalOnly)` once (no per-host patch) so newly created surfaces pick up the latest baseline before they request their own surface-level config.
+2. `ConfigStore.renderManagedSnapshot(from: settings.global)` rewrites the managed snapshot file.
+3. Build a fresh `ghostty_config_t`:
+   ```
+   cfg = ghostty_config_new()
+   ghostty_config_load_default_files(cfg)
+   ghostty_config_load_file(cfg, managedPath)
+   ghostty_config_load_file(cfg, userPath)
+   ghostty_config_finalize(cfg)
+   ```
+4. **Pre-apply validation:** call `ghostty_config_diagnostics_count(cfg)`. If > 0, iterate `ghostty_config_get_diagnostic(cfg, i)` for `i in 0..<count`. Diagnostics with severity `error` are aggregated and shown in a non-modal banner ("Some settings could not be applied: <messages>"); the apply still proceeds because Ghostty already finalized the config to a usable state (errored fields fall back to defaults internally).
+5. `ghostty_app_update_config(app, cfg)` — updates the app-level baseline.
+6. For each open `GhosttySurfaceNSView`, build a per-surface `cfg2` (cloning the global build path, plus per-host patch if `hostOverrides[surface.hostId]?.theme` is present), then `ghostty_surface_update_config(surface, cfg2)`. Free `cfg2` after the call.
+7. Free the global `cfg` once all surfaces are updated.
 
-**Per-host theme override precedence:** the per-host file loads **after** user TOML, so a host override does override a `theme = ...` line in user TOML. Rationale: per-host override is an explicit per-host action by the user via GUI; treating it as the highest-precedence layer matches user intent. Other settings categories (font, cursor, etc.) have no per-host layer in v1 and continue to honor "user TOML wins".
+#### 2.4.3 Reload sequence (scope = `.hostOverride(id)`)
 
-**Effect timing:**
-- Global settings change → all open surfaces reload immediately.
-- Per-host theme change → existing tabs keep their current theme until reconnect (per Q4a). New tabs to that host pick up the override at surface creation. Implementation: do not call `ghostty_surface_update_config` for existing surfaces on per-host theme change; only update the patch file so the next `surface_new` reads the new value.
-- If `ghostty_surface_update_config` reports failure (rare; e.g. a font-family the system rejects), the surface remains on the previous config — the user sees the old setting. UI shows a non-modal banner: "Some settings will apply on next reconnect."
+1. `SettingsStore.update(...)` writes plist + bumps revision.
+2. Compute new value:
+   - If `settings.hostOverrides[id]?.theme` is non-nil, write `~/Library/Caches/Caterm/per-host/<id>.config` containing exactly one line: `theme = <name>` (Ghostty config syntax).
+   - Else, delete the file if present.
+3. **No surface_update_config calls.** Existing tabs continue with their current theme. New surfaces to host `id` pick up the patch at construction time (`GhosttyConfig` init loads the patch when the host is known).
+
+#### 2.4.4 Per-host theme override precedence
+
+The per-host file loads **after** user config, so a host override does override a `theme = ...` line in user config. Rationale: per-host override is an explicit per-host action by the user via GUI; treating it as the highest-precedence layer matches user intent. Other settings categories (font, cursor, etc.) have no per-host layer in v1 and continue to honor "user config wins".
 
 ## 3. UI Components
 
@@ -173,7 +216,7 @@ Window
 [Edit Advanced Config…]   3 user-config overrides active
 ```
 
-The "Edit Advanced Config" button opens user TOML in Finder (preserves the previous ⌘, behavior). The hint count counts user-TOML keys that are *also* in `PartialSettings` (i.e. would be overridden by GUI changes) — gives users a heads-up when their user TOML is shadowing the GUI.
+The "Edit Advanced Config" button opens user config in Finder (preserves the previous ⌘, behavior). The hint count counts user-config keys (parsed via `GhosttyConfigParser`) that are *also* in `PartialSettings` (i.e. would be overridden by GUI changes) — gives users a heads-up when their user config is shadowing the GUI.
 
 ### 3.4 Tab: Themes (`ThemePickerView`)
 
@@ -199,7 +242,7 @@ All Themes  (300+)
 
 Build-time pipeline:
 1. `Scripts/build-theme-catalog.sh` runs as part of the `make macos-ghostty-kit` step (or as a SwiftPM build phase) after the Ghostty submodule is initialized.
-2. Reads `Vendor/ghostty/resources/themes/*` (one theme file per name; format is the same Ghostty config TOML subset).
+2. Reads `Vendor/ghostty/resources/themes/*` (one theme file per name; format is the same Ghostty config syntax subset).
 3. Parses `palette = N=#rgb`, `background`, `foreground`, `cursor-color`, `selection-background` keys.
 4. Emits `Sources/SettingsStore/Resources/themes.json` with `{ name, palette: [hex×16], background, foreground }` per theme.
 5. Bundle is loaded once at app start into an in-memory `ThemeCatalog` actor.
@@ -229,7 +272,7 @@ Effect timing per §2.4: new tabs use the override; existing tabs keep their cur
 Sources/
 ├─ ConfigStore/
 │   ├─ ConfigStore.swift                    ← MODIFIED: render from settings; preserve term+keybinds
-│   └─ SettingsRenderer.swift               ← NEW: PartialSettings → TOML lines
+│   └─ SettingsRenderer.swift               ← NEW: PartialSettings → Ghostty config lines
 ├─ SettingsStore/                           ← NEW target
 │   ├─ SettingsStore.swift                  (ObservableObject; load/save plist; debounce)
 │   ├─ CatermSettings.swift                 (Codable schema)
@@ -258,8 +301,8 @@ Scripts/
 ### 5.1 Read path (boot)
 
 1. `SettingsStore.load()` reads `settings.plist`. If absent → seed defaults using values that match the **current** observed defaults in production (SF Mono, size 13, theme Catppuccin Mocha, block cursor) so an empty plist produces no visual change.
-2. `MigrationStep.runIfNeeded()` (§8) executes once per install version; may rewrite user TOML and seed `settings.plist`.
-3. `ConfigStore.renderManagedSnapshot(from: settings.global)` writes the managed TOML — **always preserving the existing `term` + scrollback keybinds block** (Section 6.4).
+2. `MigrationStep.runIfNeeded()` (§8) executes once per install version; may rewrite user config and seed `settings.plist`.
+3. `ConfigStore.renderManagedSnapshot(from: settings.global)` writes the managed snapshot — **always preserving the existing `term` + scrollback keybinds block** (Section 6.4).
 4. `ThemeCatalog.load()` reads bundled `themes.json` into memory.
 5. Ghostty surfaces are constructed with the standard config chain.
 
@@ -284,30 +327,57 @@ let effectiveTheme = settings.hostOverrides[hostId]?.theme   // wins if present
 
 The patch file written for the surface contains only the `theme` line when a host override is set; absence of the file means "use the chain as-is" (and resolution above happens implicitly via the loaded TOMLs).
 
-## 6. Field → TOML mapping
+## 6. Field → Ghostty config mapping
 
-| Schema field | Ghostty TOML key | Notes |
+| Schema field | Ghostty config key | Notes |
 |---|---|---|
 | `fontFamily` | `font-family` | dropdown enforces system monospaced fonts |
 | `fontSize` | `font-size` | integer 8..32 |
-| `lineHeight` | `adjust-cell-height` | percent string: `1.1` → `10%` |
+| `lineHeight` | `adjust-cell-height` | percent string: `1.1` → `10%`, `0.9` → `-10%` |
 | `cursorStyle` | `cursor-style` | `block` / `bar` / `underline` |
 | `cursorBlink` | `cursor-style-blink` | bool |
-| `bell == .audio` | `audible-bell = true` | |
-| `bell == .visual` | `visual-bell = true` | |
-| `bell == .both` | both true | |
-| `scrollbackLines` | `scrollback-limit` | |
+| `bell` | `bell-features` | comma-separated set; see §6.3 |
+| `scrollbackBytes` | `scrollback-limit` | bytes; only applies to **new** surfaces (§6.5); UI shows MB |
 | `windowOpacity` | `background-opacity` | |
 | `windowPaddingX/Y` | `window-padding-x` / `window-padding-y` | |
+| `titlebarStyle` | `macos-titlebar-style` | `tabs` / `transparent` / `native` / `hidden` (preserves existing default) |
 | `theme` | `theme` | name from bundled catalog |
+
+### 6.3 Bell mapping (verified against Ghostty default)
+
+Ghostty's `bell-features` is a comma-separated set of named features. Default per `ghostty +show-config --default --docs` is `no-system,no-audio,attention,title,no-border`. Available features (each can be prefixed with `no-` to disable): `system`, `audio`, `attention`, `title`, `border`.
+
+Caterm's high-level `BellMode` maps to explicit feature sets:
+
+| `BellMode` | Rendered `bell-features` | Effect |
+|---|---|---|
+| `.none` | `no-system,no-audio,no-attention,no-title,no-border` | All bell feedback off |
+| `.audio` | `no-system,audio,no-attention,no-title,no-border` | Audio file plays; no visual feedback |
+| `.visual` | `no-system,no-audio,attention,title,no-border` | Matches Ghostty default visual feedback set |
+| `.both` | `no-system,audio,attention,title,no-border` | Audio + visual |
+
+Notes:
+- `system` (system notification) is intentionally always disabled in v1: it routes through OS-level notifications (UNUserNotificationCenter) which Caterm already uses for sync-failure notifications. Routing terminal bell through the same pipeline is a UX call we defer to v2.
+- For `.audio` and `.both`, `bell-audio-path` is left at Ghostty's default (uses bundled audio). Custom audio file is v2.
+
+### 6.5 Scrollback semantics
+
+Per Ghostty's docs (`+show-config --default --docs` confirms): `scrollback-limit` is the buffer size **in bytes**, not lines, and the value "can be changed at runtime but will only affect new terminal surfaces." Implications for the GUI:
+
+- UI shows the value as MB (e.g., "Scrollback memory: 10 MB"), not lines, with a stepper in 1 MB increments.
+- A `?` tooltip explains: "Scrollback is stored in memory; larger values use more RAM. Changes apply to new terminals only."
+- Live reload code path for scrollback-only changes does NOT call `surface_update_config` (no effect anyway). Banner shows once: "Scrollback change applies to new tabs."
+- Default in `settings.plist` matches Ghostty's default of 10 MB.
+
+### 6.6 Header comment
 
 `SettingsRenderer` emits a header comment: `# managed by Caterm — do not edit; use Caterm Preferences (⌘,)`.
 
-### 6.4 Preserved-from-legacy block
+### 6.7 Preserved-from-legacy block
 
 `SettingsRenderer.render(...)` ALWAYS prepends the existing managed-snapshot constants:
 
-```toml
+```
 term = xterm-256color
 keybind = super+up=scroll_page_lines:-1
 keybind = super+down=scroll_page_lines:1
@@ -326,20 +396,20 @@ These are the existing managed snapshot per `ConfigStore.swift:60-78`. Dropping 
 |---|---|
 | `settings.plist` corrupted | Quarantine to `settings.plist.broken-<timestamp>`; seed defaults; surface a non-modal alert on next launch |
 | Bundled `themes.json` missing or invalid | Fall back to embedded 9-favorites list; show banner in Themes tab "Theme catalog failed to load" |
-| `ghostty_surface_update_config` returns failure (or surface flagged "needs reconnect") | Subtle indicator on the affected tab |
+| `ghostty_config_diagnostics_count` > 0 after finalize | Aggregate error-severity diagnostics; non-modal banner "Some settings could not be applied: <messages>"; apply still proceeds with Ghostty's internal fallback to defaults for the offending fields |
 | Invalid font-family typed (shouldn't happen with dropdown but defensive) | Renderer omits the line; managed snapshot stays valid |
-| User TOML has same key as managed (still wins, except theme on host-override) | Show "N user-config overrides active" hint in Terminal tab footer |
-| Migration script fails mid-way | Roll back via backup of user TOML kept at `~/Library/Application Support/Caterm/config.bak-<timestamp>`; user sees alert pointing to backup |
+| User config has same key as managed (still wins, except theme on host-override) | Show "N user-config overrides active" hint in Terminal tab footer |
+| Migration script fails mid-way | Roll back via backup of user config kept at `~/Library/Application Support/Caterm/config.bak-<timestamp>`; user sees alert pointing to backup |
 
 ## 8. Migration
 
-This is the core architectural change vs v1 spec, addressing the issue where the legacy default user TOML shadows GUI changes.
+This is the core architectural change vs v1 spec, addressing the issue where the legacy default user config shadows GUI changes.
 
 ### 8.1 Detection
 
 On first launch with the new version, `SettingsMigrationStep` runs once (gated by a `migration-v1-completed` flag in `settings.plist`):
 
-1. Read user TOML from `~/Library/Application Support/Caterm/config`.
+1. Read user config from `~/Library/Application Support/Caterm/config`.
 2. Compute SHA-256 of the trimmed bytes.
 3. Compare against the **legacy fingerprint set**: hashes of every historical `defaultConfig` value baked into prior Caterm releases. (Initially just the current one in `ConfigStore.swift:8-17`. Future releases append new fingerprints.)
 
@@ -347,23 +417,23 @@ On first launch with the new version, `SettingsMigrationStep` runs once (gated b
 
 **Branch A — fingerprint matches (user has not edited their seeded defaults):**
 
-1. Backup current user TOML to `~/Library/Application Support/Caterm/config.bak-pre-settings-gui-<timestamp>`.
-2. Parse the legacy seed values (font-family, font-size, theme, cursor-style, macos-titlebar-style) into `settings.plist.global`.
-3. Replace user TOML with a minimal placeholder:
-   ```toml
+1. Backup current user config to `~/Library/Application Support/Caterm/config.bak-pre-settings-gui-<timestamp>`.
+2. Parse the legacy seed values (`font-family`, `font-size`, `theme`, `cursor-style`, `macos-titlebar-style`) into `settings.plist.global` — **all five fields**, including `titlebarStyle: .tabs` from the legacy `macos-titlebar-style = tabs` line.
+3. Replace user config with a minimal placeholder (Ghostty config syntax — comments only, no entries):
+   ```
    # User overrides for Caterm. Anything you put here wins over the
    # Caterm-managed config. Use Caterm Preferences (⌘,) for normal settings.
    ```
-4. Render managed snapshot from `settings.plist`.
+4. Render managed snapshot from `settings.plist`. The render output **must** include the `macos-titlebar-style = tabs` line because we just put it in `settings.plist.global.titlebarStyle`. (Test: `SettingsMigrationTests.testBranchA_titlebarPreserved` asserts no visual change.)
 5. Set `migration-v1-completed = true`.
 
-After this, GUI changes flow correctly: managed wins over defaults, user TOML is empty so doesn't shadow anything.
+After this, GUI changes flow correctly: managed wins over defaults, user config is empty so doesn't shadow anything.
 
 **Branch B — fingerprint does NOT match (user has edited):**
 
-1. Parse user TOML (best-effort; `# managed by Caterm` comment block ignored).
-2. For each key that maps to a `PartialSettings` field, copy the value into `settings.plist.global` (so the GUI shows what the user already had).
-3. **Do not modify** user TOML.
+1. Parse user config with `GhosttyConfigParser` (the line-based parser from §2.0; not a TOML parser — that would fail on `font-family = SF Mono`).
+2. For each key that maps to a `PartialSettings` field (font-family, font-size, line-height, cursor-style, cursor-style-blink, bell-features, scrollback-limit, background-opacity, window-padding-x/y, macos-titlebar-style, theme), copy the value into `settings.plist.global`.
+3. **Do not modify** user config.
 4. Render managed snapshot from `settings.plist`.
 5. Set `migration-v1-completed = true`.
 6. On next Preferences open (or via a one-time modal at app start), show an informational banner:
@@ -372,11 +442,11 @@ After this, GUI changes flow correctly: managed wins over defaults, user TOML is
 >
 > [ Move to Preferences (clear from user config) ] [ Keep as-is ] [ Open user config ]
 
-Choosing "Move to Preferences" clears those specific keys from the user TOML and re-renders. "Keep as-is" dismisses the banner but preserves the override hint count in the Terminal tab footer.
+Choosing "Move to Preferences" removes those specific lines from the user config (using `GhosttyConfigParser` to preserve unrelated lines and comments) and re-renders. "Keep as-is" dismisses the banner but preserves the override hint count in the Terminal tab footer.
 
-**Branch C — user TOML missing or unreadable:**
+**Branch C — user config missing or unreadable:**
 
-Treat as Branch A (write fresh placeholder; seed defaults into `settings.plist`).
+Treat as Branch A (write fresh placeholder; seed defaults into `settings.plist`, including `titlebarStyle: .tabs`).
 
 ### 8.3 Why not just "always overwrite"?
 
@@ -384,7 +454,7 @@ We never silently overwrite user content. Many Caterm users in the wild have cus
 
 ### 8.4 Test coverage
 
-- `SettingsMigrationTests` covers all three branches with golden-file user TOMLs.
+- `SettingsMigrationTests` covers all three branches with golden-file user configs.
 - A dedicated test loads the **exact** legacy default from the current `ConfigStore.defaultConfig` constant and verifies it computes to the expected fingerprint.
 
 ## 9. Testing
@@ -397,7 +467,7 @@ We never silently overwrite user content. Many Caterm users in the wild have cus
   - debounce coalesces rapid edits into one write
 
 - **`SettingsRendererTests`**
-  - each field renders to expected TOML line
+  - each field renders to expected config line
   - `lineHeight = 1.1` → `adjust-cell-height = 10%`
   - `bell = .both` → both flags true
   - `theme` with quotes/spaces is escaped
@@ -414,15 +484,15 @@ We never silently overwrite user content. Many Caterm users in the wild have cus
   - per-host patch path is created/deleted correctly
 
 - **`SettingsMigrationTests`**
-  - Branch A: legacy default → user TOML cleared, settings.plist seeded
-  - Branch B: edited user TOML → user TOML preserved, settings.plist seeded with parsed values
-  - Branch C: missing user TOML → fresh placeholder
+  - Branch A: legacy default → user config cleared, settings.plist seeded
+  - Branch B: edited user config → user config preserved, settings.plist seeded with parsed values
+  - Branch C: missing user config → fresh placeholder
   - Backup file created in branch A
   - Idempotency: running migration twice has no additional effect
 
 ### 9.2 Manual smoke (`apps/macos/Manual/settings-smoke.md`)
 
-1. Fresh install (no user TOML) → ⌘, opens Preferences; defaults visible
+1. Fresh install (no user config) → ⌘, opens Preferences; defaults visible
 2. Change font size → all open tabs reflow live
 3. Change cursor style → live update
 4. Change theme → live update (global)
@@ -430,11 +500,11 @@ We never silently overwrite user content. Many Caterm users in the wild have cus
 6. Connect to host B (no override) → tab uses global theme
 7. Change global theme while a host-overridden tab is open → existing host-overridden tab keeps override; new tabs (any host) use new global
 8. Close & reopen app → settings persist
-9. Edit user TOML to override `cursor-style` → user value wins after restart; Terminal tab shows "1 user-config override active"
-10. Click "Edit Advanced Config" → user TOML opens in Finder
+9. Edit user config to override `cursor-style` → user value wins after restart; Terminal tab shows "1 user-config override active"
+10. Click "Edit Advanced Config" → user config opens in Finder
 11. Quit while typing in stepper → no data loss (debounce flushes on quit)
-12. **Migration A:** start with legacy default user TOML → upgrade → user TOML replaced with minimal placeholder; backup file created; settings.plist contains the legacy values
-13. **Migration B:** start with edited user TOML → upgrade → user TOML untouched; banner shown; clicking "Move to Preferences" clears those keys and re-renders
+12. **Migration A:** start with legacy default user config → upgrade → user config replaced with minimal placeholder; backup file created; settings.plist contains the legacy values
+13. **Migration B:** start with edited user config → upgrade → user config untouched; banner shown; clicking "Move to Preferences" clears those keys and re-renders
 14. Theme picker shows favorites + scrollable full catalog; search filters correctly; clicking a card live-applies
 
 ## 10. Out of Scope (v2)
