@@ -30,6 +30,14 @@ struct FileDrawerView: View {
 	var body: some View {
 		VStack(spacing: 0) {
 			HStack(spacing: 8) {
+				Button { goUp() } label: {
+					Image(systemName: "chevron.left")
+				}
+				.buttonStyle(.borderless)
+				.help("Up to parent folder")
+				.disabled(!canGoUp)
+				.keyboardShortcut(.upArrow, modifiers: [.command])
+
 				Text(path)
 					.font(.system(.body, design: .monospaced))
 					.lineLimit(1)
@@ -159,6 +167,20 @@ struct FileDrawerView: View {
 				)
 			}
 		}
+	}
+
+	/// Whether the drawer is showing somewhere we can navigate up from.
+	/// `~` and `/` are roots; everything else has a parent.
+	private var canGoUp: Bool {
+		path != "~" && path != "~/" && path != "/" && !path.isEmpty
+	}
+
+	private func goUp() {
+		guard canGoUp else { return }
+		let parent = (path as NSString).deletingLastPathComponent
+		// `~/foo` → `~`; `/etc/foo` → `/etc`; `foo` → `""` → fall back to `~`.
+		path = parent.isEmpty ? "~" : parent
+		Task { await refresh() }
 	}
 
 	private func handleDrop(urls: [URL], remoteDir: String) {

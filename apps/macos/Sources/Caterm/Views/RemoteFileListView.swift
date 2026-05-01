@@ -15,7 +15,13 @@ struct RemoteFileListView: View {
 	var body: some View {
 		List(entries, selection: $selection) { entry in
 			HStack(spacing: 6) {
-				Image(systemName: entry.isDirectory ? "folder" : "doc")
+				if entry.isDirectory {
+					Image(systemName: "folder.fill")
+						.foregroundStyle(.tint)
+				} else {
+					Image(systemName: "doc")
+						.foregroundStyle(.secondary)
+				}
 				Text(entry.name).lineLimit(1).truncationMode(.middle)
 				Spacer(minLength: 8)
 				if !entry.isDirectory {
