@@ -75,35 +75,32 @@ struct MainWindow: View {
 					onDismiss: bannerState.dismissNewSurface
 				)
 			}
-			NavigationSplitView {
-				// Already a tab — connecting from this sidebar should spawn a
-				// sibling tabbed window (auto-merged by macOS into the current
-				// tab bar), not replace this window's session.
-				HostListSidebar(onOpenTab: { newId in openWindow(value: newId) })
-					.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
-			} detail: {
-				// HStack instead of HSplitView: SwiftUI HSplitView caches its
-				// underlying NSSplitView pane positions when a conditional
-				// child is removed, leaving a dead, non-clickable band where
-				// the drawer used to be. HStack reflows cleanly. Drag-resize
-				// is reimplemented via DrawerDragHandle to keep parity with
-				// the prior HSplitView UX. We can't simply force HSplitView
-				// to rebuild via .id() — that would tear down
-				// TerminalSurfaceRepresentable and SIGHUP the live ssh
-				// session.
-				// GeometryReader so terminal width is computed explicitly from
-				// the detail container's current width every frame. HStack with
-				// maxWidth:.infinity on the terminal lets NavigationSplitView's
-				// sidebar collapse/expand animation distribute width via SwiftUI's
-				// implicit allocation, which is visibly out-of-sync with the
-				// NSSplitView sidebar animation and makes the drawer translate
-				// horizontally for a few frames before snapping back. Setting an
-				// explicit width on the terminal pane removes that ambiguity.
-				GeometryReader { geo in
-					let handleWidth: CGFloat = fileDrawerOpen ? 1 : 0
-					let totalDrawer = fileDrawerOpen ? drawerWidth + handleWidth : 0
-					let terminalW = max(400, geo.size.width - totalDrawer)
-					HStack(spacing: 0) {
+			// Drawer is rendered with an explicit `.offset(x:)` from the
+			// outer GeometryReader's leading edge, independent of
+			// NavigationSplitView's animating frame. Tried earlier:
+			//   – HStack siblings: NavigationSplitView's outer frame
+			//     transiently grew during sidebar show, pushing siblings
+			//     ~30–80pt right.
+			//   – `.padding(.trailing) + .overlay(alignment:.trailing)`:
+			//     overlay anchors to NavigationSplitView's outer frame,
+			//     which still gets pushed rightward by the NSSplitView
+			//     animation, displacing the overlay 90+pt.
+			// Pinning the drawer's leading edge with .offset against the
+			// outer GeometryReader sidesteps NSSplitView's transient
+			// frame growth entirely.
+			GeometryReader { geo in
+				let drawerTotal: CGFloat = fileDrawerOpen
+					? drawerWidth + 1 : 0
+				let navWidth = max(0, geo.size.width - drawerTotal)
+				ZStack(alignment: .topLeading) {
+					NavigationSplitView {
+						// Already a tab — connecting from this sidebar
+						// should spawn a sibling tabbed window
+						// (auto-merged by macOS into the current tab
+						// bar), not replace this window's session.
+						HostListSidebar(onOpenTab: { newId in openWindow(value: newId) })
+							.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+					} detail: {
 						Group {
 							if store.tabs.contains(where: { $0.id == tabId }) {
 								TerminalContainerView(tabId: tabId)
@@ -112,9 +109,13 @@ struct MainWindow: View {
 									.foregroundColor(.secondary)
 							}
 						}
-						.frame(width: terminalW, height: geo.size.height)
+						.frame(maxWidth: .infinity, maxHeight: .infinity)
+						.frame(minWidth: 400, minHeight: 500)
+					}
+					.frame(width: navWidth, height: geo.size.height)
 
-						if fileDrawerOpen {
+					if fileDrawerOpen {
+						HStack(spacing: 0) {
 							DrawerDragHandle(
 								width: $drawerWidth,
 								minWidth: Self.drawerMinWidth,
@@ -125,15 +126,12 @@ struct MainWindow: View {
 								fs: activeRemoteFs,
 								fileTransferStore: fileTransferStore
 							)
-							.frame(width: drawerWidth, height: geo.size.height)
+							.frame(width: drawerWidth)
 						}
+						.frame(width: drawerTotal, height: geo.size.height)
+						.offset(x: navWidth, y: 0)
 					}
 				}
-				.frame(minHeight: 500)
-				// Detail floor: terminal min + drawer min + handle when drawer
-				// is open. Without it the NavigationSplitView lets the detail
-				// steal width from the sidebar's 220pt floor.
-				.frame(minWidth: fileDrawerOpen ? 400 + Self.drawerMinWidth + 1 : 400, minHeight: 500)
 			}
 		}
 		.frame(minWidth: 1000, minHeight: 600)
