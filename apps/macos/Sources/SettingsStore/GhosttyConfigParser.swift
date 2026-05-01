@@ -38,3 +38,18 @@ public enum GhosttyConfigParser {
         return out
     }
 }
+
+public extension GhosttyConfigParser {
+    /// Returns `text` with the given 1-based line numbers removed. Preserves all other
+    /// lines (including comments, blank lines, and trailing newlines) byte-for-byte.
+    static func removeLines(_ text: String, lineNumbers: [Int]) -> String {
+        let drop = Set(lineNumbers)
+        if drop.isEmpty { return text }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var kept: [Substring] = []
+        for (idx, line) in lines.enumerated() {
+            if !drop.contains(idx + 1) { kept.append(line) }
+        }
+        return kept.joined(separator: "\n")
+    }
+}
