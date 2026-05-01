@@ -20,9 +20,13 @@ struct MainWindow: View {
 	@Environment(\.openWindow) private var openWindow
 	@StateObject private var bannerState = SettingsBannerState()
 	@State private var fileDrawerOpen = false
+	@State private var drawerWidth: CGFloat = 320
 	@State private var pendingUploadURLs: [URL] = []
 	@State private var showUploadSheet = false
 	let tabId: UUID
+
+	private static let drawerMinWidth: CGFloat = 240
+	private static let drawerMaxWidth: CGFloat = 600
 
 	/// Host backing the active tab — `nil` once the tab has been closed.
 	private var activeHost: SSHHost? {
@@ -78,7 +82,16 @@ struct MainWindow: View {
 				HostListSidebar(onOpenTab: { newId in openWindow(value: newId) })
 					.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
 			} detail: {
-				HSplitView {
+				// HStack instead of HSplitView: SwiftUI HSplitView caches its
+				// underlying NSSplitView pane positions when a conditional
+				// child is removed, leaving a dead, non-clickable band where
+				// the drawer used to be. HStack reflows cleanly. Drag-resize
+				// is reimplemented via DrawerDragHandle to keep parity with
+				// the prior HSplitView UX. We can't simply force HSplitView
+				// to rebuild via .id() — that would tear down
+				// TerminalSurfaceRepresentable and SIGHUP the live ssh
+				// session.
+				HStack(spacing: 0) {
 					Group {
 						if store.tabs.contains(where: { $0.id == tabId }) {
 							TerminalContainerView(tabId: tabId)
@@ -87,22 +100,28 @@ struct MainWindow: View {
 								.foregroundColor(.secondary)
 						}
 					}
+					.frame(maxWidth: .infinity, maxHeight: .infinity)
 					.frame(minWidth: 400, minHeight: 500)
 
 					if fileDrawerOpen {
+						DrawerDragHandle(
+							width: $drawerWidth,
+							minWidth: Self.drawerMinWidth,
+							maxWidth: Self.drawerMaxWidth
+						)
 						FileDrawerView(
 							host: activeHost,
 							fs: activeRemoteFs,
 							fileTransferStore: fileTransferStore
 						)
-							.frame(minWidth: 240, idealWidth: 320, maxWidth: 600)
+							.frame(width: drawerWidth)
+							.frame(minHeight: 500, maxHeight: .infinity)
 					}
 				}
-				// Sum of children minWidths + splitter handle. Without this
-				// the HSplitView reports only its first child's min to the
-				// NavigationSplitView, which then lets detail steal width
-				// from the sidebar's 220pt floor when the drawer is open.
-				.frame(minWidth: fileDrawerOpen ? 660 : 400, minHeight: 500)
+				// Detail floor: terminal min + drawer min + handle when drawer
+				// is open. Without it the NavigationSplitView lets the detail
+				// steal width from the sidebar's 220pt floor.
+				.frame(minWidth: fileDrawerOpen ? 400 + Self.drawerMinWidth + 1 : 400, minHeight: 500)
 			}
 		}
 		.frame(minWidth: 1000, minHeight: 600)
@@ -149,6 +168,53 @@ struct MainWindow: View {
 			)
 		}
 		.onDisappear { store.closeTab(tabId: tabId) }
+	}
+}
+
+/// 1pt visual divider with a 6pt-wide invisible hit area that drives
+/// click-and-drag resizing of the SFTP file drawer. Replaces the divider that
+/// HSplitView used to provide; the rest of the drawer geometry is plain
+/// HStack so the layout reflows cleanly when the drawer toggles closed.
+struct DrawerDragHandle: View {
+	@Binding var width: CGFloat
+	let minWidth: CGFloat
+	let maxWidth: CGFloat
+	@State private var dragStartWidth: CGFloat?
+
+	var body: some View {
+		Rectangle()
+			.fill(Color(NSColor.separatorColor))
+			.frame(width: 1)
+			.frame(maxHeight: .infinity)
+			.overlay(
+				Rectangle()
+					.fill(Color.clear)
+					.contentShape(Rectangle())
+					.frame(width: 6)
+					.onHover { hovering in
+						if hovering {
+							NSCursor.resizeLeftRight.push()
+						} else {
+							NSCursor.pop()
+						}
+					}
+					.gesture(
+						DragGesture(minimumDistance: 0)
+							.onChanged { value in
+								if dragStartWidth == nil {
+									dragStartWidth = width
+								}
+								// Drawer is on the trailing edge: dragging the
+								// handle leftward (negative translation.width)
+								// must grow the drawer.
+								let proposed = (dragStartWidth ?? width) - value.translation.width
+								width = max(minWidth, min(maxWidth, proposed))
+							}
+							.onEnded { _ in
+								dragStartWidth = nil
+							}
+					)
+			)
 	}
 }
 
