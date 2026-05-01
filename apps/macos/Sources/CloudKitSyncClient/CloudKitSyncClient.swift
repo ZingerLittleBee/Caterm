@@ -44,6 +44,12 @@ public final class CloudKitSyncClient: ServerSyncClient {
                 // migration itself.
             }
             return hosts
+        } catch let ck as CKError where ck.code == .zoneNotFound {
+            // First-ever launch on a fresh iCloud account: the Caterm zone
+            // has not been created yet. Treat as "no remote records" so the
+            // reconciler can proceed; the next createHost call will run
+            // ensureZone and lazily create the zone before saving.
+            return []
         } catch {
             throw CloudKitErrorMapping.map(error)
         }

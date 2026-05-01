@@ -31,6 +31,18 @@ final class CloudKitSyncClientTests: XCTestCase {
         XCTAssertEqual(fakeDb.recordsCallCount, 1)
     }
 
+    func testListHostsReturnsEmptyWhenZoneNotFound() async throws {
+        // Fresh iCloud accounts have no Caterm zone yet. The query path
+        // throws CKError.zoneNotFound; we must treat it as "no remote
+        // records" rather than failing the whole sync, so the next
+        // createHost can run ensureZone and lazily create the zone.
+        fakeDb.recordsError = CKError(.zoneNotFound)
+
+        let hosts = try await sut.listHosts()
+        XCTAssertEqual(hosts, [], "zoneNotFound must surface as empty list")
+        XCTAssertEqual(fakeDb.recordsCallCount, 1)
+    }
+
     func testListHostsSkipsRecordsWithMissingFields() async throws {
         let goodID = CKRecord.ID(recordName: "good", zoneID: zoneID)
         let goodRec = CKRecord(recordType: "Host", recordID: goodID)
