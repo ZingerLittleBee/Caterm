@@ -172,51 +172,36 @@ struct HostRow: View {
 	let host: SSHHost
 
 	var body: some View {
-		// Belt-and-suspenders truncation: prior fixes (3a8f66d, b5ed2e8) put
-		// per-Text `frame(maxWidth: .infinity)` and `.truncationMode(.tail)`
-		// in place but the user still saw trailing characters of the text
-		// (e.g. "27:22" instead of "root@…") when the sidebar was narrow.
-		// A long-standing SwiftUI/macOS quirk causes List rows nested in a
-		// NavigationSplitView sidebar to size to the row's intrinsic width
-		// when the inner Text doesn't have an explicit `minWidth: 0` floor,
-		// so the Text claims its full width and gets clipped from the
-		// leading edge by the parent sidebar/HStack frame.
+		// Truncation strategy: three rounds of pure-SwiftUI defensive layout
+		// (3a8f66d, b5ed2e8, e9fa0a6) — frame(maxWidth: .infinity), minWidth: 0,
+		// fixedSize, clipped, layoutPriority — failed to make `.tail`
+		// truncation work inside a NavigationSplitView sidebar's List row on
+		// macOS 14. The user kept seeing trailing characters with the leading
+		// portion clipped (e.g. "27:22" instead of "root@…").
 		//
-		// The full defense applied here:
-		//   1. Outer HStack pinned to `maxWidth: .infinity, alignment: .leading`
-		//      so the row claims the full available width rather than its
-		//      intrinsic content width.
-		//   2. Per-Text `frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)`
-		//      — `minWidth: 0` tells SwiftUI the Text is allowed to shrink
-		//      below its intrinsic width, which is what triggers the
-		//      `.tail` truncation path.
-		//   3. `.fixedSize(horizontal: false, vertical: true)` on the VStack
-		//      so it does not propagate its (huge) intrinsic horizontal size
-		//      up to the HStack, but still grows vertically as needed.
-		//   4. `.clipped()` on the row so any residual overflow renders
-		//      inside the row's bounds rather than escaping the sidebar.
+		// Replaced the SwiftUI Text + truncationMode(.tail) pattern with an
+		// NSTextField bridge (TruncatingLabel) that uses the AppKit-native
+		// single-line truncating cell (usesSingleLineMode = true,
+		// lineBreakMode = .byTruncatingTail, lowered horizontal compression
+		// resistance). This has worked reliably on macOS for 15+ years.
 		HStack(spacing: 8) {
 			Image(systemName: iconName)
 				.foregroundColor(.secondary)
 				.frame(width: 20)
 				.layoutPriority(1)
 			VStack(alignment: .leading, spacing: 2) {
-				Text(host.name)
-					.font(.headline)
-					.lineLimit(1)
-					.truncationMode(.tail)
-					.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-				Text("\(host.username)@\(host.hostname):\(host.port)")
-					.font(.caption)
-					.foregroundColor(.secondary)
-					.lineLimit(1)
-					.truncationMode(.tail)
-					.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+				TruncatingLabel(
+					text: host.name,
+					font: NSFont.preferredFont(forTextStyle: .headline),
+					color: .labelColor
+				)
+				TruncatingLabel(
+					text: "\(host.username)@\(host.hostname):\(host.port)",
+					font: NSFont.preferredFont(forTextStyle: .caption1),
+					color: .secondaryLabelColor
+				)
 			}
-			.fixedSize(horizontal: false, vertical: true)
-			// layoutPriority(0) is the default; written explicitly to make the
-			// "shrink me first when narrow" intent obvious.
-			.layoutPriority(0)
+			.frame(maxWidth: .infinity, alignment: .leading)
 			if store.needsCredentialSetup(host) {
 				Image(systemName: "lock")
 					.foregroundColor(.orange)
@@ -231,7 +216,6 @@ struct HostRow: View {
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.vertical, 2)
-		.clipped()
 	}
 
 	var iconName: String {
