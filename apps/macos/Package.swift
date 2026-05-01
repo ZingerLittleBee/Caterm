@@ -54,6 +54,11 @@ let package = Package(
             path: "Sources/HostSyncStore"
         ),
         .target(
+            name: "CloudKitSyncClient",
+            dependencies: ["ServerSyncClient", "SSHCommandBuilder"],
+            path: "Sources/CloudKitSyncClient"
+        ),
+        .target(
             name: "SettingsStore",
             dependencies: [],
             path: "Sources/SettingsStore",
@@ -164,6 +169,11 @@ let package = Package(
             name: "SettingsStoreTests",
             dependencies: ["SettingsStore"],
             path: "Tests/SettingsStoreTests"
+        ),
+        .testTarget(
+            name: "CloudKitSyncClientTests",
+            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder"],
+            path: "Tests/CloudKitSyncClientTests"
         ),
     ]
 )
