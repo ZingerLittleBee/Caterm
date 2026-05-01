@@ -18,7 +18,7 @@ let package = Package(
         // --- Libraries ---
         .target(
             name: "TerminalEngine",
-            dependencies: ["GhosttyKit", "ConfigStore"],
+            dependencies: ["GhosttyKit", "ConfigStore", "SettingsStore"],
             path: "Sources/TerminalEngine"
         ),
         .target(
@@ -147,7 +147,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TerminalEngineTests",
-            dependencies: ["TerminalEngine"],
+            dependencies: ["TerminalEngine", "SettingsStore"],
             path: "Tests/TerminalEngineTests"
         ),
         .testTarget(
