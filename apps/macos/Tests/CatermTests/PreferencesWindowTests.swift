@@ -14,3 +14,11 @@ final class PreferencesWindowTests: XCTestCase {
         XCTAssertEqual(ctrl.activeTabIndex, 2)
     }
 }
+
+extension PreferencesWindowTests {
+    func testSharedInstanceShowsAndReuses() {
+        let first = PreferencesWindowController.shared
+        let second = PreferencesWindowController.shared
+        XCTAssertTrue(first === second)
+    }
+}

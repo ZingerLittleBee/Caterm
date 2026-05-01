@@ -19,10 +19,6 @@ struct CatermApp: App {
 	@StateObject var preferences: SyncPreferences
 	@StateObject var fileTransferStore: FileTransferStore
 	@StateObject var settingsStore: SettingsStore
-	@State private var showSyncSettings = false
-	@State private var serverURLText: String = ServerURL.current.absoluteString
-	private let authSession: AuthSession
-	private let syncClient: ServerSyncClient
 
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
@@ -77,8 +73,6 @@ struct CatermApp: App {
 			},
 			liveness: ControlMasterManager.shared
 		))
-		self.authSession = auth
-		self.syncClient = client
 	}
 
 	var body: some Scene {
@@ -113,21 +107,13 @@ struct CatermApp: App {
 			// cancellation lives in the chain (spec §3.5).
 			.task { syncStore.syncIfSignedIn() }
 			.onReceive(NotificationCenter.default
-				.publisher(for: .catermOpenSyncSettings)) { _ in   // NEW (v1.4)
-				showSyncSettings = true
-			}
-			.sheet(isPresented: $showSyncSettings) {
-				SyncSettingsView(
-					authSession: authSession,
-					syncStore: syncStore,
-					preferences: preferences,
-					serverURL: $serverURLText
-				)
-				.onChange(of: serverURLText) { _, newValue in
-					if let url = URL(string: newValue), !newValue.isEmpty {
-						ServerURL.set(url)
-					}
-				}
+				.publisher(for: .catermOpenSyncSettings)) { _ in
+				// Sync settings now live as a tab inside the Preferences
+				// window (Task 25). SyncStatusRow still posts this
+				// notification when the user clicks the indicator; route
+				// it through to the unified Preferences surface.
+				PreferencesWindowController.shared.activate(tabIndex: 3)
+				PreferencesWindowController.shared.showAndActivate()
 			}
 		}
 		.commands {
@@ -144,16 +130,14 @@ struct CatermApp: App {
 				}
 				.keyboardShortcut("t", modifiers: .command)
 			}
-			// ⌘, opens (reveals) the TOML config file in Finder.
+			// ⌘, opens the unified Preferences window (Task 25).
+			// "Edit Advanced Config…" inside General still reveals the TOML
+			// config in Finder for power users, so no functionality is lost.
 			CommandGroup(replacing: .appSettings) {
 				Button("Settings…") {
-					ConfigStore.revealInFinder(ConfigStore.defaultPath)
+					PreferencesWindowController.shared.showAndActivate()
 				}
 				.keyboardShortcut(",", modifiers: .command)
-			}
-			CommandGroup(after: .appSettings) {
-				Button("Sync Settings…") { showSyncSettings = true }
-					.keyboardShortcut(",", modifiers: [.command, .shift])
 			}
 			// Edit menu pasteboard commands. Selectors are the standard
 			// `NSText.copy/paste/pasteAsPlainText`, which AppKit

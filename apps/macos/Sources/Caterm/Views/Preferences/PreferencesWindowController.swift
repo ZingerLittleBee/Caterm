@@ -97,3 +97,19 @@ extension PreferencesWindowController: NSToolbarDelegate {
         activate(tabIndex: sender.tag)
     }
 }
+
+@MainActor
+public extension PreferencesWindowController {
+    /// Process-wide singleton used by ⌘, to surface the Preferences window.
+    /// The fallback `init()` loads (or seeds) the SettingsStore from the
+    /// default plist path, which matches what the rest of the app uses.
+    static let shared: PreferencesWindowController = PreferencesWindowController()
+
+    /// Brings the window on screen and activates the app, even if Caterm
+    /// isn't currently frontmost (e.g. the user invoked ⌘, from another app).
+    func showAndActivate() {
+        showWindow(self)
+        window?.makeKeyAndOrderFront(self)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
