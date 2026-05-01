@@ -26,18 +26,19 @@ struct RemoteFileListView: View {
 					.lineLimit(1)
 					.truncationMode(.middle)
 					.frame(maxWidth: .infinity, alignment: .leading)
+					.layoutPriority(0)
 				if !entry.isDirectory {
 					Text(byteString(entry.size))
 						.font(.caption)
 						.foregroundStyle(.secondary)
 						.lineLimit(1)
-						.fixedSize(horizontal: true, vertical: false)
+						.layoutPriority(1)
 				}
 			}
-			// macOS List adds a trailing safe-area for the overlay scroller.
-			// Without explicit trailing room, the size column gets clipped
-			// even though Spacer/maxWidth layout says there's space.
-			.padding(.trailing, 16)
+			// macOS List reserves a trailing safe-area for the overlay
+			// scroller. layoutPriority(1) on size keeps it from being
+			// truncated; padding here pulls it inboard of the scroller strip.
+			.padding(.trailing, 12)
 			.contentShape(Rectangle())
 			.onTapGesture(count: 2) { onActivate(entry) }
 			.modifier(FolderDropModifier(entry: entry, onDropOnFolder: onDropOnFolder))
