@@ -7,6 +7,7 @@ import SwiftUI
 struct SimpleTextSheet: View {
 	let title: String
 	let prompt: String
+	let submitLabel: String
 	@State private var value: String
 	let onSubmit: (String) -> Void
 	let onCancel: () -> Void
@@ -15,11 +16,13 @@ struct SimpleTextSheet: View {
 		title: String,
 		prompt: String,
 		initialValue: String,
+		submitLabel: String = "Upload",
 		onSubmit: @escaping (String) -> Void,
 		onCancel: @escaping () -> Void
 	) {
 		self.title = title
 		self.prompt = prompt
+		self.submitLabel = submitLabel
 		_value = State(initialValue: initialValue)
 		self.onSubmit = onSubmit
 		self.onCancel = onCancel
@@ -34,7 +37,7 @@ struct SimpleTextSheet: View {
 				Spacer()
 				Button("Cancel") { onCancel() }
 					.keyboardShortcut(.cancelAction)
-				Button("Upload") { onSubmit(value) }
+				Button(submitLabel) { onSubmit(value) }
 					.keyboardShortcut(.defaultAction)
 					.disabled(value.trimmingCharacters(in: .whitespaces).isEmpty)
 			}

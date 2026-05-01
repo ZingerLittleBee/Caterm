@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import FileTransferStore
@@ -12,12 +13,31 @@ struct FileDrawerView: View {
 	@State private var entries: [RemoteEntry] = []
 	@State private var selection: RemoteEntry.ID?
 	@State private var error: String?
+	@State private var sheetMode: SheetMode?
+
+	private enum SheetMode: Identifiable {
+		case rename(RemoteEntry)
+		case mkdir
+
+		var id: String {
+			switch self {
+			case .rename(let entry): return "rename:\(entry.id)"
+			case .mkdir: return "mkdir"
+			}
+		}
+	}
 
 	var body: some View {
 		VStack(spacing: 0) {
 			HStack {
 				Text(path).font(.system(.body, design: .monospaced))
 				Spacer()
+				Button { sheetMode = .mkdir } label: {
+					Image(systemName: "folder.badge.plus")
+				}
+				.buttonStyle(.borderless)
+				.help("New Folder")
+				.disabled(host == nil || fs == nil)
 				Button { Task { await refresh() } } label: {
 					Image(systemName: "arrow.clockwise")
 				}.buttonStyle(.borderless)
@@ -50,7 +70,11 @@ struct FileDrawerView: View {
 					onDropOnFolder: { entry, urls in
 						let folderPath = (path as NSString).appendingPathComponent(entry.name)
 						handleDrop(urls: urls, remoteDir: folderPath)
-					}
+					},
+					onDownload: { entry in handleDownload(entry) },
+					onRename: { entry in sheetMode = .rename(entry) },
+					onDelete: { entry in handleDelete(entry) },
+					onCopyPath: { entry in handleCopyPath(entry) }
 				)
 			}
 
@@ -72,12 +96,105 @@ struct FileDrawerView: View {
 			}
 			return true
 		}
+		.sheet(item: $sheetMode) { mode in
+			switch mode {
+			case .rename(let entry):
+				SimpleTextSheet(
+					title: "Rename",
+					prompt: "New name",
+					initialValue: entry.name,
+					submitLabel: "Rename",
+					onSubmit: { newName in
+						sheetMode = nil
+						handleRename(entry, newName: newName)
+					},
+					onCancel: { sheetMode = nil }
+				)
+			case .mkdir:
+				SimpleTextSheet(
+					title: "New Folder",
+					prompt: "Folder name",
+					initialValue: "",
+					submitLabel: "Create",
+					onSubmit: { name in
+						sheetMode = nil
+						handleMkdir(name: name)
+					},
+					onCancel: { sheetMode = nil }
+				)
+			}
+		}
 	}
 
 	private func handleDrop(urls: [URL], remoteDir: String) {
 		guard let host, let store = fileTransferStore else { return }
 		_ = store.enqueueUpload(localPaths: urls, remoteDir: remoteDir, host: host)
 		Task { await refresh() }
+	}
+
+	private func handleDownload(_ entry: RemoteEntry) {
+		guard let host, let store = fileTransferStore else { return }
+		let panel = NSOpenPanel()
+		panel.canChooseFiles = false
+		panel.canChooseDirectories = true
+		panel.allowsMultipleSelection = false
+		panel.prompt = "Download"
+		panel.message = "Choose a destination folder"
+		guard panel.runModal() == .OK, let localDir = panel.url else { return }
+		let remotePath = (path as NSString).appendingPathComponent(entry.name)
+		_ = store.enqueueDownload(remotePaths: [remotePath], localDir: localDir, host: host)
+	}
+
+	private func handleRename(_ entry: RemoteEntry, newName: String) {
+		guard let fs else { return }
+		let trimmed = newName.trimmingCharacters(in: .whitespaces)
+		guard !trimmed.isEmpty, trimmed != entry.name else { return }
+		let from = (path as NSString).appendingPathComponent(entry.name)
+		let to = (path as NSString).appendingPathComponent(trimmed)
+		Task {
+			do {
+				try await fs.rename(from: from, to: to)
+				await refresh()
+			} catch {
+				self.error = "\(error)"
+			}
+		}
+	}
+
+	private func handleDelete(_ entry: RemoteEntry) {
+		guard let fs else { return }
+		let target = (path as NSString).appendingPathComponent(entry.name)
+		let isDir = entry.isDirectory
+		Task {
+			do {
+				try await fs.remove(target, isDirectory: isDir)
+				await refresh()
+			} catch {
+				self.error = "\(error)"
+			}
+		}
+	}
+
+	private func handleCopyPath(_ entry: RemoteEntry) {
+		let full = (path as NSString).appendingPathComponent(entry.name)
+		let pasteboard = NSPasteboard.general
+		pasteboard.clearContents()
+		pasteboard.setString(full, forType: .string)
+	}
+
+	private func handleMkdir(name: String) {
+		guard let fs else { return }
+		let trimmed = name.trimmingCharacters(in: .whitespaces)
+		guard !trimmed.isEmpty else { return }
+		let target = (path as NSString).appendingPathComponent(trimmed)
+		Task {
+			do {
+				try await fs.mkdir(target)
+				await refresh()
+			} catch {
+				self.error = "\(error)"
+			}
+		}
 	}
 
 	private func loadURLs(from providers: [NSItemProvider]) async -> [URL] {

@@ -7,6 +7,10 @@ struct RemoteFileListView: View {
 	@Binding var selection: RemoteEntry.ID?
 	let onActivate: (RemoteEntry) -> Void
 	var onDropOnFolder: (RemoteEntry, [URL]) -> Void = { _, _ in }
+	var onDownload: (RemoteEntry) -> Void = { _ in }
+	var onRename: (RemoteEntry) -> Void = { _ in }
+	var onDelete: (RemoteEntry) -> Void = { _ in }
+	var onCopyPath: (RemoteEntry) -> Void = { _ in }
 
 	var body: some View {
 		List(entries, selection: $selection) { entry in
@@ -21,6 +25,15 @@ struct RemoteFileListView: View {
 			.contentShape(Rectangle())
 			.onTapGesture(count: 2) { onActivate(entry) }
 			.modifier(FolderDropModifier(entry: entry, onDropOnFolder: onDropOnFolder))
+			.contextMenu {
+				if !entry.isDirectory {
+					Button("Download…") { onDownload(entry) }
+				}
+				Button("Rename…") { onRename(entry) }
+				Button("Delete", role: .destructive) { onDelete(entry) }
+				Divider()
+				Button("Copy Path") { onCopyPath(entry) }
+			}
 		}
 	}
 
