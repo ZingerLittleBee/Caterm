@@ -75,23 +75,24 @@ struct MainWindow: View {
 					onDismiss: bannerState.dismissNewSurface
 				)
 			}
-			// Drawer is rendered with an explicit `.offset(x:)` from the
-			// outer GeometryReader's leading edge, independent of
-			// NavigationSplitView's animating frame. Tried earlier:
-			//   – HStack siblings: NavigationSplitView's outer frame
-			//     transiently grew during sidebar show, pushing siblings
-			//     ~30–80pt right.
-			//   – `.padding(.trailing) + .overlay(alignment:.trailing)`:
-			//     overlay anchors to NavigationSplitView's outer frame,
-			//     which still gets pushed rightward by the NSSplitView
-			//     animation, displacing the overlay 90+pt.
-			// Pinning the drawer's leading edge with .offset against the
-			// outer GeometryReader sidesteps NSSplitView's transient
-			// frame growth entirely.
+			// NavigationSplitView fills the full window width; the drawer
+			// is layered on top via ZStack rather than reserving layout
+			// space. Earlier attempts that constrained NavigationSplitView
+			// to (window − drawer) width either let NSSplitView's sidebar
+			// animation push the drawer ~30–115pt right (HStack /
+			// padding+overlay variants) or kept the drawer pinned but
+			// shrank detail's title-bar area enough that the toolbar
+			// briefly showed a `>>` overflow chevron during sidebar
+			// expansion (.frame(width: navWidth) variant). With the
+			// drawer as a ZStack overlay anchored to the outer
+			// GeometryReader's trailing edge, NavigationSplitView's
+			// outer frame never changes, so neither the drawer nor the
+			// toolbar feels the sidebar animation. The drawer needs an
+			// opaque background since it now sits over the detail
+			// region's content.
 			GeometryReader { geo in
 				let drawerTotal: CGFloat = fileDrawerOpen
 					? drawerWidth + 1 : 0
-				let navWidth = max(0, geo.size.width - drawerTotal)
 				ZStack(alignment: .topLeading) {
 					NavigationSplitView {
 						// Already a tab — connecting from this sidebar
@@ -104,6 +105,7 @@ struct MainWindow: View {
 						Group {
 							if store.tabs.contains(where: { $0.id == tabId }) {
 								TerminalContainerView(tabId: tabId)
+									.padding(.trailing, drawerTotal)
 							} else {
 								Text("Tab closed")
 									.foregroundColor(.secondary)
@@ -112,7 +114,6 @@ struct MainWindow: View {
 						.frame(maxWidth: .infinity, maxHeight: .infinity)
 						.frame(minWidth: 400, minHeight: 500)
 					}
-					.frame(width: navWidth, height: geo.size.height)
 
 					if fileDrawerOpen {
 						HStack(spacing: 0) {
@@ -129,7 +130,8 @@ struct MainWindow: View {
 							.frame(width: drawerWidth)
 						}
 						.frame(width: drawerTotal, height: geo.size.height)
-						.offset(x: navWidth, y: 0)
+						.background(Color(NSColor.windowBackgroundColor))
+						.offset(x: geo.size.width - drawerTotal, y: 0)
 						.transition(.move(edge: .trailing))
 					}
 				}
