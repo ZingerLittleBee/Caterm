@@ -32,18 +32,24 @@ struct SyncStatusRow: View {
 
     @ViewBuilder
     private func statusRowBody(state: SyncIndicatorState, now: Date) -> some View {
+        // Belt-and-suspenders truncation: see HostRow.body for the full
+        // explanation. Same SwiftUI/macOS sidebar quirk applies here — without
+        // `minWidth: 0` the Text claims its intrinsic width and gets clipped
+        // from the leading edge ("Sign in to sync" → "to sync").
         Button(action: { handleTap(state: state) }) {
             HStack(spacing: 8) {
                 stateIcon(state)
                 stateLabel(state, now: now)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                 stateChevron(state)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .contentShape(Rectangle())
+            .clipped()
         }
         .buttonStyle(.plain)
         .background(Color.clear)

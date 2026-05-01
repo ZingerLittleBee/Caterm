@@ -172,6 +172,29 @@ struct HostRow: View {
 	let host: SSHHost
 
 	var body: some View {
+		// Belt-and-suspenders truncation: prior fixes (3a8f66d, b5ed2e8) put
+		// per-Text `frame(maxWidth: .infinity)` and `.truncationMode(.tail)`
+		// in place but the user still saw trailing characters of the text
+		// (e.g. "27:22" instead of "root@…") when the sidebar was narrow.
+		// A long-standing SwiftUI/macOS quirk causes List rows nested in a
+		// NavigationSplitView sidebar to size to the row's intrinsic width
+		// when the inner Text doesn't have an explicit `minWidth: 0` floor,
+		// so the Text claims its full width and gets clipped from the
+		// leading edge by the parent sidebar/HStack frame.
+		//
+		// The full defense applied here:
+		//   1. Outer HStack pinned to `maxWidth: .infinity, alignment: .leading`
+		//      so the row claims the full available width rather than its
+		//      intrinsic content width.
+		//   2. Per-Text `frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)`
+		//      — `minWidth: 0` tells SwiftUI the Text is allowed to shrink
+		//      below its intrinsic width, which is what triggers the
+		//      `.tail` truncation path.
+		//   3. `.fixedSize(horizontal: false, vertical: true)` on the VStack
+		//      so it does not propagate its (huge) intrinsic horizontal size
+		//      up to the HStack, but still grows vertically as needed.
+		//   4. `.clipped()` on the row so any residual overflow renders
+		//      inside the row's bounds rather than escaping the sidebar.
 		HStack(spacing: 8) {
 			Image(systemName: iconName)
 				.foregroundColor(.secondary)
@@ -182,14 +205,15 @@ struct HostRow: View {
 					.font(.headline)
 					.lineLimit(1)
 					.truncationMode(.tail)
-					.frame(maxWidth: .infinity, alignment: .leading)
+					.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 				Text("\(host.username)@\(host.hostname):\(host.port)")
 					.font(.caption)
 					.foregroundColor(.secondary)
 					.lineLimit(1)
 					.truncationMode(.tail)
-					.frame(maxWidth: .infinity, alignment: .leading)
+					.frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 			}
+			.fixedSize(horizontal: false, vertical: true)
 			// layoutPriority(0) is the default; written explicitly to make the
 			// "shrink me first when narrow" intent obvious.
 			.layoutPriority(0)
@@ -205,7 +229,9 @@ struct HostRow: View {
 					.layoutPriority(1)
 			}
 		}
+		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.vertical, 2)
+		.clipped()
 	}
 
 	var iconName: String {
