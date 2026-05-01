@@ -1,6 +1,6 @@
 # Remote Files (SFTP + Drag Upload) — Design Spec
 
-**Status:** Draft v2 (revised after review 2026-05-01)
+**Status:** Draft v3 (revised after second review 2026-05-01)
 **Date:** 2026-05-01
 **Scope:** macOS app (`apps/macos/`) only.
 
@@ -28,17 +28,30 @@ This brings macOS to feature parity with the web app on file operations, while s
 
 If the ControlMaster is not actively serving (TTL expired, app restarted, ssh subprocess crashed, OS killed it) we **do not** silently re-authenticate from `sftp`. The drawer is a passive consumer of an already-authenticated session.
 
-**Liveness check is required, not just file existence.** OpenSSH's ssh client falls back to a normal connection when ControlPath points at a missing or non-listening socket — meaning a stale `.sock` file plus a sftp invocation would re-auth via askpass. We block this with two layered defenses:
+**Liveness check is required, not just file existence.** OpenSSH's ssh client falls back to a normal connection when ControlPath points at a missing or non-listening socket — meaning a stale `.sock` file plus a sftp invocation would re-auth. `BatchMode=yes` alone is **insufficient**: it only blocks interactive prompts; SSH agent (`SSH_AUTH_SOCK`), passphrase-less keys, and any `kbd-interactive` method that doesn't prompt would still authenticate non-interactively and successfully establish a new connection without the user noticing. We block this with three layered defenses:
 
-1. **`ssh -O check -S <socket>`** before each `sftp` invocation. Per `ssh(1)`, `-O check` "check that the master process is running"; non-zero exit → master is gone.
-2. **`-o BatchMode=yes`** on every `sftp` invocation. This disables all interactive prompts (passwords, passphrases, host-key TOFU). If the master is somehow gone after our check, sftp fails fast instead of hanging or prompting.
+1. **Liveness check** — `ssh -S <socket> -O check <user@host>` before each `sftp` invocation. Per `ssh(1)`, `-O check` "check that the master process is running"; non-zero exit → master is gone. The `<user@host>` destination argument is **mandatory** (otherwise ssh prints a usage error). The same destination string used for the original session is reused.
+2. **No-fallback options on every `sftp` invocation** (passed via `-o`):
+   - `ControlMaster=no` — forbid creating a *new* master from this sftp call (which would silently re-auth)
+   - `BatchMode=yes` — disable interactive prompts (defense in depth)
+   - `PreferredAuthentications=none` — refuse all auth methods, including agent and key auth
+   - `ProxyCommand=none` — defeat any user-config `ProxyCommand` that could re-establish connectivity through other means
+3. **Credentials surface still passed** (§3.4) to enforce identical host-key and known-hosts policy as the original ssh, even on the (unreachable in practice) failure path.
 
-Behavior on missing master:
-- `RemoteFileSystem` runs the `ssh -O check` first; non-zero → throw `.sessionGone`.
-- UI shows banner "Reconnect host to browse files" with an action button that triggers the existing reconnect FSM in `SessionStore`.
-- The full credential surface (§3.4) is still passed to `SFTPCommandBuilder` so that `BatchMode=yes` enforces identical host-key policy as the original ssh — but no actual interactive auth ever happens from sftp.
+With these three layers, if the master is missing or dies between the check and sftp's actual connect, sftp **cannot**:
+- attach to a missing socket (ControlMaster=no forbids creating a new one to fall back to),
+- authenticate via agent or key (PreferredAuthentications=none lists no methods),
+- prompt the user (BatchMode=yes),
+- proxy through another path (ProxyCommand=none).
 
-This resolves the apparent contradiction with §3.4: the credential surface is supplied for **policy parity** (host key checking, identity files), not for re-authentication. Re-auth is impossible because BatchMode is on.
+→ sftp exits non-zero, UI shows banner "Reconnect host to browse files" with an action button that triggers the existing reconnect FSM in `SessionStore`.
+
+This resolves the apparent contradiction with §3.4: credentials are supplied for **policy parity** (host key checking, known-hosts file paths, identity files for the *master* connection), not for re-authentication. Re-auth from sftp is structurally impossible.
+
+**Test coverage to lock the contract** (in `RemoteFileSystemTests`):
+- `testNoFallbackWhenAgentLoaded`: with `SSH_AUTH_SOCK` pointing at a working agent and the master socket deleted, list operation throws `.sessionGone` and never produces a sftp subprocess that connects.
+- `testNoFallbackWhenPasswordlessKeyAvailable`: with `~/.ssh/id_ed25519` (no passphrase) granting access to the test host and the master socket deleted, list throws `.sessionGone`.
+- `testInvocationFlagsPresent`: `SFTPInvocation.argv` contains all four `-o` no-fallback options.
 
 ### 2.3 Foreground: SwiftUI/AppKit drawer in MainWindow
 
@@ -158,11 +171,15 @@ public struct SFTPInvocation {
 }
 
 public struct SFTPCredentials {
-    public let askpassPath: URL?               // path to caterm-askpass binary
-    public let identityFiles: [URL]            // -i flags
-    public let knownHostsPath: URL?            // -o UserKnownHostsFile=
+    public let askpassPath: URL?               // path to caterm-askpass (policy parity only;
+                                               //   never invoked under no-fallback options)
+    public let identityFiles: [URL]            // -i flags (policy parity)
+    public let knownHostsCaterm: URL           // first path joined into UserKnownHostsFile=
+    public let knownHostsUser: URL             // second path; matches SSHCommandBuilder.swift:61
     public let strictHostKeyChecking: SSHCommandBuilder.StrictHostKeyChecking
-    public let extraSSHOptions: [String: String]   // forward through -o
+    public let extraSSHOptions: [String: String]   // forward through -o (note: no-fallback
+                                                   //   options are added by the builder, not
+                                                   //   read from this map)
 }
 
 public enum SFTPCommandBuilder {
@@ -259,13 +276,15 @@ public struct RemoteEntry {
 ```
 
 Internal flow per call:
-1. `precondition(socketExists(controlPath))` — else throw `.sessionGone`.
-2. Build `SFTPInvocation` via `SFTPCommandBuilder`.
+1. **Liveness check** — run `ssh -S <controlPath> -O check <user@host>` (full destination required, see §2.2). If exit code ≠ 0, throw `.sessionGone` without invoking sftp.
+2. Build `SFTPInvocation` via `SFTPCommandBuilder` (the four no-fallback `-o` options are unconditionally added by the builder).
 3. Spawn `Process`; pipe stdin/stdout/stderr.
 4. Write `scriptStdin`; close stdin.
 5. Wait for exit.
 6. On non-zero exit: capture last 1 KiB of stderr → throw `.subprocessFailed(exitCode, stderr)`.
 7. On 0 exit: parse stdout (`ls -la` for list; nothing for transfer).
+
+The previous "socket file exists" precondition is replaced by the active liveness check above — file existence does not prove the master is alive.
 
 ### 4.4 `FileDrawerView` (SwiftUI)
 
@@ -334,7 +353,7 @@ No automatic retry of failed transfers (user explicitly clicks retry). Avoids un
   - argv contains correct `-o ControlPath`
   - batch script for each `SFTPOperation` matches expected format byte-for-byte
   - lowercase `-p` flag always; `-R` only when `recursive: true`; `-a` only when `resume: true` (set by `FileTransferStore.retry`)
-  - credentials surface produces correct `-i`, `-o UserKnownHostsFile=...`, `SSH_ASKPASS` env
+  - credentials surface produces correct `-i`, `-o UserKnownHostsFile="<caterm-path> <user-path>"` (both paths joined with a space, matching SSHCommandBuilder.swift:61), `SSH_ASKPASS` env
 
 - **`FileTransferStoreTests`**
   - FIFO ordering within a host

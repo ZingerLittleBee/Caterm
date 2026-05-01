@@ -1,6 +1,6 @@
 # Terminal Settings GUI + Theme Picker — Design Spec
 
-**Status:** Draft v2 (revised after review 2026-05-01)
+**Status:** Draft v3 (revised after second review 2026-05-01)
 **Date:** 2026-05-01
 **Scope:** macOS app (`apps/macos/`) only.
 
@@ -74,6 +74,9 @@ public struct CatermSettings: Codable, Equatable {
     public var revision: String               // ULID-like token; bumps on any change
     public var global: PartialSettings
     public var hostOverrides: [HostId: PartialSettings]
+    public var migrationsCompleted: Set<String>  // e.g. ["settings-gui-v1"]; tracks one-shot
+                                                 //   migrations like the user-config rewrite
+                                                 //   in §8. Persists in plist alongside data.
 }
 
 public struct PartialSettings: Codable, Equatable {
@@ -117,23 +120,58 @@ void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);  // lin
 
 Note: `ghostty_surface_reload_config` and `ghostty_config_load_string` (mentioned in v1 spec) **do not exist**. Reload goes through new-config construction. Both `update_config` calls return `void`, so success/failure must be detected via the **diagnostics API** before the apply, not via return value.
 
-#### 2.4.1 Settings-change scope (explicit)
+#### 2.4.1 Settings-change scope (field-aware)
+
+Not every field can live-reload. Per Ghostty docs:
+- `scrollback-limit` — "can be changed at runtime but will only affect new terminal surfaces"
+- `macos-titlebar-style` — only affects new windows (NSWindow style is set at construction)
+
+So a single `.global` scope that always broadcasts `surface_update_config` is wrong. We classify each field at compile time:
+
+```swift
+public enum FieldReloadKind {
+    case live          // surface_update_config picks up the change immediately
+    case newSurface    // takes effect only on next ghostty_surface_new
+}
+
+// Static map maintained alongside SettingsRenderer. Single source of truth.
+let liveReloadable: [PartialSettingsKeyPath: FieldReloadKind] = [
+    \.fontFamily:       .live,
+    \.fontSize:         .live,
+    \.lineHeight:       .live,
+    \.cursorStyle:      .live,
+    \.cursorBlink:      .live,
+    \.bell:             .live,
+    \.windowOpacity:    .live,
+    \.windowPaddingX:   .live,
+    \.windowPaddingY:   .live,
+    \.theme:            .live,
+    \.scrollbackBytes:  .newSurface,
+    \.titlebarStyle:    .newSurface,
+]
+```
+
+`SettingsChangeScope` is computed from the diff between the old and new `settings.plist` by `SettingsStore` before posting:
 
 ```swift
 public enum SettingsChangeScope {
-    case global                                // any field in settings.global changed
-    case hostOverride(HostId)                  // settings.hostOverrides[id].theme changed
+    case globalLive          // ≥1 changed field is .live
+    case globalNewSurface    // all changed fields are .newSurface only
+    case hostOverride(HostId)
 }
 ```
 
-`SettingsStore` posts `Notification.Name.catermSettingsChanged` with the scope in `userInfo`. Surface listeners use the scope to decide whether to apply:
+`SettingsStore` posts `Notification.Name.catermSettingsChanged` with the scope in `userInfo`. Listeners apply:
 
 | Scope | Action |
 |---|---|
-| `.global` | All open surfaces rebuild config and call `surface_update_config` |
-| `.hostOverride(id)` | Update **only** the per-host patch file at `~/Library/Caches/Caterm/per-host/<id>.config`. Do NOT call `surface_update_config` on any existing surface (existing tabs keep their current theme until reconnect, per Q4a). New surfaces created later pick up the new patch at construction. |
+| `.globalLive` | Render new managed snapshot. Build new config + call `surface_update_config` for every open surface. Newly-created surfaces also see the change. |
+| `.globalNewSurface` | Render new managed snapshot. **No** `surface_update_config` calls. Show a one-time non-modal banner: "Some settings (scrollback / titlebar) apply to new tabs only." |
+| `.hostOverride(id)` | Write/delete the per-host patch file at `~/Library/Caches/Caterm/per-host/<id>.config`. **No** `surface_update_config` on existing surfaces (existing tabs keep their current theme until reconnect, per Q4a). New surfaces to that host pick up the patch via §2.4.3. |
 
-This explicit scoping resolves the apparent conflict in the original §2.4: per-host theme is a deliberately deferred change.
+If a single user action changes both live and new-surface fields (debounced together), scope is `.globalLive` (covers both: live fields apply now, new-surface fields take effect on next `surface_new`).
+
+This explicit scoping resolves three conflicts in the original §2.4: scrollback-as-live-reload, titlebar-as-live-reload, and per-host-as-broadcast.
 
 #### 2.4.2 Reload sequence (scope = `.global`)
 
@@ -147,18 +185,35 @@ This explicit scoping resolves the apparent conflict in the original §2.4: per-
    ghostty_config_load_file(cfg, userPath)
    ghostty_config_finalize(cfg)
    ```
-4. **Pre-apply validation:** call `ghostty_config_diagnostics_count(cfg)`. If > 0, iterate `ghostty_config_get_diagnostic(cfg, i)` for `i in 0..<count`. Diagnostics with severity `error` are aggregated and shown in a non-modal banner ("Some settings could not be applied: <messages>"); the apply still proceeds because Ghostty already finalized the config to a usable state (errored fields fall back to defaults internally).
+4. **Pre-apply validation:** call `ghostty_config_diagnostics_count(cfg)`. If > 0, iterate `ghostty_config_get_diagnostic(cfg, i)` for `i in 0..<count`, collecting each diagnostic's `message` field. The `ghostty_diagnostic_s` struct (header lines 397-401) **contains only `message`** — there is no severity field exposed. All diagnostics are surfaced together in a non-modal banner ("Configuration warnings: <bullet list>"); the apply still proceeds because Ghostty already finalized the config to a usable state (offending fields fall back to defaults internally). If a future GhosttyKit version adds severity, `ConfigDiagnostic.parse(_:)` is the single point to update.
 5. `ghostty_app_update_config(app, cfg)` — updates the app-level baseline.
 6. For each open `GhosttySurfaceNSView`, build a per-surface `cfg2` (cloning the global build path, plus per-host patch if `hostOverrides[surface.hostId]?.theme` is present), then `ghostty_surface_update_config(surface, cfg2)`. Free `cfg2` after the call.
 7. Free the global `cfg` once all surfaces are updated.
 
-#### 2.4.3 Reload sequence (scope = `.hostOverride(id)`)
+#### 2.4.3 Reload sequence (scope = `.hostOverride(id)`) and per-host patch application
 
 1. `SettingsStore.update(...)` writes plist + bumps revision.
 2. Compute new value:
    - If `settings.hostOverrides[id]?.theme` is non-nil, write `~/Library/Caches/Caterm/per-host/<id>.config` containing exactly one line: `theme = <name>` (Ghostty config syntax).
    - Else, delete the file if present.
-3. **No surface_update_config calls.** Existing tabs continue with their current theme. New surfaces to host `id` pick up the patch at construction time (`GhosttyConfig` init loads the patch when the host is known).
+3. **No surface_update_config calls** for existing surfaces.
+
+**Applying the per-host patch on new surfaces (current architecture)**
+
+`GhosttyApp.shared` (`Sources/TerminalEngine/GhosttyApp.swift:27`) holds a single process-level `ghostty_app_t` configured with the global chain (defaults → managed → user). `ghostty_surface_new` (`Sources/TerminalEngine/GhosttySurface.swift:137`) creates surfaces from that app handle and currently has no point at which a per-host config is mixed in.
+
+Rather than restructuring the surface-creation path, we apply the per-host patch immediately *after* surface creation:
+
+1. `GhosttySurface.init(host:)` calls `ghostty_surface_new(GhosttyApp.shared.raw, &surfaceConfig)` (unchanged).
+2. If `settings.hostOverrides[host.id]?.theme` exists at construction time:
+   - Build a host-scoped `ghostty_config_t` mirroring the §2.4.2 chain plus `ghostty_config_load_file(perHostPatchPath)`.
+   - Call `ghostty_surface_update_config(handle, hostCfg)` immediately.
+   - Free `hostCfg`.
+3. The user briefly (single frame) sees the global theme before the host theme applies. Acceptable trade-off; alternative (refactoring `GhosttySurface` to accept a custom config in `surface_new`) is a larger change deferred to a separate spec.
+
+Implementation notes:
+- The patch file is loaded *after* user config in the chain, matching §2.4.4 precedence.
+- If GhosttyKit later exposes a way to pass per-surface config to `surface_new`, this two-step apply collapses naturally.
 
 #### 2.4.4 Per-host theme override precedence
 
@@ -205,7 +260,7 @@ Bell
   Mode         [None | Audio | Visual | Both]   (segmented)
 
 Scrollback
-  Lines        [Stepper: 10000]
+  Memory       [Stepper: 10 MB]   (1–500 MB; applies to new tabs only)
 
 Window
   Opacity      ━━━━━━●━  0.95
@@ -396,7 +451,7 @@ These are the existing managed snapshot per `ConfigStore.swift:60-78`. Dropping 
 |---|---|
 | `settings.plist` corrupted | Quarantine to `settings.plist.broken-<timestamp>`; seed defaults; surface a non-modal alert on next launch |
 | Bundled `themes.json` missing or invalid | Fall back to embedded 9-favorites list; show banner in Themes tab "Theme catalog failed to load" |
-| `ghostty_config_diagnostics_count` > 0 after finalize | Aggregate error-severity diagnostics; non-modal banner "Some settings could not be applied: <messages>"; apply still proceeds with Ghostty's internal fallback to defaults for the offending fields |
+| `ghostty_config_diagnostics_count` > 0 after finalize | Aggregate all diagnostic messages (no severity field exists in `ghostty_diagnostic_s` per header line 397-401); non-modal banner "Configuration warnings: <bullet list>"; apply still proceeds with Ghostty's internal fallback to defaults for the offending fields |
 | Invalid font-family typed (shouldn't happen with dropdown but defensive) | Renderer omits the line; managed snapshot stays valid |
 | User config has same key as managed (still wins, except theme on host-override) | Show "N user-config overrides active" hint in Terminal tab footer |
 | Migration script fails mid-way | Roll back via backup of user config kept at `~/Library/Application Support/Caterm/config.bak-<timestamp>`; user sees alert pointing to backup |
@@ -407,7 +462,7 @@ This is the core architectural change vs v1 spec, addressing the issue where the
 
 ### 8.1 Detection
 
-On first launch with the new version, `SettingsMigrationStep` runs once (gated by a `migration-v1-completed` flag in `settings.plist`):
+On first launch with the new version, `SettingsMigrationStep` runs once (gated by a `"settings-gui-v1"` token in `settings.migrationsCompleted`):
 
 1. Read user config from `~/Library/Application Support/Caterm/config`.
 2. Compute SHA-256 of the trimmed bytes.
@@ -425,7 +480,7 @@ On first launch with the new version, `SettingsMigrationStep` runs once (gated b
    # Caterm-managed config. Use Caterm Preferences (⌘,) for normal settings.
    ```
 4. Render managed snapshot from `settings.plist`. The render output **must** include the `macos-titlebar-style = tabs` line because we just put it in `settings.plist.global.titlebarStyle`. (Test: `SettingsMigrationTests.testBranchA_titlebarPreserved` asserts no visual change.)
-5. Set `migration-v1-completed = true`.
+5. Insert `"settings-gui-v1"` into `settings.migrationsCompleted`.
 
 After this, GUI changes flow correctly: managed wins over defaults, user config is empty so doesn't shadow anything.
 
@@ -435,7 +490,7 @@ After this, GUI changes flow correctly: managed wins over defaults, user config 
 2. For each key that maps to a `PartialSettings` field (font-family, font-size, line-height, cursor-style, cursor-style-blink, bell-features, scrollback-limit, background-opacity, window-padding-x/y, macos-titlebar-style, theme), copy the value into `settings.plist.global`.
 3. **Do not modify** user config.
 4. Render managed snapshot from `settings.plist`.
-5. Set `migration-v1-completed = true`.
+5. Insert `"settings-gui-v1"` into `settings.migrationsCompleted`.
 6. On next Preferences open (or via a one-time modal at app start), show an informational banner:
 
 > Your user config at `~/.../Caterm/config` overrides Caterm Preferences for **theme, font-family, font-size, cursor-style**. Caterm read these into Preferences; further changes here will not take effect until the user config is updated.
