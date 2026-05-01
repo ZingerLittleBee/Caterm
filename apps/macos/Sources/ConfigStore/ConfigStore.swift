@@ -1,4 +1,5 @@
 import Foundation
+import SettingsStore
 
 #if canImport(AppKit)
 	import AppKit
@@ -82,4 +83,32 @@ public enum ConfigStore {
 			NSWorkspace.shared.activateFileViewerSelecting([url])
 		}
 	#endif
+}
+
+public extension ConfigStore {
+	static var perHostPatchDirectory: URL {
+		FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("Caterm/per-host")
+	}
+
+	static func perHostPatchPath(for hostId: HostId) -> URL {
+		perHostPatchDirectory.appendingPathComponent("\(hostId.rawValue).config")
+	}
+
+	@MainActor
+	static func renderManagedSnapshot(
+		from settings: PartialSettings,
+		to path: URL = managedConfigPath
+	) throws {
+		try FileManager.default.createDirectory(
+			at: path.deletingLastPathComponent(),
+			withIntermediateDirectories: true
+		)
+		let desired = SettingsRenderer.render(settings)
+		if let existing = try? String(contentsOf: path, encoding: .utf8), existing == desired {
+			return
+		}
+		try desired.write(to: path, atomically: true, encoding: .utf8)
+	}
 }
