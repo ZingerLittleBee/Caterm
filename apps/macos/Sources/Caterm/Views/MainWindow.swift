@@ -15,6 +15,7 @@ import SwiftUI
 /// (and the resulting SIGHUP to ssh) happens via `GhosttySurfaceNSView.deinit`.
 struct MainWindow: View {
 	@EnvironmentObject var store: SessionStore
+	@EnvironmentObject var fileTransferStore: FileTransferStore
 	@Environment(\.openWindow) private var openWindow
 	@State private var fileDrawerOpen = false
 	let tabId: UUID
@@ -68,7 +69,11 @@ struct MainWindow: View {
 				.frame(minWidth: 400, minHeight: 500)
 
 				if fileDrawerOpen {
-					FileDrawerView(host: activeHost, fs: activeRemoteFs)
+					FileDrawerView(
+						host: activeHost,
+						fs: activeRemoteFs,
+						fileTransferStore: fileTransferStore
+					)
 						.frame(minWidth: 240, idealWidth: 320, maxWidth: 600)
 				}
 			}

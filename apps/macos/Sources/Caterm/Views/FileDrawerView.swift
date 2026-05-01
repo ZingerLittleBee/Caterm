@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import FileTransferStore
 import SSHCommandBuilder
 
@@ -6,6 +7,7 @@ import SSHCommandBuilder
 struct FileDrawerView: View {
 	let host: SSHHost?
 	let fs: RemoteFileSystem?
+	let fileTransferStore: FileTransferStore?
 	@State private var path: String = "~"
 	@State private var entries: [RemoteEntry] = []
 	@State private var selection: RemoteEntry.ID?
@@ -36,16 +38,57 @@ struct FileDrawerView: View {
 					description: Text(err)
 				)
 			} else {
-				RemoteFileListView(entries: entries, selection: $selection) { entry in
-					if entry.isDirectory {
-						path = (path as NSString).appendingPathComponent(entry.name)
-						Task { await refresh() }
+				RemoteFileListView(
+					entries: entries,
+					selection: $selection,
+					onActivate: { entry in
+						if entry.isDirectory {
+							path = (path as NSString).appendingPathComponent(entry.name)
+							Task { await refresh() }
+						}
+					},
+					onDropOnFolder: { entry, urls in
+						let folderPath = (path as NSString).appendingPathComponent(entry.name)
+						handleDrop(urls: urls, remoteDir: folderPath)
 					}
-				}
+				)
 			}
 		}
 		.frame(minWidth: 240)
 		.task(id: host?.id) { await refresh() }
+		.onDrop(of: [.fileURL], isTargeted: nil) { providers in
+			guard host != nil, fileTransferStore != nil else { return false }
+			Task {
+				let urls = await loadURLs(from: providers)
+				if !urls.isEmpty {
+					handleDrop(urls: urls, remoteDir: path)
+				}
+			}
+			return true
+		}
+	}
+
+	private func handleDrop(urls: [URL], remoteDir: String) {
+		guard let host, let store = fileTransferStore else { return }
+		_ = store.enqueueUpload(localPaths: urls, remoteDir: remoteDir, host: host)
+		Task { await refresh() }
+	}
+
+	private func loadURLs(from providers: [NSItemProvider]) async -> [URL] {
+		await withTaskGroup(of: URL?.self) { group in
+			for provider in providers where provider.canLoadObject(ofClass: URL.self) {
+				group.addTask {
+					await withCheckedContinuation { (cont: CheckedContinuation<URL?, Never>) in
+						_ = provider.loadObject(ofClass: URL.self) { url, _ in
+							cont.resume(returning: url)
+						}
+					}
+				}
+			}
+			var out: [URL] = []
+			for await u in group { if let u { out.append(u) } }
+			return out
+		}
 	}
 
 	private func refresh() async {

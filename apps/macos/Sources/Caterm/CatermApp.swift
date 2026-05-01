@@ -1,8 +1,11 @@
 import ConfigStore
+import FileTransferStore
+import Foundation
 import HostSyncStore
 import KeychainStore
 import ServerSyncClient
 import SessionStore
+import SFTPCommandBuilder
 import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
@@ -13,6 +16,7 @@ struct CatermApp: App {
 	@StateObject var store: SessionStore
 	@StateObject var syncStore: HostSyncStore
 	@StateObject var preferences: SyncPreferences
+	@StateObject var fileTransferStore: FileTransferStore
 	@State private var showSyncSettings = false
 	@State private var serverURLText: String = ServerURL.current.absoluteString
 	private let authSession: AuthSession
@@ -34,6 +38,31 @@ struct CatermApp: App {
 			sessionStore: session,
 			authSession: auth,
 			preferences: prefs
+		))
+		// Per-app FileTransferStore. Closures capture plain value types
+		// (URLs / paths) rather than `ControlMasterManager` itself so the
+		// closure body remains nonisolated-callable. Liveness goes through
+		// `ControlMasterManager.shared`'s async `isAlive(hostId:)`, which
+		// crosses isolation properly.
+		let cmDir = (try? CacheDirectories.controlMasterDir())
+			?? URL(fileURLWithPath: NSTemporaryDirectory())
+		let askpass = URL(fileURLWithPath: session.askpassPath)
+		let knownCaterm = URL(fileURLWithPath: session.knownHostsCaterm)
+		let knownUser = URL(fileURLWithPath: session.knownHostsUser)
+		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
+			controlPathFor: { hostId in
+				cmDir.appendingPathComponent("\(hostId.uuidString).sock")
+			},
+			credentialsFor: { _ in
+				SFTPCredentials(
+					askpassPath: askpass,
+					identityFiles: [],
+					knownHostsCaterm: knownCaterm,
+					knownHostsUser: knownUser,
+					strictHostKeyChecking: .acceptNew
+				)
+			},
+			liveness: ControlMasterManager.shared
 		))
 		self.authSession = auth
 		self.syncClient = client
@@ -61,6 +90,7 @@ struct CatermApp: App {
 			.environmentObject(store)
 			.environmentObject(syncStore)        // NEW (v1.4)
 			.environmentObject(preferences)      // NEW (v1.4)
+			.environmentObject(fileTransferStore)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
