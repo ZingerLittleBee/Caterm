@@ -118,7 +118,50 @@ internal extension SettingsMigrationStep {
         userConfigPath: URL,
         settings: inout CatermSettings
     ) throws -> BranchBSummary {
-        // Stub — overwritten in Task 15.
-        return BranchBSummary(representableCount: 0, unrepresentableCount: 0)
+        let text = (try? String(contentsOf: userConfigPath, encoding: .utf8)) ?? ""
+        let classification = PartialSettings.classifyConfig(text)
+
+        for entry in classification.representable {
+            applyRepresentableField(entry, to: &settings.global)
+        }
+
+        return BranchBSummary(
+            representableCount: classification.representable.count,
+            unrepresentableCount: classification.unrepresentable.count
+        )
+    }
+
+    private static func applyRepresentableField(
+        _ entry: RepresentableEntry,
+        to s: inout PartialSettings
+    ) {
+        switch (entry.key, entry.value) {
+        case ("font-family", .string(let v)):       s.fontFamily = v
+        case ("font-size", .int(let v)):            s.fontSize = v
+        case ("theme", .string(let v)):             s.theme = v
+        case ("cursor-style", .cursorStyle(let v)): s.cursorStyle = v
+        case ("cursor-style-blink", .bool(let v)):  s.cursorBlink = v
+        case ("bell-features", .bell(let v)):       s.bell = v
+        case ("scrollback-limit", .int(let v)):     s.scrollbackBytes = v
+        case ("background-opacity", .double(let v)): s.windowOpacity = v
+        case ("window-padding-x", .int(let v)):     s.windowPaddingX = v
+        case ("window-padding-y", .int(let v)):     s.windowPaddingY = v
+        case ("macos-titlebar-style", .titlebar(let v)): s.titlebarStyle = v
+        default: break
+        }
+    }
+}
+
+public extension SettingsMigrationStep {
+    /// Removes only the representable single-line keys from user config; preserves all
+    /// other lines, comments, and blank lines byte-for-byte. Multi-occurrence fallback
+    /// chains and unmodeled keys are kept intact.
+    @MainActor
+    static func importRepresentableKeys(userConfigPath: URL) throws {
+        let text = try String(contentsOf: userConfigPath, encoding: .utf8)
+        let classification = PartialSettings.classifyConfig(text)
+        let linesToRemove = classification.representable.flatMap(\.sourceLines)
+        let edited = GhosttyConfigParser.removeLines(text, lineNumbers: linesToRemove)
+        try edited.write(to: userConfigPath, atomically: true, encoding: .utf8)
     }
 }
