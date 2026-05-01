@@ -77,20 +77,20 @@ public enum SFTPCommandBuilder {
 	private static func makeScript(_ op: SFTPOperation) throws -> String {
 		switch op {
 		case .list(let dir):
-			return "cd \(try SFTPPathEncoder.encode(dir))\nls -la\nexit\n"
+			return "cd \(try SFTPPathEncoder.encodeRemote(dir))\nls -la\nexit\n"
 		case .put(let local, let remote, let r, let resume):
 			let flags = "-p" + (r ? "R" : "") + (resume ? "a" : "")
-			return "put \(flags) \(try SFTPPathEncoder.encode(local.path)) \(try SFTPPathEncoder.encode(remote))\nexit\n"
+			return "put \(flags) \(try SFTPPathEncoder.encode(local.path)) \(try SFTPPathEncoder.encodeRemote(remote))\nexit\n"
 		case .get(let remote, let local, let r, let resume):
 			let flags = "-p" + (r ? "R" : "") + (resume ? "a" : "")
-			return "get \(flags) \(try SFTPPathEncoder.encode(remote)) \(try SFTPPathEncoder.encode(local.path))\nexit\n"
+			return "get \(flags) \(try SFTPPathEncoder.encodeRemote(remote)) \(try SFTPPathEncoder.encode(local.path))\nexit\n"
 		case .mkdir(let p):
-			return "mkdir \(try SFTPPathEncoder.encode(p))\nexit\n"
+			return "mkdir \(try SFTPPathEncoder.encodeRemote(p))\nexit\n"
 		case .remove(let p, let isDir):
 			let cmd = isDir ? "rmdir" : "rm"
-			return "\(cmd) \(try SFTPPathEncoder.encode(p))\nexit\n"
+			return "\(cmd) \(try SFTPPathEncoder.encodeRemote(p))\nexit\n"
 		case .rename(let a, let b):
-			return "rename \(try SFTPPathEncoder.encode(a)) \(try SFTPPathEncoder.encode(b))\nexit\n"
+			return "rename \(try SFTPPathEncoder.encodeRemote(a)) \(try SFTPPathEncoder.encodeRemote(b))\nexit\n"
 		}
 	}
 }

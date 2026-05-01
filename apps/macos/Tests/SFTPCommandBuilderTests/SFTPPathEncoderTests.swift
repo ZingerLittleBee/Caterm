@@ -59,4 +59,30 @@ final class SFTPPathEncoderTests: XCTestCase {
     func testTrailingSlashAccepted() throws {
         XCTAssertEqual(try SFTPPathEncoder.encode("/empty/"), #""/empty/""#)
     }
+
+    // MARK: - encodeRemote (tilde-aware)
+
+    func testRemoteBareTildeUnquoted() throws {
+        // sftp expands `~` only when unquoted; `cd "~"` fails as "no such dir".
+        XCTAssertEqual(try SFTPPathEncoder.encodeRemote("~"), "~")
+    }
+
+    func testRemoteTildeSlashEqualsBareTilde() throws {
+        XCTAssertEqual(try SFTPPathEncoder.encodeRemote("~/"), "~")
+    }
+
+    func testRemoteTildePathConcatenatesQuoted() throws {
+        XCTAssertEqual(try SFTPPathEncoder.encodeRemote("~/Documents"),
+                       #"~/"Documents""#)
+        XCTAssertEqual(try SFTPPathEncoder.encodeRemote("~/with space"),
+                       #"~/"with space""#)
+    }
+
+    func testRemoteAbsolutePathFallsThroughToEncode() throws {
+        XCTAssertEqual(try SFTPPathEncoder.encodeRemote("/etc"), #""/etc""#)
+    }
+
+    func testRemoteEmptyRejected() {
+        XCTAssertThrowsError(try SFTPPathEncoder.encodeRemote(""))
+    }
 }
