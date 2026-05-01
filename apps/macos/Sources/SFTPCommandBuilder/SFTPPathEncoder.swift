@@ -35,17 +35,19 @@ public enum SFTPPathEncoder {
     }
 
     /// Encode a *remote* path for `sftp` batch-mode commands. Differs from
-    /// `encode` only in tilde handling: sftp expands `~` and `~/foo` to the
-    /// remote home directory, but **only when unquoted**. `cd "~"` is a literal
-    /// directory named `~` and fails. We emit the tilde unquoted and quote the
-    /// rest by concatenation (`~/"name with space"` is valid sftp syntax).
+    /// `encode` in tilde handling: tilde expansion in sftp batch mode is
+    /// unreliable across versions and server configurations (OpenSSH's
+    /// `internal-sftp` subsystem with no shell does not expand `~` at all).
+    /// Since sftp's initial working directory is always the user's home, we
+    /// strip leading `~/` and pass the rest as a relative path. A bare `~`
+    /// becomes `"."` (the cwd, which is home).
     public static func encodeRemote(_ path: String) throws -> String {
         if path.isEmpty { throw SFTPPathEncodingError.empty }
-        if path == "~" { return "~" }
+        if path == "~" { return "\".\"" }
         if path.hasPrefix("~/") {
             let rest = String(path.dropFirst(2))
-            if rest.isEmpty { return "~" }
-            return "~/" + (try encode(rest))
+            if rest.isEmpty { return "\".\"" }
+            return try encode(rest)
         }
         return try encode(path)
     }
