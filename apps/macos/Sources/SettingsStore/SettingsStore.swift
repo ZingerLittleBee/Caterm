@@ -73,4 +73,39 @@ public final class SettingsStore: ObservableObject {
         }
         return String(ms, radix: 36) + String(rand)
     }
+
+    public func update(_ mutate: (inout CatermSettings) -> Void) {
+        var draft = _pending?.settings ?? settings
+        mutate(&draft)
+        let pending = _pending ?? _Pending(draft)
+        pending.settings = draft
+        pending.task?.cancel()
+        let interval = self.debounceInterval
+        pending.task = Task { [weak self] in
+            try? await Task.sleep(for: interval)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.flushNow() }
+        }
+        _pending = pending
+    }
+
+    public func flushNow() {
+        guard let pending = _pending else { return }
+        _pending = nil
+        let old = settings
+        let next = pending.settings
+        do {
+            try save(next)
+        } catch {
+            NSLog("[SettingsStore] save failed: \(error)")
+            return
+        }
+        if let scope = SettingsChangeScope.diff(old: old, new: next) {
+            NotificationCenter.default.post(
+                name: Self.changeNotification,
+                object: self,
+                userInfo: [Self.scopeUserInfoKey: scope]
+            )
+        }
+    }
 }
