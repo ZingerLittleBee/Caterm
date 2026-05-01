@@ -71,7 +71,20 @@ public final class CloudKitSyncClient: ServerSyncClient {
     }
 
     public func updateHost(_ input: RemoteHostUpdateInput) async throws {
-        throw ServerSyncError.http(status: 501, body: "not implemented: Task 8")
+        let recID = CKRecord.ID(recordName: input.id, zoneID: zoneID)
+        do {
+            let rec = try await database.record(for: recID)
+            if let v = input.name { rec["name"] = v as CKRecordValue }
+            if let v = input.hostname { rec["hostname"] = v as CKRecordValue }
+            if let v = input.port { rec["port"] = v as CKRecordValue }
+            if let v = input.username { rec["username"] = v as CKRecordValue }
+            if let v = input.authType { rec["authType"] = v as CKRecordValue }
+            _ = try await database.save(rec)
+        } catch let e as ServerSyncError {
+            throw e
+        } catch {
+            throw CloudKitErrorMapping.map(error)
+        }
     }
 
     public func deleteHost(id: String) async throws {

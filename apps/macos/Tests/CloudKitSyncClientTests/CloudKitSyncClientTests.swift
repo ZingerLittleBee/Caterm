@@ -64,4 +64,41 @@ final class CloudKitSyncClientTests: XCTestCase {
         XCTAssertEqual(savedID.recordName, out.id)
         XCTAssertEqual(fakeDb.records[savedID]?["name"] as? String, "alpha")
     }
+
+    func testUpdateHostFetchesAndModifiesRecord() async throws {
+        let recID = CKRecord.ID(recordName: "h-1", zoneID: zoneID)
+        let existing = CKRecord(recordType: "Host", recordID: recID)
+        existing["name"] = "old" as CKRecordValue
+        existing["hostname"] = "old.example.com" as CKRecordValue
+        existing["port"] = 22 as CKRecordValue
+        existing["username"] = "old-u" as CKRecordValue
+        existing["authType"] = "key" as CKRecordValue
+        fakeDb.records[recID] = existing
+
+        let input = RemoteHostUpdateInput(id: "h-1", name: "new",
+                                          hostname: "new.example.com",
+                                          port: 2222, username: "new-u")
+        try await sut.updateHost(input)
+
+        let saved = fakeDb.records[recID]
+        XCTAssertEqual(saved?["name"] as? String, "new")
+        XCTAssertEqual(saved?["hostname"] as? String, "new.example.com")
+        XCTAssertEqual(saved?["port"] as? Int, 2222)
+        XCTAssertEqual(saved?["username"] as? String, "new-u")
+        XCTAssertEqual(fakeDb.recordFetchCallCount, 1)
+        XCTAssertEqual(fakeDb.saveCallCount, 1)
+    }
+
+    func testUpdateHostMissingRecordThrowsHttp() async throws {
+        // Record id not present in the fake — `record(for:)` throws
+        // CKError.unknownItem, which CloudKitErrorMapping maps to .http(...).
+        let input = RemoteHostUpdateInput(id: "missing")
+        do {
+            try await sut.updateHost(input)
+            XCTFail("expected throw")
+        } catch let e as ServerSyncError {
+            if case .http = e { return }
+            XCTFail("expected .http, got \(e)")
+        }
+    }
 }
