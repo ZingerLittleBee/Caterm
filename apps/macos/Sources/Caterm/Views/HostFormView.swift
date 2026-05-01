@@ -17,7 +17,7 @@ struct HostFormView: View {
 	let onSubmit: (SSHHost, String?) -> Void
 	@Environment(\.dismiss) private var dismiss
 
-	@State private var name = ""
+	@State private var label = ""
 	@State private var hostname = ""
 	@State private var port = "22"
 	@State private var username = ""
@@ -46,8 +46,8 @@ struct HostFormView: View {
 		VStack(spacing: 0) {
 			Form {
 				Section("Connection") {
-					LabeledContent("Name") {
-						TextField("", text: $name)
+					LabeledContent("Label") {
+						TextField("", text: $label, prompt: Text("Optional"))
 					}
 					LabeledContent("Hostname") {
 						TextField("", text: $hostname)
@@ -132,16 +132,28 @@ struct HostFormView: View {
 	}
 
 	private var isValid: Bool {
-		!name.isEmpty
-			&& !hostname.isEmpty
+		!hostname.isEmpty
 			&& !username.isEmpty
 			&& (credKind != .keyFile || !keyPath.isEmpty)
 			&& Int(port) != nil
 	}
 
+	/// Falls back to `username@hostname` when the user leaves the label
+	/// blank so the host always has something user-visible to render.
+	private var resolvedName: String {
+		let trimmed = label.trimmingCharacters(in: .whitespaces)
+		if !trimmed.isEmpty { return trimmed }
+		return "\(username)@\(hostname)"
+	}
+
 	private func populate() {
 		guard case let .edit(host) = mode else { return }
-		name = host.name
+		// Only carry the existing name into the editable field when it
+		// isn't just the auto-derived `username@hostname` fallback —
+		// otherwise editing would surface the fallback as if the user
+		// had typed it, defeating the optional-label affordance.
+		let derived = "\(host.username)@\(host.hostname)"
+		label = host.name == derived ? "" : host.name
 		hostname = host.hostname
 		port = String(host.port)
 		username = host.username
@@ -185,7 +197,7 @@ struct HostFormView: View {
 		}()
 		let host = SSHHost(
 			id: id,
-			name: name,
+			name: resolvedName,
 			hostname: hostname,
 			port: Int(port) ?? 22,
 			username: username,
