@@ -7,11 +7,17 @@ import SwiftUI
 /// - Add (toolbar + ⌘T notification)
 /// - Edit (context menu)
 /// - Delete (context menu)
-/// - Connect (context menu / double-click) — opens a new tab via OpenTabBridge
+/// - Connect (context menu / double-click) — delegates "open this new tab"
+///   to the owning window via `onOpenTab`. A LandingView swaps its tab
+///   identity in-place (so the empty Landing window becomes the new tab);
+///   a MainWindow calls `openWindow(value:)` to spawn a sibling tab.
+///   This avoids the previous behavior of always spawning a new window
+///   and leaving the original Landing window around as a blank tab.
 struct HostListSidebar: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
+	let onOpenTab: (UUID) -> Void
 	@State var selectedHostId: UUID?
 	@State var showingAddSheet = false
 	@State var editingHost: SSHHost?
@@ -156,9 +162,7 @@ struct HostListSidebar: View {
 			pendingCredentialHost = host
 		case .openTab:
 			let tabId = store.openTab(host: host)
-			NotificationCenter.default.post(
-				name: .catermOpenTab, object: nil, userInfo: ["tabId": tabId]
-			)
+			onOpenTab(tabId)
 		}
 	}
 }

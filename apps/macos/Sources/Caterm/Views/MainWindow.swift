@@ -12,11 +12,15 @@ import SwiftUI
 /// (and the resulting SIGHUP to ssh) happens via `GhosttySurfaceNSView.deinit`.
 struct MainWindow: View {
 	@EnvironmentObject var store: SessionStore
+	@Environment(\.openWindow) private var openWindow
 	let tabId: UUID
 
 	var body: some View {
 		NavigationSplitView {
-			HostListSidebar()
+			// Already a tab — connecting from this sidebar should spawn a
+			// sibling tabbed window (auto-merged by macOS into the current
+			// tab bar), not replace this window's session.
+			HostListSidebar(onOpenTab: { newId in openWindow(value: newId) })
 				.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
 		} detail: {
 			Group {
