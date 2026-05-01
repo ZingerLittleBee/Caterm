@@ -52,10 +52,25 @@ struct FileDrawerView: View {
 					description: Text("Connect to a host to browse files.")
 				)
 			} else if let err = error {
+				if err == "Reconnect host to browse files" {
+					ContentUnavailableView {
+						Label("Reconnect host", systemImage: "arrow.clockwise")
+					} description: {
+						Text("Master connection expired. Reconnect the terminal session, then click Try Again.")
+					} actions: {
+						Button("Try Again") { Task { await refresh() } }
+					}
+				} else {
+					ContentUnavailableView(
+						"Error",
+						systemImage: "exclamationmark.triangle",
+						description: Text(err)
+					)
+				}
+			} else if entries.isEmpty {
 				ContentUnavailableView(
-					"Error",
-					systemImage: "exclamationmark.triangle",
-					description: Text(err)
+					"Empty folder",
+					systemImage: "folder"
 				)
 			} else {
 				RemoteFileListView(
