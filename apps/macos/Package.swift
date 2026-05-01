@@ -57,7 +57,11 @@ let package = Package(
             dependencies: ["SSHCommandBuilder", "SFTPCommandBuilder"],
             path: "Sources/FileTransferStore"
         ),
-        .target(name: "SFTPCommandBuilder", path: "Sources/SFTPCommandBuilder"),
+        .target(
+            name: "SFTPCommandBuilder",
+            dependencies: ["SSHCommandBuilder"],
+            path: "Sources/SFTPCommandBuilder"
+        ),
 
         // --- Executables ---
         .executableTarget(
@@ -142,7 +146,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SFTPCommandBuilderTests",
-            dependencies: ["SFTPCommandBuilder"],
+            dependencies: ["SFTPCommandBuilder", "SSHCommandBuilder"],
             path: "Tests/SFTPCommandBuilderTests"
         ),
     ]
