@@ -98,7 +98,11 @@ struct MainWindow: View {
 							.frame(minWidth: 240, idealWidth: 320, maxWidth: 600)
 					}
 				}
-				.frame(minHeight: 500)
+				// Sum of children minWidths + splitter handle. Without this
+				// the HSplitView reports only its first child's min to the
+				// NavigationSplitView, which then lets detail steal width
+				// from the sidebar's 220pt floor when the drawer is open.
+				.frame(minWidth: fileDrawerOpen ? 660 : 400, minHeight: 500)
 			}
 		}
 		.frame(minWidth: 1000, minHeight: 600)
