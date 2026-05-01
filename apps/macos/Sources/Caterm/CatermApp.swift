@@ -1,3 +1,4 @@
+import AppKit
 import ConfigStore
 import FileTransferStore
 import Foundation
@@ -201,6 +202,23 @@ struct CatermApp: App {
 					NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: nil, from: nil)
 				}
 				.keyboardShortcut("v", modifiers: [.command, .option, .shift])
+			}
+			// ⌘B toggles the host-list sidebar. NavigationSplitView
+			// installs an `NSSplitViewController` in the responder chain
+			// that handles `toggleSidebar:`. Use `NSApp.sendAction(_:to:
+			// from:)` with `to: nil` so AppKit walks the responder chain
+			// from the key window — `firstResponder?.tryToPerform(...)`
+			// alone misses the split-view controller because the chain
+			// starts a few links above first responder.
+			CommandGroup(after: .sidebar) {
+				Button("Toggle Sidebar") {
+					NSApp.sendAction(
+						#selector(NSSplitViewController.toggleSidebar(_:)),
+						to: nil,
+						from: nil
+					)
+				}
+				.keyboardShortcut("b", modifiers: .command)
 			}
 			// ⌘⇧F toggles the per-window Files drawer. The notification is
 			// observed by `MainWindow`; broadcasting via NotificationCenter
