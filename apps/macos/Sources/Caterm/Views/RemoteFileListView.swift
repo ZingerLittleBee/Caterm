@@ -22,18 +22,22 @@ struct RemoteFileListView: View {
 					Image(systemName: "doc")
 						.foregroundStyle(.secondary)
 				}
-				Text(entry.name).lineLimit(1).truncationMode(.middle)
-				Spacer(minLength: 8)
+				Text(entry.name)
+					.lineLimit(1)
+					.truncationMode(.middle)
+					.frame(maxWidth: .infinity, alignment: .leading)
 				if !entry.isDirectory {
 					Text(byteString(entry.size))
+						.font(.caption)
 						.foregroundStyle(.secondary)
 						.lineLimit(1)
 						.fixedSize(horizontal: true, vertical: false)
 				}
 			}
-			// Trailing inset clears macOS List's overlaid scroller area + the
-			// HSplitView resize handle so the size column doesn't get clipped.
-			.padding(.trailing, 12)
+			// macOS List adds a trailing safe-area for the overlay scroller.
+			// Without explicit trailing room, the size column gets clipped
+			// even though Spacer/maxWidth layout says there's space.
+			.padding(.trailing, 16)
 			.contentShape(Rectangle())
 			.onTapGesture(count: 2) { onActivate(entry) }
 			.modifier(FolderDropModifier(entry: entry, onDropOnFolder: onDropOnFolder))
