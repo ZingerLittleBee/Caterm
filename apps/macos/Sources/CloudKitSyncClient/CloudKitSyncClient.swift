@@ -38,6 +38,8 @@ public final class CloudKitSyncClient: ServerSyncClient {
                 // "what the server has that I can interpret"; a corrupt record
                 // (e.g. missing fields from a future schema version) silently
                 // drops out and the pass continues.
+                // TODO(Task 10): log skipped records via os.Logger so schema-drift
+                // bugs are diagnosable in Console.app.
             }
             return hosts
         } catch {
@@ -46,14 +48,17 @@ public final class CloudKitSyncClient: ServerSyncClient {
     }
 
     public func createHost(_ input: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
-        fatalError("Task 7")
+        // Replaced in Task 7. Throws (rather than fatalError) so a misconfigured
+        // build that lands wiring before this task does NOT hard-crash on host
+        // mutations — the user sees a sync failure they can recover from.
+        throw ServerSyncError.http(status: 501, body: "not implemented: Task 7")
     }
 
     public func updateHost(_ input: RemoteHostUpdateInput) async throws {
-        fatalError("Task 8")
+        throw ServerSyncError.http(status: 501, body: "not implemented: Task 8")
     }
 
     public func deleteHost(id: String) async throws {
-        fatalError("Task 9")
+        throw ServerSyncError.http(status: 501, body: "not implemented: Task 9")
     }
 }
