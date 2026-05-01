@@ -50,4 +50,18 @@ final class CloudKitSyncClientTests: XCTestCase {
         XCTAssertEqual(hosts.count, 1, "Malformed record must be skipped, not crash sync")
         XCTAssertEqual(hosts[0].id, "good")
     }
+
+    func testCreateHostWritesRecordAndReturnsRecordName() async throws {
+        let input = RemoteHostCreateInput(name: "alpha", hostname: "x",
+                                          port: 22, username: "u")
+        // The client allocates a fresh recordName per create. We cannot
+        // assert the exact name (it's a UUID), but we can verify the saved
+        // record matches and the returned id equals the allocated name.
+        let out = try await sut.createHost(input)
+        XCTAssertEqual(fakeDb.saveCallCount, 1)
+        XCTAssertEqual(fakeDb.records.count, 1)
+        let savedID = fakeDb.records.keys.first!
+        XCTAssertEqual(savedID.recordName, out.id)
+        XCTAssertEqual(fakeDb.records[savedID]?["name"] as? String, "alpha")
+    }
 }

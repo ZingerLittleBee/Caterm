@@ -48,10 +48,26 @@ public final class CloudKitSyncClient: ServerSyncClient {
     }
 
     public func createHost(_ input: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
-        // Replaced in Task 7. Throws (rather than fatalError) so a misconfigured
-        // build that lands wiring before this task does NOT hard-crash on host
-        // mutations — the user sees a sync failure they can recover from.
-        throw ServerSyncError.http(status: 501, body: "not implemented: Task 7")
+        try await ensureZone()
+        let recordName = UUID().uuidString
+        let rec = CKRecordHostMapping.makeRecord(
+            recordName: recordName, zoneID: zoneID, input: input
+        )
+        do {
+            let saved = try await database.save(rec)
+            return RemoteHostCreateOutput(id: saved.recordID.recordName)
+        } catch {
+            throw CloudKitErrorMapping.map(error)
+        }
+    }
+
+    /// Idempotent zone bootstrap. The first `save` against a fresh container
+    /// fails with `CKError.zoneNotFound` if we don't ensure the zone exists.
+    /// `database.save(zone:)` is itself idempotent (no-op on a zone that
+    /// already exists).
+    private func ensureZone() async throws {
+        let zone = CKRecordZone(zoneID: zoneID)
+        _ = try await database.save(zone)
     }
 
     public func updateHost(_ input: RemoteHostUpdateInput) async throws {

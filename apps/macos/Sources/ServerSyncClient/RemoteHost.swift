@@ -74,4 +74,5 @@ public struct RemoteHostIdInput: Codable {
 
 public struct RemoteHostCreateOutput: Codable, Equatable {
     public let id: String
+    public init(id: String) { self.id = id }
 }
