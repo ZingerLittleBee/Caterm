@@ -7,8 +7,14 @@ import XCTest
 /// host ids were torn down (and which were not). `@unchecked Sendable` is
 /// safe because all access happens on the main actor in tests.
 private final class TeardownSpy: ControlMasterTearDowning, @unchecked Sendable {
+	var registered: [UUID] = []
 	var torn: [UUID] = []
 	var allCount = 0
+
+	@MainActor
+	func register(hostId: UUID, destination: String) {
+		registered.append(hostId)
+	}
 
 	func tearDown(hostId: UUID) async {
 		torn.append(hostId)

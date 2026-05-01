@@ -25,6 +25,10 @@ struct CatermApp: App {
 	/// object on the WindowGroup.
 	let authSession: AuthSession
 
+	/// Holds the live-reload dispatcher and its NotificationCenter
+	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
+	let liveReload: LiveReloadCoordinator
+
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
@@ -53,16 +57,30 @@ struct CatermApp: App {
 		let askpass = URL(fileURLWithPath: session.askpassPath)
 		let knownCaterm = URL(fileURLWithPath: session.knownHostsCaterm)
 		let knownUser = URL(fileURLWithPath: session.knownHostsUser)
-		// SettingsStore: loaded eagerly so per-host theme overrides (Task 24)
-		// and the Preferences window (Task 25) share a single, observable
-		// instance. Falls back to a defaults-seeded in-memory store if the
-		// plist can't be read — `PreferencesWindowController` does the same.
+		// SettingsStore: loaded eagerly through `BootSequence.run` so the
+		// legacy → plist migration (Branch A/B/C), managed-snapshot render,
+		// and per-host patch regeneration all run on launch. Per-host theme
+		// overrides (Task 24) and the Preferences window (Task 25) share
+		// this observable instance. If BootSequence throws (disk fault,
+		// permissions issue, etc.), fall back to a defaults-seeded
+		// in-memory store so the app still launches — same shape as
+		// `PreferencesWindowController`'s fallback.
 		let plistPath = SettingsStore.defaultPlistPath
-		let settings = (try? SettingsStore.load(from: plistPath))
-			?? SettingsStore(
+		let settings: SettingsStore
+		do {
+			settings = try BootSequence.run(
+				settingsPlistURL: plistPath,
+				userConfigURL: ConfigStore.defaultPath,
+				managedSnapshotURL: ConfigStore.managedConfigPath,
+				perHostDirectory: ConfigStore.perHostPatchDirectory
+			)
+		} catch {
+			NSLog("[CatermApp] BootSequence failed, using in-memory defaults: \(error)")
+			settings = SettingsStore(
 				settings: CatermSettings(global: CatermSettings.defaultsSeed),
 				path: plistPath
 			)
+		}
 		_settingsStore = StateObject(wrappedValue: settings)
 		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
 			controlPathFor: { hostId in
@@ -79,6 +97,15 @@ struct CatermApp: App {
 			},
 			liveness: ControlMasterManager.shared
 		))
+		// Wire the live-reload pipeline. `LiveReloadDispatcher` already
+		// posts `catermNewSurfaceBanner` / `catermConfigDiagnostics`
+		// notifications internally — `SettingsBannerState` listens to
+		// both — so banner + managed-snapshot rerender works today.
+		// Per-surface live application of font/theme/cursor onto
+		// already-mounted Ghostty surfaces is deferred (no surface
+		// registry yet); new surfaces still pick up changes via the
+		// next render of the managed snapshot.
+		self.liveReload = LiveReloadCoordinator(settingsStore: settings)
 	}
 
 	var body: some Scene {

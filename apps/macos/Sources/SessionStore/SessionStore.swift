@@ -12,7 +12,14 @@ import ServerSyncClient
 /// needs. Declared in SessionStore to avoid taking a hard dependency on
 /// FileTransferStore. The `Caterm` target supplies the real conformance via
 /// an extension on `ControlMasterManager`.
+///
+/// `register` is synchronous and main-actor-isolated: it just records the
+/// (hostId, destination) tuple so a subsequent `isAlive(hostId:)` check
+/// (in `RemoteFileSystem`) and `tearDown(hostId:)` call (in
+/// `applicationWillTerminate`) have something to act on. Without it, the
+/// file drawer always reports "Reconnect host to browse files".
 public protocol ControlMasterTearDowning: Sendable {
+    @MainActor func register(hostId: UUID, destination: String)
     func tearDown(hostId: UUID) async
     func tearDownAll() async
 }
@@ -136,6 +143,12 @@ public final class SessionStore: ObservableObject {
         // the existing shared connection.
         teardownWorkItems[host.id]?.cancel()
         teardownWorkItems.removeValue(forKey: host.id)
+        // Make the (hostId → destination) mapping live in the
+        // ControlMasterManager so `isAlive(hostId:)` can check the
+        // socket and `tearDown` knows what `ssh -O exit` target to use.
+        // Idempotent: re-registering the same destination is a no-op.
+        let destination = "\(host.username)@\(host.hostname)"
+        controlMasterManager?.register(hostId: host.id, destination: destination)
         let tab = Tab(host: host)
         tabs.append(tab)
         return tab.id
