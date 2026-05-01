@@ -142,7 +142,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermTests",
-            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore"],
+            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore"],
             path: "Tests/CatermTests"
         ),
         .testTarget(

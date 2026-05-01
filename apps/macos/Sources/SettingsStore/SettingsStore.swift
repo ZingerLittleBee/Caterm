@@ -9,6 +9,14 @@ public final class SettingsStore: ObservableObject {
     public static let changeNotification = Notification.Name("catermSettingsChanged")
     public static let scopeUserInfoKey = "scope"
 
+    /// Production location of the user's settings plist. Tests use a temp path
+    /// instead (see `BootSequence.run(settingsPlistURL:...)`).
+    public static var defaultPlistPath: URL {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Caterm/settings.plist")
+    }
+
     // Storage for Task 9 (debounce). Declared here because Swift extensions
     // can't add stored properties and SettingsStore isn't NSObject so the
     // associated-object trick from the plan doesn't apply.
