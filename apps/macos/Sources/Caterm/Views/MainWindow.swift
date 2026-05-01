@@ -91,46 +91,45 @@ struct MainWindow: View {
 				// to rebuild via .id() — that would tear down
 				// TerminalSurfaceRepresentable and SIGHUP the live ssh
 				// session.
-				HStack(spacing: 0) {
-					Group {
-						if store.tabs.contains(where: { $0.id == tabId }) {
-							TerminalContainerView(tabId: tabId)
-						} else {
-							Text("Tab closed")
-								.foregroundColor(.secondary)
+				// GeometryReader so terminal width is computed explicitly from
+				// the detail container's current width every frame. HStack with
+				// maxWidth:.infinity on the terminal lets NavigationSplitView's
+				// sidebar collapse/expand animation distribute width via SwiftUI's
+				// implicit allocation, which is visibly out-of-sync with the
+				// NSSplitView sidebar animation and makes the drawer translate
+				// horizontally for a few frames before snapping back. Setting an
+				// explicit width on the terminal pane removes that ambiguity.
+				GeometryReader { geo in
+					let handleWidth: CGFloat = fileDrawerOpen ? 1 : 0
+					let totalDrawer = fileDrawerOpen ? drawerWidth + handleWidth : 0
+					let terminalW = max(400, geo.size.width - totalDrawer)
+					HStack(spacing: 0) {
+						Group {
+							if store.tabs.contains(where: { $0.id == tabId }) {
+								TerminalContainerView(tabId: tabId)
+							} else {
+								Text("Tab closed")
+									.foregroundColor(.secondary)
+							}
+						}
+						.frame(width: terminalW, height: geo.size.height)
+
+						if fileDrawerOpen {
+							DrawerDragHandle(
+								width: $drawerWidth,
+								minWidth: Self.drawerMinWidth,
+								maxWidth: Self.drawerMaxWidth
+							)
+							FileDrawerView(
+								host: activeHost,
+								fs: activeRemoteFs,
+								fileTransferStore: fileTransferStore
+							)
+							.frame(width: drawerWidth, height: geo.size.height)
 						}
 					}
-					.frame(
-						minWidth: 400,
-						maxWidth: .infinity,
-						minHeight: 500,
-						maxHeight: .infinity
-					)
-					.layoutPriority(0)
-
-					if fileDrawerOpen {
-						DrawerDragHandle(
-							width: $drawerWidth,
-							minWidth: Self.drawerMinWidth,
-							maxWidth: Self.drawerMaxWidth
-						)
-						.layoutPriority(1)
-						FileDrawerView(
-							host: activeHost,
-							fs: activeRemoteFs,
-							fileTransferStore: fileTransferStore
-						)
-						.frame(width: drawerWidth, alignment: .leading)
-						.frame(minHeight: 500, maxHeight: .infinity)
-						.layoutPriority(1)
-					}
 				}
-				// Disable implicit animations on this subtree. NavigationSplitView's
-				// sidebar collapse/expand animates the detail container's frame;
-				// without this, SwiftUI animates the HStack children during that
-				// transition and the drawer briefly translates left then snaps
-				// back as the layout settles.
-				.transaction { $0.animation = nil }
+				.frame(minHeight: 500)
 				// Detail floor: terminal min + drawer min + handle when drawer
 				// is open. Without it the NavigationSplitView lets the detail
 				// steal width from the sidebar's 220pt floor.
