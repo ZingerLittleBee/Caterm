@@ -140,5 +140,10 @@ let package = Package(
             dependencies: ["FileTransferStore", "SSHCommandBuilder", "SFTPCommandBuilder"],
             path: "Tests/FileTransferStoreTests"
         ),
+        .testTarget(
+            name: "SFTPCommandBuilderTests",
+            dependencies: ["SFTPCommandBuilder"],
+            path: "Tests/SFTPCommandBuilderTests"
+        ),
     ]
 )
