@@ -31,3 +31,11 @@ final class ThemeCatalogTests: XCTestCase {
         }
     }
 }
+
+extension ThemeCatalogTests {
+    func testFallbackPaletteIsParsedFromVendoredFiles() throws {
+        let catalog = ThemeCatalog.fallback
+        let dracula = try XCTUnwrap(catalog.themes.first(where: { $0.name == "Dracula" }))
+        XCTAssertEqual(dracula.background, "#282a36")
+    }
+}

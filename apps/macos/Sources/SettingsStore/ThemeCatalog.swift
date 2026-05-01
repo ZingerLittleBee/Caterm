@@ -45,15 +45,67 @@ public struct ThemeCatalog {
     }
 
     public static let fallback: ThemeCatalog = {
-        ThemeCatalog(themes: favoriteNames.map { name in
-            ThemeRecord(
-                name: name,
-                palette: Array(repeating: "#000000", count: 16),
-                background: "#000000",
-                foreground: "#ffffff",
-                cursorColor: nil,
-                selectionBackground: nil
+        var themes: [ThemeRecord] = []
+        for name in favoriteNames {
+            let url = Bundle.module.url(
+                forResource: name,
+                withExtension: "config",
+                subdirectory: "fallback-themes"
+            ) ?? Bundle.module.url(
+                forResource: name,
+                withExtension: "config"
             )
-        })
+            guard let url else { continue }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            if let record = parseThemeFile(name: name, content: text) {
+                themes.append(record)
+            }
+        }
+        if themes.isEmpty {
+            themes = favoriteNames.map { name in
+                ThemeRecord(
+                    name: name,
+                    palette: Array(repeating: "#000000", count: 16),
+                    background: "#000000",
+                    foreground: "#ffffff",
+                    cursorColor: nil,
+                    selectionBackground: nil
+                )
+            }
+        }
+        return ThemeCatalog(themes: themes)
     }()
+
+    private static func parseThemeFile(name: String, content: String) -> ThemeRecord? {
+        var palette: [String?] = Array(repeating: nil, count: 16)
+        var bg: String?
+        var fg: String?
+        var cur: String?
+        var sel: String?
+        for entry in GhosttyConfigParser.parse(content) {
+            switch entry.key {
+            case "palette":
+                let parts = entry.rawValue.split(separator: "=", maxSplits: 1)
+                guard parts.count == 2, let idx = Int(parts[0]), idx >= 0, idx < 16 else { continue }
+                var hex = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                if !hex.hasPrefix("#") { hex = "#" + hex }
+                palette[idx] = hex
+            case "background": bg = entry.rawValue
+            case "foreground": fg = entry.rawValue
+            case "cursor-color": cur = entry.rawValue
+            case "selection-background": sel = entry.rawValue
+            default: continue
+            }
+        }
+        let final = palette.compactMap { $0 }
+        guard final.count == 16, let bg, let fg else { return nil }
+        return ThemeRecord(
+            name: name,
+            palette: final,
+            background: bg,
+            foreground: fg,
+            cursorColor: cur,
+            selectionBackground: sel
+        )
+    }
 }
