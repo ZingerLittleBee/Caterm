@@ -50,7 +50,7 @@ let package = Package(
         ),
         .target(
             name: "HostSyncStore",
-            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder"],
+            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSyncStore"],
             path: "Sources/HostSyncStore"
         ),
         .target(
@@ -61,6 +61,11 @@ let package = Package(
         .target(
             name: "CredentialSyncTypes",
             path: "Sources/CredentialSyncTypes"
+        ),
+        .target(
+            name: "CredentialSyncStore",
+            dependencies: ["CredentialSyncTypes"],
+            path: "Sources/CredentialSyncStore"
         ),
         .target(
             name: "SettingsStore",
@@ -86,7 +91,7 @@ let package = Package(
         ),
         .target(
             name: "CredentialSync",
-            dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient", "CredentialSyncTypes"],
+            dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Sources/CredentialSync"
         ),
 
@@ -104,6 +109,7 @@ let package = Package(
                 "FileTransferStore",
                 "SFTPCommandBuilder",
                 "CloudKitSyncClient",
+                "CredentialSyncStore",
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
@@ -156,7 +162,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HostSyncStoreTests",
-            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore"],
+            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore"],
             path: "Tests/HostSyncStoreTests"
         ),
         .testTarget(
@@ -196,7 +202,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CredentialSyncTests",
-            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "HostSyncStore", "CloudKitSyncClient", "CredentialSyncTypes"],
+            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "HostSyncStore", "CloudKitSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Tests/CredentialSyncTests"
         ),
         .testTarget(

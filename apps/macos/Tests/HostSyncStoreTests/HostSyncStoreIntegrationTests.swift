@@ -1,3 +1,4 @@
+import CredentialSyncStore
 import XCTest
 @testable import HostSyncStore
 @testable import SessionStore
@@ -28,6 +29,7 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
                             sessionStore: sessionStore,
                             authSession: FakeAuthSession(isSignedIn: true),
                             preferences: prefs,
+                            credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                             userDefaults: isolatedDefaults)
     }
 

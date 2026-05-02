@@ -2,6 +2,7 @@ import AppKit
 import CloudKit
 import CloudKitSyncClient
 import ConfigStore
+import CredentialSyncStore
 import FileTransferStore
 import Foundation
 import HostSyncStore
@@ -62,7 +63,8 @@ struct CatermApp: App {
 			client: client,
 			sessionStore: session,
 			authSession: icloudSession,
-			preferences: prefs
+			preferences: prefs,
+			credentialSync: CredentialSyncPreferencesStore()
 		))
 		// Refresh CloudKit account status asynchronously. HostSyncStore.syncIfSignedIn
 		// (called from .task in body) handles the case where refresh hasn't completed

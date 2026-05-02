@@ -1,4 +1,5 @@
 import Combine
+import CredentialSyncStore
 import XCTest
 @testable import HostSyncStore
 @testable import SessionStore
@@ -37,6 +38,7 @@ final class HostSyncStoreIsSyncingTests: XCTestCase {
                             sessionStore: sessionStore,
                             authSession: fakeAuth,
                             preferences: prefs,
+                            credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                             debounceInterval: 0.05,
                             userDefaults: isolatedDefaults)
     }

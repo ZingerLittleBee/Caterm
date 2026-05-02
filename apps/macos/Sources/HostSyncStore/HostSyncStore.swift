@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CredentialSyncStore
 import Foundation
 import ServerSyncClient
 import SSHCommandBuilder
@@ -95,7 +96,15 @@ public final class HostSyncStore: ObservableObject {
     private let sessionStore: SessionStore
     private let authSession: AuthSessionProtocol
     private let preferences: SyncPreferences
+    private let credentialSync: CredentialSyncPreferencesStore
     private let userDefaults: UserDefaults
+
+    #if DEBUG
+    /// Test-only seam: mirrors the ops applied during the most recent
+    /// `performSync()` cycle. Reset at the start of the op-loop and
+    /// appended to as each op is dispatched.
+    internal private(set) var lastAppliedOpsForTesting: [SyncOperation] = []
+    #endif
     /// The view layer reads the same threshold used by failure detection.
     public let periodicInterval: TimeInterval
     private var cancellables: Set<AnyCancellable> = []
@@ -143,6 +152,7 @@ public final class HostSyncStore: ObservableObject {
                 sessionStore: SessionStore,
                 authSession: AuthSessionProtocol,
                 preferences: SyncPreferences,
+                credentialSync: CredentialSyncPreferencesStore,
                 debounceInterval: TimeInterval = 2.0,
                 periodicInterval: TimeInterval = 60 * 60,
                 userDefaults: UserDefaults = .standard,
@@ -151,6 +161,7 @@ public final class HostSyncStore: ObservableObject {
         self.sessionStore = sessionStore
         self.authSession = authSession
         self.preferences = preferences
+        self.credentialSync = credentialSync
         self.periodicInterval = periodicInterval
         self.userDefaults = userDefaults
 
@@ -367,8 +378,27 @@ public final class HostSyncStore: ObservableObject {
                     deletedHostIDs: batch.deletedHostIDs
                 )
             }
-            for op in ops {
+            // Plan C — cycle-start dirty scan. After the reconciler emits its
+            // metadata ops, append `.updateRemoteCredentials` for any locally
+            // dirty host, gated on prefs.state == .enabled and no destructive
+            // deletion in progress. The executor body lives in Task 14.
+            var allOps = ops
+            let prefs = credentialSync.prefs
+            if prefs.deleteCredentialsFromCloudInProgress == nil,
+               case .enabled = prefs.state {
+                for host in sessionStore.hosts where host.credentialMaterialDirty {
+                    allOps.append(.updateRemoteCredentials(localHostId: host.id))
+                }
+            }
+
+            #if DEBUG
+            lastAppliedOpsForTesting.removeAll(keepingCapacity: true)
+            #endif
+            for op in allOps {
                 try Task.checkCancellation()
+                #if DEBUG
+                lastAppliedOpsForTesting.append(op)
+                #endif
                 try await apply(op)
             }
 
@@ -477,10 +507,16 @@ public final class HostSyncStore: ObservableObject {
         case let .deleteLocal(localHostId):
             try sessionStore.deleteHost(id: localHostId)
 
-        case .updateRemoteCredentials:
-            // Plan C — handled by Plan C HostSyncStore extension; reconciler
-            // and existing tests treat it as a no-op.
-            break
+        case let .updateRemoteCredentials(localHostId):
+            try await applyUpdateRemoteCredentials(localHostId: localHostId)
         }
+    }
+
+    /// Plan C — push the local encrypted credential blob to CloudKit for
+    /// `localHostId`. Body filled in Task 14; treated as a no-op until then
+    /// so the reconciler and existing tests remain unaffected.
+    private func applyUpdateRemoteCredentials(localHostId _: UUID) async throws {
+        // Task 14: read Keychain + ManagedKeyStore, encrypt, push partial
+        // CKRecord update via CloudKitSyncClient.
     }
 }

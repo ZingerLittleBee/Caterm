@@ -1,5 +1,5 @@
 import XCTest
-@testable import CredentialSync
+import CredentialSyncStore
 
 final class CredentialSyncPreferencesTests: XCTestCase {
     private var defaults: UserDefaults!
