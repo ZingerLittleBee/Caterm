@@ -62,7 +62,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	func application(_: NSApplication,
 	                 didReceiveRemoteNotification userInfo: [String: Any]) {
 		guard parsePushUserInfo(userInfo) else { return }
+		Self.pushLog.info("CloudKit Host push received → triggering sync")
 		NotificationCenter.default.post(name: .catermCloudKitHostChanged, object: nil)
+	}
+
+	func application(_: NSApplication,
+	                 didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+		Self.pushLog.info("APS register OK: token-bytes=\(token.count)")
 	}
 
 	func application(_: NSApplication,
