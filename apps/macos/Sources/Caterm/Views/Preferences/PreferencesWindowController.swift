@@ -1,6 +1,9 @@
 import AppKit
+import CredentialSync
+import CredentialSyncStore
 import HostSyncStore
 import ServerSyncClient
+import SessionStore
 import SettingsStore
 import SwiftUI
 
@@ -14,13 +17,22 @@ public struct SyncEnvironment {
     public let authSession: AuthSession
     public let syncStore: HostSyncStore
     public let preferences: SyncPreferences
+    public let credentialSync: CredentialSyncPreferencesStore?
+    public let credentialSyncCoordinator: CredentialSyncCoordinator?
+    public let sessionStore: SessionStore?
 
     public init(authSession: AuthSession,
                 syncStore: HostSyncStore,
-                preferences: SyncPreferences) {
+                preferences: SyncPreferences,
+                credentialSync: CredentialSyncPreferencesStore? = nil,
+                credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
+                sessionStore: SessionStore? = nil) {
         self.authSession = authSession
         self.syncStore = syncStore
         self.preferences = preferences
+        self.credentialSync = credentialSync
+        self.credentialSyncCoordinator = credentialSyncCoordinator
+        self.sessionStore = sessionStore
     }
 }
 
@@ -99,7 +111,10 @@ public final class PreferencesWindowController: NSWindowController {
                 SyncSettingsTab(
                     authSession: env.authSession,
                     syncStore: env.syncStore,
-                    preferences: env.preferences
+                    preferences: env.preferences,
+                    credentialSync: env.credentialSync,
+                    credentialSyncCoordinator: env.credentialSyncCoordinator,
+                    sessionStore: env.sessionStore
                 )
             )
         } else {

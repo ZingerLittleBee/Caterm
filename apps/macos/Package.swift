@@ -109,6 +109,7 @@ let package = Package(
                 "FileTransferStore",
                 "SFTPCommandBuilder",
                 "CloudKitSyncClient",
+                "CredentialSync",
                 "CredentialSyncStore",
             ],
             path: "Sources/Caterm",

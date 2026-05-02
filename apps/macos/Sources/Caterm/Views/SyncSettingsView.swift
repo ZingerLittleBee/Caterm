@@ -1,5 +1,8 @@
+import CredentialSync
+import CredentialSyncStore
 import HostSyncStore
 import ServerSyncClient
+import SessionStore
 import SwiftUI
 import UserNotifications
 
@@ -52,11 +55,32 @@ struct SyncSettingsView: View {
     @ObservedObject var syncStore: HostSyncStore
     @ObservedObject var preferences: SyncPreferences
     @Binding var serverURL: String
+    let credentialSync: CredentialSyncPreferencesStore?
+    let credentialSyncCoordinator: CredentialSyncCoordinator?
+    let sessionStore: SessionStore?
     @State private var isSigningOut = false
     @State private var isSyncing = false
     @State private var lastSyncError: ServerSyncError?
     @State private var showSignIn = false
     @State private var notifyToggleRequestID = 0
+
+    init(
+        authSession: AuthSession,
+        syncStore: HostSyncStore,
+        preferences: SyncPreferences,
+        serverURL: Binding<String>,
+        credentialSync: CredentialSyncPreferencesStore? = nil,
+        credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
+        sessionStore: SessionStore? = nil
+    ) {
+        self.authSession = authSession
+        self.syncStore = syncStore
+        self.preferences = preferences
+        self._serverURL = serverURL
+        self.credentialSync = credentialSync
+        self.credentialSyncCoordinator = credentialSyncCoordinator
+        self.sessionStore = sessionStore
+    }
 
     var body: some View {
         let derivedAccountState = accountState(isSignedIn: authSession.isSignedIn,
@@ -130,6 +154,13 @@ struct SyncSettingsView: View {
                     Text(lastSyncError.description)
                         .foregroundColor(.red).font(.caption)
                 }
+            }
+            if let credentialSync, let credentialSyncCoordinator, let sessionStore {
+                CredentialSyncSection(
+                    prefsStore: credentialSync,
+                    coordinator: credentialSyncCoordinator,
+                    sessionStore: sessionStore
+                )
             }
             Section("Terminal") {
                 Toggle(
