@@ -15,6 +15,17 @@ public final class CloudKitSyncClient: ServerSyncClient {
 
     /// Concrete checkpoint payload. Internal — only this module
     /// constructs / interprets values.
+    ///
+    /// Zone-key semantics in `prevZones` / `newZones`:
+    /// - **Key absent from `newZones`**: zone returned no token from this drain;
+    ///   commit must SKIP that zone (do not write, do not delete).
+    /// - **Key present with non-nil `Data`**: rotate the zone's stored token
+    ///   forward to the new value via CAS against `prevZones[key]`.
+    /// - **Key present with `nil` value**: delete the zone's stored token
+    ///   (used by the Caterm-zone destruction short-circuit).
+    /// `db` follows the same rule: `newDb == nil` while `prevDb` is non-nil
+    /// means delete the database token; `newDb == nil` and `prevDb == nil`
+    /// means no-op.
     internal struct Checkpoint: HostSyncCheckpoint {
         let id: UUID
         let epoch: UInt64
