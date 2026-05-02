@@ -69,7 +69,7 @@ Plan A synced host metadata only (intentionally). New devices receive hosts but 
 
 **Why `serverId`, not local `host.id`**: `SessionStore.addRemoteHost` (`SessionStore.swift:298`) allocates a fresh local `UUID()` for every host pulled from the server, so Mac A and Mac B hold different `host.id` for the same logical host. `host.serverId` (set from the CKRecord's `recordName`) is the only cross-device-stable identifier. Encrypting with local UUID would guarantee Mac B's `AES.GCM.open` fails with AAD mismatch — exactly the bug review #1 caught.
 
-**Push gating consequence**: a host without a `serverId` (i.e., never reached the server yet) cannot have its credentials pushed — there's no stable AAD to bind. The reconciler must serialize: emit `.createRemote` first, wait for `serverId` to be assigned, only then emit `.updateRemoteCredentials`. This matches the natural ordering of "create record, then add credential payload" anyway.
+**Push gating consequence**: a host without a `serverId` (i.e., never reached the server yet) cannot have its credentials pushed — there's no stable AAD to bind. The mechanism is in §Push rules: HostSyncStore queues `.updateRemoteCredentials` after the reconciler's `.createRemote / .updateRemote / …` ops on every cycle, but the credential op's executor checks `host.serverId` at runtime. If `.createRemote` succeeded earlier in the same cycle, `serverId` is now populated and the credential push proceeds; if `.createRemote` failed or wasn't emitted, the executor no-ops without throwing and the dirty bit survives for next cycle. This produces the natural "create record, then add credential payload" ordering automatically without a special "wait for serverId" branch.
 
 **No KDF / no per-host subkey** for v1: a single master key encrypts all credentials. The AAD provides the per-message domain separation. Future versions can introduce per-record subkeys via HKDF if needed, gated by `credentialCryptoVersion`.
 
@@ -85,9 +85,21 @@ credentialBlobState      : String    // "none" | "payload" | "tombstone"
 credentialBlobRevision   : Int64     // monotonic; default 0
 credentialKeyID          : String?   // UUID of master key that sealed these (nil when state == "none")
 credentialCryptoVersion  : Int64     // 1 in v1
+metadataUpdatedAt        : Date?     // app-controlled metadata change timestamp (replaces decode-time use of CKRecord.modificationDate)
 ```
 
 Schema is forward-compatible: old (Plan A/B) clients ignore unknown fields; absent fields decode to nil / "" / 0.
+
+### Why `metadataUpdatedAt` is a separate field (review #1)
+
+Plan A's `CKRecordHostMapping.decode` maps `updatedAt = rec.modificationDate ?? .distantPast` (`CKRecordHostMapping.swift:39`). `CKRecord.modificationDate` is a server-controlled timestamp that Apple bumps on **every** save of the record — including credential-only saves via `applyCredentialBlob`. Without a separate field, a credential rotation on Mac A would be observed by Mac B as a metadata change (newer `updatedAt`), causing the reconciler to emit a spurious `.updateLocal` op and corrupting LWW behavior on concurrent metadata + credential edits.
+
+Plan C therefore introduces an **app-controlled** `metadataUpdatedAt: Date` field:
+- `applyMetadata(into existing: CKRecord, from host: SSHHost)` writes `existing["metadataUpdatedAt"] = host.updatedAt as CKRecordValue` along with the other metadata fields.
+- `applyCredentialBlob(into existing: CKRecord, blob:)` **never** touches this field (already guaranteed by the partial-encoder split — credential encoder physically cannot reach metadata fields).
+- `decode(record:)` reads `updatedAt = rec["metadataUpdatedAt"] as? Date ?? rec.creationDate ?? .distantPast`. The fallback to `creationDate` covers Plan A records written before Plan C's schema-deploy lands; once Plan C clients have rewritten metadata at least once, the field is populated and the fallback no longer applies. (`creationDate` is correct as a Plan A baseline because Plan A's `RemoteHost.updatedAt` was effectively "last server write", and a never-updated record's last write is its create.)
+- `makeRecord(input:)` initializes `metadataUpdatedAt = Date()` — the create itself is the first metadata write.
+- Schema-deploy adds `metadataUpdatedAt: Date(Indexed: false)` to the production CKRecord schema (Plan E pre-ship task).
 
 ### Field semantics
 
@@ -184,13 +196,38 @@ Plus the following persisted fields (also in `SyncPreferences` JSON):
 ### Per-host dirty bit — new field on `SSHHost`
 
 ```swift
-struct SSHHost {
+public struct Host: Codable, Identifiable, Hashable {
     // … existing fields (id, serverId, name, hostname, port, username, credential, createdAt, updatedAt) …
-    var credentialMaterialDirty: Bool = false  // NEW (Plan C)
+    public var credentialMaterialDirty: Bool = false  // NEW (Plan C)
+
+    // Backward-compatible decode (review #3): a synthesized Codable would
+    // require the new key to be present and would fail to decode any
+    // hosts.json written by a Plan A/B build. We therefore replace the
+    // synthesized init with an explicit one that uses decodeIfPresent for
+    // the new field; existing fields are decoded normally.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        serverId = try c.decodeIfPresent(String.self, forKey: .serverId)
+        name = try c.decode(String.self, forKey: .name)
+        hostname = try c.decode(String.self, forKey: .hostname)
+        port = try c.decode(Int.self, forKey: .port)
+        username = try c.decode(String.self, forKey: .username)
+        credential = try c.decode(CredentialSource.self, forKey: .credential)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        credentialMaterialDirty =
+            try c.decodeIfPresent(Bool.self, forKey: .credentialMaterialDirty) ?? false
+    }
+    // The synthesized encode(to:) is fine — it writes the new field, which
+    // older binaries silently ignore on decode (Foundation JSONDecoder
+    // already skips unknown keys for non-strict containers).
 }
 ```
 
 Persisted into `hosts.json` via the existing `HostPersistence` codec. Set to `true` whenever the user mutates credential material locally (password / passphrase / private-key bytes change); cleared by `HostSyncStore` after a successful `.updateRemoteCredentials` push for that host. The dirty bit is **the** durable source of "this host has credential material that may need to be pushed" — it survives crashes, offline gaps, and the host's `serverId` not yet existing. (See §Credential-mutation entry point and §Sync flow integration for how it's read and cleared — review #1.)
+
+**Forward compatibility into Plan A/B**: the `encode(to:)` (synthesized) writes the new key; older Plan A/B builds reading a hosts.json written by a Plan C build use their own synthesized `init(from:)` which would fail on extra keys via `KeyDecodingStrategy.useDefaultKeys`. In practice `JSONDecoder` skips keys not declared in `CodingKeys` of the target struct, so the older build silently ignores the field and round-trips it out via re-save. **However, downgrade is not a supported path** — once a user runs a Plan C build, downgrading to Plan A/B and saving over hosts.json would drop the dirty bit. This is acceptable because Plan C ships forward-only.
 
 ## State machine
 
@@ -240,7 +277,16 @@ Persisted into `hosts.json` via the existing `HostPersistence` codec. Set to `tr
 
 Triggered by HostSyncStore's per-cycle dirty scan over `sessionStore.hosts.credentialMaterialDirty`, populated by `SessionStore.setHostCredentialMaterial(...)` (the single credential-mutation entry point used by host form add / edit and `CredentialSetupView` save — see "Credential-mutation entry point"). The scan also runs on `Notification.catermHostCredentialMaterialChanged` for low-latency push of a just-edited credential without waiting for the next scheduled sync cycle.
 
-Per-host predicate for actually emitting `.updateRemoteCredentials(hostId)` for a dirty host: `state == .enabled` AND `host.serverId != nil`. Anything else leaves the bit set and waits — see the policy table in "Credential-mutation entry point" for what each state does. There is no separate "push my Mac's credentials" UI action in v1; the dirty-bit-driven push is automatic the first time a user edits a host while `.enabled`.
+**Single mechanism — queue-time vs executor-time predicates**:
+
+| Phase | Predicate | What happens if false |
+|-------|-----------|----------------------|
+| Queue-time (cycle start, after reconciler ops are emitted) | `state == .enabled` AND `host.credentialMaterialDirty == true` | If `state != .enabled`: skip queue, dirty bit stays for the next state transition. |
+| Executor-time (when the queued op actually runs) | `host.serverId != nil` | If still nil after reconciler ops ran (`.createRemote` failed or wasn't emitted): the op is a no-op success — does NOT clear the dirty bit, does NOT throw, does NOT block `commitHostCheckpoint`. Next cycle re-scans and re-queues. |
+
+For a brand-new host with credentials, this resolves to: dirty scan queues `.updateRemoteCredentials(localHostId)` regardless of whether `serverId` is currently nil. The op is appended **after** the reconciler's `.createRemote / .updateRemote / …` ops. When `.createRemote` runs, it writes `serverId` back to the local host via Plan A's existing flow. By the time the queued `.updateRemoteCredentials` op runs later in the same op loop, `host.serverId` is populated and the executor-time check passes. If `.createRemote` itself failed for this host, `serverId` is still nil, the executor no-ops, and the dirty bit survives for next cycle.
+
+There is no separate "push my Mac's credentials" UI action in v1; the dirty-bit-driven push is automatic the first time a user edits a host while `.enabled`.
 
 Behavior in each state:
 
@@ -379,7 +425,7 @@ Per the split per #8 of the review: the per-device toggle is a non-destructive p
 | `.enabled` / `.waitingForKey` / `.pausedByRemote` → toggle OFF | State → `.disabled`. Stop pushing, stop applying incoming credentials. Cloud ciphertext untouched. Local Keychain and ManagedKeyStore untouched. `credentialsNeedFullScan` not changed (it would be set the next time we re-enable). |
 | `.waitingForKey` → master key arrives via iCloud Keychain | State → `.enabled`. Set `credentialsNeedFullScan = true` (the prior `.waitingForKey` may also have set it; idempotent). Re-run sync on next trigger. |
 | `.pausedByRemote` → toggle OFF then ON | Same path as `.disabled` → toggle ON: forced forceFull + dirty-bit-driven push of any locally-edited credentials accumulated during pause. If cloud is empty (all tombstones / `state="none"`), nothing applies locally, but the device is now active and any subsequent local edit will push automatically via the dirty bit. |
-| Destructive button: "Delete synced credentials from iCloud..." | Confirmation modal: "This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To re-enable sync afterward, enable the toggle on a device of your choice. Are you sure?" On confirm: for every host record, push `state="tombstone"`, `credentialBlobRevision=max+1`, all ciphertext fields nil. **Master key is left untouched in iCloud Keychain** (cheap to keep; user might re-enable). Local state on this Mac stays `.enabled`. As each tombstone push succeeds, **set `lastAppliedRevision[hostId] := pushedTombstoneRevision`** on this Mac (review #6b) so that when the same tombstone comes back via subsequent pulls, the `rev <= lastApplied` check skips it — otherwise the deleting device would self-paused on its own write. Other Macs (which haven't bumped their `lastAppliedRevision` for this host) receive the tombstone and transition to `.pausedByRemote`. |
+| Destructive button: "Delete synced credentials from iCloud..." | Confirmation modal: "This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To re-enable sync afterward, enable the toggle on a device of your choice. Are you sure?" On confirm, atomically in this exact order: (1) **Clear `credentialMaterialDirty = false` for every host on this Mac, persist hosts.json** (review #4 — without this, any pre-existing dirty bit from a prior local edit that hadn't yet pushed would be picked up by the next dirty scan and re-populate cloud, undoing the deletion). (2) For every host record in cloud, push `state="tombstone"`, `credentialBlobRevision=max+1`, all ciphertext fields nil. As each tombstone push succeeds, **set `lastAppliedRevision[hostId] := pushedTombstoneRevision`** on this Mac (review #6b) so that when the same tombstone comes back via subsequent pulls, the `rev <= lastApplied` check skips it — otherwise the deleting device would self-pause on its own write. (3) **Master key is left untouched in iCloud Keychain** (cheap to keep; user might re-enable). Local Keychain + ManagedKeyStore untouched (user keeps local credentials). Local state on this Mac stays `.enabled` — the user can resume by editing any host, which will set `credentialMaterialDirty = true` again via the normal entry point. Other Macs (which haven't bumped their `lastAppliedRevision` for this host) receive the tombstone and transition to `.pausedByRemote`. |
 
 **Concurrent destructive action + ongoing edits**: while the destructive modal is open, the device should not accept credential edits (UI-level disable). Once tombstones are pushed, any concurrent edit from another device wins the LWW race per CloudKit's `serverRecordChanged` semantics.
 
@@ -391,7 +437,7 @@ For credentials specifically: race outcome is "last successful server-side write
 
 ## Sync flow integration
 
-`HostSyncReconciler` produces the existing `SyncOperation` set (`.createRemote / .createLocal / .updateRemote / .updateLocal / .deleteLocal`), **plus a new `.updateRemoteCredentials(hostId)`**. The existing `.updateRemote` op stays metadata-only; `.updateRemoteCredentials` carries the credential blob. The two ops can co-emit in the same reconciler pass without conflict because they touch disjoint CKRecord field sets per the encoder split in §Data model.
+`HostSyncReconciler` produces the existing 5-op `SyncOperation` set unchanged: `.createRemote / .createLocal / .updateRemote / .updateLocal / .deleteLocal`. **`.updateRemoteCredentials(localHostId)` is NOT a reconciler output** — it is queued by `HostSyncStore` from the dirty-bit scan described in §Credential-mutation entry point and §Push rules, **after** the reconciler's ops are appended to the cycle's queue. The reconciler stays Plan A's metadata-only diff engine; credential push is a side channel triggered by user mutation, not by remote-vs-local diff. The existing `.updateRemote` op stays strictly metadata-only via the `applyMetadata` partial encoder; the dirty-scan-emitted `.updateRemoteCredentials` op uses `applyCredentialBlob`. The two op kinds touch disjoint CKRecord field sets so they can co-exist on the same record in the same cycle without conflict (review #5).
 
 ### Credential-mutation entry point (single API for all UI paths)
 
@@ -422,10 +468,11 @@ Atomic ordering inside the method (no SyncOperation references; no CredentialSyn
 Push policy lives in `HostSyncStore`:
 
 - HostSyncStore subscribes to `.catermHostCredentialMaterialChanged` at construction time.
-- On notification, **and** at the start of every sync cycle (so crash-recovered dirty bits are picked up regardless of whether the notification was delivered), HostSyncStore scans `sessionStore.hosts` for `credentialMaterialDirty == true`. For each such host it consults its own `CredentialSyncState`:
-  - `.enabled` AND `host.serverId != nil` → enqueue `.updateRemoteCredentials(hostId)`. The op's executor opens Keychain + ManagedKeyStore at push time to read the freshest material (fresher than anything the notification could carry), encrypts under AAD, calls `client.applyCredentialBlob(...)`, and on success calls `sessionStore.clearCredentialMaterialDirty(hostId)`. Failure leaves the dirty bit set for retry on the next cycle.
-  - `.enabled` AND `host.serverId == nil` → leave the bit set. The host's `.createRemote` op (emitted by the existing reconciler when it sees a new local host) will run earlier in the same cycle's op loop and assign a `serverId`. The credential dirty scan happens **once per sync cycle, before the op loop**, so within the same cycle the dirty entry is queued before `.createRemote` runs — the queue order must be `.createRemote` → `.updateRemoteCredentials`. To guarantee that, HostSyncStore queues `.updateRemoteCredentials` **after** the reconciler's `.createRemote / .updateRemote / …` op set, never before. After `.createRemote` writes back the server-assigned ID via `SessionStore.applyCreatedRemoteID(localId, serverId)` (existing Plan A flow), the queued `.updateRemoteCredentials` op reads the fresh `host.serverId` at push time. Net effect: a brand-new host's credentials reach the server in the same sync cycle they were entered.
-  - `.disabled` / `.pausedByRemote` / `.waitingForKey` → leave the bit set. When the state next transitions to `.enabled` (toggle ON or master-key arrival), the dirty scan at the next sync cycle will process the accumulated bits.
+- On notification, **and** at the start of every sync cycle (so crash-recovered dirty bits are picked up regardless of whether the notification was delivered), HostSyncStore scans `sessionStore.hosts` for `credentialMaterialDirty == true`. The decision uses the queue-time / executor-time split from §Push rules:
+  - **Queue-time** (when this scan runs): if `state == .enabled`, append `.updateRemoteCredentials(localHostId)` to the cycle's op queue **after** any `.createRemote / .updateRemote / .createLocal / .updateLocal / .deleteLocal` ops produced by the reconciler. Do this **regardless of `serverId`** — the executor-time check below handles the new-host case. If `state != .enabled` (`.disabled` / `.pausedByRemote` / `.waitingForKey`), skip the queue; the dirty bit stays on disk and is re-evaluated on the next state transition into `.enabled`.
+  - **Executor-time** (when the queued op runs, possibly minutes later or after `.createRemote` populated `serverId`): re-read the host from `sessionStore.hosts` by `localHostId`. If `host.serverId == nil` (e.g., `.createRemote` failed earlier in the same cycle), the op succeeds as a no-op — does not throw, does not clear the dirty bit, does not block `commitHostCheckpoint`. Otherwise: open Keychain + ManagedKeyStore live, build the encrypted blob with AAD `"\(serverId)|\(fieldKind)|\(rev)|\(schemaVersion)"`, call `client.applyCredentialBlob(into: existingRecord, blob:)`, and on success call `sessionStore.clearCredentialMaterialDirty(localHostId)`. CloudKit-side failure (other than `serverRecordChanged`) throws and leaves the dirty bit set for retry on the next cycle.
+
+This single mechanism replaces the earlier draft's two-branch description ("`.enabled` AND serverId != nil" vs "`.enabled` AND serverId == nil") that confused queue-time policy with executor-time policy (review #2). There is one queue-time predicate (state == `.enabled`) and one executor-time predicate (`serverId != nil`); they are evaluated in different phases of the same cycle.
 
 `SessionStore.clearCredentialMaterialDirty(hostId:)` is a tiny new SessionStore API: in-memory clear + `HostPersistence.save`. Idempotent.
 
@@ -439,11 +486,11 @@ Call sites updated:
 
 `CKRecordHostMapping` — split into three explicit encoders so that **metadata-only writes never touch credential fields and credential-only writes never touch metadata fields** (review #3 — without this split, a routine rename/port edit would clobber every other device's encrypted payload):
 
-- `makeRecord(input:) -> CKRecord` — used by `.createRemote` only. Initializes a fresh CKRecord with metadata fields filled, **and** explicitly initializes credential fields to "no payload yet": `credentialBlobState = "none"`, `credentialBlobRevision = 0`, `passwordCiphertext = passphraseCiphertext = privateKeyCiphertext = credentialKeyID = nil`, `credentialCryptoVersion = 1`. This is the only path that writes credential fields without a real payload.
+- `makeRecord(input:) -> CKRecord` — used by `.createRemote` only. Initializes a fresh CKRecord with metadata fields (`name`, `hostname`, `port`, `username`, `authType`, **`metadataUpdatedAt = Date()`**) and explicitly initializes credential fields to "no payload yet": `credentialBlobState = "none"`, `credentialBlobRevision = 0`, `passwordCiphertext = passphraseCiphertext = privateKeyCiphertext = credentialKeyID = nil`, `credentialCryptoVersion = 1`. This is the only path that writes credential fields without a real payload.
 
-- `applyMetadata(into existing: CKRecord, from host: SSHHost)` — used by `.updateRemote`. **Mutates only the metadata fields** (`name`, `hostname`, `port`, `username`, `updatedAt`) on the caller-supplied existing CKRecord. **Never reads or writes credential fields.** The reconciler must pass a CKRecord that was just fetched from the server (Plan A's existing `.updateRemote` already operates on fetched-then-modified records, so this matches current behavior); credential fields on that fetched record stay at whatever value the server holds.
+- `applyMetadata(into existing: CKRecord, from host: SSHHost)` — used by `.updateRemote`. **Mutates only the metadata fields** (`name`, `hostname`, `port`, `username`, **`metadataUpdatedAt = host.updatedAt`**) on the caller-supplied existing CKRecord. **Never reads or writes credential fields.** The reconciler must pass a CKRecord that was just fetched from the server (Plan A's existing `.updateRemote` already operates on fetched-then-modified records, so this matches current behavior); credential fields on that fetched record stay at whatever value the server holds. **Server-side `modificationDate` will be bumped by the save itself, but the decoder no longer reads it as `updatedAt`** — see "Why `metadataUpdatedAt` is a separate field" above.
 
-- `applyCredentialBlob(into existing: CKRecord, blob: CredentialBlob)` — used by `.updateRemoteCredentials`. **Mutates only the credential fields** (`passwordCiphertext`, `passphraseCiphertext`, `privateKeyCiphertext`, `credentialBlobState`, `credentialBlobRevision`, `credentialKeyID`, `credentialCryptoVersion`). **Never reads or writes metadata fields.** `updatedAt` is part of metadata and is intentionally untouched — credential rotations on Mac A should not mark a metadata change that re-pushes from Mac B.
+- `applyCredentialBlob(into existing: CKRecord, blob: CredentialBlob)` — used by `.updateRemoteCredentials`. **Mutates only the credential fields** (`passwordCiphertext`, `passphraseCiphertext`, `privateKeyCiphertext`, `credentialBlobState`, `credentialBlobRevision`, `credentialKeyID`, `credentialCryptoVersion`). **Never reads or writes metadata fields, including `metadataUpdatedAt`.** Server-side `modificationDate` is bumped by the save (unavoidable per Apple's CloudKit semantics), but because the decoder reads `metadataUpdatedAt` instead, credential rotations on Mac A produce no metadata-update signal on Mac B.
 
 - `decode(record:) -> RemoteHost` — unchanged shape: returns metadata plus optional `credentialBlob: CredentialBlob?` carrying ciphertext + revision + keyID + state + cryptoVersion. `state == "none"` decodes to `credentialBlob = nil` for the consumer's convenience.
 
@@ -461,11 +508,11 @@ This split makes a hard guarantee at the type level: there is no API that can bo
 | Event | Local Keychain | ManagedKeyStore | Master key (synchronizable) | `lastAppliedRevision` |
 |-------|---------------|-----------------|----------------------------|----------------------|
 | Pull decrypt success | `set(account, secret)` | `write(hostId, bytes)` for privateKey | unchanged | advance for hostId |
-| User edits host (form submit) | `setHostCredentialMaterial` writes Keychain + sets `host.credentialMaterialDirty = true` + posts `catermHostCredentialMaterialChanged`. HostSyncStore observes; if state == `.enabled` AND `serverId` exists, queues `.updateRemoteCredentials` for next op-loop slot. | `setHostCredentialMaterial` writes via atomic `rename(2)` if private-key bytes present | unchanged | unchanged |
+| User edits host (form submit) | `setHostCredentialMaterial` writes Keychain + sets `host.credentialMaterialDirty = true` + posts `catermHostCredentialMaterialChanged`. HostSyncStore observes; if state == `.enabled`, queues `.updateRemoteCredentials(localHostId)` after the reconciler ops regardless of `serverId`. Op executor checks `serverId` at runtime — no-op if still nil (review #2). | `setHostCredentialMaterial` writes via atomic `rename(2)` if private-key bytes present | unchanged | unchanged |
 | Host deleted (local or remote) | `deleteAll(prefix: hostId)` | `delete(hostId)` | unchanged | drop `lastAppliedRevision[hostId]` |
 | Toggle ON → OFF (per-device) | unchanged | unchanged | unchanged | unchanged |
 | Any transition INTO `.enabled` (`.disabled` → toggle ON; `.waitingForKey` → master-key arrives; `.pausedByRemote` → toggle OFF then ON) | unchanged | unchanged | look up; generate iff cloud is empty | unchanged. Also: **set `credentialsNeedFullScan = true`** so the next sync cycle is forced to `.forceFull` (review #2). |
-| Destructive: "Delete synced credentials from iCloud..." (confirmed) on **deleting** Mac | unchanged | unchanged | **unchanged** (not removed; cheap to keep for re-enable) | for each tombstoned host: `lastAppliedRevision[hostId] := pushedTombstoneRevision` (review #6b — prevents the deleting device from consuming its own tombstone and self-pausing into `.pausedByRemote`) |
+| Destructive: "Delete synced credentials from iCloud..." (confirmed) on **deleting** Mac | unchanged (user keeps local secrets) | unchanged | **unchanged** (not removed; cheap to keep for re-enable) | for each tombstoned host: `lastAppliedRevision[hostId] := pushedTombstoneRevision` (review #6b — prevents the deleting device from consuming its own tombstone and self-pausing). **Also**: before pushing tombstones, clear `credentialMaterialDirty = false` for every host on this Mac (review #4 — prevents pre-existing dirty bits from re-populating cloud immediately after the deletion). |
 | Receiving tombstone push on a **peer** Mac | unchanged | unchanged | unchanged | for each tombstoned host: `lastAppliedRevision[hostId]` stays where it was; the state machine transition (`.enabled` → `.pausedByRemote(seenTombstoneRevision: rev)` and `.waitingForKey` → `.pausedByRemote(...)` per Fix #6a) is what records the observation, not the high-water mark |
 | iCloud account change (Plan B `AccountIdentityTracker`) | unchanged (Keychain is device-local) | wipe entire keys directory | the synchronizable item is part of the OLD iCloud account; the new account starts from scratch | clear all `lastAppliedRevision`; state → `.disabled` |
 | User resets iCloud Keychain in System Settings | unchanged | **unchanged** (review #7 correction: local managed keys remain valid local credentials) | item is gone; on next sync attempt, `loadAny` returns nil → state → `.waitingForKey` or surfaces "Master key lost" recovery UI | unchanged |
@@ -542,6 +589,11 @@ Plan A's "local Keychain miss → connect attempt" trigger is unchanged. Plan C 
 - `NeedFullScanFlagTests`: every transition into `.enabled` (toggle from `.disabled`, master-key arrival from `.waitingForKey`, toggle ON from `.pausedByRemote`) sets `credentialsNeedFullScan = true` and persists; HostSyncStore's next cycle issues `.forceFull`; flag cleared after `commitHostCheckpoint`; flag preserved if cycle throws before checkpoint.
 - `DisabledChecksumThenEnableTests`: device starts `.disabled`; remote pushes `state="payload"` rev=5; HostSyncStore advances checkpoint past it (Plan A metadata sync); user toggles ON → flag set → next cycle is forceFull → record re-fetched → credential applied → `lastAppliedRevision[hostId] = 5`.
 - `LayeringTests` (compile-time): `SessionStore` source files do not reference `CredentialSyncState`, `SyncOperation`, or `HostSyncStore` symbols (verified by SwiftPM target boundary; `Package.swift` keeps `HostSyncStore depends on SessionStore` one-way).
+- `MetadataUpdatedAtTests` (review #1''): a credential-only save via `applyCredentialBlob` does NOT change `metadataUpdatedAt` even though `CKRecord.modificationDate` is bumped server-side; `decode` reads `metadataUpdatedAt` as the `updatedAt` source; absent `metadataUpdatedAt` (legacy Plan A record) falls back to `creationDate`. Negative test: a metadata save via `applyMetadata` DOES update `metadataUpdatedAt`.
+- `ExecutorTimeServerIdNoOpTests` (review #2''): queue `.updateRemoteCredentials` for a dirty local host with `serverId == nil`; executor runs and no-ops (no throw, dirty bit unchanged, no `applyCredentialBlob` call observed on the mock client). Adjacent test: same host gets `serverId` populated via simulated `.createRemote` running before the credential op in the same op queue → executor proceeds and pushes.
+- `HostCodableBackcompatTests` (review #3''): a hosts.json fixture written by a Plan A binary (no `credentialMaterialDirty` key) decodes successfully via `init(from:)` with `credentialMaterialDirty == false` for every host. Round-trip a Plan C-written hosts.json through Plan C decode → `credentialMaterialDirty` round-trips intact.
+- `DestructiveClearsDirtyTests` (review #4''): set `credentialMaterialDirty = true` on hosts H1, H2; click destructive button + confirm; verify (a) hosts.json now has dirty=false for all hosts (persisted before tombstone push begins); (b) tombstone push proceeds; (c) the next dirty scan emits no `.updateRemoteCredentials` ops; (d) cloud state is unambiguously tombstoned for H1 and H2 — no race re-populating it.
+- `ReconcilerOpSetTests` (review #5''): exhaustive case coverage of `HostSyncReconciler.reconcileFullSnapshot` and `reconcileDelta` confirming the produced op set is `.createRemote / .createLocal / .updateRemote / .updateLocal / .deleteLocal` only — `.updateRemoteCredentials` is never returned by the reconciler. Companion test confirms `HostSyncStore`'s op queue contains `.updateRemoteCredentials` only when sourced from the dirty scan.
 
 ### Integration (in-process `FakeCloudDatabase` + mock `KeychainSyncMasterKeyStore` with two Caterm instances representing Mac A / Mac B)
 
@@ -589,3 +641,8 @@ Plan A's "local Keychain miss → connect attempt" trigger is unchanged. Plan C 
 - **Rejected** (review #2' / second pass): "incremental sync may re-receive disabled records" reasoning. `HostSyncStore.swift:375` advances the `CKServerChangeToken` checkpoint after the op loop succeeds even when records were ignored under `.disabled`. Adopted `credentialsNeedFullScan` flag on `CredentialSyncPreferences`: every transition into `.enabled` sets it; HostSyncStore consumes it on next cycle by forcing `.forceFull`; cleared after that cycle's checkpoint commits.
 - **Rejected** (review #3' / second pass): SessionStore deciding `CredentialSyncState` and emitting `SyncOperation`. `Package.swift:51-54` defines `HostSyncStore → SessionStore` (one-way); the proposed shape required the reverse and would have created a circular dependency. SessionStore now writes only the dirty bit and posts a typed Notification; HostSyncStore is the sole holder of state-machine policy and sync ops.
 - **Rejected** (review #4' / second pass): leftover wording that `setCredentialOnly` retains its existing public semantics for the `CredentialSetupView` flow. The public API does not survive into Plan C v1; the `CredentialSetupView` callback collapses into one `setHostCredentialMaterial` call.
+- **Rejected** (review #1'' / third pass): using `CKRecord.modificationDate` as the metadata `updatedAt` source. Apple bumps `modificationDate` on every save including credential-only saves, so credential rotations would masquerade as metadata updates and corrupt LWW. Adopted app-controlled `metadataUpdatedAt: Date?` field, written only by `applyMetadata` and `makeRecord`, read by `decode` with fallback to `creationDate` for legacy Plan A records.
+- **Rejected** (review #2'' / third pass): two-branch queue policy ("`.enabled` AND serverId != nil" vs "`.enabled` AND serverId == nil"). Adopted single mechanism with queue-time predicate (`state == .enabled`) and executor-time predicate (`serverId != nil`). The credential op no-ops at execute time if `serverId` is still nil, leaving the dirty bit for next cycle. Mechanism handles brand-new hosts naturally without a "wait for serverId" branch.
+- **Rejected** (review #3'' / third pass): synthesized `Codable` for `Host` after adding `credentialMaterialDirty`. Synthesized `init(from:)` requires the new key to be present in the JSON and would fail to decode any hosts.json written by a Plan A/B build. Adopted explicit `init(from:)` using `decodeIfPresent(...) ?? false` for the new field.
+- **Rejected** (review #4'' / third pass): leaving pre-existing `credentialMaterialDirty` bits intact when the user runs the destructive "Delete from iCloud" action. Those dirty bits would be picked up by the next dirty scan and re-populate cloud immediately after the deletion. Destructive flow now atomically clears all dirty bits before pushing tombstones.
+- **Rejected** (review #5'' / third pass): `HostSyncReconciler` producing `.updateRemoteCredentials` as part of its op set. The reconciler is Plan A's metadata-only diff engine; credential pushes are user-mutation-driven side-channel writes queued by HostSyncStore from a separate dirty scan, not by remote-vs-local diff.
