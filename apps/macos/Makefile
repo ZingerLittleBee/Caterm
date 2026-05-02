@@ -20,8 +20,10 @@
 #                      or anything that asserts a CFBundleIdentifier exists.
 #                      The bare binary will crash on first such call.
 #
-# Codesign identity is auto-detected from the login keychain. Override with:
-#   make run CATERM_DEV_IDENTITY="Apple Development: Other Name (XXXXXXXX)"
+# Codesign identity is auto-detected from the login keychain. Override with
+# either the Common Name or the 40-char SHA-1 fingerprint (preferred when
+# auto-renewed Apple Development certs share the same Common Name):
+#   make run-app CATERM_DEV_IDENTITY=0123456789ABCDEF0123456789ABCDEF01234567
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
