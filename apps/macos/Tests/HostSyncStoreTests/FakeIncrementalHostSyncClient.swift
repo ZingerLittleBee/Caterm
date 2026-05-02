@@ -65,7 +65,14 @@ final class FakeIncrementalHostSyncClient: IncrementalHostSyncClient, @unchecked
 
     // MARK: - IncrementalHostSyncClient
 
-    func preferredHostSyncMode() async -> HostSyncMode { .forceFull }
+    /// Override knob for `preferredHostSyncMode()`. Defaults to `.forceFull`
+    /// to preserve historic behavior; tests that need to differentiate the
+    /// `.auto` mode-selection path (e.g. credentialsNeedFullScan flag) flip
+    /// this to `.incremental` so the patch's effect on fetchModes is
+    /// observable.
+    var preferredModeOverride: HostSyncMode = .forceFull
+
+    func preferredHostSyncMode() async -> HostSyncMode { preferredModeOverride }
 
     func fetchHostChanges() async throws -> HostChangeBatch {
         fetchModes.append(.incremental)

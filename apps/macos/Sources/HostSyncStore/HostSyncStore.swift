@@ -384,7 +384,18 @@ public final class HostSyncStore: ObservableObject {
         do {
             let effectiveMode: HostSyncMode
             switch requestedMode {
-            case .auto:        effectiveMode = await client.preferredHostSyncMode()
+            case .auto:
+                // Plan C / Task 18 — when the credential-sync coordinator has
+                // flagged that toggling state changes require a full re-scan
+                // of all CloudKit records, force the next auto-mode pass into
+                // forceFull so we pick up every credential blob (the
+                // incremental cursor would otherwise miss records that
+                // haven't changed since the last checkpoint).
+                if credentialSync.prefs.credentialsNeedFullScan {
+                    effectiveMode = .forceFull
+                } else {
+                    effectiveMode = await client.preferredHostSyncMode()
+                }
             case .forceFull:   effectiveMode = .forceFull
             case .incremental: effectiveMode = .incremental
             }
@@ -436,6 +447,13 @@ public final class HostSyncStore: ObservableObject {
 
             if let checkpoint = batch.checkpoint {
                 try await client.commitHostCheckpoint(checkpoint)
+                // Plan C / Task 18 — clear the full-scan flag only after a
+                // successful commit. If apply or commit threw, control
+                // skipped this branch and the flag stays set so the next
+                // cycle still runs forceFull.
+                if credentialSync.prefs.credentialsNeedFullScan {
+                    credentialSync.mutate { $0.credentialsNeedFullScan = false }
+                }
             }
 
             // Spec §4.2: only update after the op loop completes without
