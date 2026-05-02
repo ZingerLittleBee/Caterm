@@ -1,4 +1,5 @@
 import XCTest
+import SessionStore
 @testable import CredentialSync
 
 final class CredentialBlobTests: XCTestCase {
