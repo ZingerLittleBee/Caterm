@@ -32,6 +32,9 @@ struct CatermApp: App {
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
 	let liveReload: LiveReloadCoordinator
 
+	let cloudKitClient: CloudKitSyncClient
+	private let accountIdentityTracker: AccountIdentityTracker
+
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
@@ -44,6 +47,11 @@ struct CatermApp: App {
 		let icloudSession = iCloudAccountSession(provider: cloudContainer)
 		self.authSession = AuthSession(baseURL: ServerURL.current)  // unwired
 		let client = CloudKitSyncClient(database: cloudContainer.privateCloudDatabase)
+		self.cloudKitClient = client
+		self.accountIdentityTracker = AccountIdentityTracker(
+			currentUserRecordID: { try? await cloudContainer.userRecordID() },
+			tokensExist: { await client.hasAnyHostSyncTokens() }
+		)
 		let prefs = SyncPreferences()
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
 		// property-wrapper init — required because `@StateObject` cannot be
@@ -159,9 +167,18 @@ struct CatermApp: App {
 			// disappearance does not cancel the sync — that's intentional;
 			// cancellation lives in the chain (spec §3.5).
 			.task { syncStore.syncIfSignedIn() }
+			.task {
+				try? await cloudKitClient.ensureHostSubscription()
+			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermICloudAccountChanged)) { _ in
 				syncStore.syncIfSignedIn()
+			}
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermICloudAccountChanged)) { _ in
+				Task {
+					await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
+				}
 			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermOpenSyncSettings)) { _ in
