@@ -58,14 +58,18 @@ Plan A synced host metadata only (intentionally). New devices receive hosts but 
 |---------|--------|
 | Symmetric algorithm | AES-256-GCM via `CryptoKit.AES.GCM` |
 | Master key | 32 bytes random (`SymmetricKey(size: .bits256)`) |
-| Master key persistence | `kSecClassGenericPassword`, `kSecAttrSynchronizable=true`, `kSecAttrAccessible=kSecAttrAccessibleAfterFirstUnlock` (synchronizable items must use AfterFirstUnlock or weaker) |
+| Master key persistence | `kSecClassGenericPassword`, `kSecAttrSynchronizable=true`, `kSecAttrAccessible=kSecAttrAccessibleWhenUnlocked` (Apple's only constraint on synchronizable items is that they must NOT use any `*ThisDeviceOnly` accessibility class; `WhenUnlocked` is permitted and preferred — it scopes master-key access to an unlocked device, which matches every code path that needs it) |
 | Master key service / account | service `com.caterm.cloudkit-sync.masterKey`, account `<credentialKeyID UUID>` |
 | Ciphertext format | `AES.GCM.SealedBox.combined` (12-byte nonce ‖ ciphertext ‖ 16-byte tag) |
 | Per-message nonce | random per-encrypt (handled by `CryptoKit.AES.GCM.seal`) |
-| AAD (authenticated additional data, **not** encrypted but bound) | UTF-8 of `"\(hostId.uuidString)|\(fieldKind)|\(credentialBlobRevision)|\(schemaVersion)"` where `fieldKind ∈ {"password", "passphrase", "privateKey"}` and `schemaVersion = 1` for v1 |
+| AAD (authenticated additional data, **not** encrypted but bound) | UTF-8 of `"\(serverId)|\(fieldKind)|\(credentialBlobRevision)|\(schemaVersion)"` where `serverId` is the CKRecord's `recordName` (the only host identifier that's stable across devices), `fieldKind ∈ {"password", "passphrase", "privateKey"}`, and `schemaVersion = 1` for v1 |
 | Algorithm versioning | `credentialCryptoVersion: Int64` field on the CKRecord. v1 = 1. Future bumps for KDF / cipher migration. |
 
 **AAD binding rationale**: prevents replay of one host's ciphertext as another host's, swapping `password` ciphertext into the `privateKey` slot, and replaying old revisions over newer ones. Any of those mismatches → `AES.GCM.open` throws → handled per §Failure modes.
+
+**Why `serverId`, not local `host.id`**: `SessionStore.addRemoteHost` (`SessionStore.swift:298`) allocates a fresh local `UUID()` for every host pulled from the server, so Mac A and Mac B hold different `host.id` for the same logical host. `host.serverId` (set from the CKRecord's `recordName`) is the only cross-device-stable identifier. Encrypting with local UUID would guarantee Mac B's `AES.GCM.open` fails with AAD mismatch — exactly the bug review #1 caught.
+
+**Push gating consequence**: a host without a `serverId` (i.e., never reached the server yet) cannot have its credentials pushed — there's no stable AAD to bind. The reconciler must serialize: emit `.createRemote` first, wait for `serverId` to be assigned, only then emit `.updateRemoteCredentials`. This matches the natural ordering of "create record, then add credential payload" anyway.
 
 **No KDF / no per-host subkey** for v1: a single master key encrypts all credentials. The AAD provides the per-message domain separation. Future versions can introduce per-record subkeys via HKDF if needed, gated by `credentialCryptoVersion`.
 
@@ -124,7 +128,12 @@ public actor ManagedKeyStore {
     public init(rootURL: URL = .applicationSupport.appending("Caterm/keys"))
 
     /// Atomically writes bytes to keys/<hostId>; returns the URL.
-    /// Implementation: write to `<rootURL>/.tmp.<hostId>.<rand>`, fsync, rename.
+    /// Implementation: write to `<rootURL>/.tmp.<hostId>.<rand>`, fsync,
+    /// `rename(tmp, target)`. POSIX `rename(2)` is atomic and replaces an
+    /// existing target — no separate delete-before-write is required.
+    /// A mid-write crash leaves either the old file or the new file intact
+    /// (never a half-written file at `target`). Concurrent calls to
+    /// `write` for the same hostId are serialized by the actor.
     public func write(hostId: UUID, bytes: Data) throws -> URL
 
     public func read(hostId: UUID) -> Data?
@@ -136,8 +145,8 @@ public actor ManagedKeyStore {
 **Filesystem hardening (mandatory):**
 - Root directory created with mode `0o700`.
 - Each file written with mode `0o600`.
-- Atomic write: `O_CREAT | O_EXCL | O_WRONLY` to a tmp path inside the root, fsync, rename to target. Reject if target exists when writing — caller must `delete` first to overwrite.
-- **Reject** any path that resolves (after `realpath`) outside `rootURL`. Reject paths containing `..` or symlinks. The tmp path generation never accepts user-provided strings.
+- Atomic write: `O_CREAT | O_EXCL | O_WRONLY` to a tmp path inside the root, fsync, `rename(tmp, target)`. Atomic replace of an existing target is intended (review #4) — pull-side apply must be able to deliver successive remote private-key updates for the same host without an extra delete step.
+- **Reject** any path that resolves (after `realpath`) outside `rootURL`. Reject paths containing `..` or symlinks. The tmp path generation never accepts user-provided strings — `<rand>` is `UInt64` from `SystemRandomNumberGenerator`. The `rename` target is computed from `hostId.uuidString` only.
 - **Reject** writes larger than `1_000_000` bytes (1 MB). Plain CKRecord `Data` fields are limited to ~1 MB by CloudKit; larger payloads would fail server-side anyway. ed25519 keys are ~400 bytes; even RSA-4096 PEM is ~3.3 KB, so this cap is generous.
 - File ownership: current user. Caterm runs unsandboxed in its dev configuration (Plan A's status); when sandbox is enabled later (Plan E), the path remains valid because Application Support is inside the app's container.
 
@@ -217,7 +226,7 @@ Plus `lastAppliedRevision: [UUID: Int64]` (per-host high-water mark for incoming
 ### Push rules
 
 Triggered by:
-- Local credential edit (host form submit; `CredentialSetupView` save) when state == `.enabled`.
+- `SessionStore.setHostCredentialMaterial(...)` — the single credential-mutation entry point used by host form add / edit and `CredentialSetupView` save (see "Credential-mutation entry point"). Emits `.updateRemoteCredentials` only when state == `.enabled` and `host.serverId != nil` (no stable AAD without a serverId — see Fix #1 push-gating note).
 - Toggle transition `disabled` / `pausedByRemote` → `.enabled` AND user explicitly chose "push my Mac's credentials" (separate action from the toggle itself; not on v1 critical path — see §Migration / future work).
 
 Behavior in each state:
@@ -241,20 +250,50 @@ else:  // remote is newer
     switch state:
 
     case .disabled:
-        // ignore credential payload entirely; advance high-water mark.
-        local.lastAppliedRevision[hostId] = remote.credentialBlobRevision
+        // ignore credential payload entirely. Do NOT advance
+        // lastAppliedRevision — otherwise a future toggle ON would
+        // suppress the very payload it's supposed to apply, since
+        // the same revision in cloud is now <= our high-water mark
+        // (review #2). Cost of not advancing: every incremental
+        // sync may re-receive the same record while disabled, but
+        // CKServerChangeToken-based fetches only re-deliver records
+        // whose recordChangeTag actually moved, so the cost is
+        // negligible.
+        no-op
 
-    case .pausedByRemote:
-        // already paused; just track the freshest revision observed.
-        local.lastAppliedRevision[hostId] = remote.credentialBlobRevision
+    case .pausedByRemote(let seenTombstoneRevision):
+        // We already remember the tombstone revision in the
+        // associated value of pausedByRemote; we do NOT also bump
+        // lastAppliedRevision (same toggle-ON suppression bug as
+        // .disabled). If the remote record's revision is past the
+        // tombstone we've seen and state == "payload", that means
+        // some peer has re-enabled and re-pushed — bump
+        // seenTombstoneRevision so we don't replay an old tombstone
+        // on toggle ON. Otherwise no-op.
+        if remote.credentialBlobState == "payload" and remote.rev > seenTombstoneRevision:
+            // someone re-enabled cloud after the tombstone; remember.
+            state → .pausedByRemote(seenTombstoneRevision: remote.rev)
 
-    case .waitingForKey:
-        // remember the keyID we need; retry on every sync until iCloud
-        // Keychain delivers the key. Do not advance lastAppliedRevision.
-        if remote.credentialBlobState == "payload":
+    case .waitingForKey(let observedKeyID):
+        switch remote.credentialBlobState:
+
+        case "payload":
+            // remember the keyID we need; retry every sync until
+            // iCloud Keychain delivers it. Do not advance
+            // lastAppliedRevision.
             update observedKeyID := remote.credentialKeyID
-        // else: tombstone or none — nothing to wait for; stay in waitingForKey
-        // until user toggles off or the next payload arrives.
+
+        case "tombstone":
+            // Cloud was wiped while we were waiting. There's no
+            // longer a key to wait for — transition to paused like
+            // an .enabled device would. Review #6a.
+            state → .pausedByRemote(seenTombstoneRevision: remote.rev)
+
+        case "none":
+            // Host without payload (e.g., .agent). Nothing to apply,
+            // nothing to wait for on this record. Stay in
+            // waitingForKey for the *other* hosts.
+            no-op
 
     case .enabled:
         switch remote.credentialBlobState:
@@ -325,7 +364,7 @@ Per the split per #8 of the review: the per-device toggle is a non-destructive p
 | `.enabled` / `.waitingForKey` / `.pausedByRemote` → toggle OFF | State → `.disabled`. Stop pushing, stop applying incoming credentials. Cloud ciphertext untouched. Local Keychain and ManagedKeyStore untouched. |
 | `.waitingForKey` → master key arrives via iCloud Keychain | State → `.enabled`. Re-run pull on next sync. |
 | `.pausedByRemote` → toggle OFF then ON | Same path as `.disabled` → toggle ON: pull cloud state; if cloud is empty (all tombstones / `state="none"`), nothing applies locally, but the device is now active and any subsequent local edit will push. (Pushing existing local credentials to re-populate cloud requires a separate explicit "Push this Mac's credentials" action — out of v1 scope.) |
-| Destructive button: "Delete synced credentials from iCloud..." | Confirmation modal: "This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To re-enable sync afterward, enable the toggle on a device of your choice. Are you sure?" On confirm: for every host record, push `state="tombstone"`, `credentialBlobRevision=max+1`, all ciphertext fields nil. **Master key is left untouched in iCloud Keychain** (cheap to keep; user might re-enable). Local state on this Mac stays `.enabled`. Other Macs receive the tombstone and transition to `.pausedByRemote`. |
+| Destructive button: "Delete synced credentials from iCloud..." | Confirmation modal: "This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To re-enable sync afterward, enable the toggle on a device of your choice. Are you sure?" On confirm: for every host record, push `state="tombstone"`, `credentialBlobRevision=max+1`, all ciphertext fields nil. **Master key is left untouched in iCloud Keychain** (cheap to keep; user might re-enable). Local state on this Mac stays `.enabled`. As each tombstone push succeeds, **set `lastAppliedRevision[hostId] := pushedTombstoneRevision`** on this Mac (review #6b) so that when the same tombstone comes back via subsequent pulls, the `rev <= lastApplied` check skips it — otherwise the deleting device would self-paused on its own write. Other Macs (which haven't bumped their `lastAppliedRevision` for this host) receive the tombstone and transition to `.pausedByRemote`. |
 
 **Concurrent destructive action + ongoing edits**: while the destructive modal is open, the device should not accept credential edits (UI-level disable). Once tombstones are pushed, any concurrent edit from another device wins the LWW race per CloudKit's `serverRecordChanged` semantics.
 
@@ -337,15 +376,51 @@ For credentials specifically: race outcome is "last successful server-side write
 
 ## Sync flow integration
 
-`HostSyncReconciler` produces the existing `SyncOperation` set (`.createRemote / .createLocal / .updateRemote / .updateLocal / .deleteLocal`), **plus a new `.updateRemoteCredentials(hostId)`** to address review #4: today, `SessionStore.setCredentialOnly` deliberately doesn't trigger any sync because credential changes are device-local. Plan C lifts that restriction when state == `.enabled` by emitting a `.updateRemoteCredentials(hostId)` operation alongside the existing local Keychain write. The existing `.updateRemote` op stays metadata-only; the new op carries the credential blob.
+`HostSyncReconciler` produces the existing `SyncOperation` set (`.createRemote / .createLocal / .updateRemote / .updateLocal / .deleteLocal`), **plus a new `.updateRemoteCredentials(hostId)`**. The existing `.updateRemote` op stays metadata-only; `.updateRemoteCredentials` carries the credential blob. The two ops can co-emit in the same reconciler pass without conflict because they touch disjoint CKRecord field sets per the encoder split in §Data model.
 
-`CKRecordHostMapping`:
-- `encode(host:credentialBlob:)` writes ciphertext + state + revision + keyID + cryptoVersion when the caller supplies a non-nil `credentialBlob`. Otherwise it leaves those fields nil and writes `state = "none"`, `revision = currentRev` (no bump for metadata-only changes).
-- `decode(record:) -> RemoteHost` returns metadata plus optional `credentialBlob: CredentialBlob?` carrying ciphertext + revision + keyID + state + cryptoVersion.
+### Credential-mutation entry point (single API for all UI paths)
+
+Review #5 caught that `setCredentialOnly` only covers the `CredentialSetupView` flow. The primary host add / edit path in `HostListSidebar.swift:71` calls `addHost` / `updateHost` and then `persistSecret` (Keychain write) — `setCredentialOnly` is never invoked. Hooking `.updateRemoteCredentials` to `setCredentialOnly` would silently miss the most common credential-mutation path.
+
+**Fix**: introduce one explicit API in `SessionStore` that all credential-mutation paths funnel through:
+
+```swift
+public func setHostCredentialMaterial(
+    secrets: HostSecrets,            // password? passphrase? privateKeyBytes?
+    credentialSource: CredentialSource,
+    for hostId: UUID
+) throws
+```
+
+Atomic ordering inside the method:
+1. Keychain writes for `secrets.password` / `secrets.passphrase` if present (Keychain failure throws; nothing else has changed).
+2. `ManagedKeyStore.write(hostId, bytes)` if `secrets.privateKeyBytes != nil` (atomic-replace per Fix #4; failure throws; Keychain writes are not rolled back, but the next sync re-pushes — see §Failure modes).
+3. Update `host.credential = credentialSource` and `HostPersistence.save` (this is `setCredentialOnly`'s existing logic, kept as a private helper — the public `setCredentialOnly` API is removed in v1 of Plan C; callers go through `setHostCredentialMaterial`).
+4. If `CredentialSyncState == .enabled` AND `host.serverId != nil`, emit a `.updateRemoteCredentials(hostId)` reconciler op. The reconciler will read fresh material via the in-memory `secrets` carried in the op (so we don't have to re-read Keychain on the push path).
+
+Call sites updated:
+
+- `HostListSidebar.swift:71` (add path): after `store.addHost(host)`, replace `persistSecret(host, secret)` with `store.setHostCredentialMaterial(secrets: ..., credentialSource: host.credential, for: host.id)`.
+- `HostListSidebar.swift:83` (edit path): same substitution after `store.updateHost(updated)`.
+- `CredentialSetupView` callback (`HostListSidebar.swift:95-103`): the existing two-step `setHostSecret` + `setCredentialOnly` collapses into one `setHostCredentialMaterial` call, preserving the original ordering invariant ("Keychain first; if it throws, no SessionStore mutation has happened yet").
+
+This guarantees that **every** UI-driven credential change passes through one place that decides whether to emit `.updateRemoteCredentials` based on the current `CredentialSyncState`.
+
+`CKRecordHostMapping` — split into three explicit encoders so that **metadata-only writes never touch credential fields and credential-only writes never touch metadata fields** (review #3 — without this split, a routine rename/port edit would clobber every other device's encrypted payload):
+
+- `makeRecord(input:) -> CKRecord` — used by `.createRemote` only. Initializes a fresh CKRecord with metadata fields filled, **and** explicitly initializes credential fields to "no payload yet": `credentialBlobState = "none"`, `credentialBlobRevision = 0`, `passwordCiphertext = passphraseCiphertext = privateKeyCiphertext = credentialKeyID = nil`, `credentialCryptoVersion = 1`. This is the only path that writes credential fields without a real payload.
+
+- `applyMetadata(into existing: CKRecord, from host: SSHHost)` — used by `.updateRemote`. **Mutates only the metadata fields** (`name`, `hostname`, `port`, `username`, `updatedAt`) on the caller-supplied existing CKRecord. **Never reads or writes credential fields.** The reconciler must pass a CKRecord that was just fetched from the server (Plan A's existing `.updateRemote` already operates on fetched-then-modified records, so this matches current behavior); credential fields on that fetched record stay at whatever value the server holds.
+
+- `applyCredentialBlob(into existing: CKRecord, blob: CredentialBlob)` — used by `.updateRemoteCredentials`. **Mutates only the credential fields** (`passwordCiphertext`, `passphraseCiphertext`, `privateKeyCiphertext`, `credentialBlobState`, `credentialBlobRevision`, `credentialKeyID`, `credentialCryptoVersion`). **Never reads or writes metadata fields.** `updatedAt` is part of metadata and is intentionally untouched — credential rotations on Mac A should not mark a metadata change that re-pushes from Mac B.
+
+- `decode(record:) -> RemoteHost` — unchanged shape: returns metadata plus optional `credentialBlob: CredentialBlob?` carrying ciphertext + revision + keyID + state + cryptoVersion. `state == "none"` decodes to `credentialBlob = nil` for the consumer's convenience.
+
+This split makes a hard guarantee at the type level: there is no API that can both update metadata and clobber credentials in the same call. The `.updateRemote` reconciler op physically cannot reach the credential fields.
 
 `HostSyncStore`:
 - The `apply()` step is extended with credential application via `SessionStore.applyRemoteCredential` per §Pull rules.
-- The push side: `setCredentialOnly` now emits a `.updateRemoteCredentials` op when state == `.enabled`. The op carries the freshly-computed encrypted blob.
+- The push side: `.updateRemoteCredentials` ops are emitted exclusively by `SessionStore.setHostCredentialMaterial` (see "Credential-mutation entry point" above). Each op carries the freshly-encrypted blob; the reconciler does an `applyCredentialBlob` partial CKRecord update.
 - Existing sync triggers (per-launch, push-driven, 60-min forceFull) all carry the credential plumbing for free.
 
 ## Lifecycle hooks
@@ -357,7 +432,8 @@ For credentials specifically: race outcome is "last successful server-side write
 | Host deleted (local or remote) | `deleteAll(prefix: hostId)` | `delete(hostId)` | unchanged | drop `lastAppliedRevision[hostId]` |
 | Toggle ON → OFF (per-device) | unchanged | unchanged | unchanged | unchanged |
 | `.disabled` → toggle ON | unchanged | unchanged | look up; generate iff cloud is empty | unchanged |
-| Destructive: "Delete synced credentials from iCloud..." (confirmed) | unchanged | unchanged | **unchanged** (not removed; cheap to keep for re-enable) | reset to 0 for all hosts (re-pull baseline after tombstone) |
+| Destructive: "Delete synced credentials from iCloud..." (confirmed) on **deleting** Mac | unchanged | unchanged | **unchanged** (not removed; cheap to keep for re-enable) | for each tombstoned host: `lastAppliedRevision[hostId] := pushedTombstoneRevision` (review #6b — prevents the deleting device from consuming its own tombstone and self-pausing into `.pausedByRemote`) |
+| Receiving tombstone push on a **peer** Mac | unchanged | unchanged | unchanged | for each tombstoned host: `lastAppliedRevision[hostId]` stays where it was; the state machine transition (`.enabled` → `.pausedByRemote(seenTombstoneRevision: rev)` and `.waitingForKey` → `.pausedByRemote(...)` per Fix #6a) is what records the observation, not the high-water mark |
 | iCloud account change (Plan B `AccountIdentityTracker`) | unchanged (Keychain is device-local) | wipe entire keys directory | the synchronizable item is part of the OLD iCloud account; the new account starts from scratch | clear all `lastAppliedRevision`; state → `.disabled` |
 | User resets iCloud Keychain in System Settings | unchanged | **unchanged** (review #7 correction: local managed keys remain valid local credentials) | item is gone; on next sync attempt, `loadAny` returns nil → state → `.waitingForKey` or surfaces "Master key lost" recovery UI | unchanged |
 | Plan B's encrypted-data-reset zone signal (`encryptedDataResetZoneIDs`) | unchanged | **unchanged** under β (no longer the credential-failure path) | unchanged | reset for the affected zone |
@@ -459,3 +535,11 @@ Plan A's "local Keychain miss → connect attempt" trigger is unchanged. Plan C 
 - **Rejected**: continuous file-watching of source key files. User triggers re-import via host edit form.
 - **Rejected**: combined toggle that both pauses and tombstones cloud. Split into per-device pause toggle (non-destructive) + explicit "Delete synced credentials from iCloud..." button (destructive, with confirmation).
 - **Rejected**: nil-payload as tombstone signal. Adopted explicit `credentialBlobState: String` to distinguish `.agent` hosts (state="none") from cleared cloud (state="tombstone").
+- **Rejected** (review #1): AAD bound to `host.id.uuidString`. Local UUIDs differ across devices because `addRemoteHost` allocates fresh IDs; AAD must use `host.serverId` (CKRecord `recordName`).
+- **Rejected** (review #2): advancing `lastAppliedRevision` in `.disabled` and `.pausedByRemote`. That high-water mark would later suppress the same-revision payload on toggle ON; the two states now no-op on the high-water mark.
+- **Rejected** (review #3): a single `encode(host:credentialBlob:)` that overloads metadata-only and credential-carrying writes. Replaced by three explicit encoders (`makeRecord`, `applyMetadata`, `applyCredentialBlob`) so metadata pushes physically cannot clobber credential fields.
+- **Rejected** (review #4): "reject if target exists" semantics for `ManagedKeyStore.write`. Successive remote private-key updates would block; replaced with POSIX `rename(2)` atomic replace.
+- **Rejected** (review #5): hooking `.updateRemoteCredentials` to `setCredentialOnly`. Doesn't cover the primary host add/edit form path. Adopted single `SessionStore.setHostCredentialMaterial` API that all UI credential-mutation paths funnel through.
+- **Rejected** (review #6a): silently staying in `.waitingForKey` on tombstone arrival. Now transitions to `.pausedByRemote` so a fresh device can never wait forever for a key that was just deleted.
+- **Rejected** (review #6b): resetting deleting device's `lastAppliedRevision` to 0 after destructive action. The device would consume its own tombstone on subsequent pull and self-pause; now sets `lastApplied = pushedTombstoneRev`.
+- **Rejected** (review #7): `kSecAttrAccessibleAfterFirstUnlock` for the master key. The actual Apple constraint is "no `*ThisDeviceOnly` accessibility for synchronizable items"; `kSecAttrAccessibleWhenUnlocked` is permitted and is the tighter, correct choice given that every code path needing the master key runs while the device is unlocked.
