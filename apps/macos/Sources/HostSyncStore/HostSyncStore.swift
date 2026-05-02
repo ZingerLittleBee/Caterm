@@ -67,7 +67,13 @@ public func syncFailureState(
     return .failing(reason: reason, since: attempted)
 }
 
-/// Coordinates sync passes: list remote → reconcile → apply ops.
+public enum SyncMode: Sendable, Equatable {
+    case auto
+    case forceFull
+    case incremental
+}
+
+/// Coordinates sync passes: fetch remote → reconcile → apply ops.
 ///
 /// **Lifecycle:** must be held as `@StateObject` (or otherwise long-lived) by
 /// the app. Reverting to a computed/short-lived instance silently breaks every
@@ -85,7 +91,7 @@ public final class HostSyncStore: ObservableObject {
     // lastSyncErrorKind and failingSince are NOT persisted; cold start falls back
     // to .other when failure can be derived from timestamps.
 
-    private let client: ServerSyncClient
+    private let client: any IncrementalHostSyncClient
     private let sessionStore: SessionStore
     private let authSession: AuthSessionProtocol
     private let preferences: SyncPreferences
@@ -113,7 +119,7 @@ public final class HostSyncStore: ObservableObject {
     private var syncGeneration: Int = 0
 
     /// "Last fully-applied sync." Set after performSync() completes the op
-    /// loop without throwing. NOT updated when listHosts fails or any
+    /// loop without throwing. NOT updated when fetch fails or any
     /// apply(op) throws — see spec §4.2.
     @Published public private(set) var lastSyncedAt: Date?
     @Published public private(set) var lastSyncAttemptedAt: Date?
@@ -133,12 +139,12 @@ public final class HostSyncStore: ObservableObject {
     /// (spec Decision #23).
     public var isSignedIn: Bool { authSession.isSignedIn }
 
-    public init(client: ServerSyncClient,
+    public init(client: any IncrementalHostSyncClient,
                 sessionStore: SessionStore,
                 authSession: AuthSessionProtocol,
                 preferences: SyncPreferences,
                 debounceInterval: TimeInterval = 2.0,
-                periodicInterval: TimeInterval = 15 * 60,
+                periodicInterval: TimeInterval = 60 * 60,
                 userDefaults: UserDefaults = .standard,
                 notificationCenter: NotificationDelivering = LiveNotificationCenter()) {
         self.client = client
@@ -175,6 +181,11 @@ public final class HostSyncStore: ObservableObject {
         NSWorkspace.shared.notificationCenter
             .publisher(for: NSWorkspace.didWakeNotification)
             .sink { [weak self] _ in self?.handleSystemWake() }
+            .store(in: &cancellables)
+
+        NotificationCenter.default
+            .publisher(for: .catermCloudKitHostChanged)
+            .sink { [weak self] _ in self?.scheduleAutoSync(mode: .auto) }
             .store(in: &cancellables)
     }
 
@@ -234,16 +245,16 @@ public final class HostSyncStore: ObservableObject {
     /// generate background server traffic. Manual `sync()` is intentionally
     /// exempt — its 401 surfacing is the recovery path for "session
     /// expired (cookie still present)" — see spec §4.4.1.
-    private func scheduleAutoSync() {
+    private func scheduleAutoSync(mode: SyncMode = .auto) {
         guard authSession.isSignedIn else { return }
         guard !manualInProgress else {
             pendingAutoAfterManual = true
             return
         }
-        _ = startSync()
+        _ = startSync(mode: mode)
     }
 
-    /// Start (or stop) the 15-minute periodic timer based on the user's
+    /// Start (or stop) the periodic timer based on the user's
     /// toggle setting. Idempotent — cancels and recreates the
     /// subscription each call, so re-arming on wake (§3.2 handleSystemWake)
     /// is safe.
@@ -263,7 +274,7 @@ public final class HostSyncStore: ObservableObject {
                                                   on: .main,
                                                   in: .common)
             .autoconnect()
-            .sink { [weak self] _ in self?.scheduleAutoSync() }
+            .sink { [weak self] _ in self?.scheduleAutoSync(mode: .forceFull) }
     }
 
     /// Handle wake from sleep. Toggle-gated (spec §4.4) so a metered-
@@ -286,7 +297,7 @@ public final class HostSyncStore: ObservableObject {
     /// running its own work — guarantees mutual exclusion across
     /// consecutive sync passes.
     @discardableResult
-    private func startSync() -> Task<Void, Error> {
+    private func startSync(mode: SyncMode = .auto) -> Task<Void, Error> {
         let prev = inFlight
         syncGeneration += 1
         let myGeneration = syncGeneration
@@ -313,7 +324,7 @@ public final class HostSyncStore: ObservableObject {
             prev?.cancel()
             _ = await prev?.result   // drain — always resolves (success / throw / CancellationError)
             try Task.checkCancellation()  // we may have been replaced too
-            try await self.performSync()
+            try await self.performSync(mode: mode)
         }
         inFlight = new
         return new
@@ -321,21 +332,50 @@ public final class HostSyncStore: ObservableObject {
 
     // MARK: - Sync work
 
-    private func performSync() async throws {
+    private func performSync(mode requestedMode: SyncMode = .auto) async throws {
         let failureStateToken = failureStateResetToken
         let attempted = Date()
         lastSyncAttemptedAt = attempted
         userDefaults.set(attempted, forKey: Self.lastSyncAttemptedAtKey)
 
         do {
-            let remote = try await client.listHosts()
+            let effectiveMode: HostSyncMode
+            switch requestedMode {
+            case .auto:        effectiveMode = await client.preferredHostSyncMode()
+            case .forceFull:   effectiveMode = .forceFull
+            case .incremental: effectiveMode = .incremental
+            }
+
+            var batch = try await fetch(effectiveMode)
+            if batch.tokenExpired {
+                // Single retry as forceFull. Token clearing already happened
+                // inside the client.
+                batch = try await fetch(.forceFull)
+            }
             try Task.checkCancellation()
-            let ops = HostSyncReconciler.reconcileFullSnapshot(local: sessionStore.hosts,
-                                                               remote: remote)
+
+            let ops: [SyncOperation]
+            switch batch.mode {
+            case .forceFull:
+                ops = HostSyncReconciler.reconcileFullSnapshot(
+                    local: sessionStore.hosts, remote: batch.changedHosts
+                )
+            case .incremental:
+                ops = HostSyncReconciler.reconcileDelta(
+                    local: sessionStore.hosts,
+                    changedHosts: batch.changedHosts,
+                    deletedHostIDs: batch.deletedHostIDs
+                )
+            }
             for op in ops {
                 try Task.checkCancellation()
                 try await apply(op)
             }
+
+            if let checkpoint = batch.checkpoint {
+                try await client.commitHostCheckpoint(checkpoint)
+            }
+
             // Spec §4.2: only update after the op loop completes without
             // throwing. Partial-apply failures must NOT advance freshness.
             let now = Date()
@@ -358,6 +398,13 @@ public final class HostSyncStore: ObservableObject {
             if failureStateToken != failureStateResetToken { throw error }
             wasFailing = nowFailing
             throw error
+        }
+    }
+
+    private func fetch(_ mode: HostSyncMode) async throws -> HostChangeBatch {
+        switch mode {
+        case .incremental: return try await client.fetchHostChanges()
+        case .forceFull:   return try await client.fetchHostSnapshotAndCheckpoint()
         }
     }
 

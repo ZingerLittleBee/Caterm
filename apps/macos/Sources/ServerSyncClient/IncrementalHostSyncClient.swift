@@ -39,3 +39,11 @@ public protocol IncrementalHostSyncClient: ServerSyncClient {
 	func ensureHostSubscription() async throws
 	func deleteHostSubscription() async throws
 }
+
+extension Notification.Name {
+	/// Posted by AppDelegate.application(_:didReceiveRemoteNotification:)
+	/// when a CKDatabaseSubscription notification matching the Host
+	/// subscription ID arrives. Observed by HostSyncStore.
+	public static let catermCloudKitHostChanged =
+		Notification.Name("catermCloudKitHostChanged")
+}

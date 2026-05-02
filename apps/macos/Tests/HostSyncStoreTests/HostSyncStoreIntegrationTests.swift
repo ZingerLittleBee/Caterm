@@ -103,7 +103,7 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 /// failed" from "list succeeded but apply[k] failed" — the partial-apply
 /// branch in spec §4.2 that the older single `shouldThrow` flag could not
 /// reach. Default nil = no error.
-final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
+final class FakeServerSyncClient: IncrementalHostSyncClient, @unchecked Sendable {
     var listResult: [RemoteHost] = []
     var createResult = RemoteHostCreateOutput(id: "srv-default")
     var listCallCount = 0
@@ -129,6 +129,16 @@ final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
     var createHostError: Error?
     var updateHostError: Error?
     var deleteHostError: Error?
+
+    // NEW: track which incremental client methods were called.
+    var fetchHostChangesCallCount = 0
+    var fetchHostSnapshotAndCheckpointCallCount = 0
+    var commitHostCheckpointCallCount = 0
+    var resetHostSyncStateCallCount = 0
+    var ensureHostSubscriptionCallCount = 0
+    var deleteHostSubscriptionCallCount = 0
+    /// When true, preferredHostSyncMode returns .forceFull; else .incremental.
+    var preferForceFull: Bool = true
 
     func listHosts() async throws -> [RemoteHost] {
         listCallCount += 1
@@ -158,5 +168,59 @@ final class FakeServerSyncClient: ServerSyncClient, @unchecked Sendable {
     func deleteHost(id: String) async throws {
         deleteCallCount += 1
         if let err = deleteHostError { throw err }
+    }
+
+    func preferredHostSyncMode() async -> HostSyncMode {
+        preferForceFull ? .forceFull : .incremental
+    }
+
+    func fetchHostChanges() async throws -> HostChangeBatch {
+        fetchHostChangesCallCount += 1
+        // For .incremental tests, default to no changes (callers can override
+        // by setting listResult and toggling preferForceFull = false, but this
+        // path isn't currently exercised by existing tests).
+        return HostChangeBatch(
+            changedHosts: [], deletedHostIDs: [],
+            checkpoint: nil, tokenExpired: false, mode: .incremental
+        )
+    }
+
+    func fetchHostSnapshotAndCheckpoint() async throws -> HostChangeBatch {
+        fetchHostSnapshotAndCheckpointCallCount += 1
+        // Mirror listHosts() semantics (delay, error, listResult) so existing
+        // forceFull-driven tests work without modification.
+        listCallCount += 1
+        listHostsStartedAt.append(Date())
+        if let err = listHostsError { throw err }
+        if listHostsDelay > 0 {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(listHostsDelay * 1_000_000_000))
+            } catch {
+                listHostsTaskWasCancelled = true
+                throw error
+            }
+        }
+        if let err = listHostsErrorAfterDelay { throw err }
+        listHostsFinishedAt.append(Date())
+        return HostChangeBatch(
+            changedHosts: listResult, deletedHostIDs: [],
+            checkpoint: nil, tokenExpired: false, mode: .forceFull
+        )
+    }
+
+    func commitHostCheckpoint(_ checkpoint: any HostSyncCheckpoint) async throws {
+        commitHostCheckpointCallCount += 1
+    }
+
+    func resetHostSyncState() async {
+        resetHostSyncStateCallCount += 1
+    }
+
+    func ensureHostSubscription() async throws {
+        ensureHostSubscriptionCallCount += 1
+    }
+
+    func deleteHostSubscription() async throws {
+        deleteHostSubscriptionCallCount += 1
     }
 }
