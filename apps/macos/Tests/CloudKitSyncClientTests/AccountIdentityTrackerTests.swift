@@ -79,9 +79,10 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		XCTAssertNil(defaults.string(forKey: "cloudkit.lastKnownUserRecordName"))
 	}
 
+	// Test-only spy; per-test instance, never accessed concurrently.
 	private final class SpyClient: AccountSensitiveClient {
-		var didReset = false
-		var didDeleteSubscription = false
+		nonisolated(unsafe) var didReset = false
+		nonisolated(unsafe) var didDeleteSubscription = false
 		func resetHostSyncState() async { didReset = true }
 		func deleteHostSubscription() async throws { didDeleteSubscription = true }
 	}

@@ -32,6 +32,11 @@ public actor AccountIdentityTracker {
 		switch (prior, current) {
 		case (nil, nil):
 			return
+		// First observation of an identity with tokens already on disk
+		// means a prior install left CKServerChangeTokens behind. They
+		// belong to whichever account that prior install was signed in
+		// to — possibly different from `new`. Drop them to force a
+		// forceFull pass on first sync of the current account.
 		case (nil, .some(let new)):
 			if await tokensExistProvider() {
 				Self.log.info("first identity observation with existing tokens → resetting")
