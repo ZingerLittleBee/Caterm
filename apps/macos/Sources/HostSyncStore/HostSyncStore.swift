@@ -208,6 +208,17 @@ public final class HostSyncStore: ObservableObject {
             .publisher(for: .catermCloudKitHostChanged)
             .sink { [weak self] _ in self?.scheduleAutoSync(mode: .auto) }
             .store(in: &cancellables)
+
+        // Plan C / Task 15 — low-latency push path. SessionStore posts this
+        // notification immediately after `setHostCredentialMaterial(...)`
+        // persists hosts.json with `credentialMaterialDirty=true`. Schedule a
+        // sync cycle so the dirty-scan can queue `.updateRemoteCredentials`
+        // and the executor pushes the new ciphertext without waiting for the
+        // periodic timer or another mutation event.
+        NotificationCenter.default
+            .publisher(for: .catermHostCredentialMaterialChanged)
+            .sink { [weak self] _ in self?.scheduleAutoSync(mode: .auto) }
+            .store(in: &cancellables)
     }
 
     // MARK: - Public entry points
