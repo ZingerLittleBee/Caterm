@@ -1,7 +1,11 @@
 import AppKit
 import Combine
 import CredentialSyncStore
+import CredentialSyncTypes
+import CryptoKit
 import Foundation
+import KeychainStore
+import ManagedKeyStore
 import ServerSyncClient
 import SSHCommandBuilder
 import SessionStore
@@ -97,6 +101,8 @@ public final class HostSyncStore: ObservableObject {
     private let authSession: AuthSessionProtocol
     private let preferences: SyncPreferences
     private let credentialSync: CredentialSyncPreferencesStore
+    private let masterKeyStore: KeychainSyncMasterKeyStore
+    private let managedKeyStore: ManagedKeyStore
     private let userDefaults: UserDefaults
 
     #if DEBUG
@@ -153,6 +159,8 @@ public final class HostSyncStore: ObservableObject {
                 authSession: AuthSessionProtocol,
                 preferences: SyncPreferences,
                 credentialSync: CredentialSyncPreferencesStore,
+                masterKeyStore: KeychainSyncMasterKeyStore = KeychainSyncMasterKeyStore(),
+                managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
                 debounceInterval: TimeInterval = 2.0,
                 periodicInterval: TimeInterval = 60 * 60,
                 userDefaults: UserDefaults = .standard,
@@ -162,6 +170,8 @@ public final class HostSyncStore: ObservableObject {
         self.authSession = authSession
         self.preferences = preferences
         self.credentialSync = credentialSync
+        self.masterKeyStore = masterKeyStore
+        self.managedKeyStore = managedKeyStore
         self.periodicInterval = periodicInterval
         self.userDefaults = userDefaults
 
@@ -513,10 +523,57 @@ public final class HostSyncStore: ObservableObject {
     }
 
     /// Plan C — push the local encrypted credential blob to CloudKit for
-    /// `localHostId`. Body filled in Task 14; treated as a no-op until then
-    /// so the reconciler and existing tests remain unaffected.
-    private func applyUpdateRemoteCredentials(localHostId _: UUID) async throws {
-        // Task 14: read Keychain + ManagedKeyStore, encrypt, push partial
-        // CKRecord update via CloudKitSyncClient.
+    /// `localHostId`.
+    ///
+    /// Bail (no-op) when:
+    /// - host has no `serverId` yet (createRemote in this cycle hasn't run / failed)
+    /// - prefs.state is not `.enabled` (defensive — caller already gated)
+    /// - master key is absent from the keychain (iCloud Keychain hasn't yet
+    ///   delivered it on this device); the dirty bit stays set so a later
+    ///   cycle can retry
+    ///
+    /// On push success: bumps `prefs.lastAppliedRevision[hostId]` and clears
+    /// the host's `credentialMaterialDirty`. Push failure propagates to the
+    /// sync cycle (commit is skipped, dirty stays).
+    private func applyUpdateRemoteCredentials(localHostId: UUID) async throws {
+        guard let host = sessionStore.hosts.first(where: { $0.id == localHostId }) else { return }
+        guard let serverId = host.serverId else { return }
+        guard case .enabled = credentialSync.prefs.state else { return }
+        guard let resolved = await masterKeyStore.loadAny() else { return }
+        let masterKey = resolved.key
+        let keyID = resolved.keyID
+
+        let pwSecret: Data? = (try? sessionStore.keychain.get(account: "\(localHostId.uuidString).password"))
+            .flatMap { $0.data(using: .utf8) }
+        let ppSecret: Data? = (try? sessionStore.keychain.get(account: "\(localHostId.uuidString).keyPassphrase"))
+            .flatMap { $0.data(using: .utf8) }
+
+        let pkBytes: Data?
+        if case let .keyFile(path, _) = host.credential {
+            if let managed = (try? managedKeyStore.read(hostId: localHostId)) ?? nil {
+                pkBytes = managed
+            } else {
+                pkBytes = FileManager.default.contents(atPath: path)
+            }
+        } else {
+            pkBytes = nil
+        }
+
+        let nextRev = (credentialSync.prefs.lastAppliedRevision[localHostId] ?? 0) + 1
+        let aadFor: (FieldKind) -> Data = { kind in
+            EnvelopeCrypto.aad(serverId: serverId, fieldKind: kind, revision: nextRev)
+        }
+        let blob = CredentialBlob(
+            state: .payload,
+            revision: nextRev,
+            keyID: keyID,
+            cryptoVersion: Int64(EnvelopeCrypto.schemaVersion),
+            passwordCiphertext: try pwSecret.map { try EnvelopeCrypto.seal($0, key: masterKey, aad: aadFor(.password)) },
+            passphraseCiphertext: try ppSecret.map { try EnvelopeCrypto.seal($0, key: masterKey, aad: aadFor(.passphrase)) },
+            privateKeyCiphertext: try pkBytes.map { try EnvelopeCrypto.seal($0, key: masterKey, aad: aadFor(.privateKey)) }
+        )
+        let pushedRev = try await client.pushHostCredentialBlob(serverId: serverId, blob: blob)
+        credentialSync.mutate { $0.lastAppliedRevision[localHostId] = pushedRev }
+        try sessionStore.clearCredentialMaterialDirty(localHostId)
     }
 }

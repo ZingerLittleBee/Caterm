@@ -1,7 +1,7 @@
 import CryptoKit
+import CredentialSyncStore
 import CredentialSyncTypes
 import XCTest
-@testable import CredentialSync
 
 final class EnvelopeCryptoTests: XCTestCase {
     private let key = SymmetricKey(size: .bits256)

@@ -1,6 +1,6 @@
 import CryptoKit
+import CredentialSyncStore
 import XCTest
-@testable import CredentialSync
 
 final class KeychainSyncMasterKeyStoreTests: XCTestCase {
     /// We use a unique service per test so concurrent runs don't collide.

@@ -50,7 +50,7 @@ let package = Package(
         ),
         .target(
             name: "HostSyncStore",
-            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSyncStore"],
+            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSyncStore", "CredentialSyncTypes", "KeychainStore", "ManagedKeyStore"],
             path: "Sources/HostSyncStore"
         ),
         .target(
@@ -162,7 +162,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HostSyncStoreTests",
-            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore"],
+            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore", "CredentialSyncTypes", "ManagedKeyStore"],
             path: "Tests/HostSyncStoreTests"
         ),
         .testTarget(

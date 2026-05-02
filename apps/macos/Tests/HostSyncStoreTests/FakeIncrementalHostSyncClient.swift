@@ -1,3 +1,4 @@
+import CredentialSyncTypes
 import Foundation
 @testable import ServerSyncClient
 
@@ -7,6 +8,11 @@ struct FakeCheckpoint: HostSyncCheckpoint, Sendable {
 
 struct CommitCall: Sendable {
     let id: UUID
+}
+
+struct PushCredentialCall: Sendable {
+    let serverId: String
+    let blob: CredentialBlob
 }
 
 /// Test fake that gives precise control over fetch/commit ordering and outcome,
@@ -27,6 +33,18 @@ final class FakeIncrementalHostSyncClient: IncrementalHostSyncClient, @unchecked
     var createHostError: Error?
     var updateHostError: Error?
     var deleteHostError: Error?
+
+    // MARK: - Credential push
+
+    private(set) var pushCredentialCalls: [PushCredentialCall] = []
+    var pushCredentialError: Error?
+    var pushCredentialReturn: Int64 = 1
+
+    func pushHostCredentialBlob(serverId: String, blob: CredentialBlob) async throws -> Int64 {
+        if let err = pushCredentialError { throw err }
+        pushCredentialCalls.append(PushCredentialCall(serverId: serverId, blob: blob))
+        return pushCredentialReturn
+    }
 
     // MARK: - ServerSyncClient (legacy list/create/update/delete)
 
