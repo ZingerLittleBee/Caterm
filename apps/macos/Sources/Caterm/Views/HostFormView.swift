@@ -201,12 +201,8 @@ struct HostFormView: View {
 		case .agent:
 			cred = .agent
 		}
-		let id: UUID = {
-			if case let .edit(existing) = mode { return existing.id }
-			return UUID()
-		}()
-		let host = SSHHost(
-			id: id,
+		let host = HostFormView.buildHost(
+			mode: mode,
 			name: resolvedName,
 			hostname: hostname,
 			port: Int(port) ?? 22,
@@ -225,5 +221,38 @@ struct HostFormView: View {
 			}
 		}()
 		onSubmit(host, secret)
+	}
+
+	/// Build the `SSHHost` payload for `onSubmit`. In `.edit` mode this
+	/// must spread from the existing host so hidden fields (`serverId`,
+	/// `createdAt`, `credentialMaterialDirty`) survive a metadata-only
+	/// edit — constructing a fresh `SSHHost` with the default initializer
+	/// erases `serverId` and causes the next sync pass to treat the
+	/// renamed host as a new local insert, leaving the original CloudKit
+	/// record orphaned and re-pulled as a duplicate.
+	static func buildHost(
+		mode: HostFormMode,
+		name: String,
+		hostname: String,
+		port: Int,
+		username: String,
+		credential: CredentialSource
+	) -> SSHHost {
+		if case let .edit(existing) = mode {
+			var h = existing
+			h.name = name
+			h.hostname = hostname
+			h.port = port
+			h.username = username
+			h.credential = credential
+			return h
+		}
+		return SSHHost(
+			name: name,
+			hostname: hostname,
+			port: port,
+			username: username,
+			credential: credential
+		)
 	}
 }

@@ -87,11 +87,18 @@ struct HostListSidebar: View {
 				HostFormView(mode: .edit(host)) { updated, secret in
 					do {
 						try store.updateHost(updated)
-						try store.setHostCredentialMaterial(
-							secrets: makeSecrets(for: updated.credential, secret: secret),
-							credentialSource: updated.credential,
-							for: updated.id
-						)
+						// Only route through the Plan C credential entry point
+						// when the user supplied a new secret. A pure metadata
+						// edit (rename / hostname / port / username) must not
+						// flip `credentialMaterialDirty` or fire the credential
+						// changed notification.
+						if secret != nil {
+							try store.setHostCredentialMaterial(
+								secrets: makeSecrets(for: updated.credential, secret: secret),
+								credentialSource: updated.credential,
+								for: updated.id
+							)
+						}
 						editingHost = nil
 					} catch {
 						errorMessage = error.localizedDescription
