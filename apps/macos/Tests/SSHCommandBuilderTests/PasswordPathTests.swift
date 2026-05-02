@@ -19,9 +19,9 @@ final class PasswordPathTests: XCTestCase {
         let cmd = result.command
         XCTAssertTrue(cmd.contains("/usr/bin/ssh"))
         XCTAssertTrue(cmd.contains("StrictHostKeyChecking=accept-new"))
-        XCTAssertTrue(cmd.contains("PreferredAuthentications=password"))
+        XCTAssertTrue(cmd.contains("PreferredAuthentications=password,keyboard-interactive"))
         XCTAssertTrue(cmd.contains("PubkeyAuthentication=no"))
-        XCTAssertTrue(cmd.contains("KbdInteractiveAuthentication=no"))
+        XCTAssertFalse(cmd.contains("KbdInteractiveAuthentication=no"))
         XCTAssertTrue(cmd.contains("NumberOfPasswordPrompts=1"))
         XCTAssertTrue(cmd.contains("'alice'@'host.example.com'"))
         XCTAssertTrue(cmd.contains("-p 22"))

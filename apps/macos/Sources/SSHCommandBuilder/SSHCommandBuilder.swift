@@ -72,9 +72,12 @@ public enum SSHCommandBuilder {
 
 		switch host.credential {
 		case .password:
-			args += [.raw("-o"), .quoted("PreferredAuthentications=password")]
+			// Many OpenSSH servers route password logins through `keyboard-interactive`
+			// rather than the bare `password` method, so we offer both. With
+			// SSH_ASKPASS_REQUIRE=force (set below), OpenSSH 8.4+ routes
+			// keyboard-interactive prompts through askpass too.
+			args += [.raw("-o"), .quoted("PreferredAuthentications=password,keyboard-interactive")]
 			args += [.raw("-o"), .quoted("PubkeyAuthentication=no")]
-			args += [.raw("-o"), .quoted("KbdInteractiveAuthentication=no")]
 			args += [.raw("-o"), .quoted("NumberOfPasswordPrompts=1")]
 			env = [
 				("SSH_ASKPASS", askpassPath),

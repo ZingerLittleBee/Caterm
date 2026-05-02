@@ -131,6 +131,7 @@ run-bg: sign ## build + sign + launch caterm in background (logs to /tmp/caterm.
 .PHONY: kill
 kill: ## kill any running caterm dev process
 	-pkill -f "$(CATERM_BIN)" || true
+	-pkill -f "Caterm.app/Contents/MacOS/caterm" || true
 
 .PHONY: bootstrap-askpass
 bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)

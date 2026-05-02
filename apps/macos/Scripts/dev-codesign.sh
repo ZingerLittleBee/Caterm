@@ -109,6 +109,15 @@ if [[ "$DEV_LOGIN_KEYCHAIN" == "1" ]]; then
         "$TMPDIR_ENT/Caterm.entitlements" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" \
         "$TMPDIR_ENT/CatermAskpass.entitlements" 2>/dev/null || true
+    # The askpass helper is exec'd as a plain nested binary by /usr/bin/ssh.
+    # It does not need an app identity when using the login keychain, and
+    # keeping restricted app/team entitlements here makes AMFI kill it before
+    # main() runs. The main app keeps its identity entitlements for APS /
+    # CloudKit; only the helper gets the no-drama treatment.
+    /usr/libexec/PlistBuddy -c "Delete :com.apple.application-identifier" \
+        "$TMPDIR_ENT/CatermAskpass.entitlements" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.team-identifier" \
+        "$TMPDIR_ENT/CatermAskpass.entitlements" 2>/dev/null || true
 fi
 
 codesign --force --options runtime \

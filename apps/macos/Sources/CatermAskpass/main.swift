@@ -18,6 +18,30 @@ import KeychainStore
 
 let env = ProcessInfo.processInfo.environment
 
+// Lightweight invocation log so we can diagnose "ssh says wrong password" with
+// real evidence instead of guessing. One line per invocation; logs the exit
+// status, the keychain account looked up, the access group, and the secret
+// length (NEVER the secret itself). File is auto-created if missing.
+let logURL: URL = {
+    let logsDir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Logs/Caterm", isDirectory: true)
+    try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+    return logsDir.appendingPathComponent("caterm-askpass.log")
+}()
+
+func logLine(_ message: String) {
+    let ts = ISO8601DateFormatter().string(from: Date())
+    let line = "\(ts) pid=\(getpid()) \(message)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    if let h = try? FileHandle(forWritingTo: logURL) {
+        defer { try? h.close() }
+        _ = try? h.seekToEnd()
+        try? h.write(contentsOf: data)
+    } else {
+        try? data.write(to: logURL)
+    }
+}
+
 // Dev-only stuff mode — used by Task 1.4 EndToEndSSHTests to seed a Keychain
 // item from the same signed binary that will later read it (so the partition
 // list automatically grants access without an "Always Allow" dialog). Gated
@@ -52,27 +76,33 @@ if env["CATERM_ASKPASS_STUFF"] == "1" {
 
 guard let hostId = env["CATERM_HOST_ID"], !hostId.isEmpty else {
     FileHandle.standardError.write(Data("CATERM_HOST_ID not set\n".utf8))
+    logLine("FAIL exit=1 reason=CATERM_HOST_ID-not-set")
     exit(1)
 }
 guard let kind = env["CATERM_ASKPASS_KIND"],
       kind == "password" || kind == "passphrase" else {
     FileHandle.standardError.write(Data("CATERM_ASKPASS_KIND invalid\n".utf8))
+    logLine("FAIL exit=1 reason=CATERM_ASKPASS_KIND-invalid host=\(hostId)")
     exit(1)
 }
 
 let account = "\(hostId).\(kind)"
 let accessGroup = env["CATERM_ACCESS_GROUP"]
+let groupTag = accessGroup ?? "<nil>"
 let store = KeychainStore(service: "com.caterm.host", accessGroup: accessGroup)
 
 do {
     let secret = try store.get(account: account)
     let out = secret + "\n"
     FileHandle.standardOutput.write(Data(out.utf8))
+    logLine("OK exit=0 account=\(account) group=\(groupTag) secretLen=\(secret.count)")
     exit(0)
 } catch KeychainError.notFound {
     FileHandle.standardError.write(Data("askpass: secret not found for \(account)\n".utf8))
+    logLine("FAIL exit=2 reason=keychain-not-found account=\(account) group=\(groupTag)")
     exit(2)
 } catch {
     FileHandle.standardError.write(Data("askpass: keychain error \(error)\n".utf8))
+    logLine("FAIL exit=3 reason=keychain-error account=\(account) group=\(groupTag) error=\(error)")
     exit(3)
 }
