@@ -82,3 +82,52 @@ final class InMemoryServerChangeTokenStoreTests: XCTestCase {
 		XCTAssertNil(zone)
 	}
 }
+
+final class UserDefaultsServerChangeTokenStoreTests: XCTestCase {
+	private var defaults: UserDefaults!
+	private var suiteName: String!
+
+	override func setUp() async throws {
+		suiteName = "UserDefaultsServerChangeTokenStoreTests.\(UUID().uuidString)"
+		defaults = UserDefaults(suiteName: suiteName)
+	}
+
+	override func tearDown() async throws {
+		UserDefaults.standard.removePersistentDomain(forName: suiteName)
+		defaults = nil
+		suiteName = nil
+	}
+
+	func testRoundTripPersistsAcrossInstances() async throws {
+		let s1 = UserDefaultsServerChangeTokenStore(defaults: defaults)
+		let epoch = await s1.currentEpoch()
+		_ = await s1.commitTokens(
+			expectedEpoch: epoch,
+			db: TokenCAS(prev: nil, new: Data([9, 9, 9])),
+			zones: [:]
+		)
+		// New instance reading the same defaults backing
+		let s2 = UserDefaultsServerChangeTokenStore(defaults: defaults)
+		let token = await s2.loadDatabaseToken()
+		XCTAssertEqual(token?.archivedData, Data([9, 9, 9]))
+	}
+
+	func testCorruptStoredBytesAreReturnedAsIsForCAS() async throws {
+		// Pre-seed garbage directly via UserDefaults; loadDatabaseToken
+		// must NOT decode synchronously, so it returns the bytes wrapped.
+		defaults.set(Data([0xDE, 0xAD]), forKey: "cloudkit.changeToken.database")
+		let s = UserDefaultsServerChangeTokenStore(defaults: defaults)
+		let token = await s.loadDatabaseToken()
+		XCTAssertEqual(token?.archivedData, Data([0xDE, 0xAD]))
+		XCTAssertThrowsError(try token?.unarchive())
+	}
+
+	func testEpochSurvivesAcrossInstances() async throws {
+		let s1 = UserDefaultsServerChangeTokenStore(defaults: defaults)
+		await s1.bumpEpoch()
+		await s1.bumpEpoch()
+		let s2 = UserDefaultsServerChangeTokenStore(defaults: defaults)
+		let epoch = await s2.currentEpoch()
+		XCTAssertEqual(epoch, 2)
+	}
+}

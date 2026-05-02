@@ -109,3 +109,83 @@ internal actor InMemoryServerChangeTokenStore: ServerChangeTokenStoring {
 		"\(zoneID.zoneName).\(zoneID.ownerName)"
 	}
 }
+
+internal actor UserDefaultsServerChangeTokenStore: ServerChangeTokenStoring {
+	private static let dbKey = "cloudkit.changeToken.database"
+	private static let epochKey = "cloudkit.changeToken.epoch"
+	private static let zonePrefix = "cloudkit.changeToken.zone."
+
+	private let defaults: UserDefaults
+
+	init(defaults: UserDefaults = .standard) {
+		self.defaults = defaults
+	}
+
+	func currentEpoch() async -> UInt64 {
+		UInt64(bitPattern: Int64(defaults.integer(forKey: Self.epochKey)))
+	}
+
+	func bumpEpoch() async {
+		let current = await currentEpoch()
+		defaults.set(Int64(bitPattern: current &+ 1), forKey: Self.epochKey)
+	}
+
+	func loadDatabaseToken() async -> StoredServerChangeToken? {
+		defaults.data(forKey: Self.dbKey).map { StoredServerChangeToken(archivedData: $0) }
+	}
+
+	func loadZoneToken(_ zoneID: CKRecordZone.ID) async -> StoredServerChangeToken? {
+		defaults.data(forKey: Self.zoneKey(for: zoneID))
+			.map { StoredServerChangeToken(archivedData: $0) }
+	}
+
+	func commitTokens(expectedEpoch: UInt64,
+	                  db: TokenCAS,
+	                  zones: [String: TokenCAS]) async -> CommitOutcome {
+		guard await currentEpoch() == expectedEpoch else { return .staleEpoch }
+
+		var skippedZones: [String] = []
+		var skippedDb = false
+
+		for (zoneKey, cas) in zones {
+			let storageKey = Self.zonePrefix + zoneKey
+			let persisted = defaults.data(forKey: storageKey)
+			if persisted == cas.prev {
+				if let new = cas.new {
+					defaults.set(new, forKey: storageKey)
+				} else {
+					defaults.removeObject(forKey: storageKey)
+				}
+			} else {
+				skippedZones.append(zoneKey)
+			}
+		}
+
+		let persistedDb = defaults.data(forKey: Self.dbKey)
+		if persistedDb == db.prev {
+			if let new = db.new {
+				defaults.set(new, forKey: Self.dbKey)
+			} else {
+				defaults.removeObject(forKey: Self.dbKey)
+			}
+		} else {
+			skippedDb = true
+		}
+
+		if skippedZones.isEmpty && !skippedDb { return .applied }
+		return .partialCAS(skippedZoneKeys: skippedZones, skippedDb: skippedDb)
+	}
+
+	func clearAll() async {
+		await bumpEpoch()
+		defaults.removeObject(forKey: Self.dbKey)
+		for key in defaults.dictionaryRepresentation().keys
+		where key.hasPrefix(Self.zonePrefix) {
+			defaults.removeObject(forKey: key)
+		}
+	}
+
+	private static func zoneKey(for zoneID: CKRecordZone.ID) -> String {
+		zonePrefix + InMemoryServerChangeTokenStore.key(for: zoneID)
+	}
+}
