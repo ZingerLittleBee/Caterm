@@ -149,4 +149,35 @@ final class CloudKitSyncClientPushTests: XCTestCase {
         let stored = await tokenStore.loadDatabaseToken()
         XCTAssertNil(stored, "reset bumped epoch ⇒ commit must be staleEpoch")
     }
+
+    // MARK: - Subscription management
+
+    func testEnsureHostSubscriptionCreatesNewWhenMissing() async throws {
+        try await client.ensureHostSubscription()
+        XCTAssertEqual(fakeDB.savedSubscriptions.count, 1)
+        let sub = try XCTUnwrap(fakeDB.savedSubscriptions.first as? CKDatabaseSubscription)
+        XCTAssertEqual(sub.subscriptionID, CloudKitPushNames.hostSubscriptionID)
+        XCTAssertEqual(sub.recordType, "Host")
+        XCTAssertTrue(sub.notificationInfo?.shouldSendContentAvailable ?? false)
+    }
+
+    func testEnsureHostSubscriptionTreatsAlreadyExistsAsSuccess() async throws {
+        fakeDB.saveSubscriptionError = CKError(.serverRejectedRequest)
+        try await client.ensureHostSubscription()  // must not throw
+    }
+
+    func testEnsureHostSubscriptionPropagatesNonExistsError() async throws {
+        fakeDB.saveSubscriptionError = CKError(.networkFailure)
+        do {
+            try await client.ensureHostSubscription()
+            XCTFail("expected throw")
+        } catch let e as CKError {
+            XCTAssertEqual(e.code, .networkFailure)
+        }
+    }
+
+    func testDeleteHostSubscriptionTreatsUnknownItemAsSuccess() async throws {
+        fakeDB.deleteSubscriptionError = CKError(.unknownItem)
+        try await client.deleteHostSubscription()  // must not throw
+    }
 }

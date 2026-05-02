@@ -49,11 +49,28 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
     }
 
     public func ensureHostSubscription() async throws {
-        // Implemented in Task 2.1.
+        let sub = CKDatabaseSubscription(subscriptionID: CloudKitPushNames.hostSubscriptionID)
+        sub.recordType = Self.hostRecordType
+        let info = CKSubscription.NotificationInfo()
+        info.shouldSendContentAvailable = true
+        sub.notificationInfo = info
+        do {
+            _ = try await database.saveSubscription(sub)
+        } catch let ck as CKError where ck.code == .serverRejectedRequest {
+            // Subscription already exists. Apple returns this when a
+            // subscription with the same ID is present.
+            return
+        }
     }
 
     public func deleteHostSubscription() async throws {
-        // Implemented in Task 2.1.
+        do {
+            _ = try await database.deleteSubscription(
+                withID: CloudKitPushNames.hostSubscriptionID
+            )
+        } catch let ck as CKError where ck.code == .unknownItem {
+            return
+        }
     }
 
     // MARK: - Drain loop
