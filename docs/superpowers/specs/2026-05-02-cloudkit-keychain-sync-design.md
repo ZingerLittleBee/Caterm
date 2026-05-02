@@ -97,9 +97,48 @@ Plan A's `CKRecordHostMapping.decode` maps `updatedAt = rec.modificationDate ?? 
 Plan C therefore introduces an **app-controlled** `metadataUpdatedAt: Date` field:
 - `applyMetadata(into existing: CKRecord, from host: SSHHost)` writes `existing["metadataUpdatedAt"] = host.updatedAt as CKRecordValue` along with the other metadata fields.
 - `applyCredentialBlob(into existing: CKRecord, blob:)` **never** touches this field (already guaranteed by the partial-encoder split — credential encoder physically cannot reach metadata fields).
-- `decode(record:)` reads `updatedAt = rec["metadataUpdatedAt"] as? Date ?? rec.creationDate ?? .distantPast`. The fallback to `creationDate` covers Plan A records written before Plan C's schema-deploy lands; once Plan C clients have rewritten metadata at least once, the field is populated and the fallback no longer applies. (`creationDate` is correct as a Plan A baseline because Plan A's `RemoteHost.updatedAt` was effectively "last server write", and a never-updated record's last write is its create.)
+- `decode(record:)` reads `updatedAt = rec["metadataUpdatedAt"] as? Date ?? rec.modificationDate ?? rec.creationDate ?? .distantPast`. **The fallback chain is `metadataUpdatedAt → modificationDate → creationDate`** (review #1''' / fourth pass). Falling back to `creationDate` alone, as the previous draft did, is unsafe: a Plan A record created at `t0` and edited at `t2` would decode as `updatedAt = t0`, and a stale local copy at `t1 < t2` would erroneously beat the cloud's `t2` in LWW. `modificationDate` is Plan A's actual LWW clock, so reading it as the fallback preserves Plan A's pre-existing semantics for any record that hasn't been touched by a Plan C `applyCredentialBlob` save yet (see §Seed-before-credential-save below for why this fallback can never read a `modificationDate` that's been contaminated by credential-only writes).
 - `makeRecord(input:)` initializes `metadataUpdatedAt = Date()` — the create itself is the first metadata write.
 - Schema-deploy adds `metadataUpdatedAt: Date(Indexed: false)` to the production CKRecord schema (Plan E pre-ship task).
+
+### Seed-before-credential-save (legacy migration, review #1''' / fourth pass)
+
+The `applyCredentialBlob` save bumps server-side `modificationDate`. If a Plan C client did a credential-only save on a legacy Plan A record before that record's `metadataUpdatedAt` was populated, the decoder's fallback would later read a `modificationDate` that no longer reflects the metadata clock — exactly the contamination Plan C set out to prevent. To eliminate that window, the `.updateRemoteCredentials` executor adopts a one-time-per-record seed step:
+
+```
+on .updateRemoteCredentials(localHostId):
+    let host = sessionStore.host(by: localHostId)
+    guard let serverId = host.serverId else { return /* no-op per executor-time check */ }
+
+    let existing = try await client.fetchRecord(serverId, in: zoneID)
+
+    // Seed metadataUpdatedAt for legacy records BEFORE the credential-only
+    // save bumps modificationDate. After this seed save, the field reflects
+    // the pre-Plan-C metadata clock and is safe to read on every device.
+    if existing["metadataUpdatedAt"] == nil {
+        let seed = (existing.modificationDate ?? existing.creationDate ?? Date.distantPast)
+        existing["metadataUpdatedAt"] = seed as CKRecordValue
+    }
+
+    // Same save also applies the credential blob — single CKRecord save
+    // so the seed and the first credential write are atomic on the server.
+    applyCredentialBlob(into: existing, blob: encryptedBlob(for: host))
+    try await client.save(existing)
+
+    await sessionStore.clearCredentialMaterialDirty(localHostId)
+```
+
+Records also get `metadataUpdatedAt` written via the metadata path: any Plan C client whose `.updateRemote` op runs against a legacy record will execute `applyMetadata`, which sets `metadataUpdatedAt = host.updatedAt`. Across the fleet, every record migrates the moment any Plan C client either edits its metadata or first pushes credentials for it. Records that are never touched by any Plan C client retain the `modificationDate → creationDate` fallback in decode and continue to behave per Plan A semantics indefinitely.
+
+### Decode-time invariant
+
+For any record visible to a Plan C decoder, the value read as `updatedAt` is exactly one of:
+1. `metadataUpdatedAt` populated by Plan C's `makeRecord`, `applyMetadata`, or the seed step above. **This is always uncontaminated** by credential-only saves because:
+   - `makeRecord` only runs at create time.
+   - `applyMetadata` writes it deliberately to the new metadata clock.
+   - The seed step writes the pre-Plan-C `modificationDate` (sampled before the credential-only save's modificationDate bump applies on the server — the seed assignment is part of the same client-side CKRecord modification that gets sent in one save).
+2. Fallback `modificationDate` for records never touched by any Plan C save. **Uncontaminated** by definition: no Plan C client has done a credential-only save on this record yet, so `modificationDate` still reflects the last metadata-content change exactly as Plan A intended.
+3. Fallback `creationDate` if the record somehow has no `modificationDate` (CloudKit ought to set it on every save, but the optional API leaves us defensive).
 
 ### Field semantics
 
@@ -192,6 +231,18 @@ enum CredentialSyncState {
 Plus the following persisted fields (also in `SyncPreferences` JSON):
 - `lastAppliedRevision: [UUID: Int64]` — per-host high-water mark for incoming.
 - `credentialsNeedFullScan: Bool` — set true on every transition into `.enabled`. Consumed by `HostSyncStore` at the start of the next sync cycle, which forces that cycle to use `.forceFull` regardless of `preferredHostSyncMode`'s default. Cleared after the forceFull pass commits its checkpoint successfully. **Must persist across crashes / restarts**: if the user toggles ON and quits before the next sync, the flag stays on disk so the next launch's first sync still picks it up. (See §Toggle ON full-snapshot fix for why this is necessary — review #2.)
+- `deleteCredentialsFromCloudInProgress: DeletionProgress?` — durable record of an in-flight destructive "Delete from iCloud" action (review #2''' / fourth pass). Non-nil while the operation is mid-flight. Suppresses the dirty scan and credential push pipeline entirely until cleared. Crash-resumable: see §Destructive deletion flow.
+
+```swift
+struct DeletionProgress: Codable {
+    /// Local host IDs whose tombstone push has not yet succeeded for
+    /// this destructive action. Decreases monotonically as each
+    /// tombstone push lands and lastAppliedRevision is updated.
+    /// Empty array → operation complete; HostSyncStore clears the
+    /// outer Optional to nil and resumes normal pipeline.
+    var pendingLocalHostIds: [UUID]
+}
+```
 
 ### Per-host dirty bit — new field on `SSHHost`
 
@@ -310,14 +361,31 @@ else:  // remote is newer
 
     case .disabled:
         // ignore credential payload entirely. Do NOT advance
-        // lastAppliedRevision — otherwise a future toggle ON would
-        // suppress the very payload it's supposed to apply, since
-        // the same revision in cloud is now <= our high-water mark
-        // (review #2). Cost of not advancing: every incremental
-        // sync may re-receive the same record while disabled, but
-        // CKServerChangeToken-based fetches only re-deliver records
-        // whose recordChangeTag actually moved, so the cost is
-        // negligible.
+        // lastAppliedRevision.
+        //
+        // Two independent gates determine whether a credential payload
+        // is applied:
+        //   (a) CKServerChangeToken (the cycle-level checkpoint, owned
+        //       by HostSyncStore.commitHostCheckpoint, advanced after
+        //       the op loop succeeds at HostSyncStore.swift:375) —
+        //       decides whether the SERVER will re-deliver this record
+        //       on a future incremental fetch.
+        //   (b) lastAppliedRevision[hostId] — decides whether THIS
+        //       device's apply step actually applies the credential
+        //       once the record has been fetched.
+        //
+        // While disabled the cycle still applies metadata for the
+        // record and commits the checkpoint, so gate (a) advances
+        // past this revision and incremental will NOT re-deliver it.
+        // The only path that re-fetches this record after toggle ON
+        // is the credentialsNeedFullScan-driven forceFull cycle (set
+        // by every transition into .enabled — see §Sync flow
+        // integration). forceFull bypasses (a) entirely. At apply
+        // time, gate (b) is what tells the apply step "this revision
+        // hasn't been applied yet on this device, do it now". If we
+        // had advanced lastAppliedRevision while disabled, gate (b)
+        // would skip the credential apply on the forceFull replay
+        // and the user would silently lose the data.
         no-op
 
     case .pausedByRemote(let seenTombstoneRevision):
@@ -425,7 +493,7 @@ Per the split per #8 of the review: the per-device toggle is a non-destructive p
 | `.enabled` / `.waitingForKey` / `.pausedByRemote` → toggle OFF | State → `.disabled`. Stop pushing, stop applying incoming credentials. Cloud ciphertext untouched. Local Keychain and ManagedKeyStore untouched. `credentialsNeedFullScan` not changed (it would be set the next time we re-enable). |
 | `.waitingForKey` → master key arrives via iCloud Keychain | State → `.enabled`. Set `credentialsNeedFullScan = true` (the prior `.waitingForKey` may also have set it; idempotent). Re-run sync on next trigger. |
 | `.pausedByRemote` → toggle OFF then ON | Same path as `.disabled` → toggle ON: forced forceFull + dirty-bit-driven push of any locally-edited credentials accumulated during pause. If cloud is empty (all tombstones / `state="none"`), nothing applies locally, but the device is now active and any subsequent local edit will push automatically via the dirty bit. |
-| Destructive button: "Delete synced credentials from iCloud..." | Confirmation modal: "This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To re-enable sync afterward, enable the toggle on a device of your choice. Are you sure?" On confirm, atomically in this exact order: (1) **Clear `credentialMaterialDirty = false` for every host on this Mac, persist hosts.json** (review #4 — without this, any pre-existing dirty bit from a prior local edit that hadn't yet pushed would be picked up by the next dirty scan and re-populate cloud, undoing the deletion). (2) For every host record in cloud, push `state="tombstone"`, `credentialBlobRevision=max+1`, all ciphertext fields nil. As each tombstone push succeeds, **set `lastAppliedRevision[hostId] := pushedTombstoneRevision`** on this Mac (review #6b) so that when the same tombstone comes back via subsequent pulls, the `rev <= lastApplied` check skips it — otherwise the deleting device would self-pause on its own write. (3) **Master key is left untouched in iCloud Keychain** (cheap to keep; user might re-enable). Local Keychain + ManagedKeyStore untouched (user keeps local credentials). Local state on this Mac stays `.enabled` — the user can resume by editing any host, which will set `credentialMaterialDirty = true` again via the normal entry point. Other Macs (which haven't bumped their `lastAppliedRevision` for this host) receive the tombstone and transition to `.pausedByRemote`. |
+| Destructive button: "Delete synced credentials from iCloud..." | Confirmation modal text per §Destructive deletion flow. On confirm, the durable resumable flow described there runs. Local state on this Mac stays `.enabled`; local Keychain + ManagedKeyStore + master key (in iCloud Keychain) all untouched. Other Macs (which haven't bumped their `lastAppliedRevision` for these hosts) receive the tombstones and transition to `.pausedByRemote`. |
 
 **Concurrent destructive action + ongoing edits**: while the destructive modal is open, the device should not accept credential edits (UI-level disable). Once tombstones are pushed, any concurrent edit from another device wins the LWW race per CloudKit's `serverRecordChanged` semantics.
 
@@ -434,6 +502,41 @@ Per the split per #8 of the review: the per-device toggle is a non-destructive p
 CloudKit's actual mechanism is `recordChangeTag` + `ifServerRecordUnchanged` save policy. Server returns `CKError.serverRecordChanged` (currently mapped to HTTP 409 by `CloudKitErrorMapping`) on stale writes. Plan A's existing behavior — and Plan C's — is "next sync trigger pulls latest record state, encoder re-encodes from current local Keychain, push retries naturally". There is no in-process refetch/merge/retry loop in v1; that would belong to a Plan A/B hardening exercise outside Plan C's scope.
 
 For credentials specifically: race outcome is "last successful server-side write wins". Mac A and Mac B push different credentials in close succession → server accepts the first → second sees `serverRecordChanged` → on next sync, second pulls fresh state and re-encrypts current local; server now has the chronologically-second credential. The user observes "the device that pushed last wins", same as Plan A metadata.
+
+### Destructive deletion flow (durable + crash-resumable, review #2''' / fourth pass)
+
+The user clicks "Delete synced credentials from iCloud..." and confirms. The flow must survive crashes, app quits, network failures, and partial completion without losing the user's delete intent and without leaving the credential pipeline in a state where subsequent local edits could re-populate cloud.
+
+**Confirmation modal text**: "This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To re-enable sync afterward, enable the toggle on a device of your choice. Are you sure?"
+
+**On confirm, in this exact order:**
+
+1. **Persist intent atomically** (single `SyncPreferences.save`):
+   - `deleteCredentialsFromCloudInProgress = DeletionProgress(pendingLocalHostIds: <localHostIds of every host with a non-nil serverId, regardless of credentialBlobState>)`. Hosts without `serverId` have nothing to tombstone.
+   - **Clear `credentialMaterialDirty = false` for every host on this Mac, persist hosts.json** (review #4 second-pass — closes the same window: a pre-existing dirty bit must not survive past the intent persistence to be picked up later).
+2. **HostSyncStore observes** `deleteCredentialsFromCloudInProgress != nil` and switches behavior at every cycle start:
+   - The dirty scan and `.updateRemoteCredentials` queueing are suppressed entirely. (`credentialsNeedFullScan` and Plan A metadata sync continue as normal — this gate is credential-push-only.)
+   - HostSyncStore runs a **destructive sub-pipeline** for each `localHostId` in `pendingLocalHostIds`:
+     a. Read host; if `serverId == nil` (e.g., user deleted the host locally between steps), skip and remove from `pendingLocalHostIds`.
+     b. Fetch existing CKRecord by `serverId`.
+     c. Compute `tombRev = max(rec["credentialBlobRevision"] as? Int64 ?? 0, lastAppliedRevision[localHostId] ?? 0) + 1`.
+     d. Apply tombstone: `state="tombstone", credentialBlobRevision=tombRev, all ciphertext fields nil, credentialKeyID=nil`.  Run the §Seed-before-credential-save step too (a tombstone is a credential-only save, so legacy records still need `metadataUpdatedAt` seeded).
+     e. Save.
+     f. **On success, atomically persist** (single `SyncPreferences.save`): `lastAppliedRevision[localHostId] = tombRev` (review #6b — prevents self-pausing on own tombstone) **and** remove `localHostId` from `pendingLocalHostIds`.
+     g. On `serverRecordChanged`: re-fetch and retry within the same sub-pipeline pass (a tombstone race is harmless — whoever wins, the next pass either confirms tombstone or, if the loser was a peer payload push, re-tombstones it). On other failures: leave `localHostId` in `pendingLocalHostIds`, exit the sub-pipeline (next sync cycle resumes).
+   - When `pendingLocalHostIds.isEmpty`, atomically clear `deleteCredentialsFromCloudInProgress = nil` and persist. Normal credential-push pipeline resumes on the next cycle.
+3. **Local state on this Mac stays `.enabled`** throughout. After completion, the user can resume cloud sync by editing any host (`setHostCredentialMaterial` flips `credentialMaterialDirty = true` per the normal entry point). Master key in iCloud Keychain is left untouched (cheap to keep for re-enable). Local Keychain + ManagedKeyStore are untouched (user keeps local credentials).
+
+**Crash / restart semantics**:
+- If we crash between step 1 and step 2, restart finds `deleteCredentialsFromCloudInProgress` populated and dirty bits cleared. Step 2's sub-pipeline runs fresh on next sync cycle.
+- If we crash mid-sub-pipeline (between two host tombstones), restart's sub-pipeline picks up the remaining `pendingLocalHostIds` and finishes them. Already-tombstoned hosts are no longer in the list.
+- If we crash between sub-pipeline empty and clearing the outer flag, the next cycle finds an empty list, clears the flag, resumes normal pipeline. Idempotent.
+- If the user toggles OFF mid-deletion, `state → .disabled` but the destructive sub-pipeline still runs to completion (finishing what they started); only the suppression of normal credential push remains in effect. After the destructive flow finishes, `.disabled` behaves normally (no credential pushes).
+
+**UI during in-progress deletion**:
+- Destructive button replaced by a non-clickable "Deleting credentials from iCloud... (N/M complete)" status until `pendingLocalHostIds` empties.
+- Per-device toggle remains operable (toggle OFF allowed, see above).
+- Host add/edit form remains operable; secret writes still go to local Keychain + ManagedKeyStore via `setHostCredentialMaterial`, but the dirty bit is cleared again at end-of-call as long as `deleteCredentialsFromCloudInProgress != nil` (so any edits during the deletion window do not re-populate cloud the moment the deletion finishes — explicit behavior, documented to the user via the modal text "Each device keeps its local credentials").
 
 ## Sync flow integration
 
@@ -470,7 +573,7 @@ Push policy lives in `HostSyncStore`:
 - HostSyncStore subscribes to `.catermHostCredentialMaterialChanged` at construction time.
 - On notification, **and** at the start of every sync cycle (so crash-recovered dirty bits are picked up regardless of whether the notification was delivered), HostSyncStore scans `sessionStore.hosts` for `credentialMaterialDirty == true`. The decision uses the queue-time / executor-time split from §Push rules:
   - **Queue-time** (when this scan runs): if `state == .enabled`, append `.updateRemoteCredentials(localHostId)` to the cycle's op queue **after** any `.createRemote / .updateRemote / .createLocal / .updateLocal / .deleteLocal` ops produced by the reconciler. Do this **regardless of `serverId`** — the executor-time check below handles the new-host case. If `state != .enabled` (`.disabled` / `.pausedByRemote` / `.waitingForKey`), skip the queue; the dirty bit stays on disk and is re-evaluated on the next state transition into `.enabled`.
-  - **Executor-time** (when the queued op runs, possibly minutes later or after `.createRemote` populated `serverId`): re-read the host from `sessionStore.hosts` by `localHostId`. If `host.serverId == nil` (e.g., `.createRemote` failed earlier in the same cycle), the op succeeds as a no-op — does not throw, does not clear the dirty bit, does not block `commitHostCheckpoint`. Otherwise: open Keychain + ManagedKeyStore live, build the encrypted blob with AAD `"\(serverId)|\(fieldKind)|\(rev)|\(schemaVersion)"`, call `client.applyCredentialBlob(into: existingRecord, blob:)`, and on success call `sessionStore.clearCredentialMaterialDirty(localHostId)`. CloudKit-side failure (other than `serverRecordChanged`) throws and leaves the dirty bit set for retry on the next cycle.
+  - **Executor-time** (when the queued op runs, possibly minutes later or after `.createRemote` populated `serverId`): re-read the host from `sessionStore.hosts` by `localHostId`. If `host.serverId == nil` (e.g., `.createRemote` failed earlier in the same cycle), the op succeeds as a no-op — does not throw, does not clear the dirty bit, does not block `commitHostCheckpoint`. Otherwise: fetch the existing CKRecord; if its `metadataUpdatedAt` is nil, seed it from `rec.modificationDate ?? rec.creationDate` in the same client-side mutation (per §Seed-before-credential-save); open Keychain + ManagedKeyStore live; build the encrypted blob with AAD `"\(serverId)|\(fieldKind)|\(rev)|\(schemaVersion)"`; call `client.applyCredentialBlob(into: existingRecord, blob:)`; save; on success call `sessionStore.clearCredentialMaterialDirty(localHostId)`. CloudKit-side failure (other than `serverRecordChanged`) throws and leaves the dirty bit set for retry on the next cycle.
 
 This single mechanism replaces the earlier draft's two-branch description ("`.enabled` AND serverId != nil" vs "`.enabled` AND serverId == nil") that confused queue-time policy with executor-time policy (review #2). There is one queue-time predicate (state == `.enabled`) and one executor-time predicate (`serverId != nil`); they are evaluated in different phases of the same cycle.
 
@@ -512,7 +615,7 @@ This split makes a hard guarantee at the type level: there is no API that can bo
 | Host deleted (local or remote) | `deleteAll(prefix: hostId)` | `delete(hostId)` | unchanged | drop `lastAppliedRevision[hostId]` |
 | Toggle ON → OFF (per-device) | unchanged | unchanged | unchanged | unchanged |
 | Any transition INTO `.enabled` (`.disabled` → toggle ON; `.waitingForKey` → master-key arrives; `.pausedByRemote` → toggle OFF then ON) | unchanged | unchanged | look up; generate iff cloud is empty | unchanged. Also: **set `credentialsNeedFullScan = true`** so the next sync cycle is forced to `.forceFull` (review #2). |
-| Destructive: "Delete synced credentials from iCloud..." (confirmed) on **deleting** Mac | unchanged (user keeps local secrets) | unchanged | **unchanged** (not removed; cheap to keep for re-enable) | for each tombstoned host: `lastAppliedRevision[hostId] := pushedTombstoneRevision` (review #6b — prevents the deleting device from consuming its own tombstone and self-pausing). **Also**: before pushing tombstones, clear `credentialMaterialDirty = false` for every host on this Mac (review #4 — prevents pre-existing dirty bits from re-populating cloud immediately after the deletion). |
+| Destructive: "Delete synced credentials from iCloud..." (confirmed) on **deleting** Mac | unchanged (user keeps local secrets) | unchanged | **unchanged** (not removed; cheap to keep for re-enable) | per the durable resumable §Destructive deletion flow: on confirm, atomically persist `deleteCredentialsFromCloudInProgress` + clear `credentialMaterialDirty` for every host. As each host tombstone push lands, atomically `lastAppliedRevision[hostId] := tombRev` (review #6b) **and** remove that host id from `pendingLocalHostIds`. Outer flag cleared when list is empty. Crash-resumable. |
 | Receiving tombstone push on a **peer** Mac | unchanged | unchanged | unchanged | for each tombstoned host: `lastAppliedRevision[hostId]` stays where it was; the state machine transition (`.enabled` → `.pausedByRemote(seenTombstoneRevision: rev)` and `.waitingForKey` → `.pausedByRemote(...)` per Fix #6a) is what records the observation, not the high-water mark |
 | iCloud account change (Plan B `AccountIdentityTracker`) | unchanged (Keychain is device-local) | wipe entire keys directory | the synchronizable item is part of the OLD iCloud account; the new account starts from scratch | clear all `lastAppliedRevision`; state → `.disabled` |
 | User resets iCloud Keychain in System Settings | unchanged | **unchanged** (review #7 correction: local managed keys remain valid local credentials) | item is gone; on next sync attempt, `loadAny` returns nil → state → `.waitingForKey` or surfaces "Master key lost" recovery UI | unchanged |
@@ -594,6 +697,14 @@ Plan A's "local Keychain miss → connect attempt" trigger is unchanged. Plan C 
 - `HostCodableBackcompatTests` (review #3''): a hosts.json fixture written by a Plan A binary (no `credentialMaterialDirty` key) decodes successfully via `init(from:)` with `credentialMaterialDirty == false` for every host. Round-trip a Plan C-written hosts.json through Plan C decode → `credentialMaterialDirty` round-trips intact.
 - `DestructiveClearsDirtyTests` (review #4''): set `credentialMaterialDirty = true` on hosts H1, H2; click destructive button + confirm; verify (a) hosts.json now has dirty=false for all hosts (persisted before tombstone push begins); (b) tombstone push proceeds; (c) the next dirty scan emits no `.updateRemoteCredentials` ops; (d) cloud state is unambiguously tombstoned for H1 and H2 — no race re-populating it.
 - `ReconcilerOpSetTests` (review #5''): exhaustive case coverage of `HostSyncReconciler.reconcileFullSnapshot` and `reconcileDelta` confirming the produced op set is `.createRemote / .createLocal / .updateRemote / .updateLocal / .deleteLocal` only — `.updateRemoteCredentials` is never returned by the reconciler. Companion test confirms `HostSyncStore`'s op queue contains `.updateRemoteCredentials` only when sourced from the dirty scan.
+- `LegacyMetadataUpdatedAtFallbackTests` (review #1''' regression guard): CKRecord fixture with `creationDate=t0, modificationDate=t2, metadataUpdatedAt absent`. Verify (a) decode returns `updatedAt=t2` (not t0); (b) a local stale host with `updatedAt=t1 < t2` is correctly identified as stale by the reconciler — no `.updateRemote` op emitted that would overwrite cloud's t2 with t1.
+- `SeedBeforeCredentialSaveTests` (review #1''' regression guard): a Plan A record without `metadataUpdatedAt` is the target of `.updateRemoteCredentials`. Verify the executor's CKRecord save contains BOTH the seeded `metadataUpdatedAt = rec.modificationDate` AND the credential blob, in a single save (single fake-client `save` call observed). Verify the saved CKRecord, when re-decoded, returns `updatedAt = original modificationDate` (the pre-credential-save value), unaffected by the bumped server-side modificationDate that this save would have produced.
+- `MetadataPathSeedingTests`: a Plan A record without `metadataUpdatedAt` is the target of `.updateRemote` (metadata edit, no credentials involved). Verify `applyMetadata` writes `metadataUpdatedAt = host.updatedAt`, and subsequent decode returns that value. (Confirms metadata edits also migrate legacy records without going through credential push.)
+- `DestructiveResumableTests` (review #2''' regression guard): begin destructive flow with `pendingLocalHostIds = [H1, H2, H3]`; simulate H1 tombstone success → atomic SyncPreferences.save observed (lastAppliedRevision[H1] set + H1 removed from pendingLocalHostIds in same write); then **simulate process crash before H2 tombstone**; "relaunch" (rebuild HostSyncStore from persisted SyncPreferences); verify (a) on next cycle the destructive sub-pipeline picks up H2 first (not H1, not idempotently re-tombstone), (b) `pendingLocalHostIds == [H2, H3]` initially, (c) after H2+H3 succeed, outer flag cleared, (d) normal dirty scan resumes only after the flag is nil.
+- `DestructiveSuppressesDirtyScanTests` (review #2''' regression guard): set `deleteCredentialsFromCloudInProgress = DeletionProgress(pendingLocalHostIds: [H1])`; manually set `host.credentialMaterialDirty = true` on a different host H4 (or H1 itself). Run a sync cycle; verify zero `.updateRemoteCredentials` ops are queued / executed for H4 (or H1) for the duration the flag is non-nil. After H1 tombstone completes and flag clears, the next cycle's dirty scan picks H4 up normally.
+- `DestructiveDirtyClearOnConfirmTests` (review #4 + #2''' interaction): hosts H1 and H2 both have `credentialMaterialDirty = true` from prior local edits; user clicks Delete + confirms. Verify the FIRST disk write completed by the confirm handler is the atomic `(deleteCredentialsFromCloudInProgress = DeletionProgress(...) + dirty cleared on H1, H2)` — not two separate writes that could leave the dirty bits intact if a crash occurred between them.
+- `DestructiveEditDuringDeletionTests` (review #2''' regression guard): destructive flow in flight; user calls `setHostCredentialMaterial` for some host; verify the local Keychain + ManagedKeyStore + `host.credential` mutations land but the dirty bit is **cleared again at end of call** because `deleteCredentialsFromCloudInProgress != nil` (per §Destructive deletion flow UI section). Confirm cloud is not re-populated after the deletion completes.
+- `DisabledLastAppliedNoOpTests` (review #3''' doc-bug regression guard): in `.disabled`, fetch a record with `state="payload"` rev=5; assert `lastAppliedRevision[hostId]` is unchanged. Then transition to `.enabled` (sets `credentialsNeedFullScan`); next cycle is forceFull; rev=5 record re-applied; `lastAppliedRevision[hostId] = 5` after success. Confirms the apply-time gate (lastAppliedRevision) is independent of the fetch-time gate (CKServerChangeToken).
 
 ### Integration (in-process `FakeCloudDatabase` + mock `KeychainSyncMasterKeyStore` with two Caterm instances representing Mac A / Mac B)
 
@@ -646,3 +757,6 @@ Plan A's "local Keychain miss → connect attempt" trigger is unchanged. Plan C 
 - **Rejected** (review #3'' / third pass): synthesized `Codable` for `Host` after adding `credentialMaterialDirty`. Synthesized `init(from:)` requires the new key to be present in the JSON and would fail to decode any hosts.json written by a Plan A/B build. Adopted explicit `init(from:)` using `decodeIfPresent(...) ?? false` for the new field.
 - **Rejected** (review #4'' / third pass): leaving pre-existing `credentialMaterialDirty` bits intact when the user runs the destructive "Delete from iCloud" action. Those dirty bits would be picked up by the next dirty scan and re-populate cloud immediately after the deletion. Destructive flow now atomically clears all dirty bits before pushing tombstones.
 - **Rejected** (review #5'' / third pass): `HostSyncReconciler` producing `.updateRemoteCredentials` as part of its op set. The reconciler is Plan A's metadata-only diff engine; credential pushes are user-mutation-driven side-channel writes queued by HostSyncStore from a separate dirty scan, not by remote-vs-local diff.
+- **Rejected** (review #1''' / fourth pass): decoder fallback chain `metadataUpdatedAt → creationDate`. A Plan A record with `creationDate=t0, modificationDate=t2` would decode as `updatedAt=t0`, letting a stale local `t1 < t2` win LWW and overwrite cloud. Adopted three-step fallback `metadataUpdatedAt → modificationDate → creationDate` plus a one-time-per-record seed step in the `.updateRemoteCredentials` executor that writes `metadataUpdatedAt = rec.modificationDate` BEFORE the first credential-only save can contaminate `modificationDate`.
+- **Rejected** (review #2''' / fourth pass): destructive flow described as "atomic three steps" but actually consisting of multiple non-atomic disk + network operations. A crash or network failure mid-flight would lose delete intent and let a subsequent local edit re-populate cloud. Adopted durable `deleteCredentialsFromCloudInProgress: DeletionProgress?` field on `CredentialSyncPreferences`; HostSyncStore observes the flag at every cycle start, suppresses normal credential push, runs a resumable destructive sub-pipeline that decreases `pendingLocalHostIds` atomically with each tombstone success; clears the outer flag only when the list empties.
+- **Rejected** (review #3''' / fourth pass): `.disabled` pull rule comment claiming the no-advance-lastAppliedRevision rule was justified by "incremental sync may re-receive". Wrong — checkpoint advances regardless, so incremental will not re-receive. Real reason rewritten in-place: lastAppliedRevision is the apply-time gate, separate from CKServerChangeToken's fetch-time gate. forceFull (driven by `credentialsNeedFullScan`) bypasses the fetch-time gate but still hits the apply-time gate; not advancing lastAppliedRevision in `.disabled` is what lets the post-toggle-ON forceFull replay correctly apply payloads that were ignored.
