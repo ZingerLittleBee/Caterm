@@ -206,6 +206,106 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
             "Concurrent manual callers must share a single in-flight pass (currentManualTask lock)")
     }
 
+    // MARK: - Task 1.13: checkpoint-on-success
+
+    func testCheckpointCommittedAfterApplySucceeds() async throws {
+        let fake = FakeIncrementalHostSyncClient()
+        let cpID = UUID()
+        fake.fetchSnapshotResult = HostChangeBatch(
+            changedHosts: [makeRemote(id: "R1")],
+            deletedHostIDs: [],
+            checkpoint: FakeCheckpoint(id: cpID),
+            tokenExpired: false,
+            mode: .forceFull
+        )
+        let store = makeIncrementalStore(client: fake)
+        try await store.sync()
+        XCTAssertEqual(fake.commitCalls.map(\.id), [cpID])
+        XCTAssertGreaterThan(sessionStore.hosts.count, 0,
+                             "apply must have created a local host before commit")
+    }
+
+    func testApplyFailureDoesNotAdvanceChangeTokens() async throws {
+        // Pre-seed a local host without serverId so reconcileFullSnapshot emits
+        // .createRemote (the path that calls client.createHost).
+        let unsynced = SSHHost(name: "x", hostname: "h", port: 22, username: "u",
+                               credential: .agent)
+        try sessionStore.addHost(unsynced)
+
+        let fake = FakeIncrementalHostSyncClient()
+        fake.fetchSnapshotResult = HostChangeBatch(
+            changedHosts: [],
+            deletedHostIDs: [],
+            checkpoint: FakeCheckpoint(id: UUID()),
+            tokenExpired: false, mode: .forceFull
+        )
+        fake.createHostError = NSError(domain: "T", code: 1)
+
+        let store = makeIncrementalStore(client: fake)
+        do {
+            try await store.sync()
+            XCTFail("expected throw from createHost")
+        } catch {
+            // expected
+        }
+        XCTAssertTrue(fake.commitCalls.isEmpty,
+                      "commit must NOT run when apply fails")
+    }
+
+    func testNilCheckpointFromTokenExpiredBatchSkipsCommit() async throws {
+        let fake = FakeIncrementalHostSyncClient()
+        fake.fetchSnapshotResult = HostChangeBatch(
+            changedHosts: [], deletedHostIDs: [],
+            checkpoint: nil, tokenExpired: true, mode: .incremental
+        )
+        fake.fetchSnapshotResultRetry = HostChangeBatch(
+            changedHosts: [], deletedHostIDs: [],
+            checkpoint: nil, tokenExpired: false, mode: .forceFull
+        )
+        let store = makeIncrementalStore(client: fake)
+        try await store.sync()
+        XCTAssertTrue(fake.commitCalls.isEmpty,
+                      "no checkpoint → no commit")
+    }
+
+    func testTokenExpiredTriggersForceFullRetry() async throws {
+        let fake = FakeIncrementalHostSyncClient()
+        fake.fetchSnapshotResult = HostChangeBatch(
+            changedHosts: [], deletedHostIDs: [],
+            checkpoint: nil, tokenExpired: true, mode: .incremental
+        )
+        let cpID = UUID()
+        fake.fetchSnapshotResultRetry = HostChangeBatch(
+            changedHosts: [], deletedHostIDs: [],
+            checkpoint: FakeCheckpoint(id: cpID),
+            tokenExpired: false, mode: .forceFull
+        )
+        let store = makeIncrementalStore(client: fake)
+        try await store.sync()
+        XCTAssertEqual(fake.fetchModes.count, 2,
+                       "token-expired must trigger one retry")
+        XCTAssertEqual(fake.fetchModes[1], .forceFull,
+                       "retry must be forceFull")
+        XCTAssertEqual(fake.commitCalls.map(\.id), [cpID])
+    }
+
+    private func makeIncrementalStore(client: FakeIncrementalHostSyncClient) -> HostSyncStore {
+        let prefs = SyncPreferences(defaults: isolatedDefaults)
+        return HostSyncStore(client: client,
+                             sessionStore: sessionStore,
+                             authSession: fakeAuth,
+                             preferences: prefs,
+                             debounceInterval: 0.05,
+                             userDefaults: isolatedDefaults)
+    }
+
+    private func makeRemote(id: String) -> RemoteHost {
+        RemoteHost(id: id, name: "n-\(id)", hostname: "h", port: 22,
+                   username: "u", authType: "password",
+                   createdAt: Date(timeIntervalSince1970: 100),
+                   updatedAt: Date(timeIntervalSince1970: 200))
+    }
+
     // Polls `condition` on the @MainActor every 10 ms up to `timeout`.
     // XCTestCase doesn't auto-pump @MainActor work between awaits without
     // explicit yields, so this small helper is the standard pattern across
