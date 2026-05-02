@@ -179,6 +179,18 @@ CATERM_DEV_IDENTITY=28A2AF9F761AB261B3144E4AF67373EC0F883ED1 make sign
 
 `Scripts/dev-codesign.sh` detects a 40-hex `CATERM_DEV_IDENTITY` and looks up the team OU via the matching cert.
 
+## CloudKit silent push (Plan B Phase 0)
+
+- **Date:** 2026-05-02
+- **Result:** PASS
+- **Latency observed:** ~30s from CloudKit Dashboard write to `didReceiveRemoteNotification`
+- **Chain validated end-to-end:**
+  - `didRegisterForRemoteNotifications token-bytes=32` (APS reachable, device token issued)
+  - `CKDatabaseSubscription` saved on `iCloud.com.caterm.app` private DB
+  - Same-device `CKRecord` write succeeded but did NOT push back (CloudKit by-design suppresses notifications to the originating device — confirmed via spike)
+  - Cross-origin write (Dashboard) successfully delivered the silent push within ~30s
+- **Notes:** spike code (auto-spike runner in `AppDelegate` + `CloudKitPushSpikeView`) reverted in Task 0.3. Phase 2 push-subscription wiring can rely on the verified pipeline.
+
 ## Dev workflow recap (Plan B Phase 0)
 
 After the entitlement edit + Apple Developer Portal work, the actual local sequence:
