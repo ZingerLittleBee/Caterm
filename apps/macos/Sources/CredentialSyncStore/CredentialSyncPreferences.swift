@@ -57,6 +57,13 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
     public var credentialsNeedFullScan: Bool
     public var deleteCredentialsFromCloudInProgress: DeletionProgress?
     public var corruptCredentials: Set<CorruptCredentialKey>
+    /// Set true when the destructive sub-pipeline finishes pushing every
+    /// host's tombstone (cloud now has no payloads). Reset to false on the
+    /// next successful credential payload push from this device. Drives the
+    /// post-deletion UI: hides the "Delete from iCloud" button and changes
+    /// the status row copy so the user isn't told "5 hosts synced" when
+    /// every cloud blob is a tombstone.
+    public var cloudCredentialsCleared: Bool
 
     private static let storageKey = "catermCredentialSyncPreferences"
     private let defaults: UserDefaults
@@ -70,12 +77,14 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.credentialsNeedFullScan = loaded.credentialsNeedFullScan
             self.deleteCredentialsFromCloudInProgress = loaded.deleteCredentialsFromCloudInProgress
             self.corruptCredentials = loaded.corruptCredentials
+            self.cloudCredentialsCleared = loaded.cloudCredentialsCleared ?? false
         } else {
             self.state = .disabled
             self.lastAppliedRevision = [:]
             self.credentialsNeedFullScan = false
             self.deleteCredentialsFromCloudInProgress = nil
             self.corruptCredentials = []
+            self.cloudCredentialsCleared = false
         }
     }
 
@@ -85,7 +94,8 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             lastAppliedRevision: lastAppliedRevision,
             credentialsNeedFullScan: credentialsNeedFullScan,
             deleteCredentialsFromCloudInProgress: deleteCredentialsFromCloudInProgress,
-            corruptCredentials: corruptCredentials
+            corruptCredentials: corruptCredentials,
+            cloudCredentialsCleared: cloudCredentialsCleared
         )
         if let data = try? JSONEncoder().encode(stored) {
             defaults.set(data, forKey: Self.storageKey)
@@ -102,13 +112,18 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         var credentialsNeedFullScan: Bool
         var deleteCredentialsFromCloudInProgress: DeletionProgress?
         var corruptCredentials: Set<CorruptCredentialKey>
+        // Optional so a UserDefaults blob written by an older app version
+        // (no `cloudCredentialsCleared` key) still decodes successfully on
+        // upgrade. Treated as `false` when absent.
+        var cloudCredentialsCleared: Bool?
 
         init(
             state: CredentialSyncState,
             lastAppliedRevision: [UUID: Int64],
             credentialsNeedFullScan: Bool,
             deleteCredentialsFromCloudInProgress: DeletionProgress?,
-            corruptCredentials: Set<CorruptCredentialKey>
+            corruptCredentials: Set<CorruptCredentialKey>,
+            cloudCredentialsCleared: Bool
         ) {
             self.state = state
             self.lastAppliedRevision = Dictionary(
@@ -117,6 +132,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.credentialsNeedFullScan = credentialsNeedFullScan
             self.deleteCredentialsFromCloudInProgress = deleteCredentialsFromCloudInProgress
             self.corruptCredentials = corruptCredentials
+            self.cloudCredentialsCleared = cloudCredentialsCleared
         }
 
         var lastAppliedRevisionAsUUID: [UUID: Int64] {
@@ -132,6 +148,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
     private enum CodingKeys: String, CodingKey {
         case state, lastAppliedRevision, credentialsNeedFullScan
         case deleteCredentialsFromCloudInProgress, corruptCredentials
+        case cloudCredentialsCleared
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -146,6 +163,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         self.credentialsNeedFullScan = try c.decode(Bool.self, forKey: .credentialsNeedFullScan)
         self.deleteCredentialsFromCloudInProgress = try c.decodeIfPresent(DeletionProgress.self, forKey: .deleteCredentialsFromCloudInProgress)
         self.corruptCredentials = try c.decode(Set<CorruptCredentialKey>.self, forKey: .corruptCredentials)
+        self.cloudCredentialsCleared = try c.decodeIfPresent(Bool.self, forKey: .cloudCredentialsCleared) ?? false
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -157,6 +175,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         try c.encode(credentialsNeedFullScan, forKey: .credentialsNeedFullScan)
         try c.encodeIfPresent(deleteCredentialsFromCloudInProgress, forKey: .deleteCredentialsFromCloudInProgress)
         try c.encode(corruptCredentials, forKey: .corruptCredentials)
+        try c.encode(cloudCredentialsCleared, forKey: .cloudCredentialsCleared)
     }
 
     public static func == (lhs: CredentialSyncPreferences, rhs: CredentialSyncPreferences) -> Bool {
@@ -164,6 +183,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         lhs.lastAppliedRevision == rhs.lastAppliedRevision &&
         lhs.credentialsNeedFullScan == rhs.credentialsNeedFullScan &&
         lhs.deleteCredentialsFromCloudInProgress == rhs.deleteCredentialsFromCloudInProgress &&
-        lhs.corruptCredentials == rhs.corruptCredentials
+        lhs.corruptCredentials == rhs.corruptCredentials &&
+        lhs.cloudCredentialsCleared == rhs.cloudCredentialsCleared
     }
 }

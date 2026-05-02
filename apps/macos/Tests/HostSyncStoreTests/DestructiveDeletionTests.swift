@@ -210,6 +210,71 @@ final class DestructiveDeletionTests: XCTestCase {
         XCTAssertEqual(fakeClient.pushCredentialCalls[0].serverId, "rec-other")
     }
 
+    // MARK: - confirm() invokes triggerSync callback
+
+    func test_confirmInvokesTriggerSyncCallback_evenWhenNoHosts() {
+        var triggered = 0
+        DestructiveDeletionFlow.confirm(
+            sessionStore: sessionStore,
+            credentialSync: prefsStore,
+            triggerSync: { triggered += 1 }
+        )
+        XCTAssertEqual(triggered, 1,
+                       "confirm must kick the sync pipeline immediately so the user "
+                       + "doesn't have to click Sync Now to push tombstones")
+    }
+
+    // MARK: - cloudCredentialsCleared flag transitions
+
+    func test_subPipelineComplete_setsCloudCredentialsClearedTrue() async throws {
+        let host = makeHost(name: "tombstone-target")
+        try sessionStore.setServerId("rec-x", for: host.id)
+        prefsStore.mutate {
+            $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
+                pendingLocalHostIds: [host.id]
+            )
+            // Pretend nothing was previously cleared.
+            $0.cloudCredentialsCleared = false
+        }
+
+        let sut = makeStore()
+        try await sut.sync()
+
+        XCTAssertNil(prefsStore.prefs.deleteCredentialsFromCloudInProgress,
+                     "outer flag must clear once the list is empty")
+        XCTAssertTrue(prefsStore.prefs.cloudCredentialsCleared,
+                      "completing the destructive sub-pipeline must mark cloud cleared "
+                      + "so the UI hides the delete button and stops counting payloads")
+    }
+
+    func test_subPipelineMidFlight_doesNotPrematurelySetCloudCleared() async throws {
+        // Two hosts pending, second tombstone push fails. cloudCredentialsCleared
+        // must NOT flip true while the list still has remaining hosts.
+        let hostA = makeHost(name: "A")
+        try sessionStore.setServerId("rec-a", for: hostA.id)
+        let hostB = makeHost(name: "B")
+        try sessionStore.setServerId("rec-b", for: hostB.id)
+        prefsStore.mutate {
+            $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
+                pendingLocalHostIds: [hostA.id, hostB.id]
+            )
+            $0.cloudCredentialsCleared = false
+        }
+        fakeClient.pushCredentialError = NSError(
+            domain: "test", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "simulated B failure"]
+        )
+        fakeClient.pushCredentialFailAtIndex = 1
+
+        let sut = makeStore()
+        try? await sut.sync()
+
+        XCTAssertNotNil(prefsStore.prefs.deleteCredentialsFromCloudInProgress,
+                        "outer flag must remain while hostB is pending")
+        XCTAssertFalse(prefsStore.prefs.cloudCredentialsCleared,
+                       "cloudCredentialsCleared must NOT flip true mid-flight")
+    }
+
     // MARK: - 5. Empty pending list clears outer flag
 
     func test_emptyList_clearsOuterFlag_resumesNormalPipeline() async throws {

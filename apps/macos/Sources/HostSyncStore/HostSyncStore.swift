@@ -554,7 +554,13 @@ public final class HostSyncStore: ObservableObject {
             }
         }
         if remaining.isEmpty {
-            credentialSync.mutate { $0.deleteCredentialsFromCloudInProgress = nil }
+            credentialSync.mutate {
+                $0.deleteCredentialsFromCloudInProgress = nil
+                // Cloud now has only tombstones. UI uses this to hide the
+                // "Delete from iCloud" button and stop reporting "N hosts
+                // synced". Cleared by the next successful payload push.
+                $0.cloudCredentialsCleared = true
+            }
         }
     }
 
@@ -892,7 +898,13 @@ public final class HostSyncStore: ObservableObject {
             privateKeyCiphertext: try pkBytes.map { try EnvelopeCrypto.seal($0, key: masterKey, aad: aadFor(.privateKey)) }
         )
         let pushedRev = try await client.pushHostCredentialBlob(serverId: serverId, blob: blob)
-        credentialSync.mutate { $0.lastAppliedRevision[localHostId] = pushedRev }
+        credentialSync.mutate {
+            $0.lastAppliedRevision[localHostId] = pushedRev
+            // Any payload push invalidates the post-destructive "all
+            // tombstones" UI marker. Safe to set unconditionally — set
+            // semantics make repeated false-writes a no-op.
+            $0.cloudCredentialsCleared = false
+        }
         try sessionStore.clearCredentialMaterialDirty(localHostId)
     }
 }

@@ -132,6 +132,29 @@ final class CredentialPushExecutorTests: XCTestCase {
         XCTAssertEqual(prefsStore.prefs.lastAppliedRevision[host.id], 1)
     }
 
+    /// After a destructive flow leaves `cloudCredentialsCleared = true`, the
+    /// next successful payload push must flip it back to false so the UI
+    /// resumes counting synced hosts and re-enables the delete button.
+    func test_payloadPush_clearsCloudCredentialsClearedFlag() async throws {
+        prefsStore.mutate {
+            $0.state = .enabled
+            $0.cloudCredentialsCleared = true  // simulate post-destructive state
+        }
+        let host = makeDirtyHost()
+        try sessionStore.setServerId("rec-1", for: host.id)
+        try sessionStore.setHostSecret("p1", hostId: host.id, kind: .password)
+        try await stageMasterKey()
+        seedSnapshotMatchingLocal(serverId: "rec-1", host: host)
+
+        let sut = makeStore()
+        try await sut.sync()
+
+        XCTAssertEqual(fakeClient.pushCredentialCalls.count, 1)
+        XCTAssertEqual(fakeClient.pushCredentialCalls[0].blob.state, .payload)
+        XCTAssertFalse(prefsStore.prefs.cloudCredentialsCleared,
+                       "a successful payload push must invalidate the cloud-cleared marker")
+    }
+
     func test_executor_pushFailure_keepsDirty_propagates_abortsCheckpoint() async throws {
         prefsStore.mutate { $0.state = .enabled }
         let host = makeDirtyHost()

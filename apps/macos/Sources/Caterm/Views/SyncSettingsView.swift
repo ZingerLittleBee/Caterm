@@ -159,7 +159,8 @@ struct SyncSettingsView: View {
                 CredentialSyncSection(
                     prefsStore: credentialSync,
                     coordinator: credentialSyncCoordinator,
-                    sessionStore: sessionStore
+                    sessionStore: sessionStore,
+                    triggerSync: { [weak syncStore] in syncStore?.syncIfSignedIn() }
                 )
             }
             Section("Terminal") {

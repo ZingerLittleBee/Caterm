@@ -21,7 +21,8 @@ public enum DestructiveDeletionFlow {
     ///      tombstone for them.
     public static func confirm(
         sessionStore: SessionStore,
-        credentialSync: CredentialSyncPreferencesStore
+        credentialSync: CredentialSyncPreferencesStore,
+        triggerSync: () -> Void = {}
     ) {
         let pendingIds = sessionStore.hosts.compactMap { host -> UUID? in
             host.serverId == nil ? nil : host.id
@@ -34,5 +35,10 @@ public enum DestructiveDeletionFlow {
                 pendingLocalHostIds: pendingIds
             )
         }
+        // Kick off the destructive sub-pipeline immediately. Without this
+        // the tombstone push would only run on the next mutationsForSync
+        // signal or 60-min force-full timer — leaving cloud populated for
+        // an unbounded time after the user clicked "Delete".
+        triggerSync()
     }
 }

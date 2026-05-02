@@ -8,6 +8,7 @@ struct CredentialSyncSection: View {
 	@ObservedObject var prefsStore: CredentialSyncPreferencesStore
 	let coordinator: CredentialSyncCoordinator
 	@ObservedObject var sessionStore: SessionStore
+	let triggerSync: () -> Void
 
 	@State private var confirmingDelete = false
 	@State private var enableError: String?
@@ -43,12 +44,13 @@ struct CredentialSyncSection: View {
 					Button("Delete", role: .destructive) {
 						DestructiveDeletionFlow.confirm(
 							sessionStore: sessionStore,
-							credentialSync: prefsStore
+							credentialSync: prefsStore,
+							triggerSync: triggerSync
 						)
 					}
 					Button("Cancel", role: .cancel) {}
 				} message: {
-					Text("This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To re-enable sync afterward, enable the toggle on a device of your choice.")
+					Text("This removes credentials from iCloud for ALL your devices. Each device keeps its local credentials. To repopulate iCloud from this Mac, edit any host afterward.")
 				}
 			}
 			corruptList
@@ -59,9 +61,7 @@ struct CredentialSyncSection: View {
 	private var statusLine: some View {
 		switch prefsStore.prefs.state {
 		case .enabled:
-			Text(payloadCount > 0
-				? "\(payloadCount) hosts synced; encrypted with a key only your devices can read"
-				: "Credential sync enabled. Edit any host to populate iCloud.")
+			Text(enabledStatusText)
 				.font(.caption).foregroundColor(.secondary)
 		case .waitingForKey:
 			HStack {
@@ -95,15 +95,36 @@ struct CredentialSyncSection: View {
 		}
 	}
 
+	/// Visibility for the destructive "Delete from iCloud" button. Hidden when
+	/// the destructive flow has already cleared cloud (only tombstones remain),
+	/// or when no host has ever pushed a payload from this device.
 	private var hasPayload: Bool {
-		if case .enabled = prefsStore.prefs.state { return payloadCount > 0 }
-		return false
+		guard case .enabled = prefsStore.prefs.state else { return false }
+		if prefsStore.prefs.cloudCredentialsCleared { return false }
+		return payloadCount > 0
 	}
 
 	private var payloadCount: Int {
 		sessionStore.hosts.filter {
 			$0.serverId != nil && (prefsStore.prefs.lastAppliedRevision[$0.id] ?? 0) > 0
 		}.count
+	}
+
+	/// `state == .enabled` status copy. Distinguishes three sub-states:
+	///   - destructive flow in progress      — "Removing credentials from iCloud…"
+	///   - destructive flow finished + cleared — "Cloud cleared. Edit any host to repopulate."
+	///   - normal                              — "N hosts synced…" / "Edit any host to populate"
+	private var enabledStatusText: String {
+		if prefsStore.prefs.deleteCredentialsFromCloudInProgress != nil {
+			return "Removing credentials from iCloud…"
+		}
+		if prefsStore.prefs.cloudCredentialsCleared {
+			return "iCloud credentials cleared. Edit any host to repopulate."
+		}
+		if payloadCount > 0 {
+			return "\(payloadCount) hosts synced; encrypted with a key only your devices can read"
+		}
+		return "Credential sync enabled. Edit any host to populate iCloud."
 	}
 
 	private func handleToggle(_ newValue: Bool) async {
