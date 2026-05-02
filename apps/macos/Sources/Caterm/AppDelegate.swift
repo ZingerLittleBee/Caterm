@@ -1,8 +1,12 @@
 import AppKit
+import CloudKitSyncClient
 import FileTransferStore
+import os
+import ServerSyncClient
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	private var observer: NSObjectProtocol?
+	private static let pushLog = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
 
 	/// On app quit, tear down all live ControlMaster sockets so the
 	/// shared `ssh -M` masters exit cleanly instead of being killed by
@@ -52,5 +56,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 				win.tabbingMode = .preferred
 			}
 		}
+		NSApp.registerForRemoteNotifications()
+	}
+
+	func application(_: NSApplication,
+	                 didReceiveRemoteNotification userInfo: [String: Any]) {
+		guard parsePushUserInfo(userInfo) else { return }
+		NotificationCenter.default.post(name: .catermCloudKitHostChanged, object: nil)
+	}
+
+	func application(_: NSApplication,
+	                 didFailToRegisterForRemoteNotificationsWithError error: Error) {
+		Self.pushLog.error("APS register failed: \(error.localizedDescription)")
 	}
 }
