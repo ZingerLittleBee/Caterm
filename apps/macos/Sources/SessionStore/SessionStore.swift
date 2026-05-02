@@ -341,11 +341,11 @@ public final class SessionStore: ObservableObject {
 	) throws {
 		if let pw = secrets.password {
 			guard let s = String(data: pw, encoding: .utf8) else { throw KeychainError.decodeFailed }
-			try keychain.set(account: "\(hostId).password", secret: s)
+			try keychain.set(account: "\(hostId.uuidString).password", secret: s)
 		}
 		if let pp = secrets.passphrase {
 			guard let s = String(data: pp, encoding: .utf8) else { throw KeychainError.decodeFailed }
-			try keychain.set(account: "\(hostId).keyPassphrase", secret: s)
+			try keychain.set(account: "\(hostId.uuidString).keyPassphrase", secret: s)
 		}
 		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
 		var updated = hosts

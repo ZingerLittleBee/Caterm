@@ -46,7 +46,7 @@ final class SetHostCredentialMaterialTests: XCTestCase {
 		)
 
 		await fulfillment(of: [exp], timeout: 1.0)
-		let stored = try keychain.get(account: "\(host.id).password")
+		let stored = try keychain.get(account: "\(host.id.uuidString).password")
 		XCTAssertEqual(stored, "p")
 		XCTAssertTrue(store.hosts.first { $0.id == host.id }!.credentialMaterialDirty)
 	}
