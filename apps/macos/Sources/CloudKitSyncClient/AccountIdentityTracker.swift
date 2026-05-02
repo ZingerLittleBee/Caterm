@@ -9,6 +9,15 @@ public protocol AccountSensitiveClient: Sendable {
 
 extension CloudKitSyncClient: AccountSensitiveClient {}
 
+public enum AccountChangeOutcome: Sendable, Equatable {
+	/// No-op: same identity as last observed, or no identity in either state.
+	case unchanged
+	/// First-ever observation of an identity (prior was nil).
+	case firstObservation
+	/// Identity actually changed (prior non-nil, current differs OR is nil).
+	case identityChanged
+}
+
 public actor AccountIdentityTracker {
 	private static let storageKey = "cloudkit.lastKnownUserRecordName"
 	private static let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-account")
@@ -25,13 +34,14 @@ public actor AccountIdentityTracker {
 		self.tokensExistProvider = tokensExist
 	}
 
-	public func handleAccountChange(client: any AccountSensitiveClient) async {
+	@discardableResult
+	public func handleAccountChange(client: any AccountSensitiveClient) async -> AccountChangeOutcome {
 		let prior = defaults.string(forKey: Self.storageKey)
 		let current = await currentUserRecordIDProvider()?.recordName
 
 		switch (prior, current) {
 		case (nil, nil):
-			return
+			return .unchanged
 		// First observation of an identity with tokens already on disk
 		// means a prior install left CKServerChangeTokens behind. They
 		// belong to whichever account that prior install was signed in
@@ -43,8 +53,9 @@ public actor AccountIdentityTracker {
 				await client.resetHostSyncState()
 			}
 			defaults.set(new, forKey: Self.storageKey)
+			return .firstObservation
 		case (.some(let p), .some(let c)) where p == c:
-			return
+			return .unchanged
 		case (.some, _):
 			await client.resetHostSyncState()
 			try? await client.deleteHostSubscription()
@@ -53,6 +64,7 @@ public actor AccountIdentityTracker {
 			} else {
 				defaults.removeObject(forKey: Self.storageKey)
 			}
+			return .identityChanged
 		}
 	}
 }

@@ -41,6 +41,7 @@ struct CatermApp: App {
 	private let masterKeyStore: KeychainSyncMasterKeyStore
 	private let managedKeyStore: ManagedKeyStore
 	private let credentialSyncCoordinator: CredentialSyncCoordinator
+	private let credentialSyncAccountReset: CredentialSyncAccountResetCoordinator
 
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
@@ -71,6 +72,10 @@ struct CatermApp: App {
 			prefsStore: credentialSyncPrefs,
 			masterKeyStore: mks,
 			iCloudKeychainAvailable: { true }
+		)
+		self.credentialSyncAccountReset = CredentialSyncAccountResetCoordinator(
+			prefsStore: credentialSyncPrefs,
+			managedKeyStore: mngs
 		)
 		_credentialSync = StateObject(wrappedValue: credentialSyncPrefs)
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
@@ -200,7 +205,10 @@ struct CatermApp: App {
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermICloudAccountChanged)) { _ in
 				Task {
-					await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
+					let outcome = await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
+					if outcome == .identityChanged {
+						await credentialSyncAccountReset.resetForAccountChange()
+					}
 				}
 			}
 			.onReceive(NotificationCenter.default
