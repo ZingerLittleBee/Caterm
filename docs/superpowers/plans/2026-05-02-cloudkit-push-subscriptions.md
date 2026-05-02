@@ -834,7 +834,7 @@ extension CKDatabase {
             op.fetchDatabaseChangesResultBlock = { result in
                 switch result {
                 case .success(let info):
-                    newToken = info.token
+                    newToken = info.serverChangeToken
                     more = info.moreComing
                     cont.resume(returning: (changed, deleted, purged, encReset,
                                             newToken, more))
