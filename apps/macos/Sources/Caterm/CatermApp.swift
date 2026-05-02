@@ -2,11 +2,13 @@ import AppKit
 import CloudKit
 import CloudKitSyncClient
 import ConfigStore
+import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
 import Foundation
 import HostSyncStore
 import KeychainStore
+import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
@@ -23,6 +25,7 @@ struct CatermApp: App {
 	@StateObject var preferences: SyncPreferences
 	@StateObject var fileTransferStore: FileTransferStore
 	@StateObject var settingsStore: SettingsStore
+	@StateObject private var credentialSync: CredentialSyncPreferencesStore
 	/// Lifetime-owned by the App so the Preferences "Sync" tab can reach
 	/// it. `AuthSession` is not `ObservableObject`, so we inject it via
 	/// `PreferencesWindowController.syncEnvironment` rather than as an env
@@ -35,6 +38,9 @@ struct CatermApp: App {
 
 	let cloudKitClient: CloudKitSyncClient
 	private let accountIdentityTracker: AccountIdentityTracker
+	private let masterKeyStore: KeychainSyncMasterKeyStore
+	private let managedKeyStore: ManagedKeyStore
+	private let credentialSyncCoordinator: CredentialSyncCoordinator
 
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
@@ -54,6 +60,19 @@ struct CatermApp: App {
 			tokensExist: { await client.hasAnyHostSyncTokens() }
 		)
 		let prefs = SyncPreferences()
+		// Single instances shared across HostSyncStore + Coordinator + UI so
+		// toggle/reset state stays consistent.
+		let credentialSyncPrefs = CredentialSyncPreferencesStore()
+		let mks = KeychainSyncMasterKeyStore()
+		let mngs = ManagedKeyStore()
+		self.masterKeyStore = mks
+		self.managedKeyStore = mngs
+		self.credentialSyncCoordinator = CredentialSyncCoordinator(
+			prefsStore: credentialSyncPrefs,
+			masterKeyStore: mks,
+			iCloudKeychainAvailable: { true }
+		)
+		_credentialSync = StateObject(wrappedValue: credentialSyncPrefs)
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
 		// property-wrapper init — required because `@StateObject` cannot be
 		// assigned via the synthesized `self.store = ...` syntax in `init`.
@@ -64,7 +83,9 @@ struct CatermApp: App {
 			sessionStore: session,
 			authSession: icloudSession,
 			preferences: prefs,
-			credentialSync: CredentialSyncPreferencesStore()
+			credentialSync: credentialSyncPrefs,
+			masterKeyStore: mks,
+			managedKeyStore: mngs
 		))
 		// Refresh CloudKit account status asynchronously. HostSyncStore.syncIfSignedIn
 		// (called from .task in body) handles the case where refresh hasn't completed
@@ -191,7 +212,10 @@ struct CatermApp: App {
 				PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
 					authSession: authSession,
 					syncStore: syncStore,
-					preferences: preferences
+					preferences: preferences,
+					credentialSync: credentialSync,
+					credentialSyncCoordinator: credentialSyncCoordinator,
+					sessionStore: store
 				)
 				PreferencesWindowController.shared.activate(tabIndex: 3)
 				PreferencesWindowController.shared.showAndActivate()
@@ -219,7 +243,10 @@ struct CatermApp: App {
 					PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
 						authSession: authSession,
 						syncStore: syncStore,
-						preferences: preferences
+						preferences: preferences,
+						credentialSync: credentialSync,
+						credentialSyncCoordinator: credentialSyncCoordinator,
+						sessionStore: store
 					)
 					PreferencesWindowController.shared.showAndActivate()
 				}
