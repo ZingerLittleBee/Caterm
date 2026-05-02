@@ -45,7 +45,7 @@ let package = Package(
         ),
         .target(
             name: "ServerSyncClient",
-            dependencies: ["SSHCommandBuilder"],
+            dependencies: ["SSHCommandBuilder", "CredentialSyncTypes"],
             path: "Sources/ServerSyncClient"
         ),
         .target(

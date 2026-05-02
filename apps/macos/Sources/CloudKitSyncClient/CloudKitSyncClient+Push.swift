@@ -1,4 +1,5 @@
 import CloudKit
+import CredentialSyncTypes
 import Foundation
 import ServerSyncClient
 import os
@@ -71,6 +72,26 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
         } catch let ck as CKError where ck.code == .unknownItem {
             return
         }
+    }
+
+    /// Plan C — partial credential push. Honors the §Seed-before-credential-save
+    /// invariant: if the existing record has no `metadataUpdatedAt`, seed it
+    /// from `modificationDate`/`creationDate` (falling back to `.distantPast`)
+    /// BEFORE applying the credential blob, in the same client-side mutation,
+    /// then save the record exactly once. Returns `blob.revision`.
+    public func pushHostCredentialBlob(
+        serverId: String,
+        blob: CredentialBlob
+    ) async throws -> Int64 {
+        let recordID = CKRecord.ID(recordName: serverId, zoneID: zoneID)
+        let existing = try await database.record(for: recordID)
+        if existing[CKRecordHostMapping.Field.metadataUpdatedAt] == nil {
+            let seed = existing.modificationDate ?? existing.creationDate ?? Date.distantPast
+            existing[CKRecordHostMapping.Field.metadataUpdatedAt] = seed as CKRecordValue
+        }
+        CKRecordHostMapping.applyCredentialBlob(into: existing, blob: blob)
+        _ = try await database.save(existing)
+        return blob.revision
     }
 
     // MARK: - Drain loop
