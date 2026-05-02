@@ -111,6 +111,10 @@ internal actor InMemoryServerChangeTokenStore: ServerChangeTokenStoring {
 }
 
 internal actor UserDefaultsServerChangeTokenStore: ServerChangeTokenStoring {
+	// MIGRATION NOTE: These keys are persisted to UserDefaults across app
+	// launches and app updates. They MUST NOT be renamed without a migration
+	// that reads the old key, writes the new key, and deletes the old one.
+	// A silent rename would orphan existing tokens and force a full re-fetch.
 	private static let dbKey = "cloudkit.changeToken.database"
 	private static let epochKey = "cloudkit.changeToken.epoch"
 	private static let zonePrefix = "cloudkit.changeToken.zone."
@@ -125,6 +129,10 @@ internal actor UserDefaultsServerChangeTokenStore: ServerChangeTokenStoring {
 		UInt64(bitPattern: Int64(defaults.integer(forKey: Self.epochKey)))
 	}
 
+	// Round-trips UInt64 through Int64 bitPattern, then through UserDefaults'
+	// integer(forKey:) which returns Int. Correct only on 64-bit platforms
+	// (Int == Int64). All current Apple platforms qualify; revisit if 32-bit
+	// targets are added.
 	func bumpEpoch() async {
 		let current = await currentEpoch()
 		defaults.set(Int64(bitPattern: current &+ 1), forKey: Self.epochKey)
