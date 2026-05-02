@@ -6,8 +6,8 @@ import SSHCommandBuilder
 /// the caller will execute. Per spec §7.1.3, matching is by `serverId`,
 /// conflicts resolve by `updatedAt` last-write-wins.
 public enum HostSyncReconciler {
-    public static func reconcile(local: [SSHHost],
-                                 remote: [RemoteHost]) -> [SyncOperation] {
+    public static func reconcileFullSnapshot(local: [SSHHost],
+                                             remote: [RemoteHost]) -> [SyncOperation] {
         var ops: [SyncOperation] = []
 
         let remoteById = Dictionary(uniqueKeysWithValues: remote.map { ($0.id, $0) })
@@ -40,6 +40,37 @@ public enum HostSyncReconciler {
             ops.append(.createLocal(remote: r))
         }
 
+        return ops
+    }
+
+    public static func reconcileDelta(
+        local: [SSHHost],
+        changedHosts: [RemoteHost],
+        deletedHostIDs: [String]
+    ) -> [SyncOperation] {
+        var ops: [SyncOperation] = []
+        let localByServerId = Dictionary(uniqueKeysWithValues:
+            local.compactMap { h -> (String, SSHHost)? in
+                guard let s = h.serverId else { return nil }
+                return (s, h)
+            }
+        )
+        for r in changedHosts {
+            if let existing = localByServerId[r.id] {
+                if existing.updatedAt < r.updatedAt {
+                    ops.append(.updateLocal(localHostId: existing.id, remote: r))
+                } else if existing.updatedAt > r.updatedAt {
+                    ops.append(.updateRemote(localHostId: existing.id, serverId: r.id))
+                }
+            } else {
+                ops.append(.createLocal(remote: r))
+            }
+        }
+        for id in deletedHostIDs {
+            if let existing = localByServerId[id] {
+                ops.append(.deleteLocal(localHostId: existing.id))
+            }
+        }
         return ops
     }
 }

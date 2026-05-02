@@ -330,8 +330,8 @@ public final class HostSyncStore: ObservableObject {
         do {
             let remote = try await client.listHosts()
             try Task.checkCancellation()
-            let ops = HostSyncReconciler.reconcile(local: sessionStore.hosts,
-                                                    remote: remote)
+            let ops = HostSyncReconciler.reconcileFullSnapshot(local: sessionStore.hosts,
+                                                               remote: remote)
             for op in ops {
                 try Task.checkCancellation()
                 try await apply(op)
