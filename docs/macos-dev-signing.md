@@ -136,3 +136,63 @@ log stream --predicate 'subsystem == "com.apple.amfi"' --info --debug
 ```
 
 Run it in one terminal, launch the app in another. AMFI logs the exact mismatch (cert SHA1 mismatch, device id not in profile, profile not yet effective, etc.) — much more useful than the generic `Killed: 9` you see in the launching shell.
+
+For unredacted error messages (the default log shows `<private>`), prepend `sudo`:
+
+```bash
+sudo log show --last 2m --predicate 'process == "amfid"' --info --debug
+```
+
+`unsatisfiedEntitlements: ["foo"]` in the output names the exact entitlement key whose value the binary asserts but the profile does not permit — usually the fastest path to root cause.
+
+## Pitfall 8 — APS entitlement key is `com.apple.developer.aps-environment` on macOS
+
+The iOS form is the bare `aps-environment`. On macOS, AMFI matches against the **`com.apple.developer.aps-environment`** key (with `com.apple.developer.` prefix) — same form the profile uses. Putting `aps-environment` on the binary while the profile lists `com.apple.developer.aps-environment` produces:
+
+```
+amfid: unsatisfiedEntitlements: [aps-environment]
+amfid: Error -413 "No matching profile found"
+```
+
+— even with the correct embedded profile, app id, cert, and device. Confirmed by inspecting Apple's own apps (Safari, Keynote, Xcode) — they all use the prefixed form.
+
+## Pitfall 9 — Multiple Apple Development certs with the same Common Name
+
+Apple's auto-renewal flow can leave two or three certs in your login keychain that share the CN `Apple Development: <Name> (XXXXXXXXXX)` but differ in SHA-1 fingerprint. `security find-identity -v -p codesigning` shows them all as valid; `codesign --sign "CN..."` fails with `ambiguous`.
+
+The signed cert must match the cert whose SHA-1 is embedded in the profile's `DeveloperCertificates` array. To find which one:
+
+```bash
+python3 - <<'PY' < <(security cms -D -i ~/Downloads/Caterm_Mac_Dev_Apple_Dev.provisionprofile)
+import plistlib, sys, hashlib
+p = plistlib.loads(sys.stdin.buffer.read())
+for c in p.get('DeveloperCertificates') or []:
+    print(hashlib.sha1(c).hexdigest().upper())
+PY
+```
+
+Then pass that SHA-1 directly to codesign — it accepts a fingerprint as a `--sign` argument and resolves unambiguously:
+
+```bash
+CATERM_DEV_IDENTITY=28A2AF9F761AB261B3144E4AF67373EC0F883ED1 make sign
+```
+
+`Scripts/dev-codesign.sh` detects a 40-hex `CATERM_DEV_IDENTITY` and looks up the team OU via the matching cert.
+
+## Dev workflow recap (Plan B Phase 0)
+
+After the entitlement edit + Apple Developer Portal work, the actual local sequence:
+
+```bash
+# Find the cert SHA-1 listed in your downloaded profile
+PROFILE_CERT_SHA1=$(python3 -c "
+import plistlib, sys, hashlib, subprocess
+p = plistlib.loads(subprocess.check_output(['security','cms','-D','-i',sys.argv[1]]))
+print(hashlib.sha1((p['DeveloperCertificates'] or [b''])[0]).hexdigest().upper())
+" ~/Downloads/Caterm_Mac_Dev_Apple_Dev.provisionprofile)
+
+# Build, sign, wrap in .app, embed profile, launch
+CATERM_DEV_IDENTITY="$PROFILE_CERT_SHA1" make run-app
+```
+
+`Scripts/dev-run-app.sh` defaults `CATERM_DEV_PROFILE=~/Downloads/Caterm_Mac_Dev_Apple_Dev.provisionprofile`; override with `CATERM_DEV_PROFILE=...` if you keep the profile elsewhere.

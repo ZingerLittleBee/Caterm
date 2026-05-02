@@ -33,7 +33,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/.build/debug"
 APP="$BIN_DIR/Caterm.app"
-APP_BUNDLE_ID="${CATERM_DEV_BUNDLE_ID:-app.caterm.dev}"
+# Default bundle id matches the profile's App ID (9VM4RM39R3.com.caterm.app).
+# AMFI rejects launch when CFBundleIdentifier does not match the profile's
+# application-identifier. Override only if you have a separate dev profile.
+APP_BUNDLE_ID="${CATERM_DEV_BUNDLE_ID:-com.caterm.app}"
+
+# Optional Mac App Development provisioning profile. Required for AMFI to
+# accept restricted entitlements like `aps-environment` (Push Notifications)
+# and `keychain-access-groups`. Default points at the Plan B Phase 0 file.
+CATERM_DEV_PROFILE="${CATERM_DEV_PROFILE:-$HOME/Downloads/Caterm_Mac_Dev_Apple_Dev.provisionprofile}"
+ENTITLEMENTS="$BIN_DIR/Caterm.dev.entitlements"
 
 if [[ ! -x "$BIN_DIR/caterm" || ! -x "$BIN_DIR/caterm-askpass" ]]; then
     echo "Error: signed binaries not found in $BIN_DIR. Run \`make sign\` first." >&2
@@ -92,14 +101,37 @@ cat > "$APP/Contents/Info.plist" <<EOF
 EOF
 
 # ---------------------------------------------------------------------------
+# Embed the Mac App Development provisioning profile so AMFI can validate
+# restricted entitlements (aps-environment, keychain-access-groups) at exec
+# time. Without this, the kernel SIGKILLs the process with "no matching
+# profile" — see docs/macos-dev-signing.md "Embedding the profile".
+# ---------------------------------------------------------------------------
+if [[ -f "$CATERM_DEV_PROFILE" ]]; then
+    echo "==> Embedding profile from $CATERM_DEV_PROFILE"
+    cp "$CATERM_DEV_PROFILE" "$APP/Contents/embedded.provisionprofile"
+else
+    echo "Warning: provisioning profile not found at $CATERM_DEV_PROFILE — APS / KAG entitlements will be rejected by AMFI" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Re-sign the bundle. The inner binaries were signed by dev-codesign.sh with
 # the correct entitlements; we don't want to re-sign them and lose those
 # entitlements, so we omit --deep and let codesign just produce the bundle
 # seal that references the existing inner signatures.
+#
+# Pass --entitlements explicitly (Pitfall 5 in docs/macos-dev-signing.md):
+# without it, the outer codesign re-signs the main executable with empty
+# entitlements, which then fails to register for remote notifications and
+# crashes inside CKContainer init.
 # ---------------------------------------------------------------------------
 echo "==> Signing $APP"
+ENT_ARGS=()
+if [[ -f "$ENTITLEMENTS" ]]; then
+    ENT_ARGS=(--entitlements "$ENTITLEMENTS")
+fi
 codesign --force --options runtime \
     --sign "$CATERM_DEV_IDENTITY" \
+    "${ENT_ARGS[@]}" \
     "$APP"
 
 codesign -dvv "$APP" 2>&1 | grep -E "TeamIdentifier|Authority|Identifier" || true
