@@ -9,8 +9,8 @@ import ServerSyncClient
 /// creates are idempotent and there is no "server-allocated id round-trip"
 /// race (cf. `HostSyncStore.swift:403` warning).
 public final class CloudKitSyncClient: ServerSyncClient {
-    private let database: CKDatabaseProtocol
-    private let zoneID: CKRecordZone.ID
+    internal let database: CKDatabaseProtocol
+    internal let zoneID: CKRecordZone.ID
     internal let tokenStore: any ServerChangeTokenStoring
 
     /// Concrete checkpoint payload. Internal — only this module
