@@ -189,6 +189,14 @@ final class FakeServerSyncClient: IncrementalHostSyncClient, @unchecked Sendable
         fetchHostSnapshotAndCheckpointCallCount += 1
         // Mirror listHosts() semantics (delay, error, listResult) so existing
         // forceFull-driven tests work without modification.
+        //
+        // NOTE: listCallCount is intentionally also incremented here so legacy
+        // `XCTAssertEqual(fakeClient.listCallCount, N)` assertions still pass
+        // after the listHosts → fetchHostSnapshotAndCheckpoint migration.
+        // For NEW assertions distinguishing the two paths, use
+        // fetchHostSnapshotAndCheckpointCallCount (forceFull) or
+        // fetchHostChangesCallCount (incremental) instead — listCallCount
+        // is now overloaded and will be biased upward by every forceFull pass.
         listCallCount += 1
         listHostsStartedAt.append(Date())
         if let err = listHostsError { throw err }
