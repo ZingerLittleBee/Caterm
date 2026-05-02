@@ -76,6 +76,15 @@ let package = Package(
             dependencies: ["SSHCommandBuilder"],
             path: "Sources/SFTPCommandBuilder"
         ),
+        .target(
+            name: "ManagedKeyStore",
+            path: "Sources/ManagedKeyStore"
+        ),
+        .target(
+            name: "CredentialSync",
+            dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient"],
+            path: "Sources/CredentialSync"
+        ),
 
         // --- Executables ---
         .executableTarget(
@@ -175,6 +184,16 @@ let package = Package(
             name: "CloudKitSyncClientTests",
             dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder"],
             path: "Tests/CloudKitSyncClientTests"
+        ),
+        .testTarget(
+            name: "ManagedKeyStoreTests",
+            dependencies: ["ManagedKeyStore"],
+            path: "Tests/ManagedKeyStoreTests"
+        ),
+        .testTarget(
+            name: "CredentialSyncTests",
+            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "HostSyncStore", "CloudKitSyncClient"],
+            path: "Tests/CredentialSyncTests"
         ),
     ]
 )
