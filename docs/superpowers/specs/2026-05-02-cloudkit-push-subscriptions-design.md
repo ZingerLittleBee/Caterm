@@ -263,57 +263,70 @@ extension CloudKitSyncClient {
 }
 ```
 
-**Comparable token form.** `CKServerChangeToken` is opaque and not `Equatable`. The internal `ServerChangeTokenStoring` therefore returns and stores tokens as a value type:
-
-```swift
-internal struct StoredServerChangeToken: Equatable, Sendable {
-    let archivedData: Data        // NSKeyedArchiver(requiringSecureCoding: true)
-    var token: CKServerChangeToken { /* unarchive on demand */ }
-}
-```
+**Comparable token form.** `CKServerChangeToken` is opaque and not `Equatable`. The internal `ServerChangeTokenStoring` therefore returns and stores tokens as `StoredServerChangeToken { archivedData: Data }` (definition above in §`ServerChangeTokenStoring`); decoding is `throws` via `unarchive()` — never `try!`. CAS in `commitTokens` compares `Data` values, which is what makes the CAS work.
 
 CAS in `commitHostCheckpoint` compares `Data` values, which are trivially `Equatable`. The store also tracks a monotonically increasing `currentEpoch: UInt64` used to defeat the reset/commit race below.
 
-**Pagination contract.** Both `fetchHostChanges` and `fetchHostSnapshotAndCheckpoint` drain to completion before returning:
+**Pagination contract.** Both `fetchHostChanges` and `fetchHostSnapshotAndCheckpoint` drain to completion before returning. Two distinct concepts must NOT be conflated:
+
+- `operationPreviousToken*`: passed to the CloudKit op. `nil` for `forceFull`, the persisted token for `incremental`. When persisted bytes are corrupt, also `nil`.
+- `casPrevious*Archive`: snapshot of the persisted `archivedData` at fetch start (or `nil` if absent). Always captured, both modes — this is what `commitTokens` compares against. **For `forceFull` with an existing persisted token, `casPreviousArchive` is the existing archive, not `nil`** — otherwise the CAS at commit time would see `persisted != nil ≠ prev nil` and skip writing the fresh token, leaving the periodic full-sync tick unable to ever refresh the checkpoint.
 
 ```
 fetchEpoch := await tokenStore.currentEpoch()
-prevDbToken := (mode == .incremental) ? await tokenStore.loadDatabaseToken() : nil
-prevZoneTokens: [CKRecordZone.ID: StoredServerChangeToken?] := {}
-                // captured once at fetch start for CAS at commit time
+persistedDb := await tokenStore.loadDatabaseToken()         // captured both modes
+casPreviousDbArchive := persistedDb?.archivedData            // commit CAS prev (both modes)
+operationPreviousDbToken := (mode == .incremental) ? (try? persistedDb?.unarchive()) : nil
+                                                             // CloudKit op prev (nil on forceFull
+                                                             // OR on unarchive failure)
+
+casPreviousZoneArchives: [zoneID: Data?] := {}               // captured both modes; Data? lets us
+                                                             // record "absent" distinct from "missing entry"
 pendingZoneTokens: [zoneID: StoredServerChangeToken] := {}
-deletedZoneIDs: Set<CKRecordZone.ID> := {}
-purgedZoneIDs: Set<CKRecordZone.ID> := {}
-encryptedResetZoneIDs: Set<CKRecordZone.ID> := {}
+deletedZoneIDs / purgedZoneIDs / encryptedResetZoneIDs := {}
 
 databaseLoop:
   (changedZones, dbDeletedZones, dbPurgedZones, dbEncryptedResetZones, dbToken, dbMore)
-      = fetchDatabaseChanges(prevDbToken?.unarchive())
-  deletedZoneIDs        ∪= dbDeletedZones
-  purgedZoneIDs         ∪= dbPurgedZones
-  encryptedResetZoneIDs ∪= dbEncryptedResetZones
+      = fetchDatabaseChanges(operationPreviousDbToken)
+  // accumulate zone-status sets
 
   for zoneID in changedZones:
-      // Capture prevZoneToken once for CAS — DON'T re-read after pagination.
-      if prevZoneTokens[zoneID] == nil {
-          prevZoneTokens[zoneID] = (mode == .incremental)
-              ? await tokenStore.loadZoneToken(zoneID) : nil
+      // Capture CAS prev archive once at fetch start (BOTH modes).
+      if casPreviousZoneArchives[zoneID] == .none {
+          let persistedZone = await tokenStore.loadZoneToken(zoneID)
+          casPreviousZoneArchives[zoneID] = persistedZone?.archivedData     // may be nil
+          let opPrevZoneToken = (mode == .incremental)
+              ? (try? persistedZone?.unarchive())
+              : nil
+          var rollingZoneToken: CKServerChangeToken? = opPrevZoneToken
+          zoneLoop:
+            (recs, dels, zoneToken, zoneMore)
+                = fetchZoneChanges(zoneID, rollingZoneToken)
+            // recordType filter — Host-only.
+            accumulate Host-typed records / Host-typed deletes
+            rollingZoneToken := zoneToken
+            if zoneMore { continue zoneLoop }
+          if let final = rollingZoneToken {
+              pendingZoneTokens[zoneID] = StoredServerChangeToken.archive(final)  // throws → log
+          }
       }
-      var rollingZoneToken := prevZoneTokens[zoneID]
-      zoneLoop:
-        (recs, dels, zoneToken, zoneMore)
-            = fetchZoneChanges(zoneID, rollingZoneToken?.unarchive())
-        // recordType filter happens here — Host-only.
-        accumulate Host-typed records / Host-typed deletes
-        rollingZoneToken := zoneToken
-        if zoneMore { continue zoneLoop }
-      pendingZoneTokens[zoneID] := rollingZoneToken
+      // (else: this zone already drained in a prior databaseLoop iteration; skip.)
 
-  prevDbToken := dbToken
+  // Roll the database operation prev forward for the next loop iteration.
+  operationPreviousDbToken := dbToken
   if dbMore { continue databaseLoop }
+
+// Build checkpoint. NOTE prevDb / prevZones come from casPrevious*, not from operationPrevious*.
+let newDbArchive = dbToken.flatMap { try? StoredServerChangeToken.archive($0).archivedData }
+let prevZonesForCAS: [String: Data?] = casPreviousZoneArchives.mapKeys { stringify($0) }
+let newZonesForCAS:  [String: Data?] = pendingZoneTokens.mapValues { $0.archivedData }
+                                                       .mapKeys  { stringify($0) }
+return Checkpoint(id: UUID(), epoch: fetchEpoch,
+                  prevDb: casPreviousDbArchive, newDb: newDbArchive,
+                  prevZones: prevZonesForCAS, newZones: newZonesForCAS)
 ```
 
-If any `unarchive()` throws (corrupt persisted bytes), log + treat that token as `nil` and continue with `forceFull`. Never `try!`.
+If any `unarchive()` throws (corrupt persisted bytes), log + treat the operation prev as `nil` (CloudKit op runs as if the token were absent → effectively `forceFull` for that scope). The corrupt `archivedData` stays in `casPrevious*Archive`, so the subsequent successful commit's CAS sees `persisted == casPrev` (both equal the corrupt bytes) and replaces with the fresh archive. **Never `try!`.**
 
 After the drain loop, **deleted / purged / encrypted-reset zone handling**:
 - If the Caterm zone (`CKRecordZone.ID(zoneName: "Caterm", ...)`) appears in **any** of `deletedZoneIDs`, `purgedZoneIDs`, or `encryptedResetZoneIDs`: short-circuit. Wipe the Caterm zone token (via a no-CAS direct path, or via a `commitTokens` call with `prev: <whatever>, new: nil` — either is fine because we're already in the actor) and return `HostChangeBatch(checkpoint: nil, tokenExpired: true, ...)` with empty records. The store retries `forceFull`. The forceFull path will see no records (zone is gone) and reconcile against an empty remote, which deletes locally orphaned hosts naturally — no need for the client to know what's local.
@@ -631,6 +644,8 @@ HostSyncStore
 13b. `testCorruptStoredTokenFallsBackToForceFull` — pre-seed `UserDefaults` with garbage bytes for the database token; `unarchive()` throws; the next `fetchHostChanges` treats prior token as `nil` and proceeds as `forceFull`, persisting a fresh valid token afterwards.
 14. `testResetHostSyncStateBumpsEpochAndClearsTokens`.
 15. `testFetchHostSnapshotAndCheckpointReturnsAllHostsAndCheckpointReflectsAllZones`.
+15a. `testForceFullWithExistingTokensCommitsFreshCheckpoint` — pre-seed the token store with a non-nil prior db / zone archive; run `fetchHostSnapshotAndCheckpoint` (which passes `nil` to the CloudKit op); assert the returned checkpoint's `prevDb` / `prevZones` equal the **existing persisted archives**, NOT nil. After commit, assert the persisted store contains the fresh server tokens. Failing this test would mean the periodic 60-min full-sync tick can never refresh the checkpoint.
+15b. `testForceFullWithCorruptPersistedTokenStillCommitsFresh` — pre-seed garbage bytes; force-full fetch runs (op prev = nil); checkpoint's `prevDb` carries the corrupt archive; commit replaces with valid fresh token.
 16. `testPreferredHostSyncModeReflectsTokenStoreState`.
 17. `testCommitHostCheckpointRejectsForeignCheckpointType` — pass a stub `HostSyncCheckpoint` conformer; assert no state change.
 18. `testEnsureHostSubscriptionIsIdempotentWhenAlreadyExists`.
@@ -673,6 +688,11 @@ HostSyncStore
   - Q3: spike first.
 
 ## Revision Log
+
+- **2026-05-02 (sixth pass):** Separate CAS-prev from operation-prev; sample sync:
+  - **`forceFull` no longer breaks CAS commits.** The drain loop now distinguishes `operationPreviousToken*` (passed to the CloudKit op — `nil` for forceFull or on unarchive failure) from `casPrevious*Archive` (snapshot of the persisted `archivedData` at fetch start, captured for both modes). The checkpoint's `prevDb` / `prevZones` come from `casPrevious*`. Without this split, a 60-minute reconciliation tick with an existing persisted token would build the checkpoint with `prev == nil` while the store still held the prior archive ⇒ CAS mismatch ⇒ commit silently skipped ⇒ checkpoint never refreshed. Same logic preserves a corrupt archive in CAS prev so a successful forceFull can replace it.
+  - New tests: `testForceFullWithExistingTokensCommitsFreshCheckpoint`, `testForceFullWithCorruptPersistedTokenStillCommitsFresh`.
+  - **"Comparable token form" sample synced.** The leftover `var token: CKServerChangeToken` accessor in §`CloudKitSyncClient` was reduced to a one-line cross-reference pointing at the canonical `StoredServerChangeToken` definition with `unarchive() throws`. Prevents an implementer from copy-pasting the old `try!` shape back in.
 
 - **2026-05-02 (fifth pass):** Atomicity, callback completeness, decode safety, dedup:
   - **`commitTokens` is now an atomic compound operation on the token store.** Replaced the old `currentEpoch` getter + separate `saveDatabaseToken` / `saveZoneToken` calls. The default impl is an `actor`, which makes the epoch check and the per-token CAS writes share a single critical section — `clearAll` / `bumpEpoch` cannot interleave between them. Closes the residual race the fourth pass left.
