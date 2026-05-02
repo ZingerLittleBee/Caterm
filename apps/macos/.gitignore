@@ -4,5 +4,6 @@ Package.resolved
 Frameworks/
 *.xcframework
 .spike.local.json
+.dev-identity
 DerivedData/
 xcuserdata/

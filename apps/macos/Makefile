@@ -24,9 +24,20 @@
 #                      to confirm the binary builds and signs cleanly without
 #                      actually running the UI.
 #
-# Codesign identity is auto-detected from the login keychain. Override with
-# either the Common Name or the 40-char SHA-1 fingerprint (preferred when
-# auto-renewed Apple Development certs share the same Common Name):
+# Codesign identity resolution (priority high → low):
+#   1. CATERM_DEV_IDENTITY env var / make argument
+#   2. apps/macos/.dev-identity (gitignored, one line — Common Name or
+#      40-char SHA-1; Conductor worktrees symlink this to the main repo
+#      via conductor.json setup, so writing it once in the main repo
+#      propagates to all worktrees)
+#   3. Auto-detect from login keychain (`security find-identity` first match
+#      — unreliable when multiple "Apple Development" certs share a CN, which
+#      Apple's auto-renewal flow regularly produces)
+#
+# SHA-1 fingerprint is preferred over Common Name because it disambiguates
+# duplicate / renewed certs:
+#   echo 28A2AF9F761AB261B3144E4AF67373EC0F883ED1 > apps/macos/.dev-identity
+# or one-shot override:
 #   make run-app CATERM_DEV_IDENTITY=0123456789ABCDEF0123456789ABCDEF01234567
 
 SHELL := /usr/bin/env bash
@@ -37,9 +48,17 @@ BIN_DIR := $(ROOT)/.build/debug
 CATERM_BIN := $(BIN_DIR)/caterm
 ASKPASS_BIN := $(BIN_DIR)/caterm-askpass
 
-# Auto-detect first available codesigning identity if not provided.
+# Resolve codesign identity (see header comment for priority chain).
+# Only runs the lookup when CATERM_DEV_IDENTITY is not already set on the
+# command line / environment.
 # (awk -F'"' avoids nested parens that confuse make's $(shell ...) tokenizer.)
-CATERM_DEV_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $$2;exit}')
+ifeq ($(origin CATERM_DEV_IDENTITY), undefined)
+  ifneq ("$(wildcard $(ROOT)/.dev-identity)","")
+    CATERM_DEV_IDENTITY := $(shell tr -d '[:space:]' < $(ROOT)/.dev-identity)
+  else
+    CATERM_DEV_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $$2;exit}')
+  endif
+endif
 
 .DEFAULT_GOAL := help
 
