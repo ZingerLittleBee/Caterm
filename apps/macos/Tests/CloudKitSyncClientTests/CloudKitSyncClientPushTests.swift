@@ -83,4 +83,70 @@ final class CloudKitSyncClientPushTests: XCTestCase {
         rec["authType"] = "password" as CKRecordValue
         return rec
     }
+
+    func testCommitHostCheckpointPersistsBothDbAndZoneTokens() async throws {
+        let token: CKServerChangeToken
+        do {
+            token = try FakeCloudDatabase.makeRealishToken()
+        } catch {
+            throw XCTSkip("FakeCloudDatabase.makeRealishToken byte fixture rejected by current toolchain")
+        }
+        fakeDB.enqueueDatabaseChanges(.init(changedZoneIDs: [zoneID],
+                                            newToken: token, moreComing: false))
+        fakeDB.enqueueZoneChanges(zoneID, .init(newToken: token, moreComing: false))
+
+        let batch = try await client.fetchHostChanges()
+        let checkpoint = try XCTUnwrap(batch.checkpoint)
+        try await client.commitHostCheckpoint(checkpoint)
+
+        let stored = await tokenStore.loadDatabaseToken()
+        XCTAssertNotNil(stored)
+    }
+
+    func testForceFullWithExistingTokensCommitsFreshCheckpoint() async throws {
+        let pre: CKServerChangeToken
+        let post: CKServerChangeToken
+        do {
+            pre = try FakeCloudDatabase.makeRealishToken()
+            post = try FakeCloudDatabase.makeRealishToken()
+        } catch {
+            throw XCTSkip("FakeCloudDatabase.makeRealishToken byte fixture rejected by current toolchain")
+        }
+        let preArchived = try StoredServerChangeToken.archive(pre)
+        let epoch = await tokenStore.currentEpoch()
+        _ = await tokenStore.commitTokens(
+            expectedEpoch: epoch,
+            db: TokenCAS(prev: nil, new: preArchived.archivedData),
+            zones: [:]
+        )
+
+        fakeDB.enqueueDatabaseChanges(.init(newToken: post, moreComing: false))
+
+        let batch = try await client.fetchHostSnapshotAndCheckpoint()
+        let cp = try XCTUnwrap(batch.checkpoint)
+        try await client.commitHostCheckpoint(cp)
+
+        let stored = await tokenStore.loadDatabaseToken()
+        XCTAssertNotNil(stored)
+        XCTAssertNotEqual(stored?.archivedData, preArchived.archivedData,
+                          "commit must replace the prior archive with the fresh server token")
+    }
+
+    func testCommitHostCheckpointRejectsForeignCheckpointType() async throws {
+        struct ForeignCheckpoint: HostSyncCheckpoint { let id = UUID() }
+        try await client.commitHostCheckpoint(ForeignCheckpoint())
+        let stored = await tokenStore.loadDatabaseToken()
+        XCTAssertNil(stored, "foreign checkpoint must be silently rejected")
+    }
+
+    func testResetDuringApplyPreventsStaleCheckpointCommit() async throws {
+        fakeDB.enqueueDatabaseChanges(.init(newToken: nil, moreComing: false))
+        let batch = try await client.fetchHostChanges()
+        let cp = try XCTUnwrap(batch.checkpoint)
+        await client.resetHostSyncState()  // bumps epoch
+        try await client.commitHostCheckpoint(cp)
+
+        let stored = await tokenStore.loadDatabaseToken()
+        XCTAssertNil(stored, "reset bumped epoch ⇒ commit must be staleEpoch")
+    }
 }

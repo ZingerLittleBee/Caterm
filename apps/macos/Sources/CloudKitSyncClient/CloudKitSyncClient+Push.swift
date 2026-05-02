@@ -21,7 +21,27 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
     }
 
     public func commitHostCheckpoint(_ checkpoint: any HostSyncCheckpoint) async throws {
-        // Implemented in Task 1.10.
+        guard let cp = checkpoint as? Checkpoint else {
+            Self.log.info("commitHostCheckpoint: foreign type, ignoring")
+            return
+        }
+        let dbCAS = TokenCAS(prev: cp.prevDb, new: cp.newDb)
+        var zoneCASes: [String: TokenCAS] = [:]
+        for (zoneKey, newOpt) in cp.newZones {
+            let prevOpt = cp.prevZones[zoneKey] ?? nil
+            zoneCASes[zoneKey] = TokenCAS(prev: prevOpt, new: newOpt)
+        }
+        let outcome = await tokenStore.commitTokens(
+            expectedEpoch: cp.epoch, db: dbCAS, zones: zoneCASes
+        )
+        switch outcome {
+        case .applied:
+            Self.log.debug("checkpoint applied epoch=\(cp.epoch)")
+        case .staleEpoch:
+            Self.log.info("checkpoint stale by epoch \(cp.epoch); skipping")
+        case .partialCAS(let zones, let db):
+            Self.log.info("checkpoint partial CAS skippedZones=\(zones) skippedDb=\(db)")
+        }
     }
 
     public func resetHostSyncState() async {
