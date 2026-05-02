@@ -39,9 +39,22 @@ final class FakeIncrementalHostSyncClient: IncrementalHostSyncClient, @unchecked
     private(set) var pushCredentialCalls: [PushCredentialCall] = []
     var pushCredentialError: Error?
     var pushCredentialReturn: Int64 = 1
+    /// Plan C / Task 20 — when set, push throws ONLY when the current call's
+    /// 0-based index equals this value. Lets tests simulate "first host
+    /// succeeds, second host crashes" so we can verify resume-from-persisted-list.
+    var pushCredentialFailAtIndex: Int?
 
     func pushHostCredentialBlob(serverId: String, blob: CredentialBlob) async throws -> Int64 {
-        if let err = pushCredentialError { throw err }
+        let callIndex = pushCredentialCalls.count
+        if let failAt = pushCredentialFailAtIndex, callIndex == failAt {
+            throw pushCredentialError ?? NSError(
+                domain: "FakeIncrementalHostSyncClient.pushCredential",
+                code: 1, userInfo: nil
+            )
+        }
+        if let err = pushCredentialError, pushCredentialFailAtIndex == nil {
+            throw err
+        }
         pushCredentialCalls.append(PushCredentialCall(serverId: serverId, blob: blob))
         return pushCredentialReturn
     }

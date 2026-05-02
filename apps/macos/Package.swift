@@ -162,7 +162,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HostSyncStoreTests",
-            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore", "CredentialSyncTypes", "ManagedKeyStore"],
+            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore", "CredentialSyncTypes", "ManagedKeyStore", "CredentialSync"],
             path: "Tests/HostSyncStoreTests"
         ),
         .testTarget(

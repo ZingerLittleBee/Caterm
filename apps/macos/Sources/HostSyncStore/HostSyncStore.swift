@@ -228,7 +228,20 @@ public final class HostSyncStore: ObservableObject {
         // periodic timer or another mutation event.
         NotificationCenter.default
             .publisher(for: .catermHostCredentialMaterialChanged)
-            .sink { [weak self] _ in self?.scheduleAutoSync(mode: .auto) }
+            .sink { [weak self] note in
+                guard let self else { return }
+                // Plan C / Task 20 — edit-during-deletion guard. While a
+                // destructive deletion is in-flight we must NOT push the
+                // freshly-saved credential to the cloud (it would re-populate
+                // the row we're about to tombstone). Clear the dirty bit
+                // immediately and skip the auto-sync trigger.
+                if self.credentialSync.prefs.deleteCredentialsFromCloudInProgress != nil,
+                   let hostId = note.userInfo?[CatermHostCredentialMaterialChangedKeys.hostId] as? UUID {
+                    try? self.sessionStore.clearCredentialMaterialDirty(hostId)
+                    return
+                }
+                self.scheduleAutoSync(mode: .auto)
+            }
             .store(in: &cancellables)
     }
 
@@ -382,6 +395,18 @@ public final class HostSyncStore: ObservableObject {
         userDefaults.set(attempted, forKey: Self.lastSyncAttemptedAtKey)
 
         do {
+            // Plan C / Task 20 — destructive sub-pipeline dispatch. When a
+            // user-confirmed "delete all credentials from cloud" is in
+            // progress, every cycle short-circuits into the tombstone driver
+            // until the persisted pending list is empty. The early `return`
+            // intentionally skips the normal fetch/reconcile + lastSyncedAt
+            // update — the destructive pipeline is a side-channel and the
+            // user-facing freshness signal should not advance from it.
+            if let progress = credentialSync.prefs.deleteCredentialsFromCloudInProgress {
+                try await runDestructiveSubPipeline(progress: progress)
+                return
+            }
+
             let effectiveMode: HostSyncMode
             switch requestedMode {
             case .auto:
@@ -478,6 +503,58 @@ public final class HostSyncStore: ObservableObject {
             if failureStateToken != failureStateResetToken { throw error }
             wasFailing = nowFailing
             throw error
+        }
+    }
+
+    /// Plan C / Task 20 — destructive deletion driver.
+    ///
+    /// Iterates the persisted `pendingLocalHostIds` and pushes a `.tombstone`
+    /// blob (revision = `lastApplied + 1`) for each host. After each
+    /// successful push we atomically:
+    ///   - drop that hostId from `pendingLocalHostIds`
+    ///   - bump `lastAppliedRevision[hostId]` to the new tombstone revision
+    /// so a crash here resumes correctly. If any push throws we abort the
+    /// loop and let the next cycle pick up the remaining hosts. When the
+    /// list empties, clear the outer `deleteCredentialsFromCloudInProgress`
+    /// flag so subsequent cycles return to the normal pipeline.
+    private func runDestructiveSubPipeline(progress: DeletionProgress) async throws {
+        var remaining = progress.pendingLocalHostIds
+        for localId in progress.pendingLocalHostIds {
+            guard let host = sessionStore.hosts.first(where: { $0.id == localId }),
+                  let serverId = host.serverId else {
+                // Locally-deleted or never-promoted host — nothing to
+                // tombstone; just shrink the list so we don't loop forever.
+                remaining.removeAll { $0 == localId }
+                credentialSync.mutate {
+                    $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
+                        pendingLocalHostIds: remaining
+                    )
+                }
+                continue
+            }
+            let nextRev = (credentialSync.prefs.lastAppliedRevision[localId] ?? 0) + 1
+            let tombstone = CredentialBlob(
+                state: .tombstone,
+                revision: nextRev,
+                keyID: nil
+            )
+            do {
+                _ = try await client.pushHostCredentialBlob(serverId: serverId, blob: tombstone)
+            } catch {
+                // Abort the loop; the next cycle resumes from the
+                // unchanged persisted list.
+                return
+            }
+            remaining.removeAll { $0 == localId }
+            credentialSync.mutate {
+                $0.lastAppliedRevision[localId] = nextRev
+                $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
+                    pendingLocalHostIds: remaining
+                )
+            }
+        }
+        if remaining.isEmpty {
+            credentialSync.mutate { $0.deleteCredentialsFromCloudInProgress = nil }
         }
     }
 
