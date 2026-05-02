@@ -16,6 +16,7 @@ final class AppDelegatePushParsingTests: XCTestCase {
 	}
 
 	func testRemoteNotificationWithDifferentSubscriptionIDIsIgnored() {
+		// Deliberately uses the flat "ck.sid" shape, which CKNotification cannot parse → false regardless of sid value.
 		let userInfo: [String: Any] = [
 			"ck": ["sid": "some.other.subscription"]
 		]
