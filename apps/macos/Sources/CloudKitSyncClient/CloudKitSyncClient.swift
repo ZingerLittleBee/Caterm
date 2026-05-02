@@ -11,11 +11,33 @@ import ServerSyncClient
 public final class CloudKitSyncClient: ServerSyncClient {
     private let database: CKDatabaseProtocol
     private let zoneID: CKRecordZone.ID
+    internal let tokenStore: any ServerChangeTokenStoring
 
-    public init(database: CKDatabaseProtocol,
-                zoneID: CKRecordZone.ID = CKRecordZone.ID(zoneName: "Caterm")) {
+    /// Concrete checkpoint payload. Internal — only this module
+    /// constructs / interprets values.
+    internal struct Checkpoint: HostSyncCheckpoint {
+        let id: UUID
+        let epoch: UInt64
+        let prevDb: Data?
+        let newDb: Data?
+        let prevZones: [String: Data?]
+        let newZones: [String: Data?]
+    }
+
+    public convenience init(
+        database: CKDatabaseProtocol,
+        zoneID: CKRecordZone.ID = CKRecordZone.ID(zoneName: "Caterm")
+    ) {
+        self.init(database: database, zoneID: zoneID,
+                  tokenStore: UserDefaultsServerChangeTokenStore())
+    }
+
+    internal init(database: CKDatabaseProtocol,
+                  zoneID: CKRecordZone.ID,
+                  tokenStore: any ServerChangeTokenStoring) {
         self.database = database
         self.zoneID = zoneID
+        self.tokenStore = tokenStore
     }
 
     public func listHosts() async throws -> [RemoteHost] {
