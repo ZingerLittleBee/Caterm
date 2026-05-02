@@ -324,4 +324,82 @@ public final class SessionStore: ObservableObject {
         try HostPersistence.save(updated, to: hostsURL)
         hosts = updated
     }
+
+	/// Plan C: single credential-mutation entry point.
+	/// Atomic ordering: Keychain writes (password / keyPassphrase) →
+	/// host.credential update + dirty=true → HostPersistence.save → post
+	/// notification. ManagedKeyStore writes for `secrets.privateKeyBytes`
+	/// happen on the caller side (SessionStore has no dependency on
+	/// ManagedKeyStore — avoids module graph entanglement). Callers must
+	/// have already written private-key bytes via ManagedKeyStore before
+	/// calling, and the `credentialSource` they pass already encodes the
+	/// resulting managedPath.
+	public func setHostCredentialMaterial(
+		secrets: HostSecrets,
+		credentialSource: CredentialSource,
+		for hostId: UUID
+	) throws {
+		if let pw = secrets.password {
+			guard let s = String(data: pw, encoding: .utf8) else { throw KeychainError.decodeFailed }
+			try keychain.set(account: "\(hostId.uuidString).password", secret: s)
+		}
+		if let pp = secrets.passphrase {
+			guard let s = String(data: pp, encoding: .utf8) else { throw KeychainError.decodeFailed }
+			try keychain.set(account: "\(hostId.uuidString).keyPassphrase", secret: s)
+		}
+		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
+		var updated = hosts
+		updated[idx].credential = credentialSource
+		updated[idx].credentialMaterialDirty = true
+		try HostPersistence.save(updated, to: hostsURL)
+		hosts = updated
+
+		NotificationCenter.default.post(
+			name: .catermHostCredentialMaterialChanged,
+			object: nil,
+			userInfo: [CatermHostCredentialMaterialChangedKeys.hostId: hostId]
+		)
+	}
+
+	public func clearCredentialMaterialDirty(_ hostId: UUID) throws {
+		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
+		guard hosts[idx].credentialMaterialDirty else { return }  // idempotent
+		var updated = hosts
+		updated[idx].credentialMaterialDirty = false
+		try HostPersistence.save(updated, to: hostsURL)
+		hosts = updated
+	}
+
+	/// Plan C pull-side credential application. Caller (HostSyncStore)
+	/// decrypts ciphertext and (if private-key bytes present) has already
+	/// called `ManagedKeyStore.write` to obtain `managedKeyPath`.
+	/// Does NOT set credentialMaterialDirty — the bytes came FROM the
+	/// remote, so re-pushing would be a useless write loop.
+	public func applyRemoteCredential(
+		decryptedPassword: Data?,
+		decryptedPassphrase: Data?,
+		decryptedPrivateKey: Data?,
+		managedKeyPath: String?,
+		for hostId: UUID
+	) throws {
+		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
+
+		if let pw = decryptedPassword {
+			guard let s = String(data: pw, encoding: .utf8) else { throw KeychainError.decodeFailed }
+			try keychain.set(account: "\(hostId.uuidString).password", secret: s)
+		}
+		if let pp = decryptedPassphrase {
+			guard let s = String(data: pp, encoding: .utf8) else { throw KeychainError.decodeFailed }
+			try keychain.set(account: "\(hostId.uuidString).keyPassphrase", secret: s)
+		}
+
+		var updated = hosts
+		if decryptedPrivateKey != nil, let path = managedKeyPath {
+			updated[idx].credential = .keyFile(keyPath: path, hasPassphrase: decryptedPassphrase != nil)
+		} else if decryptedPassword != nil {
+			updated[idx].credential = .password
+		}  // else: leave existing credential alone (e.g., .agent)
+		try HostPersistence.save(updated, to: hostsURL)
+		hosts = updated
+	}
 }

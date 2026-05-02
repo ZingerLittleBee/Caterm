@@ -1,5 +1,8 @@
+import CredentialSync
+import CredentialSyncStore
 import HostSyncStore
 import ServerSyncClient
+import SessionStore
 import SwiftUI
 
 /// Wrapper view that adapts the existing four-property `SyncSettingsView` so
@@ -20,14 +23,36 @@ struct SyncSettingsTab: View {
     let authSession: AuthSession
     @ObservedObject var syncStore: HostSyncStore
     @ObservedObject var preferences: SyncPreferences
+    let credentialSync: CredentialSyncPreferencesStore?
+    let credentialSyncCoordinator: CredentialSyncCoordinator?
+    let sessionStore: SessionStore?
     @State private var serverURL: String = ServerURL.current.absoluteString
+
+    init(
+        authSession: AuthSession,
+        syncStore: HostSyncStore,
+        preferences: SyncPreferences,
+        credentialSync: CredentialSyncPreferencesStore? = nil,
+        credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
+        sessionStore: SessionStore? = nil
+    ) {
+        self.authSession = authSession
+        self.syncStore = syncStore
+        self.preferences = preferences
+        self.credentialSync = credentialSync
+        self.credentialSyncCoordinator = credentialSyncCoordinator
+        self.sessionStore = sessionStore
+    }
 
     var body: some View {
         SyncSettingsView(
             authSession: authSession,
             syncStore: syncStore,
             preferences: preferences,
-            serverURL: $serverURL
+            serverURL: $serverURL,
+            credentialSync: credentialSync,
+            credentialSyncCoordinator: credentialSyncCoordinator,
+            sessionStore: sessionStore
         )
         .onChange(of: serverURL) { _, newValue in
             // Persist on edit. SyncSettingsView already shows the

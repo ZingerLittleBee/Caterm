@@ -1,4 +1,5 @@
 import Combine
+import CredentialSyncStore
 import XCTest
 @testable import HostSyncStore
 @testable import SessionStore
@@ -34,6 +35,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
                             sessionStore: sessionStore,
                             authSession: fakeAuth,
                             preferences: prefs,
+                            credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                             debounceInterval: 0.05,
                             userDefaults: isolatedDefaults)
     }
@@ -68,6 +70,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
                                    sessionStore: sessionStore,
                                    authSession: fakeAuth,
                                    preferences: newPrefs,
+                                   credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                                    debounceInterval: 0.05,
                                    userDefaults: isolatedDefaults)
 
@@ -137,6 +140,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
                                     sessionStore: sessionStore,
                                     authSession: fakeAuth,
                                     preferences: prefs,
+                                    credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                                     debounceInterval: 0.05,
                                     periodicInterval: 0.05,
                                     userDefaults: isolatedDefaults)
@@ -163,6 +167,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
                                       sessionStore: sessionStore,
                                       authSession: fakeAuth,
                                       preferences: offPrefs,
+                                      credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                                       debounceInterval: 0.05,
                                       periodicInterval: 0.05,
                                       userDefaults: defaults)
@@ -186,6 +191,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
                                     sessionStore: sessionStore,
                                     authSession: fakeAuth,
                                     preferences: prefs,
+                                    credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                                     debounceInterval: 0.05,
                                     periodicInterval: 0.05,
                                     userDefaults: isolatedDefaults)

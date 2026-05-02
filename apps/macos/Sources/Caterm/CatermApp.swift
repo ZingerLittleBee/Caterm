@@ -1,9 +1,14 @@
 import AppKit
+import CloudKit
+import CloudKitSyncClient
 import ConfigStore
+import CredentialSync
+import CredentialSyncStore
 import FileTransferStore
 import Foundation
 import HostSyncStore
 import KeychainStore
+import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
@@ -20,6 +25,7 @@ struct CatermApp: App {
 	@StateObject var preferences: SyncPreferences
 	@StateObject var fileTransferStore: FileTransferStore
 	@StateObject var settingsStore: SettingsStore
+	@StateObject private var credentialSync: CredentialSyncPreferencesStore
 	/// Lifetime-owned by the App so the Preferences "Sync" tab can reach
 	/// it. `AuthSession` is not `ObservableObject`, so we inject it via
 	/// `PreferencesWindowController.syncEnvironment` rather than as an env
@@ -30,13 +36,48 @@ struct CatermApp: App {
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
 	let liveReload: LiveReloadCoordinator
 
+	let cloudKitClient: CloudKitSyncClient
+	private let accountIdentityTracker: AccountIdentityTracker
+	private let masterKeyStore: KeychainSyncMasterKeyStore
+	private let managedKeyStore: ManagedKeyStore
+	private let credentialSyncCoordinator: CredentialSyncCoordinator
+	private let credentialSyncAccountReset: CredentialSyncAccountResetCoordinator
+
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
-		let auth = AuthSession(baseURL: ServerURL.current)
-		self.authSession = auth
-		let client = URLSessionServerSyncClient(baseURL: ServerURL.current)
+		// CloudKit-backed sync (replaces the URLSession + better-auth pair).
+		// `AuthSession` reference kept on `CatermApp` for compatibility with
+		// `PreferencesWindowController.syncEnvironment` which still expects
+		// a typed `AuthSession`. Plan E removes the typed reference along
+		// with the login UI.
+		let cloudContainer = CKContainer(identifier: "iCloud.com.caterm.app")
+		let icloudSession = iCloudAccountSession(provider: cloudContainer)
+		self.authSession = AuthSession(baseURL: ServerURL.current)  // unwired
+		let client = CloudKitSyncClient(database: cloudContainer.privateCloudDatabase)
+		self.cloudKitClient = client
+		self.accountIdentityTracker = AccountIdentityTracker(
+			currentUserRecordID: { try? await cloudContainer.userRecordID() },
+			tokensExist: { await client.hasAnyHostSyncTokens() }
+		)
 		let prefs = SyncPreferences()
+		// Single instances shared across HostSyncStore + Coordinator + UI so
+		// toggle/reset state stays consistent.
+		let credentialSyncPrefs = CredentialSyncPreferencesStore()
+		let mks = KeychainSyncMasterKeyStore()
+		let mngs = ManagedKeyStore()
+		self.masterKeyStore = mks
+		self.managedKeyStore = mngs
+		self.credentialSyncCoordinator = CredentialSyncCoordinator(
+			prefsStore: credentialSyncPrefs,
+			masterKeyStore: mks,
+			iCloudKeychainAvailable: { true }
+		)
+		self.credentialSyncAccountReset = CredentialSyncAccountResetCoordinator(
+			prefsStore: credentialSyncPrefs,
+			managedKeyStore: mngs
+		)
+		_credentialSync = StateObject(wrappedValue: credentialSyncPrefs)
 		// `_store = StateObject(wrappedValue:)` is the underscore-prefixed
 		// property-wrapper init — required because `@StateObject` cannot be
 		// assigned via the synthesized `self.store = ...` syntax in `init`.
@@ -45,9 +86,23 @@ struct CatermApp: App {
 		_syncStore = StateObject(wrappedValue: HostSyncStore(
 			client: client,
 			sessionStore: session,
-			authSession: auth,
-			preferences: prefs
+			authSession: icloudSession,
+			preferences: prefs,
+			credentialSync: credentialSyncPrefs,
+			masterKeyStore: mks,
+			managedKeyStore: mngs
 		))
+		// Refresh CloudKit account status asynchronously. HostSyncStore.syncIfSignedIn
+		// (called from .task in body) handles the case where refresh hasn't completed
+		// yet — it sees isSignedIn=false and skips; the .CKAccountChanged observer
+		// re-triggers sync once the status flips.
+		Task { @MainActor in
+			await icloudSession.refresh()
+			NotificationCenter.default.post(
+				name: .catermICloudAccountChanged, object: nil
+			)
+		}
+		icloudSession.startObservingAccountChanges()
 		// Per-app FileTransferStore. Closures capture plain value types
 		// (URLs / paths) rather than `ControlMasterManager` itself so the
 		// closure body remains nonisolated-callable. Liveness goes through
@@ -140,6 +195,22 @@ struct CatermApp: App {
 			// disappearance does not cancel the sync — that's intentional;
 			// cancellation lives in the chain (spec §3.5).
 			.task { syncStore.syncIfSignedIn() }
+			.task {
+				try? await cloudKitClient.ensureHostSubscription()
+			}
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermICloudAccountChanged)) { _ in
+				syncStore.syncIfSignedIn()
+			}
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermICloudAccountChanged)) { _ in
+				Task {
+					let outcome = await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
+					if outcome == .identityChanged {
+						await credentialSyncAccountReset.resetForAccountChange()
+					}
+				}
+			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermOpenSyncSettings)) { _ in
 				// Sync settings now live as a tab inside the Preferences
@@ -149,7 +220,10 @@ struct CatermApp: App {
 				PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
 					authSession: authSession,
 					syncStore: syncStore,
-					preferences: preferences
+					preferences: preferences,
+					credentialSync: credentialSync,
+					credentialSyncCoordinator: credentialSyncCoordinator,
+					sessionStore: store
 				)
 				PreferencesWindowController.shared.activate(tabIndex: 3)
 				PreferencesWindowController.shared.showAndActivate()
@@ -177,7 +251,10 @@ struct CatermApp: App {
 					PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
 						authSession: authSession,
 						syncStore: syncStore,
-						preferences: preferences
+						preferences: preferences,
+						credentialSync: credentialSync,
+						credentialSyncCoordinator: credentialSyncCoordinator,
+						sessionStore: store
 					)
 					PreferencesWindowController.shared.showAndActivate()
 				}

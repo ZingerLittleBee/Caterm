@@ -71,7 +71,11 @@ struct HostListSidebar: View {
 				HostFormView(mode: .add) { host, secret in
 					do {
 						try store.addHost(host)
-						if let secret { try persistSecret(host: host, secret: secret) }
+						try store.setHostCredentialMaterial(
+							secrets: makeSecrets(for: host.credential, secret: secret),
+							credentialSource: host.credential,
+							for: host.id
+						)
 						showingAddSheet = false
 					} catch {
 						errorMessage = error.localizedDescription
@@ -83,7 +87,18 @@ struct HostListSidebar: View {
 				HostFormView(mode: .edit(host)) { updated, secret in
 					do {
 						try store.updateHost(updated)
-						if let secret { try persistSecret(host: updated, secret: secret) }
+						// Only route through the Plan C credential entry point
+						// when the user supplied a new secret. A pure metadata
+						// edit (rename / hostname / port / username) must not
+						// flip `credentialMaterialDirty` or fire the credential
+						// changed notification.
+						if secret != nil {
+							try store.setHostCredentialMaterial(
+								secrets: makeSecrets(for: updated.credential, secret: secret),
+								credentialSource: updated.credential,
+								for: updated.id
+							)
+						}
 						editingHost = nil
 					} catch {
 						errorMessage = error.localizedDescription
@@ -93,16 +108,13 @@ struct HostListSidebar: View {
 			}
 			.sheet(item: $pendingCredentialHost) { host in
 				CredentialSetupView(host: host) { cred, secret in
-					// Order is intentional: Keychain (the operation that can fail
-					// for legitimate reasons — locked Keychain, denied prompt) goes
-					// FIRST. If it throws, no SessionStore mutation has happened
-					// yet, so a subsequent Cancel is a clean no-op.
-					if let secret, let kind = secretKind(for: cred) {
-						try store.setHostSecret(secret, hostId: host.id, kind: kind)
-					}
-					try store.setCredentialOnly(cred, for: host.id)
-					// Both writes succeeded — dismiss and re-enter connect with
-					// the refreshed host (now needsCredentialSetup == false).
+					try store.setHostCredentialMaterial(
+						secrets: makeSecrets(for: cred, secret: secret),
+						credentialSource: cred,
+						for: host.id
+					)
+					// Write succeeded — dismiss and re-enter connect with the
+					// refreshed host (now needsCredentialSetup == false).
 					if let refreshed = store.hosts.first(where: { $0.id == host.id }) {
 						await MainActor.run {
 							pendingCredentialHost = nil
@@ -134,25 +146,23 @@ struct HostListSidebar: View {
 		}
 	}
 
-	private func persistSecret(host: SSHHost, secret: String) throws {
-		switch host.credential {
-		case .password:
-			try store.setHostSecret(secret, hostId: host.id, kind: .password)
-		case let .keyFile(_, hasPassphrase) where hasPassphrase:
-			try store.setHostSecret(secret, hostId: host.id, kind: .keyPassphrase)
-		default:
-			break
+	/// Build a `HostSecrets` payload from the optional plain-text secret
+	/// returned by the host form / credential setup view. Returns an empty
+	/// `HostSecrets` for credential kinds that have no secret material
+	/// (.agent, keyFile without passphrase) or when the user left the field
+	/// blank — `setHostCredentialMaterial` treats an empty payload as
+	/// "credential source change only, no Keychain write".
+	private func makeSecrets(for cred: CredentialSource, secret: String?) -> HostSecrets {
+		guard let secret, !secret.isEmpty else {
+			return HostSecrets()
 		}
-	}
-
-	/// Map a CredentialSource to the keychain SecretKind that stores its
-	/// secret material. Returns nil for cases that have no secret (.agent,
-	/// keyFile without passphrase) — callers must guard on this.
-	private func secretKind(for cred: CredentialSource) -> SessionStore.SecretKind? {
 		switch cred {
-		case .password: return .password
-		case .keyFile(_, hasPassphrase: true): return .keyPassphrase
-		default: return nil
+		case .password:
+			return HostSecrets(password: Data(secret.utf8))
+		case .keyFile(_, hasPassphrase: true):
+			return HostSecrets(passphrase: Data(secret.utf8))
+		default:
+			return HostSecrets()
 		}
 	}
 

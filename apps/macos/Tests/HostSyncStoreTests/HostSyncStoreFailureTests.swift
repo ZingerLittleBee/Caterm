@@ -1,4 +1,5 @@
 import Combine
+import CredentialSyncStore
 import XCTest
 import UserNotifications
 @testable import HostSyncStore
@@ -45,6 +46,7 @@ final class HostSyncStoreFailureTests: XCTestCase {
                             sessionStore: sessionStore,
                             authSession: fakeAuth,
                             preferences: prefs,
+                            credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                             debounceInterval: 0.05,
                             userDefaults: isolatedDefaults,
                             notificationCenter: fakeNotifications)
@@ -343,6 +345,7 @@ final class HostSyncStoreFailureTests: XCTestCase {
                             sessionStore: sessionStore,
                             authSession: fakeAuth,
                             preferences: prefs,
+                            credentialSync: CredentialSyncPreferencesStore(defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!),
                             debounceInterval: 0.05,
                             periodicInterval: periodicInterval,
                             userDefaults: isolatedDefaults,
