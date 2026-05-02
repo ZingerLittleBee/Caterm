@@ -180,4 +180,10 @@ final class CloudKitSyncClientPushTests: XCTestCase {
         fakeDB.deleteSubscriptionError = CKError(.unknownItem)
         try await client.deleteHostSubscription()  // must not throw
     }
+
+    func testDeleteHostSubscriptionRemovesExistingSubscription() async throws {
+        try await client.deleteHostSubscription()
+        XCTAssertEqual(fakeDB.deletedSubscriptionIDs.count, 1)
+        XCTAssertEqual(fakeDB.deletedSubscriptionIDs.first, CloudKitPushNames.hostSubscriptionID)
+    }
 }
