@@ -170,6 +170,9 @@ final class CredentialPullStateMachineTests: XCTestCase {
     func test_enabled_tombstone_transitionsToPaused_doesNotTouchKeychain() async throws {
         prefsStore.mutate { $0.state = .enabled }
         let host = seedLocalHost(serverId: "rec-1")
+        // Pre-stage the host in the payload-tracking set — the observed
+        // tombstone must remove it so the UI count doesn't lie.
+        prefsStore.mutate { $0.hostsWithCloudPayload = [host.id] }
         let remote = makeNewerRemote(serverId: "rec-1", host: host)
         let blob = CredentialBlob(state: .tombstone, revision: 13, keyID: nil)
         seedBatch(remote: remote, blob: blob)
@@ -190,6 +193,10 @@ final class CredentialPullStateMachineTests: XCTestCase {
         XCTAssertNil(
             try? keychain.get(account: "\(host.id.uuidString).password"),
             "tombstone in enabled must not touch keychain credentials"
+        )
+        XCTAssertFalse(
+            prefsStore.prefs.hostsWithCloudPayload.contains(host.id),
+            "observed tombstone must drop the host from the payload-tracking set"
         )
     }
 
@@ -235,6 +242,10 @@ final class CredentialPullStateMachineTests: XCTestCase {
         XCTAssertEqual(
             prefsStore.prefs.lastAppliedRevision[host.id], revision,
             "successful apply must bump lastAppliedRevision"
+        )
+        XCTAssertTrue(
+            prefsStore.prefs.hostsWithCloudPayload.contains(host.id),
+            "successful payload decrypt must add the host to the payload-tracking set"
         )
     }
 

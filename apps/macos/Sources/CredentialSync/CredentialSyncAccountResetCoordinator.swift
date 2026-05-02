@@ -30,6 +30,7 @@ public final class CredentialSyncAccountResetCoordinator {
 			$0.deleteCredentialsFromCloudInProgress = nil
 			$0.corruptCredentials = []
 			$0.cloudCredentialsCleared = false
+			$0.hostsWithCloudPayload = []
 		}
 	}
 }

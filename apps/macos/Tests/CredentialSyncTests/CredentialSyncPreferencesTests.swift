@@ -17,17 +17,20 @@ final class CredentialSyncPreferencesTests: XCTestCase {
         XCTAssertEqual(prefs.lastAppliedRevision, [:])
         XCTAssertEqual(prefs.corruptCredentials, [])
         XCTAssertFalse(prefs.cloudCredentialsCleared)
+        XCTAssertEqual(prefs.hostsWithCloudPayload, [])
     }
 
     func test_save_thenLoad_roundTripsAllFields() {
         var prefs = CredentialSyncPreferences(defaults: defaults)
         let id = UUID()
+        let id2 = UUID()
         prefs.state = .enabled
         prefs.credentialsNeedFullScan = true
         prefs.lastAppliedRevision[id] = 5
         prefs.deleteCredentialsFromCloudInProgress = DeletionProgress(pendingLocalHostIds: [id])
         prefs.corruptCredentials.insert(CorruptCredentialKey(hostId: id, revision: 5))
         prefs.cloudCredentialsCleared = true
+        prefs.hostsWithCloudPayload = [id, id2]
         prefs.save()
 
         let reloaded = CredentialSyncPreferences(defaults: defaults)
@@ -37,14 +40,16 @@ final class CredentialSyncPreferencesTests: XCTestCase {
         XCTAssertEqual(reloaded.deleteCredentialsFromCloudInProgress?.pendingLocalHostIds, [id])
         XCTAssertEqual(reloaded.corruptCredentials, [CorruptCredentialKey(hostId: id, revision: 5)])
         XCTAssertTrue(reloaded.cloudCredentialsCleared)
+        XCTAssertEqual(reloaded.hostsWithCloudPayload, [id, id2])
     }
 
     /// Backwards-compat: a UserDefaults blob written by the pre-cloudCleared
-    /// app version (no `cloudCredentialsCleared` key) must decode with the
-    /// flag defaulting to false. Without `decodeIfPresent` the upgrade path
-    /// would throw and silently reset every field to defaults.
-    func test_loadLegacyBlob_withoutCloudCredentialsClearedKey_defaultsToFalse() throws {
-        // Hand-craft a JSON payload that omits the cloudCredentialsCleared key.
+    /// app version (no `cloudCredentialsCleared` / `hostsWithCloudPayload`
+    /// keys) must decode with both fields defaulting to safe values. Without
+    /// `decodeIfPresent` the upgrade path would throw and silently reset
+    /// every field to defaults.
+    func test_loadLegacyBlob_withoutNewKeys_defaultsToFalseAndEmptySet() throws {
+        // Hand-craft a JSON payload that omits the new keys.
         let id = UUID()
         let json = """
         {
@@ -60,7 +65,9 @@ final class CredentialSyncPreferencesTests: XCTestCase {
         XCTAssertEqual(reloaded.state, .enabled)
         XCTAssertEqual(reloaded.lastAppliedRevision[id], 3)
         XCTAssertFalse(reloaded.cloudCredentialsCleared,
-                       "missing key must decode as false, not throw")
+                       "missing cloudCredentialsCleared must decode as false")
+        XCTAssertEqual(reloaded.hostsWithCloudPayload, [],
+                       "missing hostsWithCloudPayload must decode as empty set")
     }
 
     func test_pausedByRemote_keepsTombstoneRev() {

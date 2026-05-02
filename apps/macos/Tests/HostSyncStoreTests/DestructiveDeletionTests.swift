@@ -233,8 +233,11 @@ final class DestructiveDeletionTests: XCTestCase {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [host.id]
             )
-            // Pretend nothing was previously cleared.
+            // Pretend nothing was previously cleared, but the host had a
+            // payload before destructive started — the tombstone push must
+            // remove it from the payload-tracking set.
             $0.cloudCredentialsCleared = false
+            $0.hostsWithCloudPayload = [host.id]
         }
 
         let sut = makeStore()
@@ -245,6 +248,8 @@ final class DestructiveDeletionTests: XCTestCase {
         XCTAssertTrue(prefsStore.prefs.cloudCredentialsCleared,
                       "completing the destructive sub-pipeline must mark cloud cleared "
                       + "so the UI hides the delete button and stops counting payloads")
+        XCTAssertFalse(prefsStore.prefs.hostsWithCloudPayload.contains(host.id),
+                       "tombstone push must drop the host from the payload-tracking set")
     }
 
     func test_subPipelineMidFlight_doesNotPrematurelySetCloudCleared() async throws {

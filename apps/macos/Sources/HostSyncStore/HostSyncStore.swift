@@ -548,6 +548,9 @@ public final class HostSyncStore: ObservableObject {
             remaining.removeAll { $0 == localId }
             credentialSync.mutate {
                 $0.lastAppliedRevision[localId] = nextRev
+                // Cloud blob for this host is now a tombstone — drop it from
+                // the payload-tracking set so the UI count reflects truth.
+                $0.hostsWithCloudPayload.remove(localId)
                 $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                     pendingLocalHostIds: remaining
                 )
@@ -718,6 +721,9 @@ public final class HostSyncStore: ObservableObject {
                 credentialSync.mutate {
                     $0.state = .pausedByRemote(seenTombstoneRevision: blob.revision)
                     $0.lastAppliedRevision[localHostId] = blob.revision
+                    // Cloud blob is a tombstone now — drop from payload set
+                    // so the UI count doesn't include it.
+                    $0.hostsWithCloudPayload.remove(localHostId)
                 }
                 return
             case .none:
@@ -818,6 +824,9 @@ public final class HostSyncStore: ObservableObject {
             decryptAttemptCount[key] = nil
             credentialSync.mutate {
                 $0.lastAppliedRevision[localHostId] = blob.revision
+                // Cloud blob is a payload we just successfully decrypted —
+                // it belongs in the payload-tracking set.
+                $0.hostsWithCloudPayload.insert(localHostId)
             }
         } catch {
             // Step 6 — bounded retry: 3 strikes → corruptCredentials +
@@ -900,9 +909,9 @@ public final class HostSyncStore: ObservableObject {
         let pushedRev = try await client.pushHostCredentialBlob(serverId: serverId, blob: blob)
         credentialSync.mutate {
             $0.lastAppliedRevision[localHostId] = pushedRev
-            // Any payload push invalidates the post-destructive "all
-            // tombstones" UI marker. Safe to set unconditionally — set
-            // semantics make repeated false-writes a no-op.
+            // Cloud now holds a payload for this host — track it for the
+            // UI count and invalidate the post-destructive marker.
+            $0.hostsWithCloudPayload.insert(localHostId)
             $0.cloudCredentialsCleared = false
         }
         try sessionStore.clearCredentialMaterialDirty(localHostId)

@@ -135,10 +135,14 @@ final class CredentialPushExecutorTests: XCTestCase {
     /// After a destructive flow leaves `cloudCredentialsCleared = true`, the
     /// next successful payload push must flip it back to false so the UI
     /// resumes counting synced hosts and re-enables the delete button.
-    func test_payloadPush_clearsCloudCredentialsClearedFlag() async throws {
+    /// Also inserts the host into `hostsWithCloudPayload` so the count is
+    /// computed off real payload presence rather than `revision > 0`
+    /// (tombstones bump the revision too).
+    func test_payloadPush_clearsCloudCredentialsClearedFlag_andTracksHost() async throws {
         prefsStore.mutate {
             $0.state = .enabled
             $0.cloudCredentialsCleared = true  // simulate post-destructive state
+            $0.hostsWithCloudPayload = []
         }
         let host = makeDirtyHost()
         try sessionStore.setServerId("rec-1", for: host.id)
@@ -153,6 +157,8 @@ final class CredentialPushExecutorTests: XCTestCase {
         XCTAssertEqual(fakeClient.pushCredentialCalls[0].blob.state, .payload)
         XCTAssertFalse(prefsStore.prefs.cloudCredentialsCleared,
                        "a successful payload push must invalidate the cloud-cleared marker")
+        XCTAssertTrue(prefsStore.prefs.hostsWithCloudPayload.contains(host.id),
+                      "successful payload push must add the host to the payload-tracking set")
     }
 
     func test_executor_pushFailure_keepsDirty_propagates_abortsCheckpoint() async throws {

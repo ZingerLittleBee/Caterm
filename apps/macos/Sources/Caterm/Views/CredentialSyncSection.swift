@@ -104,10 +104,15 @@ struct CredentialSyncSection: View {
 		return payloadCount > 0
 	}
 
+	/// Hosts whose cloud blob is, from this device's last-known view, a
+	/// payload (not a tombstone). Filtered by current local hosts so a host
+	/// deleted locally stops counting even before its CloudKit record is
+	/// reconciled. Driven by `prefsStore.prefs.hostsWithCloudPayload`,
+	/// updated by HostSyncStore on every push (payload→insert, tombstone→
+	/// remove) and pull (decrypt success→insert, observed tombstone→remove).
 	private var payloadCount: Int {
-		sessionStore.hosts.filter {
-			$0.serverId != nil && (prefsStore.prefs.lastAppliedRevision[$0.id] ?? 0) > 0
-		}.count
+		let payloadSet = prefsStore.prefs.hostsWithCloudPayload
+		return sessionStore.hosts.filter { payloadSet.contains($0.id) }.count
 	}
 
 	/// `state == .enabled` status copy. Distinguishes three sub-states:

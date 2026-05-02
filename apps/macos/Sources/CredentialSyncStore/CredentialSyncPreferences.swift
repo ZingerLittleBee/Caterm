@@ -64,6 +64,13 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
     /// the status row copy so the user isn't told "5 hosts synced" when
     /// every cloud blob is a tombstone.
     public var cloudCredentialsCleared: Bool
+    /// Local hosts whose cloud blob is, from this device's last-known view,
+    /// a `.payload` (not a `.tombstone`). Push payload → insert; push or
+    /// observe tombstone → remove. The status row's "N hosts synced" count
+    /// derives from this set rather than `lastAppliedRevision > 0`, since
+    /// the latter incorrectly counts hosts whose blob was tombstoned (the
+    /// revision is bumped past 0 by the tombstone push too).
+    public var hostsWithCloudPayload: Set<UUID>
 
     private static let storageKey = "catermCredentialSyncPreferences"
     private let defaults: UserDefaults
@@ -78,6 +85,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.deleteCredentialsFromCloudInProgress = loaded.deleteCredentialsFromCloudInProgress
             self.corruptCredentials = loaded.corruptCredentials
             self.cloudCredentialsCleared = loaded.cloudCredentialsCleared ?? false
+            self.hostsWithCloudPayload = loaded.hostsWithCloudPayloadAsUUID ?? []
         } else {
             self.state = .disabled
             self.lastAppliedRevision = [:]
@@ -85,6 +93,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.deleteCredentialsFromCloudInProgress = nil
             self.corruptCredentials = []
             self.cloudCredentialsCleared = false
+            self.hostsWithCloudPayload = []
         }
     }
 
@@ -95,7 +104,8 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             credentialsNeedFullScan: credentialsNeedFullScan,
             deleteCredentialsFromCloudInProgress: deleteCredentialsFromCloudInProgress,
             corruptCredentials: corruptCredentials,
-            cloudCredentialsCleared: cloudCredentialsCleared
+            cloudCredentialsCleared: cloudCredentialsCleared,
+            hostsWithCloudPayload: hostsWithCloudPayload
         )
         if let data = try? JSONEncoder().encode(stored) {
             defaults.set(data, forKey: Self.storageKey)
@@ -116,6 +126,10 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         // (no `cloudCredentialsCleared` key) still decodes successfully on
         // upgrade. Treated as `false` when absent.
         var cloudCredentialsCleared: Bool?
+        // Stored as [String] (UUID strings) for stable JSON round-trip.
+        // Optional so legacy blobs without this key still decode — they
+        // upgrade with an empty set; the next push or pull repopulates.
+        var hostsWithCloudPayload: [String]?
 
         init(
             state: CredentialSyncState,
@@ -123,7 +137,8 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             credentialsNeedFullScan: Bool,
             deleteCredentialsFromCloudInProgress: DeletionProgress?,
             corruptCredentials: Set<CorruptCredentialKey>,
-            cloudCredentialsCleared: Bool
+            cloudCredentialsCleared: Bool,
+            hostsWithCloudPayload: Set<UUID>
         ) {
             self.state = state
             self.lastAppliedRevision = Dictionary(
@@ -133,6 +148,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.deleteCredentialsFromCloudInProgress = deleteCredentialsFromCloudInProgress
             self.corruptCredentials = corruptCredentials
             self.cloudCredentialsCleared = cloudCredentialsCleared
+            self.hostsWithCloudPayload = hostsWithCloudPayload.map(\.uuidString)
         }
 
         var lastAppliedRevisionAsUUID: [UUID: Int64] {
@@ -142,6 +158,10 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
                 }
             )
         }
+
+        var hostsWithCloudPayloadAsUUID: Set<UUID>? {
+            hostsWithCloudPayload.map { Set($0.compactMap(UUID.init(uuidString:))) }
+        }
     }
 
     // Codable conformance for the public type itself.
@@ -149,6 +169,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         case state, lastAppliedRevision, credentialsNeedFullScan
         case deleteCredentialsFromCloudInProgress, corruptCredentials
         case cloudCredentialsCleared
+        case hostsWithCloudPayload
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -164,6 +185,8 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         self.deleteCredentialsFromCloudInProgress = try c.decodeIfPresent(DeletionProgress.self, forKey: .deleteCredentialsFromCloudInProgress)
         self.corruptCredentials = try c.decode(Set<CorruptCredentialKey>.self, forKey: .corruptCredentials)
         self.cloudCredentialsCleared = try c.decodeIfPresent(Bool.self, forKey: .cloudCredentialsCleared) ?? false
+        let payloadStrings = try c.decodeIfPresent([String].self, forKey: .hostsWithCloudPayload)
+        self.hostsWithCloudPayload = Set((payloadStrings ?? []).compactMap(UUID.init(uuidString:)))
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -176,6 +199,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         try c.encodeIfPresent(deleteCredentialsFromCloudInProgress, forKey: .deleteCredentialsFromCloudInProgress)
         try c.encode(corruptCredentials, forKey: .corruptCredentials)
         try c.encode(cloudCredentialsCleared, forKey: .cloudCredentialsCleared)
+        try c.encode(hostsWithCloudPayload.map(\.uuidString), forKey: .hostsWithCloudPayload)
     }
 
     public static func == (lhs: CredentialSyncPreferences, rhs: CredentialSyncPreferences) -> Bool {
@@ -184,6 +208,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         lhs.credentialsNeedFullScan == rhs.credentialsNeedFullScan &&
         lhs.deleteCredentialsFromCloudInProgress == rhs.deleteCredentialsFromCloudInProgress &&
         lhs.corruptCredentials == rhs.corruptCredentials &&
-        lhs.cloudCredentialsCleared == rhs.cloudCredentialsCleared
+        lhs.cloudCredentialsCleared == rhs.cloudCredentialsCleared &&
+        lhs.hostsWithCloudPayload == rhs.hostsWithCloudPayload
     }
 }
