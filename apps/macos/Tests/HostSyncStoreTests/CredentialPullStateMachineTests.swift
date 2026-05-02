@@ -194,16 +194,27 @@ final class CredentialPullStateMachineTests: XCTestCase {
     }
 
     func test_enabled_payload_decryptsAndAppliesViaSessionStore() async throws {
-        // Per Task 16's plan: the decrypt body itself is filled in Task 17.
-        // Here we verify the dispatch path reaches `decryptAndApply` by
-        // checking the DEBUG invocation seam. The stub is a no-op so the
-        // sync cycle completes without throwing.
+        // Plan C / Task 17 — `.enabled.payload` actually decrypts ciphertext
+        // and persists via SessionStore. We assert the dispatch path reached
+        // `decryptAndApply` (DEBUG seam) AND that the password round-tripped
+        // to the keychain on the happy path.
         prefsStore.mutate { $0.state = .enabled }
         let host = seedLocalHost(serverId: "rec-1")
-        let remote = makeNewerRemote(serverId: "rec-1", host: host)
+
+        let resolved = try await masterKeyStore.generate()
+        let key = resolved.key
+        let keyID = resolved.keyID
+        let serverId = "rec-1"
+        let revision: Int64 = 4
+        let pwCt = try EnvelopeCrypto.seal(
+            Data("p1".utf8), key: key,
+            aad: EnvelopeCrypto.aad(serverId: serverId, fieldKind: .password, revision: revision)
+        )
+        let remote = makeNewerRemote(serverId: serverId, host: host)
         let blob = CredentialBlob(
-            state: .payload, revision: 4, keyID: "k1",
-            passwordCiphertext: Data([0xAA])
+            state: .payload, revision: revision, keyID: keyID,
+            cryptoVersion: Int64(EnvelopeCrypto.schemaVersion),
+            passwordCiphertext: pwCt
         )
         seedBatch(remote: remote, blob: blob)
 
@@ -216,7 +227,15 @@ final class CredentialPullStateMachineTests: XCTestCase {
         )
         let inv = sut.decryptAndApplyInvocations[0]
         XCTAssertEqual(inv.localHostId, host.id)
-        XCTAssertEqual(inv.revision, 4)
+        XCTAssertEqual(inv.revision, revision)
+        XCTAssertEqual(
+            try keychain.get(account: "\(host.id.uuidString).password"), "p1",
+            "decryptAndApply must persist the decrypted password to the keychain"
+        )
+        XCTAssertEqual(
+            prefsStore.prefs.lastAppliedRevision[host.id], revision,
+            "successful apply must bump lastAppliedRevision"
+        )
     }
 
     // MARK: - Helpers

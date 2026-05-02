@@ -132,6 +132,12 @@ public final class HostSyncStore: ObservableObject {
     private let notificationCenter: NotificationDelivering
     private var pendingAutoAfterManual: Bool = false
     private var currentManualTask: Task<Void, Error>?
+    /// Plan C / Task 17 — bounded retry counter for `decryptAndApply`.
+    /// Keyed by `(localHostId, revision)` so a recovered key (or fresh
+    /// blob revision) starts the count over. After 3 strikes we mark the
+    /// blob corrupt AND advance `lastAppliedRevision[hostId] = revision`
+    /// so subsequent cycles skip past it.
+    private var decryptAttemptCount: [CorruptCredentialKey: Int] = [:]
     /// Generation token gating the single isSyncing-clear site in startSync().
     /// Each call to startSync() captures a snapshot; only the latest
     /// generation's defer is permitted to clear isSyncing — preserves the
@@ -626,22 +632,27 @@ public final class HostSyncStore: ObservableObject {
         }
     }
 
-    /// Plan C / Task 17 stub. The real implementation will:
-    ///   1. Look up the master key for `blob.keyID` in the iCloud-Keychain-
-    ///      backed master-key store. If missing, transition state to
-    ///      `.waitingForKey(observedKeyID: blob.keyID)` and return.
-    ///   2. Decrypt the three field ciphertexts with envelope AAD, write
-    ///      private-key bytes via ManagedKeyStore, then call
-    ///      `sessionStore.applyRemoteCredential(...)`.
-    ///   3. On success, bump `lastAppliedRevision[hostId] = blob.revision`.
+    /// Plan C / Task 17 — decrypt-and-apply with hard invariant + bounded retry.
     ///
-    /// For Task 16 we only need to record that this dispatch path was
-    /// reached so tests can verify the state-machine routing. The body is a
-    /// no-op so tests don't need to handle a thrown error from a path that's
-    /// expected to succeed.
+    /// 1. Resolve the master key by `blob.keyID`. If missing, transition state
+    ///    to `.waitingForKey(observedKeyID: blob.keyID)` and throw — caller's
+    ///    `try await apply(...)` propagates, aborting the cycle (commit not
+    ///    called, lastSyncedAt not advanced).
+    /// 2. Decrypt password / passphrase / privateKey ciphertexts using
+    ///    AAD = `serverId|fieldKind|revision|schemaVersion` (schemaVersion=1).
+    /// 3. If a private-key blob decrypted, write its bytes via ManagedKeyStore
+    ///    (atomic O_EXCL+rename) and capture the resulting URL → managedKeyPath.
+    /// 4. Call `sessionStore.applyRemoteCredential(...)` to persist password /
+    ///    passphrase to Keychain and update `host.credential`.
+    /// 5. On success: bump `lastAppliedRevision[hostId] = blob.revision`.
+    /// 6. On any error: increment the per-(hostId, revision) attempt counter.
+    ///    After 3 strikes, insert into `corruptCredentials` AND advance
+    ///    `lastAppliedRevision[hostId] = revision` so the cycle progresses
+    ///    past the bad blob next time. Re-throw the original error in all
+    ///    cases (hard invariant: caller aborts the sync cycle).
     private func decryptAndApply(
         localHostId: UUID,
-        remote _: RemoteHost,
+        remote: RemoteHost,
         blob: CredentialBlob
     ) async throws {
         #if DEBUG
@@ -649,7 +660,90 @@ public final class HostSyncStore: ObservableObject {
             (localHostId: localHostId, revision: blob.revision)
         )
         #endif
-        // Task 17 will replace this stub.
+
+        // Step 1 — master-key resolution. `blob.keyID == nil` shouldn't reach
+        // here (only payload arms call decryptAndApply), but guard anyway.
+        guard let keyID = blob.keyID else {
+            credentialSync.mutate {
+                $0.state = .waitingForKey(observedKeyID: nil)
+            }
+            throw EnvelopeCrypto.Error.decryptionFailed
+        }
+        guard let masterKey = await masterKeyStore.load(keyID: keyID) else {
+            credentialSync.mutate {
+                $0.state = .waitingForKey(observedKeyID: keyID)
+            }
+            throw EnvelopeCrypto.Error.decryptionFailed
+        }
+
+        do {
+            // Step 2 — decrypt each ciphertext field with the proper AAD.
+            let aadFor: (FieldKind) -> Data = { kind in
+                EnvelopeCrypto.aad(
+                    serverId: remote.id, fieldKind: kind, revision: blob.revision
+                )
+            }
+            let decryptedPassword: Data? = try blob.passwordCiphertext.map {
+                try EnvelopeCrypto.open($0, key: masterKey, aad: aadFor(.password))
+            }
+            let decryptedPassphrase: Data? = try blob.passphraseCiphertext.map {
+                try EnvelopeCrypto.open($0, key: masterKey, aad: aadFor(.passphrase))
+            }
+            let decryptedPrivateKey: Data? = try blob.privateKeyCiphertext.map {
+                try EnvelopeCrypto.open($0, key: masterKey, aad: aadFor(.privateKey))
+            }
+
+            // Step 3 — write private-key bytes, if any, via ManagedKeyStore.
+            var managedKeyPath: String?
+            if let pkBytes = decryptedPrivateKey {
+                let url = try await managedKeyStore.write(
+                    hostId: localHostId, bytes: pkBytes
+                )
+                managedKeyPath = url.path
+            }
+
+            // Step 4 — hand off to SessionStore (Keychain + host.credential).
+            try sessionStore.applyRemoteCredential(
+                decryptedPassword: decryptedPassword,
+                decryptedPassphrase: decryptedPassphrase,
+                decryptedPrivateKey: decryptedPrivateKey,
+                managedKeyPath: managedKeyPath,
+                for: localHostId
+            )
+
+            // Step 5 — happy path: bump lastAppliedRevision; clear any prior
+            // corrupt-attempt counter for this (hostId, revision) pair.
+            let key = CorruptCredentialKey(hostId: localHostId, revision: blob.revision)
+            decryptAttemptCount[key] = nil
+            credentialSync.mutate {
+                $0.lastAppliedRevision[localHostId] = blob.revision
+            }
+        } catch {
+            // Step 6 — bounded retry: 3 strikes → corruptCredentials +
+            // advance lastAppliedRevision. Always re-throw (hard invariant).
+            recordCorruptAttempt(localHostId: localHostId, revision: blob.revision)
+            throw error
+        }
+    }
+
+    /// Increment the attempt counter for `(localHostId, revision)`. On the
+    /// 3rd strike, insert into `corruptCredentials` AND advance
+    /// `lastAppliedRevision[localHostId]` so the next cycle moves past the
+    /// bad blob, then clear the in-memory counter.
+    ///
+    /// Does not throw — callers re-throw the original error after invoking
+    /// this so the surrounding sync cycle aborts (hard invariant).
+    private func recordCorruptAttempt(localHostId: UUID, revision: Int64) {
+        let key = CorruptCredentialKey(hostId: localHostId, revision: revision)
+        let nextCount = (decryptAttemptCount[key] ?? 0) + 1
+        decryptAttemptCount[key] = nextCount
+        if nextCount >= 3 {
+            credentialSync.mutate {
+                $0.corruptCredentials.insert(key)
+                $0.lastAppliedRevision[localHostId] = revision
+            }
+            decryptAttemptCount[key] = nil
+        }
     }
 
     /// Plan C — push the local encrypted credential blob to CloudKit for
