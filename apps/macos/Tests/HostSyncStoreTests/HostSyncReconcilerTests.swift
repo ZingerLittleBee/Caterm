@@ -116,6 +116,25 @@ final class HostSyncReconcilerTests: XCTestCase {
         XCTAssertTrue(ops.contains(.updateRemote(localHostId: conflict.id, serverId: "srv-1")))
         XCTAssertTrue(ops.contains(.createLocal(remote: fresh)))
     }
+
+    func test_reconciler_neverEmitsUpdateRemoteCredentials() {
+        // Mix of local-only, remote-only, and mismatched updatedAt entries.
+        let local = [
+            makeLocalHost(name: "A", serverId: nil),
+            makeLocalHost(name: "B", serverId: "rec-1", updatedAt: Date(timeIntervalSince1970: 100))
+        ]
+        let remote = [
+            RemoteHost(id: "rec-1", name: "B-renamed", hostname: "h", port: 22,
+                       username: "u", authType: "password",
+                       createdAt: Date(timeIntervalSince1970: 0),
+                       updatedAt: Date(timeIntervalSince1970: 200))
+        ]
+        let opsFull = HostSyncReconciler.reconcileFullSnapshot(local: local, remote: remote)
+        let opsDelta = HostSyncReconciler.reconcileDelta(local: local, changedHosts: remote, deletedHostIDs: [])
+        for op in opsFull + opsDelta {
+            if case .updateRemoteCredentials = op { XCTFail("reconciler must not emit .updateRemoteCredentials") }
+        }
+    }
 }
 
 final class HostSyncReconcilerDeltaTests: XCTestCase {

@@ -476,6 +476,11 @@ public final class HostSyncStore: ObservableObject {
 
         case let .deleteLocal(localHostId):
             try sessionStore.deleteHost(id: localHostId)
+
+        case .updateRemoteCredentials:
+            // Plan C — handled by Plan C HostSyncStore extension; reconciler
+            // and existing tests treat it as a no-op.
+            break
         }
     }
 }

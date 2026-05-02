@@ -18,4 +18,9 @@ public enum SyncOperation: Equatable {
     /// Local host was synced before but is gone from server (other device
     /// deleted it). Delete locally.
     case deleteLocal(localHostId: UUID)
+    /// Plan C — emitted by HostSyncStore (NOT by HostSyncReconciler) from
+    /// the cycle-start dirty scan, after the reconciler's metadata ops.
+    /// Executor reads Keychain + ManagedKeyStore live and pushes encrypted
+    /// blob via partial CKRecord update.
+    case updateRemoteCredentials(localHostId: UUID)
 }
