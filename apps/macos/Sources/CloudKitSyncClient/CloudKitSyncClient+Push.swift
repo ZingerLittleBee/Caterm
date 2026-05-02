@@ -109,6 +109,7 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
         }
 
         var changedHosts: [RemoteHost] = []
+        var credentialBlobs: [String: CredentialBlob] = [:]
         var deletedHostIDs: [String] = []
         var deletedZoneIDs: Set<CKRecordZone.ID> = []
         var purgedZoneIDs: Set<CKRecordZone.ID> = []
@@ -148,6 +149,9 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
                         where record.recordType == Self.hostRecordType {
                             if let result = try? CKRecordHostMapping.decode(record) {
                                 changedHosts.append(result.host)
+                                if let blob = result.blob {
+                                    credentialBlobs[result.host.id] = blob
+                                }
                             }
                         }
                         for (recordID, recordType) in zResult.deletedRecords
@@ -208,6 +212,7 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
         return HostChangeBatch(
             changedHosts: changedHosts,
             deletedHostIDs: deletedHostIDs,
+            credentialBlobsByServerId: credentialBlobs,
             checkpoint: checkpoint,
             tokenExpired: false,
             mode: mode

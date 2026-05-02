@@ -14,17 +14,24 @@ public protocol HostSyncCheckpoint: Sendable {
 public struct HostChangeBatch: Sendable {
 	public let changedHosts: [RemoteHost]
 	public let deletedHostIDs: [String]
+	/// Plan C — credential side-table keyed by server (CKRecord) id. Populated
+	/// by CloudKit decode; empty for legacy/test producers that don't carry
+	/// credential blobs. The default `[:]` preserves every existing
+	/// `HostChangeBatch(...)` call site.
+	public let credentialBlobsByServerId: [String: CredentialBlob]
 	public let checkpoint: (any HostSyncCheckpoint)?
 	public let tokenExpired: Bool
 	public let mode: HostSyncMode
 
 	public init(changedHosts: [RemoteHost],
 	            deletedHostIDs: [String],
+	            credentialBlobsByServerId: [String: CredentialBlob] = [:],
 	            checkpoint: (any HostSyncCheckpoint)?,
 	            tokenExpired: Bool,
 	            mode: HostSyncMode) {
 		self.changedHosts = changedHosts
 		self.deletedHostIDs = deletedHostIDs
+		self.credentialBlobsByServerId = credentialBlobsByServerId
 		self.checkpoint = checkpoint
 		self.tokenExpired = tokenExpired
 		self.mode = mode

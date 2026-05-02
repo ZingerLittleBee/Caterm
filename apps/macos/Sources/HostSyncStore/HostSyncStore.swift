@@ -110,6 +110,11 @@ public final class HostSyncStore: ObservableObject {
     /// `performSync()` cycle. Reset at the start of the op-loop and
     /// appended to as each op is dispatched.
     internal private(set) var lastAppliedOpsForTesting: [SyncOperation] = []
+    /// Test-only seam (Plan C / Task 16): records every invocation of
+    /// `decryptAndApply`. Task 17 will fill the body — Task 16's tests use
+    /// this counter to verify the `.enabled` + `.payload` dispatch path
+    /// reaches the decrypt step.
+    internal private(set) var decryptAndApplyInvocations: [(localHostId: UUID, revision: Int64)] = []
     #endif
     /// The view layer reads the same threshold used by failure detection.
     public let periodicInterval: TimeInterval
@@ -420,7 +425,7 @@ public final class HostSyncStore: ObservableObject {
                 #if DEBUG
                 lastAppliedOpsForTesting.append(op)
                 #endif
-                try await apply(op)
+                try await apply(op, credentialBlobs: batch.credentialBlobsByServerId)
             }
 
             if let checkpoint = batch.checkpoint {
@@ -497,7 +502,8 @@ public final class HostSyncStore: ObservableObject {
         try? await notificationCenter.add(request)
     }
 
-    private func apply(_ op: SyncOperation) async throws {
+    private func apply(_ op: SyncOperation,
+                       credentialBlobs: [String: CredentialBlob] = [:]) async throws {
         // ★ Critical invariant: do NOT insert Task.checkCancellation()
         // between client.createHost(...) and sessionStore.setServerId(...)
         // — see spec §4.2.1.
@@ -513,6 +519,16 @@ public final class HostSyncStore: ObservableObject {
 
         case let .createLocal(remote):
             try sessionStore.addRemoteHost(remote)
+            // Plan C / Task 16 — if the snapshot carried a credential blob
+            // for this remote, run it through the pull-side state machine.
+            // `addRemoteHost` allocates a fresh local UUID; look it up by
+            // serverId rather than mutating addRemoteHost's signature.
+            if let blob = credentialBlobs[remote.id],
+               let local = sessionStore.hosts.last(where: { $0.serverId == remote.id }) {
+                try await applyCredentialBlobOnPull(
+                    localHostId: local.id, remote: remote, blob: blob
+                )
+            }
 
         case let .updateRemote(localHostId, serverId):
             guard let host = sessionStore.hosts.first(where: { $0.id == localHostId }) else { return }
@@ -524,6 +540,11 @@ public final class HostSyncStore: ObservableObject {
 
         case let .updateLocal(localHostId, remote):
             try sessionStore.applyRemoteMetadata(localHostId: localHostId, remote: remote)
+            if let blob = credentialBlobs[remote.id] {
+                try await applyCredentialBlobOnPull(
+                    localHostId: localHostId, remote: remote, blob: blob
+                )
+            }
 
         case let .deleteLocal(localHostId):
             try sessionStore.deleteHost(id: localHostId)
@@ -531,6 +552,104 @@ public final class HostSyncStore: ObservableObject {
         case let .updateRemoteCredentials(localHostId):
             try await applyUpdateRemoteCredentials(localHostId: localHostId)
         }
+    }
+
+    /// Plan C / Task 16 — pull-side credential state machine.
+    ///
+    /// Dispatches a freshly-fetched `CredentialBlob` through the four
+    /// `CredentialSyncState` arms. The actual decrypt + apply path
+    /// (`.enabled` + `.payload`) is filled by Task 17; here we only
+    /// stub `decryptAndApply` so the dispatch logic is testable now.
+    ///
+    /// Stale-revision drop: if `blob.revision <= lastAppliedRevision[hostId]`,
+    /// return immediately. This guards against re-applying a previously
+    /// processed blob when the same record arrives again (forceFull rebuild,
+    /// duplicate notification, etc.).
+    private func applyCredentialBlobOnPull(
+        localHostId: UUID,
+        remote: RemoteHost,
+        blob: CredentialBlob
+    ) async throws {
+        let lastApplied = credentialSync.prefs.lastAppliedRevision[localHostId] ?? 0
+        if blob.revision <= lastApplied { return }
+
+        switch credentialSync.prefs.state {
+        case .disabled:
+            // Drop. Do NOT advance lastAppliedRevision — re-enabling later
+            // must replay this blob.
+            return
+
+        case .pausedByRemote(let seenTombstoneRev):
+            // We're paused because of an earlier tombstone. A newer payload
+            // bumps the tombstone-rev marker (so a later "resume" knows the
+            // observed high-water mark), but we still don't apply.
+            if blob.state == .payload && blob.revision > seenTombstoneRev {
+                credentialSync.mutate {
+                    $0.state = .pausedByRemote(seenTombstoneRevision: blob.revision)
+                }
+            }
+            return
+
+        case .waitingForKey:
+            switch blob.state {
+            case .payload:
+                credentialSync.mutate {
+                    $0.state = .waitingForKey(observedKeyID: blob.keyID)
+                }
+            case .tombstone:
+                credentialSync.mutate {
+                    $0.state = .pausedByRemote(seenTombstoneRevision: blob.revision)
+                }
+            case .none:
+                return
+            }
+            return
+
+        case .enabled:
+            switch blob.state {
+            case .tombstone:
+                credentialSync.mutate {
+                    $0.state = .pausedByRemote(seenTombstoneRevision: blob.revision)
+                    $0.lastAppliedRevision[localHostId] = blob.revision
+                }
+                return
+            case .none:
+                credentialSync.mutate {
+                    $0.lastAppliedRevision[localHostId] = blob.revision
+                }
+                return
+            case .payload:
+                try await decryptAndApply(
+                    localHostId: localHostId, remote: remote, blob: blob
+                )
+            }
+        }
+    }
+
+    /// Plan C / Task 17 stub. The real implementation will:
+    ///   1. Look up the master key for `blob.keyID` in the iCloud-Keychain-
+    ///      backed master-key store. If missing, transition state to
+    ///      `.waitingForKey(observedKeyID: blob.keyID)` and return.
+    ///   2. Decrypt the three field ciphertexts with envelope AAD, write
+    ///      private-key bytes via ManagedKeyStore, then call
+    ///      `sessionStore.applyRemoteCredential(...)`.
+    ///   3. On success, bump `lastAppliedRevision[hostId] = blob.revision`.
+    ///
+    /// For Task 16 we only need to record that this dispatch path was
+    /// reached so tests can verify the state-machine routing. The body is a
+    /// no-op so tests don't need to handle a thrown error from a path that's
+    /// expected to succeed.
+    private func decryptAndApply(
+        localHostId: UUID,
+        remote _: RemoteHost,
+        blob: CredentialBlob
+    ) async throws {
+        #if DEBUG
+        decryptAndApplyInvocations.append(
+            (localHostId: localHostId, revision: blob.revision)
+        )
+        #endif
+        // Task 17 will replace this stub.
     }
 
     /// Plan C — push the local encrypted credential blob to CloudKit for
