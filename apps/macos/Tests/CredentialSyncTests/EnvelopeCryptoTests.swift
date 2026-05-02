@@ -1,4 +1,5 @@
 import CryptoKit
+import CredentialSyncTypes
 import XCTest
 @testable import CredentialSync
 

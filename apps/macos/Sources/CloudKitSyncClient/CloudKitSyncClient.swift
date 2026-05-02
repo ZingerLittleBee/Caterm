@@ -62,8 +62,8 @@ public final class CloudKitSyncClient: ServerSyncClient {
             var hosts: [RemoteHost] = []
             for (_, result) in matches {
                 if case let .success(rec) = result,
-                   let host = try? CKRecordHostMapping.decode(rec) {
-                    hosts.append(host)
+                   let result = try? CKRecordHostMapping.decode(rec) {
+                    hosts.append(result.host)
                 }
                 // Per-record .failure(_) and decode failures are silently
                 // skipped: a single bad record must not poison the whole

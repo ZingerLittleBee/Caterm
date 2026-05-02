@@ -55,8 +55,12 @@ let package = Package(
         ),
         .target(
             name: "CloudKitSyncClient",
-            dependencies: ["ServerSyncClient", "SSHCommandBuilder"],
+            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes"],
             path: "Sources/CloudKitSyncClient"
+        ),
+        .target(
+            name: "CredentialSyncTypes",
+            path: "Sources/CredentialSyncTypes"
         ),
         .target(
             name: "SettingsStore",
@@ -82,7 +86,7 @@ let package = Package(
         ),
         .target(
             name: "CredentialSync",
-            dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient"],
+            dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient", "CredentialSyncTypes"],
             path: "Sources/CredentialSync"
         ),
 
@@ -182,7 +186,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CloudKitSyncClientTests",
-            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder"],
+            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes"],
             path: "Tests/CloudKitSyncClientTests"
         ),
         .testTarget(
@@ -192,8 +196,13 @@ let package = Package(
         ),
         .testTarget(
             name: "CredentialSyncTests",
-            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "HostSyncStore", "CloudKitSyncClient"],
+            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "HostSyncStore", "CloudKitSyncClient", "CredentialSyncTypes"],
             path: "Tests/CredentialSyncTests"
+        ),
+        .testTarget(
+            name: "CredentialSyncTypesTests",
+            dependencies: ["CredentialSyncTypes"],
+            path: "Tests/CredentialSyncTypesTests"
         ),
     ]
 )

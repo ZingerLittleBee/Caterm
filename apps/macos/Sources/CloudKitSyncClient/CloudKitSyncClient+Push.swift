@@ -125,8 +125,8 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
                         )
                         for record in zResult.changedRecords
                         where record.recordType == Self.hostRecordType {
-                            if let host = try? CKRecordHostMapping.decode(record) {
-                                changedHosts.append(host)
+                            if let result = try? CKRecordHostMapping.decode(record) {
+                                changedHosts.append(result.host)
                             }
                         }
                         for (recordID, recordType) in zResult.deletedRecords
