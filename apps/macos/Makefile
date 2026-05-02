@@ -1,24 +1,28 @@
 # Caterm macOS dev Makefile
 #
 # Quick start:
-#   make run         # build + codesign + launch the bare binary (fastest dev loop)
-#   make run-app     # wrap the signed binary in a Caterm.app bundle and launch it
-#                    # (REQUIRED to test UserNotifications, NSWorkspace bundle
-#                    # identity, App Groups, etc. — those frameworks raise an
-#                    # uncatchable Obj-C NSException when there is no .app
-#                    # bundle / CFBundleIdentifier around the binary)
+#   make run-app     # build + codesign + wrap in Caterm.app bundle + launch
+#                    # (default dev loop — needed because AppDelegate registers
+#                    # for APS push on every launch, which requires a bundle
+#                    # identity. The bare binary will crash on launch.)
+#   make run         # build + codesign + launch the bare binary
+#                    # (only useful for quick build/sign sanity checks — does
+#                    # NOT survive into AppDelegate.applicationDidFinishLaunching
+#                    # because of the APS register call there.)
 #   make test        # swift test
 #   make clean       # nuke .build
 #
 # When to use which:
-#   - `make run`     — default. Faster, no bundle assembly. Anything that doesn't
-#                      need a bundle identity (terminal, SSH, sync, keychain via
-#                      access groups) works fine.
-#   - `make run-app` — needed when you're touching code that calls
-#                      UNUserNotificationCenter, NSWorkspace bundle APIs,
-#                      LSCopyApplication*, NSUserActivity / Handoff, App Groups,
-#                      or anything that asserts a CFBundleIdentifier exists.
-#                      The bare binary will crash on first such call.
+#   - `make run-app` — default. Required for anything that exercises the running
+#                      app: UNUserNotificationCenter / APS, NSWorkspace bundle
+#                      APIs, LSCopyApplication*, NSUserActivity / Handoff, App
+#                      Groups, or anything that asserts a CFBundleIdentifier
+#                      exists. CloudKit push subscriptions count — AppDelegate
+#                      calls `NSApp.registerForRemoteNotifications()` on every
+#                      launch, so the bare binary path is unsafe by default.
+#   - `make run`     — fast build+sign smoke test only. Use when you just want
+#                      to confirm the binary builds and signs cleanly without
+#                      actually running the UI.
 #
 # Codesign identity is auto-detected from the login keychain. Override with
 # either the Common Name or the 40-char SHA-1 fingerprint (preferred when
@@ -70,7 +74,7 @@ sign: build ## codesign caterm + caterm-askpass with dev identity
 	CATERM_DEV_IDENTITY="$(CATERM_DEV_IDENTITY)" bash Scripts/dev-codesign.sh
 
 .PHONY: run
-run: sign ## build + sign + launch caterm in foreground (no .app bundle — UserNotifications etc. will crash)
+run: sign ## build + sign + launch bare binary (build smoke only — APS register in AppDelegate will crash without bundle id; use run-app for actual dev)
 	@echo "Launching $(CATERM_BIN)"
 	@"$(CATERM_BIN)"
 
