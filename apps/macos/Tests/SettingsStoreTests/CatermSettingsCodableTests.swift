@@ -19,7 +19,7 @@ final class CatermSettingsCodableTests: XCTestCase {
     }
 
     func testEmptyDefaults() {
-        XCTAssertEqual(CatermSettings.empty.version, 1)
+        XCTAssertEqual(CatermSettings.empty.version, 2)
         XCTAssertTrue(CatermSettings.empty.global == PartialSettings())
         XCTAssertTrue(CatermSettings.empty.hostOverrides.isEmpty)
         XCTAssertTrue(CatermSettings.empty.migrationsCompleted.isEmpty)

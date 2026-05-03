@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import ServerSyncClient
+import SettingsSyncStore
 
 /// Minimal `CKContainer` surface for testability.
 public protocol CKAccountStatusProviding: Sendable {
@@ -71,11 +72,13 @@ public final class iCloudAccountSession: AuthSessionProtocol {
     }
 }
 
-extension Notification.Name {
-    /// Posted after `iCloudAccountSession.refresh()` runs in response to
-    /// `CKAccountChanged`. `CatermApp` wires this to
-    /// `HostSyncStore.syncIfSignedIn()` so an in-app sign-in to iCloud
-    /// triggers an immediate sync.
-    public static let catermICloudAccountChanged =
-        Notification.Name("catermICloudAccountChanged")
-}
+// Notification name `Notification.Name.catermICloudAccountChanged` is now
+// defined publicly in `SettingsSyncStore`. `CloudKitSyncClient` re-uses that
+// declaration via the `SettingsSyncStore` import above so both modules post
+// against the same symbol — preventing ambiguity at use sites that import
+// both modules (e.g., `CatermApp`).
+//
+// Posted after `iCloudAccountSession.refresh()` runs in response to
+// `CKAccountChanged`. `CatermApp` wires this to
+// `HostSyncStore.syncIfSignedIn()` so an in-app sign-in to iCloud
+// triggers an immediate sync.

@@ -15,7 +15,8 @@ ITEMS := \
 	"check-types   — Type check all packages" \
 	"check         — Lint check" \
 	"fix           — Lint fix" \
-	"macos-run     — Build + sign + launch macOS app" \
+	"macos-run-app — Build + sign + wrap + launch Caterm.app (default dev loop)" \
+	"macos-run     — Build + sign bare binary (build smoke only — crashes on APS register)" \
 	"macos-run-bg  — Launch macOS app in background" \
 	"macos-build   — Build macOS app (debug)" \
 	"macos-ghostty-kit — Init Ghostty submodule + build GhosttyKit" \

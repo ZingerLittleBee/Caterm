@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 
 @MainActor
 public final class SettingsStore: ObservableObject {
@@ -8,6 +9,7 @@ public final class SettingsStore: ObservableObject {
 
     public static let changeNotification = Notification.Name("catermSettingsChanged")
     public static let scopeUserInfoKey = "scope"
+    public static let sourceUserInfoKey = "source"  // values: "local" (default) or "sync"
 
     /// Production location of the user's settings plist. Tests use a temp path
     /// instead (see `BootSequence.run(settingsPlistURL:...)`).
@@ -39,18 +41,46 @@ public final class SettingsStore: ObservableObject {
             var seeded = CatermSettings.empty
             seeded.global = CatermSettings.defaultsSeed
             seeded.revision = makeRevision()
+            seeded.seededByDefault = true
+            seeded.seedVersion = 1
+            seeded.canonicalSeedHash = v1DefaultSeedHash
+            seeded.firstUserEditedAt = nil
             return SettingsStore(settings: seeded, path: path)
         }
         do {
             let data = try Data(contentsOf: path)
-            let s = try PropertyListDecoder().decode(CatermSettings.self, from: data)
+            var s = try PropertyListDecoder().decode(CatermSettings.self, from: data)
+            if s.version < 2 {
+                migrateV1ToV2(&s)
+            }
             return SettingsStore(settings: s, path: path)
         } catch {
             try quarantineCorrupted(at: path)
             var seeded = CatermSettings.empty
             seeded.global = CatermSettings.defaultsSeed
             seeded.revision = makeRevision()
+            seeded.seededByDefault = true
+            seeded.seedVersion = 1
+            seeded.canonicalSeedHash = v1DefaultSeedHash
+            seeded.firstUserEditedAt = nil
             return SettingsStore(settings: seeded, path: path)
+        }
+    }
+
+    private static func migrateV1ToV2(_ s: inout CatermSettings) {
+        s.version = 2
+        let exactDefaults = canonicalHash(of: s.global) == v1DefaultSeedHash
+            && s.hostOverrides.isEmpty
+        if exactDefaults {
+            s.seededByDefault = true
+            s.firstUserEditedAt = nil
+            s.seedVersion = 1
+            s.canonicalSeedHash = v1DefaultSeedHash
+        } else {
+            s.seededByDefault = false
+            s.firstUserEditedAt = Date()  // sentinel: edited before tracking, exact moment unknown
+            s.seedVersion = 1  // origin seed version; content was user-edited so canonicalSeedHash is empty
+            s.canonicalSeedHash = ""  // empty never matches KnownSeedTable; locks user in real-edits
         }
     }
 
@@ -74,6 +104,25 @@ public final class SettingsStore: ObservableObject {
         try FileManager.default.moveItem(at: path, to: dest)
     }
 
+    // Intentionally duplicated from KnownSeedTable.canonicalHash. SettingsStore must
+    // not import SettingsSyncStore (wrong dependency direction); both implementations
+    // are kept identical so v1DefaultSeedHash matches KnownSeedTable.entries[0].canonicalSeedHash.
+    private static func canonicalHash(of partial: PartialSettings) -> String {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        guard let data = try? encoder.encode(partial) else { return "" }
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static let v1DefaultSeedHash: String = canonicalHash(of: CatermSettings.defaultsSeed)
+
+    /// Revision format: `String(ms_since_epoch, radix: 36) + 8 random chars`.
+    /// The ms timestamp is currently 8 chars in base-36 and stays 8 chars
+    /// through ~2059. String lexicographic order equals time order as long
+    /// as the timestamp prefix is fixed-width. Do NOT change the radix or
+    /// shorten the random suffix without auditing all revision comparisons
+    /// (notably `BootstrapDecider.cloudWins`).
     public static func makeRevision() -> String {
         let ms = UInt64(Date().timeIntervalSince1970 * 1000)
         let rand = (0..<8).map { _ in
@@ -85,6 +134,9 @@ public final class SettingsStore: ObservableObject {
     public func update(_ mutate: (inout CatermSettings) -> Void) {
         var draft = _pending?.settings ?? settings
         mutate(&draft)
+        if draft.firstUserEditedAt == nil {
+            draft.firstUserEditedAt = Date()
+        }
         let pending = _pending ?? _Pending(draft)
         pending.settings = draft
         pending.task?.cancel()
@@ -112,8 +164,54 @@ public final class SettingsStore: ObservableObject {
             NotificationCenter.default.post(
                 name: Self.changeNotification,
                 object: self,
-                userInfo: [Self.scopeUserInfoKey: scope]
+                userInfo: [
+                    Self.scopeUserInfoKey: scope,
+                    Self.sourceUserInfoKey: "local",
+                ]
             )
         }
+    }
+
+    /// Sync-side cloud-apply path. Preserves cloud's revision verbatim (does NOT
+    /// call makeRevision), preserves the local migrationsCompleted set, and posts
+    /// a change notification tagged source == "sync" so SettingsSyncStore can
+    /// filter and avoid an apply→push feedback loop.
+    ///
+    /// `migrationsCompleted` is per-device filesystem migration state and never
+    /// travels — even though `cloud.migrationsCompleted` may have content (it
+    /// shouldn't if the codec strips it correctly, but we defend at the seam).
+    public func replaceFromSync(_ cloud: CatermSettings) throws {
+        // Cancel any in-flight debounced local edit. The pending draft was
+        // built on a pre-cloud snapshot; flushing it after the cloud apply
+        // would call `save`, which re-stamps `revision` via `makeRevision`,
+        // producing a newer-revision local blob that revision-LWW would push
+        // back to KVS — silently undoing the cloud apply we are about to
+        // perform. Drop the partial draft conservatively.
+        _pending?.task?.cancel()
+        _pending = nil
+
+        var next = cloud
+        next.migrationsCompleted = settings.migrationsCompleted
+        let data = try PropertyListEncoder().encode(next)
+        try FileManager.default.createDirectory(
+            at: path.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: path, options: .atomic)
+        let old = settings
+        self.settings = next
+
+        // Symmetric with `flushNow`: skip the post on a no-op apply so that
+        // observers don't receive phantom change notifications. Sync-side
+        // observers already filter on source; this guarantees the same shape
+        // for any future observer that doesn't.
+        guard let scope = SettingsChangeScope.diff(old: old, new: next) else { return }
+        NotificationCenter.default.post(
+            name: Self.changeNotification, object: self,
+            userInfo: [
+                Self.scopeUserInfoKey: scope,
+                Self.sourceUserInfoKey: "sync",
+            ]
+        )
     }
 }

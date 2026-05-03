@@ -1,27 +1,44 @@
 # Caterm macOS dev Makefile
 #
 # Quick start:
-#   make run         # build + codesign + launch the bare binary (fastest dev loop)
-#   make run-app     # wrap the signed binary in a Caterm.app bundle and launch it
-#                    # (REQUIRED to test UserNotifications, NSWorkspace bundle
-#                    # identity, App Groups, etc. — those frameworks raise an
-#                    # uncatchable Obj-C NSException when there is no .app
-#                    # bundle / CFBundleIdentifier around the binary)
+#   make run-app     # build + codesign + wrap in Caterm.app bundle + launch
+#                    # (default dev loop — needed because AppDelegate registers
+#                    # for APS push on every launch, which requires a bundle
+#                    # identity. The bare binary will crash on launch.)
+#   make run         # build + codesign + launch the bare binary
+#                    # (only useful for quick build/sign sanity checks — does
+#                    # NOT survive into AppDelegate.applicationDidFinishLaunching
+#                    # because of the APS register call there.)
 #   make test        # swift test
 #   make clean       # nuke .build
 #
 # When to use which:
-#   - `make run`     — default. Faster, no bundle assembly. Anything that doesn't
-#                      need a bundle identity (terminal, SSH, sync, keychain via
-#                      access groups) works fine.
-#   - `make run-app` — needed when you're touching code that calls
-#                      UNUserNotificationCenter, NSWorkspace bundle APIs,
-#                      LSCopyApplication*, NSUserActivity / Handoff, App Groups,
-#                      or anything that asserts a CFBundleIdentifier exists.
-#                      The bare binary will crash on first such call.
+#   - `make run-app` — default. Required for anything that exercises the running
+#                      app: UNUserNotificationCenter / APS, NSWorkspace bundle
+#                      APIs, LSCopyApplication*, NSUserActivity / Handoff, App
+#                      Groups, or anything that asserts a CFBundleIdentifier
+#                      exists. CloudKit push subscriptions count — AppDelegate
+#                      calls `NSApp.registerForRemoteNotifications()` on every
+#                      launch, so the bare binary path is unsafe by default.
+#   - `make run`     — fast build+sign smoke test only. Use when you just want
+#                      to confirm the binary builds and signs cleanly without
+#                      actually running the UI.
 #
-# Codesign identity is auto-detected from the login keychain. Override with:
-#   make run CATERM_DEV_IDENTITY="Apple Development: Other Name (XXXXXXXX)"
+# Codesign identity resolution (priority high → low):
+#   1. CATERM_DEV_IDENTITY env var / make argument
+#   2. apps/macos/.dev-identity (gitignored, one line — Common Name or
+#      40-char SHA-1; Conductor worktrees symlink this to the main repo
+#      via conductor.json setup, so writing it once in the main repo
+#      propagates to all worktrees)
+#   3. Auto-detect from login keychain (`security find-identity` first match
+#      — unreliable when multiple "Apple Development" certs share a CN, which
+#      Apple's auto-renewal flow regularly produces)
+#
+# SHA-1 fingerprint is preferred over Common Name because it disambiguates
+# duplicate / renewed certs:
+#   echo 28A2AF9F761AB261B3144E4AF67373EC0F883ED1 > apps/macos/.dev-identity
+# or one-shot override:
+#   make run-app CATERM_DEV_IDENTITY=0123456789ABCDEF0123456789ABCDEF01234567
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
@@ -31,9 +48,17 @@ BIN_DIR := $(ROOT)/.build/debug
 CATERM_BIN := $(BIN_DIR)/caterm
 ASKPASS_BIN := $(BIN_DIR)/caterm-askpass
 
-# Auto-detect first available codesigning identity if not provided.
+# Resolve codesign identity (see header comment for priority chain).
+# Only runs the lookup when CATERM_DEV_IDENTITY is not already set on the
+# command line / environment.
 # (awk -F'"' avoids nested parens that confuse make's $(shell ...) tokenizer.)
-CATERM_DEV_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $$2;exit}')
+ifeq ($(origin CATERM_DEV_IDENTITY), undefined)
+  ifneq ("$(wildcard $(ROOT)/.dev-identity)","")
+    CATERM_DEV_IDENTITY := $(shell tr -d '[:space:]' < $(ROOT)/.dev-identity)
+  else
+    CATERM_DEV_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $$2;exit}')
+  endif
+endif
 
 .DEFAULT_GOAL := help
 
@@ -68,7 +93,7 @@ sign: build ## codesign caterm + caterm-askpass with dev identity
 	CATERM_DEV_IDENTITY="$(CATERM_DEV_IDENTITY)" bash Scripts/dev-codesign.sh
 
 .PHONY: run
-run: sign ## build + sign + launch caterm in foreground (no .app bundle — UserNotifications etc. will crash)
+run: sign ## build + sign + launch bare binary (build smoke only — APS register in AppDelegate will crash without bundle id; use run-app for actual dev)
 	@echo "Launching $(CATERM_BIN)"
 	@"$(CATERM_BIN)"
 
@@ -106,6 +131,7 @@ run-bg: sign ## build + sign + launch caterm in background (logs to /tmp/caterm.
 .PHONY: kill
 kill: ## kill any running caterm dev process
 	-pkill -f "$(CATERM_BIN)" || true
+	-pkill -f "Caterm.app/Contents/MacOS/caterm" || true
 
 .PHONY: bootstrap-askpass
 bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)

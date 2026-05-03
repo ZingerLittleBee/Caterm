@@ -55,7 +55,7 @@ let package = Package(
         ),
         .target(
             name: "CloudKitSyncClient",
-            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes"],
+            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SettingsSyncStore"],
             path: "Sources/CloudKitSyncClient"
         ),
         .target(
@@ -74,6 +74,11 @@ let package = Package(
             resources: [
                 .process("Resources"),
             ]
+        ),
+        .target(
+            name: "SettingsSyncStore",
+            dependencies: ["SettingsStore"],
+            path: "Sources/SettingsSyncStore"
         ),
         .target(
             name: "FileTransferStore",
@@ -111,6 +116,7 @@ let package = Package(
                 "CloudKitSyncClient",
                 "CredentialSync",
                 "CredentialSyncStore",
+                "SettingsSyncStore",
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
@@ -190,6 +196,11 @@ let package = Package(
             name: "SettingsStoreTests",
             dependencies: ["SettingsStore"],
             path: "Tests/SettingsStoreTests"
+        ),
+        .testTarget(
+            name: "SettingsSyncStoreTests",
+            dependencies: ["SettingsSyncStore", "SettingsStore"],
+            path: "Tests/SettingsSyncStoreTests"
         ),
         .testTarget(
             name: "CloudKitSyncClientTests",

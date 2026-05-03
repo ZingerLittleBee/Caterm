@@ -46,3 +46,39 @@ final class SettingsStoreUpdateTests: XCTestCase {
         XCTAssertEqual(store.settings.global.fontSize, 22)
     }
 }
+
+final class FirstUserEditedAtTests: XCTestCase {
+    @MainActor
+    func test_firstUpdate_setsFirstUserEditedAt() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("settings-\(UUID().uuidString).plist")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = SettingsStore(settings: CatermSettings(), path: tmp)
+        XCTAssertNil(store.settings.firstUserEditedAt)
+
+        store.debounceInterval = .milliseconds(0)
+        store.update { $0.global.fontSize = 14 }
+        store.flushNow()
+
+        XCTAssertNotNil(store.settings.firstUserEditedAt, "first edit should populate timestamp")
+    }
+
+    @MainActor
+    func test_secondUpdate_doesNotChangeFirstUserEditedAt() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("settings-\(UUID().uuidString).plist")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let initial = Date(timeIntervalSince1970: 1_700_000_000)
+        let store = SettingsStore(
+            settings: CatermSettings(firstUserEditedAt: initial),
+            path: tmp
+        )
+
+        store.debounceInterval = .milliseconds(0)
+        store.update { $0.global.fontSize = 14 }
+        store.flushNow()
+
+        XCTAssertEqual(store.settings.firstUserEditedAt, initial,
+            "subsequent edits must NOT overwrite the first-edit timestamp")
+    }
+}

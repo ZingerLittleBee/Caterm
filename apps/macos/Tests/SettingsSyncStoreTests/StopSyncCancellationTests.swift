@@ -1,0 +1,118 @@
+import XCTest
+import SettingsStore
+@testable import SettingsSyncStore
+
+@MainActor
+final class StopSyncCancellationTests: XCTestCase {
+	private func realLocal(font: Int, revision: String) -> CatermSettings {
+		var s = CatermSettings()
+		s.global.fontSize = font
+		s.firstUserEditedAt = Date(timeIntervalSince1970: 1)
+		s.revision = revision
+		return s
+	}
+
+	// stopSync mid-boot must abort the pending decision: no apply, no token
+	// persist, and (critically) no observer registration. Without cancellation
+	// the boot task wakes from sleep, calls applyDecision, and re-installs the
+	// observers stopSync just removed.
+	func test_stopSync_duringBoot_abortsApplyAndDoesNotRegisterObservers() async throws {
+		let kvs = FakeKVS()
+		var cloud = CatermSettings()
+		cloud.global.fontSize = 99
+		cloud.firstUserEditedAt = Date(timeIntervalSince1970: 1)
+		cloud.revision = "cloud-rev"
+		kvs.set(try SettingsBlobCodec.encode(cloud), forKey: SettingsSyncStore.kvsKey)
+
+		let tmp = FileManager.default.temporaryDirectory
+			.appendingPathComponent("stop-\(UUID().uuidString).plist")
+		let store = SettingsStore(settings: realLocal(font: 17, revision: "a-rev"), path: tmp)
+		store.debounceInterval = .milliseconds(0)
+		let defaults = UserDefaults(suiteName: "stop-\(UUID().uuidString)")!
+		let tokenStore = IdentityTokenStore(userDefaults: defaults)
+		let session = AlwaysSignedInSession()
+		let sync = SettingsSyncStore(
+			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
+			currentTokenProvider: { TestToken("user-A") }
+		)
+		sync.testInitialSyncTimeout = .milliseconds(200)
+		sync.testInitialSyncGrace = .milliseconds(0)
+		sync.installLifecycleObservers()
+		await sync.startSync()
+
+		// Boot is still in its initial-sync sleep. Stop now.
+		try await Task.sleep(for: .milliseconds(30))
+		sync.stopSync()
+
+		// Wait well past the original boot timeout so any uncancelled task
+		// would have woken up by now.
+		try await Task.sleep(for: .milliseconds(300))
+
+		// Apply must NOT have run.
+		XCTAssertEqual(store.settings.global.fontSize, 17,
+			"stopSync mid-boot must prevent applyDecision; cloud should not have been applied")
+		XCTAssertEqual(tokenStore.loadPersisted(), .none,
+			"stopSync mid-boot must prevent token persist")
+
+		// Observers must NOT be installed. Drop a fresh blob and post a
+		// serverChange — if the KVS observer is installed it would apply.
+		var cloud2 = CatermSettings()
+		cloud2.global.fontSize = 33
+		cloud2.firstUserEditedAt = Date(timeIntervalSince1970: 1)
+		cloud2.revision = "cloud-2"
+		kvs.set(try SettingsBlobCodec.encode(cloud2), forKey: SettingsSyncStore.kvsKey)
+		NotificationCenter.default.post(
+			name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+			object: nil,
+			userInfo: [NSUbiquitousKeyValueStoreChangeReasonKey: NSUbiquitousKeyValueStoreServerChange]
+		)
+		try await Task.sleep(for: .milliseconds(50))
+		XCTAssertEqual(store.settings.global.fontSize, 17,
+			"after stopSync, KVS observer must not be installed")
+	}
+
+	// stopSync mid-grace must cancel the pending classifyAndApply.
+	func test_stopSync_duringInitialSyncGrace_cancelsClassifyAndApply() async throws {
+		let kvs = FakeKVS()
+		let tmp = FileManager.default.temporaryDirectory
+			.appendingPathComponent("stop-\(UUID().uuidString).plist")
+		let store = SettingsStore(settings: realLocal(font: 17, revision: "a-rev"), path: tmp)
+		store.debounceInterval = .milliseconds(0)
+		let defaults = UserDefaults(suiteName: "stop-\(UUID().uuidString)")!
+		let tokenStore = IdentityTokenStore(userDefaults: defaults)
+		let session = AlwaysSignedInSession()
+		let sync = SettingsSyncStore(
+			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
+			currentTokenProvider: { TestToken("user-A") }
+		)
+		sync.testInitialSyncTimeout = .milliseconds(10)
+		sync.testInitialSyncGrace = .milliseconds(120)
+		sync.installLifecycleObservers()
+		await sync.startSync()
+		await sync.testWaitForBootDecision()
+
+		// Plant cloud data that classifyAndApply would otherwise apply.
+		var cloud = CatermSettings()
+		cloud.global.fontSize = 88
+		cloud.firstUserEditedAt = Date(timeIntervalSince1970: 1)
+		cloud.revision = "cloud-rev"
+		kvs.set(try SettingsBlobCodec.encode(cloud), forKey: SettingsSyncStore.kvsKey)
+
+		// Trigger initial-sync grace.
+		NotificationCenter.default.post(
+			name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+			object: nil,
+			userInfo: [NSUbiquitousKeyValueStoreChangeReasonKey: NSUbiquitousKeyValueStoreInitialSyncChange]
+		)
+		try await Task.sleep(for: .milliseconds(20))
+		XCTAssertTrue(sync.testPushSuspended, "grace barrier active")
+
+		// Stop mid-grace.
+		sync.stopSync()
+
+		// Wait past the original grace duration. classifyAndApply must NOT run.
+		try await Task.sleep(for: .milliseconds(200))
+		XCTAssertEqual(store.settings.global.fontSize, 17,
+			"stopSync mid-grace must abort classifyAndApply")
+	}
+}
