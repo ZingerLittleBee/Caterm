@@ -43,3 +43,25 @@ final class SettingsStorePersistenceTests: XCTestCase {
         return url
     }
 }
+
+final class CatermSettingsV2SchemaTests: XCTestCase {
+    func test_defaultInit_hasV2FieldsWithSafeDefaults() {
+        let s = CatermSettings()
+        XCTAssertEqual(s.version, 2, "schema bumped to v2")
+        XCTAssertEqual(s.seedVersion, 0, "0 = not yet seeded")
+        XCTAssertFalse(s.seededByDefault)
+        XCTAssertNil(s.firstUserEditedAt)
+        XCTAssertEqual(s.canonicalSeedHash, "")
+    }
+
+    func test_codable_roundTrip_preservesAllFields() throws {
+        var s = CatermSettings()
+        s.seedVersion = 1
+        s.seededByDefault = true
+        s.firstUserEditedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        s.canonicalSeedHash = "deadbeef"
+        let data = try PropertyListEncoder().encode(s)
+        let decoded = try PropertyListDecoder().decode(CatermSettings.self, from: data)
+        XCTAssertEqual(decoded, s)
+    }
+}

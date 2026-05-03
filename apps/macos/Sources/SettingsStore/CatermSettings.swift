@@ -68,18 +68,33 @@ public struct CatermSettings: Codable, Equatable {
     public var hostOverrides: [HostId: PartialSettings]
     public var migrationsCompleted: Set<String>
 
+    // v2 fields. Always carried in CatermSettings; SyncableSettings strips
+    // migrationsCompleted before encoding to KVS but keeps these.
+    public var seedVersion: Int
+    public var seededByDefault: Bool
+    public var firstUserEditedAt: Date?
+    public var canonicalSeedHash: String
+
     public init(
-        version: Int = 1,
+        version: Int = 2,
         revision: String = "",
         global: PartialSettings = PartialSettings(),
         hostOverrides: [HostId: PartialSettings] = [:],
-        migrationsCompleted: Set<String> = []
+        migrationsCompleted: Set<String> = [],
+        seedVersion: Int = 0,
+        seededByDefault: Bool = false,
+        firstUserEditedAt: Date? = nil,
+        canonicalSeedHash: String = ""
     ) {
         self.version = version
         self.revision = revision
         self.global = global
         self.hostOverrides = hostOverrides
         self.migrationsCompleted = migrationsCompleted
+        self.seedVersion = seedVersion
+        self.seededByDefault = seededByDefault
+        self.firstUserEditedAt = firstUserEditedAt
+        self.canonicalSeedHash = canonicalSeedHash
     }
 
     public static let empty = CatermSettings()
@@ -92,4 +107,24 @@ public struct CatermSettings: Codable, Equatable {
         titlebarStyle: .tabs,
         theme: "Catppuccin Mocha"
     )
+}
+
+extension CatermSettings {
+    private enum CodingKeys: String, CodingKey {
+        case version, revision, global, hostOverrides, migrationsCompleted
+        case seedVersion, seededByDefault, firstUserEditedAt, canonicalSeedHash
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        self.revision = try c.decodeIfPresent(String.self, forKey: .revision) ?? ""
+        self.global = try c.decodeIfPresent(PartialSettings.self, forKey: .global) ?? PartialSettings()
+        self.hostOverrides = try c.decodeIfPresent([HostId: PartialSettings].self, forKey: .hostOverrides) ?? [:]
+        self.migrationsCompleted = try c.decodeIfPresent(Set<String>.self, forKey: .migrationsCompleted) ?? []
+        self.seedVersion = try c.decodeIfPresent(Int.self, forKey: .seedVersion) ?? 0
+        self.seededByDefault = try c.decodeIfPresent(Bool.self, forKey: .seededByDefault) ?? false
+        self.firstUserEditedAt = try c.decodeIfPresent(Date.self, forKey: .firstUserEditedAt)
+        self.canonicalSeedHash = try c.decodeIfPresent(String.self, forKey: .canonicalSeedHash) ?? ""
+    }
 }
