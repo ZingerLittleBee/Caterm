@@ -146,11 +146,26 @@ public final class SettingsSyncStore {
 	private func handleKVSExternalChange(note: Notification) {
 		let raw = note.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
 		let reason = KVSReasonClassifier.classify(raw)
-		// Set the grace barrier synchronously so callers observing
-		// `testPushSuspended` immediately after `testPostExternalChange`
-		// see the barrier active without having to yield first.
-		if case .initialSyncChange = reason {
+		// Supersede any in-flight pull. Without this, two overlapping
+		// .initialSyncChange notifications spawn two grace tasks; the older
+		// task wakes first and clears `inInitialSyncGrace` while the newer
+		// task's grace window is still open — re-opening the C1 leak (a user
+		// edit in that gap takes the unfreeze branch and pushes pre-grace
+		// local state).
+		pullTask?.cancel()
+		// Update the grace barrier synchronously based on the *new* reason so
+		// callers observing `testPushSuspended` immediately after a post see
+		// the correct state without yielding. Setting / clearing here also
+		// means the cancellation guard inside dispatchPull never has to touch
+		// the flag (so a cancelled grace task can't clobber a newer one).
+		switch reason {
+		case .initialSyncChange:
 			inInitialSyncGrace = true
+		case .serverChange, .accountChange, .quotaViolationChange, .unknown:
+			// A non-grace pull supersedes any prior grace. Leaving the flag
+			// set would freeze user-edit pushes until the (now cancelled)
+			// older grace task naturally completed.
+			inInitialSyncGrace = false
 		}
 		pullTask = Task { @MainActor [weak self] in
 			await self?.dispatchPull(reason: reason)
@@ -163,15 +178,15 @@ public final class SettingsSyncStore {
 			NSLog("[SettingsSyncStore] quota violation; key present? \(kvs.data(forKey: Self.kvsKey) != nil)")
 			return
 		case .initialSyncChange:
-			inInitialSyncGrace = true
+			// `inInitialSyncGrace` was already set synchronously by
+			// handleKVSExternalChange so observers see the barrier without
+			// having to yield. Don't touch it here on the cancellation path —
+			// supersede semantics in handleKVSExternalChange own the flag.
 			try? await Task.sleep(for: testInitialSyncGrace)
-			guard !Task.isCancelled, isSyncRunning else {
-				inInitialSyncGrace = false
-				return
-			}
+			guard !Task.isCancelled, isSyncRunning else { return }
 			// Clear the grace flag BEFORE classifyAndApply so the decision's
-			// finalSuspensionState is the sole source of truth for whether
-			// subsequent user edits should take the unfreeze path.
+			// finalState is the sole source of truth for whether subsequent
+			// user edits should take the unfreeze path.
 			inInitialSyncGrace = false
 			await classifyAndApply()
 		case .serverChange, .accountChange, .unknown:
@@ -333,10 +348,16 @@ public final class SettingsSyncStore {
 		}
 
 		if applyFailed {
-			// Apply failed mid-decision. Roll back: do NOT persist the
-			// identity token (next boot will re-classify and retry), and do
-			// NOT transition out of the current suspension. The next pull
-			// will reach this code path again with fresh state.
+			// Apply failed mid-decision. Roll back:
+			// - Do NOT persist the identity token (a successor boot will
+			//   re-classify and retry).
+			// - Move to .quarantined so the observer-plane push is inhibited
+			//   regardless of the prior state. This matters most when the
+			//   prior state was .active: returning early without changing
+			//   syncState would leave the next user edit free to push stale
+			//   local state over the cloud blob we just failed to apply.
+			//   The next pull re-evaluates and can clear quarantine.
+			syncState = .quarantined
 			return
 		}
 

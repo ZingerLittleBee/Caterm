@@ -153,4 +153,61 @@ final class QuarantineAndApplyFailureTests: XCTestCase {
 		// And local store still holds X data.
 		XCTAssertEqual(store.settings.global.fontSize, 17)
 	}
+
+	// MARK: - Apply failure while ALREADY .active (review issue MEDIUM)
+
+	// If a runtime .serverChange triggers applyCloud and the apply throws while
+	// syncState was .active, the early return leaves syncState at .active. The
+	// next user edit then takes the .active branch and pushLocalToKVS, clobbering
+	// the cloud blob we couldn't apply. Apply failure must move the state out of
+	// .active so push is inhibited until the next pull re-evaluates.
+	func test_applyFailureWhileActive_movesOutOfActiveSoEditsCannotPushOverCloud() async throws {
+		let kvs = FakeKVS()
+		let tmp = FileManager.default.temporaryDirectory
+			.appendingPathComponent("rta-\(UUID().uuidString).plist")
+		let store = SettingsStore(settings: realLocal(font: 17, revision: "a-rev"), path: tmp)
+		store.debounceInterval = .milliseconds(0)
+		let defaults = UserDefaults(suiteName: "rta-\(UUID().uuidString)")!
+		let tokenStore = IdentityTokenStore(userDefaults: defaults)
+		let session = AlwaysSignedInSession()
+		let sync = SettingsSyncStore(
+			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
+			currentTokenProvider: { TestToken("user-A") }
+		)
+		sync.testInitialSyncTimeout = .milliseconds(10)
+		sync.testInitialSyncGrace = .milliseconds(0)
+		sync.installLifecycleObservers()
+		await sync.startSync()
+		await sync.testWaitForBootDecision()
+
+		XCTAssertEqual(sync.syncState, .active,
+			"boot with absent cloud + real local → pushLocal → .active")
+
+		// Plant a newer cloud blob — next classifyAndApply will pick applyCloud.
+		var cloud = CatermSettings()
+		cloud.global.fontSize = 88
+		cloud.firstUserEditedAt = Date(timeIntervalSince1970: 1)
+		cloud.revision = "z-rev"
+		let cloudBlob = try SettingsBlobCodec.encode(cloud)
+		kvs.set(cloudBlob, forKey: SettingsSyncStore.kvsKey)
+
+		// Sabotage the local plist path: replace the file with a directory.
+		// `data.write(to: path, options: .atomic)` will throw on a directory
+		// path, so replaceFromSync throws inside applyCloudToLocal. KVS push
+		// is unaffected (it doesn't touch disk).
+		try? FileManager.default.removeItem(at: tmp)
+		try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+
+		NotificationCenter.default.post(
+			name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+			object: nil,
+			userInfo: [NSUbiquitousKeyValueStoreChangeReasonKey: NSUbiquitousKeyValueStoreServerChange]
+		)
+		try await Task.sleep(for: .milliseconds(80))
+
+		XCTAssertNotEqual(sync.syncState, .active,
+			"apply failure while .active must move out of .active so the next observer-plane push can't clobber the cloud blob we failed to apply")
+		XCTAssertEqual(kvs.data(forKey: SettingsSyncStore.kvsKey), cloudBlob,
+			"cloud blob must remain intact after apply failure")
+	}
 }
