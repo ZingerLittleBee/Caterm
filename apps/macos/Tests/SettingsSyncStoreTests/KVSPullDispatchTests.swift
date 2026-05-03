@@ -63,6 +63,37 @@ final class KVSPullDispatchTests: XCTestCase {
         XCTAssertEqual(sync.testPushSuspended, originalSuspended)
     }
 
+    func test_editDuringInitialSyncGrace_doesNotBypassClassifier() async throws {
+        // Regression for the C1 race: while .initialSyncChange grace is in flight,
+        // a user edit must NOT take the suspendUntilFirstEdit unfreeze path. The
+        // unfreeze path persists the current token and pushes unconditionally,
+        // which would (1) leak the previous identity's data into the new identity's
+        // KVS during a hidden mid-flight identity switch, and (2) bypass
+        // classifyAndApply, which is the only place AccountSwitchHandler / schema
+        // checks run on the pulled blob.
+        let (sync, store, kvs) = try await setup()
+        sync.testInitialSyncGrace = .milliseconds(80)
+        kvs.removeObject(forKey: SettingsSyncStore.kvsKey)
+
+        sync.testPostExternalChange(reason: NSUbiquitousKeyValueStoreInitialSyncChange)
+        XCTAssertTrue(sync.testPushSuspended, "barrier active synchronously")
+        XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
+            "preconditions: KVS empty before edit")
+
+        try await Task.sleep(for: .milliseconds(20))
+        store.update { $0.global.fontSize = 7 }
+        store.flushNow()
+        try await Task.sleep(for: .milliseconds(10))
+
+        XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
+            "user edit during grace MUST NOT push via the unfreeze branch")
+        XCTAssertTrue(sync.testPushSuspended, "barrier still active until grace expires")
+
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertNotNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
+            "after grace, classifier handles the local push via the control plane")
+    }
+
     func test_accountChange_reclassifies_firstObservation_pushesViaBootstrap() async throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("pull-\(UUID().uuidString).plist")

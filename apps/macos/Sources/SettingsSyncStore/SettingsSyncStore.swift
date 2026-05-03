@@ -31,7 +31,17 @@ public final class SettingsSyncStore {
 	private var kvsExternalObserver: NSObjectProtocol?
 	private var settingsChangeObserver: NSObjectProtocol?
 
-	public var pushSuspended: Bool = true   // initial barrier — cleared by startSync's decision pass
+	/// `suspendUntilFirstEdit` semantics: a real boot-decision outcome (or
+	/// `stopSync`/initial-startup gate). The next *user* edit unfreezes,
+	/// pushes, and persists the current identity token.
+	public var pushSuspended: Bool = true
+	/// Transient write barrier covering Apple's `.initialSyncChange` grace
+	/// window. Distinct from `pushSuspended` because a user edit during
+	/// grace MUST defer to the post-grace classifier — it must NOT take the
+	/// suspendUntilFirstEdit unfreeze path, which would bypass schema /
+	/// account-switch checks and (worse) leak the previous identity's data
+	/// into a freshly-arrived KVS state.
+	private var inInitialSyncGrace: Bool = false
 	private var isSyncRunning: Bool = false
 
 	// Test counters
@@ -41,7 +51,7 @@ public final class SettingsSyncStore {
 	// MARK: - Test hooks
 	public var testInitialSyncTimeout: Duration = .seconds(3)
 	public var testInitialSyncGrace: Duration = .milliseconds(500)
-	public var testPushSuspended: Bool { pushSuspended }
+	public var testPushSuspended: Bool { pushSuspended || inInitialSyncGrace }
 	public func testForcePushSuspended(_ v: Bool) { pushSuspended = v }
 	public func testPostExternalChange(reason: Int) {
 		NotificationCenter.default.post(
@@ -128,10 +138,11 @@ public final class SettingsSyncStore {
 	private func handleKVSExternalChange(note: Notification) {
 		let raw = note.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
 		let reason = KVSReasonClassifier.classify(raw)
-		// For .initialSyncChange we set the barrier synchronously so callers
-		// observing immediately after the post see pushSuspended == true.
+		// Set the grace barrier synchronously so callers observing
+		// `testPushSuspended` immediately after `testPostExternalChange`
+		// see the barrier active without having to yield first.
 		if case .initialSyncChange = reason {
-			pushSuspended = true
+			inInitialSyncGrace = true
 		}
 		Task { @MainActor [weak self] in
 			await self?.dispatchPull(reason: reason)
@@ -144,8 +155,12 @@ public final class SettingsSyncStore {
 			NSLog("[SettingsSyncStore] quota violation; key present? \(kvs.data(forKey: Self.kvsKey) != nil)")
 			return
 		case .initialSyncChange:
-			pushSuspended = true
+			inInitialSyncGrace = true
 			try? await Task.sleep(for: testInitialSyncGrace)
+			// Clear the grace flag BEFORE classifyAndApply so the decision's
+			// finalSuspensionState is the sole source of truth for whether
+			// subsequent user edits should take the unfreeze path.
+			inInitialSyncGrace = false
 			await classifyAndApply()
 		case .serverChange, .accountChange, .unknown:
 			await classifyAndApply()
@@ -179,6 +194,13 @@ public final class SettingsSyncStore {
 	private func handleLocalSettingsChange(note: Notification) {
 		let source = note.userInfo?[SettingsStore.sourceUserInfoKey] as? String ?? "local"
 		if source == "sync" { return }
+
+		// During the initial-sync grace window, defer to the post-grace
+		// classifier. Taking the unfreeze branch here would (a) skip schema /
+		// account-switch checks against the freshly-arrived blob and (b)
+		// risk persisting the current identity token before the classifier
+		// has decided whether the local data belongs there.
+		if inInitialSyncGrace { return }
 
 		if pushSuspended {
 			// CRITICAL ORDERING: unfreeze BEFORE the push for this same edit so
@@ -292,7 +314,7 @@ public final class SettingsSyncStore {
 	}
 
 	private func knownMigrationsAtBoot() -> Set<String> {
-		return ["settings-gui-v1"]
+		return [SettingsMigrationStep.token]
 	}
 }
 
