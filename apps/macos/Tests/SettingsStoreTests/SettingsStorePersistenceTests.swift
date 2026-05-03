@@ -9,6 +9,10 @@ final class SettingsStorePersistenceTests: XCTestCase {
         let store = try SettingsStore.load(from: dir.appendingPathComponent("settings.plist"))
         XCTAssertEqual(store.settings.global.fontFamily, "SF Mono")
         XCTAssertEqual(store.settings.global.theme, "Catppuccin Mocha")
+        XCTAssertTrue(store.settings.seededByDefault)
+        XCTAssertEqual(store.settings.seedVersion, 1)
+        XCTAssertFalse(store.settings.canonicalSeedHash.isEmpty)
+        XCTAssertNil(store.settings.firstUserEditedAt)
     }
 
     func testRoundTripPersists() throws {
@@ -34,6 +38,10 @@ final class SettingsStorePersistenceTests: XCTestCase {
         XCTAssertEqual(store.settings.global.theme, "Catppuccin Mocha")
         let siblings = try FileManager.default.contentsOfDirectory(atPath: dir.path)
         XCTAssertTrue(siblings.contains { $0.hasPrefix("settings.plist.broken-") })
+        XCTAssertTrue(store.settings.seededByDefault)
+        XCTAssertEqual(store.settings.seedVersion, 1)
+        XCTAssertFalse(store.settings.canonicalSeedHash.isEmpty)
+        XCTAssertNil(store.settings.firstUserEditedAt)
     }
 
     private func makeTempDir() throws -> URL {

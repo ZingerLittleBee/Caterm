@@ -79,7 +79,7 @@ public final class SettingsStore: ObservableObject {
         } else {
             s.seededByDefault = false
             s.firstUserEditedAt = Date()  // sentinel: edited before tracking, exact moment unknown
-            s.seedVersion = 1
+            s.seedVersion = 1  // origin seed version; content was user-edited so canonicalSeedHash is empty
             s.canonicalSeedHash = ""  // empty never matches KnownSeedTable; locks user in real-edits
         }
     }
@@ -104,6 +104,9 @@ public final class SettingsStore: ObservableObject {
         try FileManager.default.moveItem(at: path, to: dest)
     }
 
+    // Intentionally duplicated from KnownSeedTable.canonicalHash. SettingsStore must
+    // not import SettingsSyncStore (wrong dependency direction); both implementations
+    // are kept identical so v1DefaultSeedHash matches KnownSeedTable.entries[0].canonicalSeedHash.
     private static func canonicalHash(of partial: PartialSettings) -> String {
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
