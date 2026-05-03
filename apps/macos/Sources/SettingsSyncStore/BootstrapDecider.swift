@@ -35,6 +35,9 @@ public enum BootstrapDecider {
 		}
 
 		// Both have real edits. Doc-level revision LWW with clock-skew sanity.
+		// String compare is total-order-safe because makeRevision() emits a
+		// fixed-width timestamp prefix at current epoch scales (see
+		// SettingsStore.makeRevision docstring).
 		let cloudWins = cloud.revision > local.revision
 		let clockSkewSuspect: Bool = {
 			guard cloudWins, let firstEdit = local.firstUserEditedAt else { return false }

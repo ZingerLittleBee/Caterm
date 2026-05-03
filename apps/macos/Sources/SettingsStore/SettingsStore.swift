@@ -117,6 +117,12 @@ public final class SettingsStore: ObservableObject {
 
     private static let v1DefaultSeedHash: String = canonicalHash(of: CatermSettings.defaultsSeed)
 
+    /// Revision format: `String(ms_since_epoch, radix: 36) + 8 random chars`.
+    /// The ms timestamp is currently 8 chars in base-36 and stays 8 chars
+    /// through ~2059. String lexicographic order equals time order as long
+    /// as the timestamp prefix is fixed-width. Do NOT change the radix or
+    /// shorten the random suffix without auditing all revision comparisons
+    /// (notably `BootstrapDecider.cloudWins`).
     public static func makeRevision() -> String {
         let ms = UInt64(Date().timeIntervalSince1970 * 1000)
         let rand = (0..<8).map { _ in
