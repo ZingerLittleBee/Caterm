@@ -93,3 +93,29 @@ public final class SettingsSyncStore {
 		pushSuspended = true
 	}
 }
+
+public enum TokenClassification: Equatable {
+	case notSignedIn
+	case firstObservation     // prev nil, curr non-nil — no prior identity to leak
+	case identitySame         // prev and curr both non-nil and isEqual
+	case identityChanged      // prev and curr both non-nil and NOT isEqual
+	case signedOut            // prev non-nil, curr nil
+	case unknownPrevious      // sentinel "<archive-failed>" — route conservatively
+}
+
+public enum TokenClassifier {
+	public static func classify(
+		persisted: PersistedTokenLoad,
+		current: (NSObject & NSCoding & NSCopying)?
+	) -> TokenClassification {
+		if case .archiveFailed = persisted { return .unknownPrevious }
+		switch (persisted, current) {
+		case (.none, nil): return .notSignedIn
+		case (.none, _?): return .firstObservation
+		case (.token, nil): return .signedOut
+		case (.token(let prev), let curr?):
+			return prev.isEqual(curr) ? .identitySame : .identityChanged
+		default: return .notSignedIn   // unreachable; .archiveFailed handled above
+		}
+	}
+}
