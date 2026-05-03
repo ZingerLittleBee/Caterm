@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 
 @MainActor
 public final class SettingsStore: ObservableObject {
@@ -40,18 +41,46 @@ public final class SettingsStore: ObservableObject {
             var seeded = CatermSettings.empty
             seeded.global = CatermSettings.defaultsSeed
             seeded.revision = makeRevision()
+            seeded.seededByDefault = true
+            seeded.seedVersion = 1
+            seeded.canonicalSeedHash = v1DefaultSeedHash
+            seeded.firstUserEditedAt = nil
             return SettingsStore(settings: seeded, path: path)
         }
         do {
             let data = try Data(contentsOf: path)
-            let s = try PropertyListDecoder().decode(CatermSettings.self, from: data)
+            var s = try PropertyListDecoder().decode(CatermSettings.self, from: data)
+            if s.version < 2 {
+                migrateV1ToV2(&s)
+            }
             return SettingsStore(settings: s, path: path)
         } catch {
             try quarantineCorrupted(at: path)
             var seeded = CatermSettings.empty
             seeded.global = CatermSettings.defaultsSeed
             seeded.revision = makeRevision()
+            seeded.seededByDefault = true
+            seeded.seedVersion = 1
+            seeded.canonicalSeedHash = v1DefaultSeedHash
+            seeded.firstUserEditedAt = nil
             return SettingsStore(settings: seeded, path: path)
+        }
+    }
+
+    private static func migrateV1ToV2(_ s: inout CatermSettings) {
+        s.version = 2
+        let exactDefaults = canonicalHash(of: s.global) == v1DefaultSeedHash
+            && s.hostOverrides.isEmpty
+        if exactDefaults {
+            s.seededByDefault = true
+            s.firstUserEditedAt = nil
+            s.seedVersion = 1
+            s.canonicalSeedHash = v1DefaultSeedHash
+        } else {
+            s.seededByDefault = false
+            s.firstUserEditedAt = Date()  // sentinel: edited before tracking, exact moment unknown
+            s.seedVersion = 1
+            s.canonicalSeedHash = ""  // empty never matches KnownSeedTable; locks user in real-edits
         }
     }
 
@@ -74,6 +103,16 @@ public final class SettingsStore: ObservableObject {
             .appendingPathComponent("\(path.lastPathComponent).broken-\(stamp)")
         try FileManager.default.moveItem(at: path, to: dest)
     }
+
+    private static func canonicalHash(of partial: PartialSettings) -> String {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        guard let data = try? encoder.encode(partial) else { return "" }
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static let v1DefaultSeedHash: String = canonicalHash(of: CatermSettings.defaultsSeed)
 
     public static func makeRevision() -> String {
         let ms = UInt64(Date().timeIntervalSince1970 * 1000)
