@@ -254,23 +254,54 @@ When AccountSwitchHandler hits the "Y empty, first user edit unfreezes" branch, 
 
 `didChangeExternallyNotification` arrives with a `reason`. `SettingsSyncStore` dispatches:
 
-- `.initialSyncChange`: hydration **in progress** signal (per Apple). Set `pushSuspended = true`, schedule a 500ms grace backoff, then re-read KVS and run the appropriate handler (`BootstrapDecider` if identity matches persisted, `AccountSwitchHandler` if identity differs — token re-checked, since `.initialSyncChange` and `.accountChange` can both indicate identity transitions in some scenarios). Restore `pushSuspended = false` after.
-- `.serverChange`: another device pushed. Decode → `BootstrapDecider.decide(local, cloud)` → apply via `replaceFromSync`. Identity must match the persisted token; if not, route to `AccountSwitchHandler` instead.
-- `.quotaViolationChange`: log, verify our key still present via `dictionaryRepresentation()`, do NOT apply or repush this turn. Re-push naturally on next user edit.
-- `.accountChange`: route to `AccountSwitchHandler`.
+**Routing principle**: every steady-state pull dispatches through the **token classifier first**, then to a handler. The handler's returned `Decision` carries the final `pushSuspended` value; the dispatcher writes that value into state and does NOT blanket-restore `false`. This preserves cases where a handler intentionally stays suspended (e.g., AccountSwitchHandler with empty Y).
 
-`BootstrapDecider` is the **only** revision-LWW entry point. `AccountSwitchHandler` is the only force-apply entry point. Boot calls one of them once; every steady-state pull dispatches via reason. No duplicate merge logic across paths.
+```
+on didChangeExternallyNotification(reason):
+  switch reason:
+    .initialSyncChange:
+      pushSuspended = true             // confirm/extend barrier
+      after 500ms grace:
+        classify(IdentityTokenStore) → routeAndApply(reason: .initialSyncChange)
+    .serverChange:
+      classify(IdentityTokenStore) → routeAndApply(reason: .serverChange)
+    .accountChange:
+      classify(IdentityTokenStore) → routeAndApply(reason: .accountChange)
+    .quotaViolationChange:
+      log, verify our key via dictionaryRepresentation(), no apply, no repush
+
+routeAndApply(reason):
+  decision = switch classification:
+    notSignedIn       → stopSync()      // returns Decision.suspendedTerminal
+    firstObservation  → BootstrapDecider.decide(local, cloud)
+    identitySame      → BootstrapDecider.decide(local, cloud)
+    identityChanged   → AccountSwitchHandler.handle(local, cloudY, reason)
+    unknownPrevious   → AccountSwitchHandler.handle(local, cloudY, reason)
+  applyDecision(decision)
+  pushSuspended = decision.finalSuspensionState   // honor handler's choice
+```
+
+Both decider/handler results ARE source of truth for `pushSuspended`. Examples:
+- `BootstrapDecider.applyCloud` → `finalSuspensionState = false`
+- `BootstrapDecider.pushLocal` → `finalSuspensionState = false` (control-plane push runs first, then unsuspend)
+- `BootstrapDecider.noOp` → `finalSuspensionState = false`
+- `BootstrapDecider.rejectMerge` → `finalSuspensionState = false` (we keep local; observer plane resumes)
+- `AccountSwitchHandler.forceApply` → `finalSuspensionState = false`
+- `AccountSwitchHandler.suspendUntilFirstEdit` (Y empty branch) → `finalSuspensionState = true` (the only handler outcome that intentionally stays suspended; the unfreeze flips it on first observed user edit, see Account Switch Flow)
+- `AccountSwitchHandler.rejectMerge` (cloud Y schema-newer) → `finalSuspensionState = true` (don't pollute Y; user must upgrade older Mac)
+
+`BootstrapDecider` is the **only** revision-LWW entry point. `AccountSwitchHandler` is the only force-apply entry point. Boot AND every steady-state pull go through the same `IdentityTokenStore.classify()` first, then dispatch to the right handler. No duplicate routing logic across paths.
 
 ## Account Switch Flow
 
 ### Identifying a real switch
 
-`AccountSwitchHandler` runs on either of:
+`AccountSwitchHandler` is invoked when `IdentityTokenStore.classify()` returns `identityChanged` or `unknownPrevious`. The classifier runs in three contexts and is the single source of truth for routing:
 
-- KVS `didChangeExternallyNotification` with reason `.accountChange`.
-- Boot-time `ubiquityIdentityToken` classified as `identityChanged` (previous and current both non-nil and `isEqual` returns false) — see Boot Sequence step 3d.
+- Boot Sequence step 3d.
+- Steady-state `didChangeExternallyNotification` with reason `.serverChange`, `.accountChange`, or post-grace `.initialSyncChange` — see "Routing principle" in Steady-State Triggers.
 
-`firstObservation` (previous nil, current non-nil) does NOT route here; it goes through `BootstrapDecider` because there is no prior identity to leak from.
+`firstObservation` (previous nil, current non-nil) does NOT route here; it goes through `BootstrapDecider` because there is no prior identity to leak from. **This applies to KVS `.accountChange` too** — a `.accountChange` notification with previously-unobserved identity legitimately routes to `BootstrapDecider`, not `AccountSwitchHandler`. Hard-coding `.accountChange → AccountSwitchHandler` would conservatively quarantine first-time sign-ins for no benefit.
 
 It does **not** subscribe to `.catermICloudAccountChanged` directly — that notification is posted on every cold launch by `CatermApp.swift:99` as part of `iCloudAccountSession.refresh()`. (`SettingsSyncStore` does observe `.catermICloudAccountChanged` for one narrow purpose: detecting a transition from `isSignedIn == false` → `true` to call `startSync()`. That observer is in the lifecycle group, registered once for the app's lifetime.)
 
@@ -379,6 +410,9 @@ Two-Mac simulator using a `FakeKVS` shared between two `SettingsSyncStore` insta
 8a. **firstObservation upgrade path.** v2 build's first launch: persisted token absent, current `ubiquityIdentityToken` non-nil. Local has real edits (v1 plist, edited). KVS empty. Verify: `BootstrapDecider` runs (not `AccountSwitchHandler`); local pushed up immediately via control-plane (despite `pushSuspended == true` during the boot barrier); persisted token written. NOT silently quarantined.
 8b. **Archive-failure sentinel routes safely.** Inject an `IdentityTokenStore` whose archive throws. Run boot. Verify: sentinel `"<archive-failed>"` is persisted; on the *next* boot, classifier returns `unknownPrevious` and routes to AccountSwitchHandler (force-apply if Y has data, else suspend) — never to BootstrapDecider's revision LWW. This is the cross-identity-leak guard for archive failures.
 8c. **AccountSwitch + initialSyncChange grace.** During account-switch flow, the wait completes with `.initialSyncChange` reason. Verify: 500ms grace fires before KVS read. Without grace, KVS Y is read while still hydrating and may appear empty when it actually has data.
+8d. **`.accountChange` re-classifies via token store.** Inject an `.accountChange` notification while `IdentityTokenStore` reports `firstObservation` (no persisted token, current non-nil). Verify: `BootstrapDecider` runs, NOT `AccountSwitchHandler` — the routing principle holds across `.accountChange`.
+8e. **Steady-state `.initialSyncChange` honors handler suspension state.** Setup: identityChanged classification, KVS Y empty. Inject `.initialSyncChange`. After the 500ms grace + `AccountSwitchHandler.suspendUntilFirstEdit` decision, verify `pushSuspended` remains `true` (NOT blanket-restored to `false` by the dispatcher). User edit then unfreezes and pushes.
+8f. **Quota notification does not change suspension.** During steady-state with `pushSuspended == false`, inject `.quotaViolationChange`. Verify `pushSuspended` stays `false`; no apply, no repush; key still present in `dictionaryRepresentation()`.
 9. **Schema version reject.** v3 blob in KVS, v2 client decodes → rejectMerge, local untouched.
 10. **`migrationsCompleted` does not sync.** Device A has token `settings-gui-v1` set; pushes blob to KVS. Device B (without the token) decodes — its `migrationsCompleted` is unchanged. Then Device B applies its own filesystem migration, sets the token locally, the token does NOT propagate via `replaceFromSync` from any subsequent A push.
 11. **v1 → v2 unedited migration.** v1 plist with `global == defaultsSeed` and empty `hostOverrides` migrates with `seededByDefault = true`, `firstUserEditedAt = nil`, `canonicalSeedHash` populated. `isDefaultSeedUnedited` returns true. KVS empty + this state ⇒ no push.
