@@ -26,30 +26,33 @@ final class BootstrapDeciderTests: XCTestCase {
 		return s
 	}
 
-	private func cloud(revision: String, version: Int = 2) -> SyncableSettings {
+	private func cloud(revision: String, version: Int = 2) -> CloudReadResult {
 		var c = SyncableSettings(from: realEdits(revision: revision))
 		c.version = version
-		return c
+		return .decoded(c)
 	}
+
+	private struct DummyError: Error {}
 
 	private let bootStartedAt = Date(timeIntervalSince1970: 100_000_000)
 
-	func test_branch1_cloudNil_localSeed_returnsNoOp() {
+	func test_branch1_cloudAbsent_localSeed_returnsNoOp() {
 		let d = BootstrapDecider.decide(
-			local: freshSeed(), cloud: nil,
+			local: freshSeed(), cloud: .absent,
 			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
 		)
 		XCTAssertEqual(d.action, .noOp)
-		XCTAssertFalse(d.finalSuspensionState)
+		XCTAssertEqual(d.finalState, .active)
 		XCTAssertTrue(d.acceptIdentity)
 	}
 
-	func test_branch2_cloudNil_localReal_returnsPushLocal() {
+	func test_branch2_cloudAbsent_localReal_returnsPushLocal() {
 		let d = BootstrapDecider.decide(
-			local: realEdits(), cloud: nil,
+			local: realEdits(), cloud: .absent,
 			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
 		)
 		XCTAssertEqual(d.action, .pushLocal)
+		XCTAssertEqual(d.finalState, .active)
 		XCTAssertTrue(d.acceptIdentity)
 	}
 
@@ -59,6 +62,7 @@ final class BootstrapDeciderTests: XCTestCase {
 			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
 		)
 		XCTAssertEqual(d.action.tag, "applyCloud")
+		XCTAssertEqual(d.finalState, .active)
 		XCTAssertTrue(d.acceptIdentity)
 	}
 
@@ -68,6 +72,7 @@ final class BootstrapDeciderTests: XCTestCase {
 			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
 		)
 		XCTAssertEqual(d.action.tag, "applyCloud")
+		XCTAssertEqual(d.finalState, .active)
 	}
 
 	func test_branch5_cloudReal_localReal_localNewer_returnsPushLocal() {
@@ -76,6 +81,7 @@ final class BootstrapDeciderTests: XCTestCase {
 			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
 		)
 		XCTAssertEqual(d.action, .pushLocal)
+		XCTAssertEqual(d.finalState, .active)
 	}
 
 	func test_branch6_cloudReal_localReal_revisionEqual_returnsNoOp() {
@@ -86,19 +92,18 @@ final class BootstrapDeciderTests: XCTestCase {
 		XCTAssertEqual(d.action, .noOp)
 	}
 
-	func test_branch7_cloudSchemaNewer_returnsRejectMerge() {
+	func test_branch7_cloudSchemaNewer_returnsRejectMerge_quarantined() {
 		let d = BootstrapDecider.decide(
 			local: realEdits(), cloud: cloud(revision: "z", version: 3),
 			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
 		)
 		XCTAssertEqual(d.action, .rejectMerge(reason: .schemaNewerThanLocal))
+		XCTAssertEqual(d.finalState, .quarantined,
+			"schema-newer must quarantine — pushing local would clobber the v3 cloud")
 		XCTAssertTrue(d.acceptIdentity, "schema-newer in same identity still accepts identity")
-		XCTAssertFalse(d.finalSuspensionState)
 	}
 
 	func test_branch8_clockSkewSanity_localFirstEditAfterBoot_prefersLocal() {
-		// local revision lower (cloud appears newer), but local.firstUserEditedAt
-		// is after bootStartedAt — clock has been rewound; trust local.
 		let after = bootStartedAt.addingTimeInterval(60)
 		let d = BootstrapDecider.decide(
 			local: realEdits(revision: "a", firstEdit: after),
@@ -106,5 +111,16 @@ final class BootstrapDeciderTests: XCTestCase {
 			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
 		)
 		XCTAssertEqual(d.action, .pushLocal)
+	}
+
+	func test_branch9_cloudUnreadable_returnsRejectMerge_quarantined() {
+		let d = BootstrapDecider.decide(
+			local: realEdits(), cloud: .unreadable(DummyError()),
+			bootStartedAt: bootStartedAt, knownMigrations: knownMigrations
+		)
+		XCTAssertEqual(d.action, .rejectMerge(reason: .unreadableCloud))
+		XCTAssertEqual(d.finalState, .quarantined,
+			"undecodable cloud must quarantine — pushing local would overwrite a blob we can't read")
+		XCTAssertTrue(d.acceptIdentity)
 	}
 }

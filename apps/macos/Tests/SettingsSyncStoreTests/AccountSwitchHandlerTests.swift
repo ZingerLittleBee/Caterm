@@ -14,11 +14,13 @@ final class AccountSwitchHandlerTests: XCTestCase {
         return s
     }
 
-    private func cloud(revision: String, version: Int = 2) -> SyncableSettings {
+    private func cloud(revision: String, version: Int = 2) -> CloudReadResult {
         var c = SyncableSettings(from: realEdits(revision: revision))
         c.version = version
-        return c
+        return .decoded(c)
     }
+
+    private struct DummyError: Error {}
 
     func test_yHasData_schemaCompatible_returnsForceApply_acceptsIdentity() {
         // Local revision NEWER than Y's — proves no LWW comparison happens.
@@ -27,24 +29,33 @@ final class AccountSwitchHandlerTests: XCTestCase {
             cloudY: cloud(revision: "a")
         )
         XCTAssertEqual(d.action.tag, "forceApply")
-        XCTAssertFalse(d.finalSuspensionState)
+        XCTAssertEqual(d.finalState, .active)
         XCTAssertTrue(d.acceptIdentity)
     }
 
-    func test_yHasData_schemaNewer_returnsRejectMerge_doesNotAcceptIdentity() {
+    func test_yHasData_schemaNewer_returnsRejectMerge_quarantined() {
         let d = AccountSwitchHandler.handle(
             local: realEdits(),
             cloudY: cloud(revision: "z", version: 3)
         )
-        XCTAssertEqual(d.action, .rejectMerge(reason: RejectReason.schemaNewerThanLocal))
-        XCTAssertTrue(d.finalSuspensionState, "stay suspended; don't pollute Y")
+        XCTAssertEqual(d.action, .rejectMerge(reason: .schemaNewerThanLocal))
+        XCTAssertEqual(d.finalState, .quarantined,
+            "schema-newer Y must quarantine; the next pull retries when cloud catches up")
         XCTAssertFalse(d.acceptIdentity, "do not persist Y identity — we have no readable Y data")
     }
 
     func test_yEmpty_returnsSuspendUntilFirstEdit_doesNotAcceptIdentity() {
-        let d = AccountSwitchHandler.handle(local: realEdits(), cloudY: Optional<SyncableSettings>.none)
+        let d = AccountSwitchHandler.handle(local: realEdits(), cloudY: .absent)
         XCTAssertEqual(d.action, .suspendUntilFirstEdit)
-        XCTAssertTrue(d.finalSuspensionState)
+        XCTAssertEqual(d.finalState, .suspendUntilFirstEdit)
         XCTAssertFalse(d.acceptIdentity, "token persists later, at unfreeze + push moment")
+    }
+
+    func test_yUnreadable_returnsRejectMerge_quarantined_doesNotAcceptIdentity() {
+        let d = AccountSwitchHandler.handle(local: realEdits(), cloudY: .unreadable(DummyError()))
+        XCTAssertEqual(d.action, .rejectMerge(reason: .unreadableCloud))
+        XCTAssertEqual(d.finalState, .quarantined,
+            "Y present-but-undecodable must NOT route to the empty-Y suspendUntilFirstEdit path; first user edit would push X data into Y")
+        XCTAssertFalse(d.acceptIdentity)
     }
 }

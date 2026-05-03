@@ -31,16 +31,16 @@ public final class SettingsSyncStore {
 	private var kvsExternalObserver: NSObjectProtocol?
 	private var settingsChangeObserver: NSObjectProtocol?
 
-	/// `suspendUntilFirstEdit` semantics: a real boot-decision outcome (or
-	/// `stopSync`/initial-startup gate). The next *user* edit unfreezes,
-	/// pushes, and persists the current identity token.
-	public var pushSuspended: Bool = true
+	/// Decision-driven sync state. See `SyncStateOutcome` for semantics.
+	/// `suspendUntilFirstEdit` and `quarantined` look identical to a casual
+	/// observer — both block observer-plane push — but they differ in how
+	/// the next user edit is handled: suspendUntilFirstEdit unfreezes +
+	/// pushes + persists token; quarantined does nothing (the next pull
+	/// re-evaluates).
+	public private(set) var syncState: SyncStateOutcome = .suspendUntilFirstEdit
 	/// Transient write barrier covering Apple's `.initialSyncChange` grace
-	/// window. Distinct from `pushSuspended` because a user edit during
-	/// grace MUST defer to the post-grace classifier — it must NOT take the
-	/// suspendUntilFirstEdit unfreeze path, which would bypass schema /
-	/// account-switch checks and (worse) leak the previous identity's data
-	/// into a freshly-arrived KVS state.
+	/// window. Orthogonal to `syncState`: a user edit during grace defers
+	/// to the post-grace classifier regardless of `syncState`.
 	private var inInitialSyncGrace: Bool = false
 	private var isSyncRunning: Bool = false
 
@@ -51,8 +51,14 @@ public final class SettingsSyncStore {
 	// MARK: - Test hooks
 	public var testInitialSyncTimeout: Duration = .seconds(3)
 	public var testInitialSyncGrace: Duration = .milliseconds(500)
-	public var testPushSuspended: Bool { pushSuspended || inInitialSyncGrace }
-	public func testForcePushSuspended(_ v: Bool) { pushSuspended = v }
+	public var testPushSuspended: Bool { syncState != .active || inInitialSyncGrace }
+	public func testForceSyncState(_ s: SyncStateOutcome) { syncState = s }
+	/// Back-compat shim: maps the legacy boolean to the two-valued slice of
+	/// `SyncStateOutcome` it used to represent. New tests should call
+	/// `testForceSyncState` directly so quarantine is reachable.
+	public func testForcePushSuspended(_ v: Bool) {
+		syncState = v ? .suspendUntilFirstEdit : .active
+	}
 	public func testPostExternalChange(reason: Int) {
 		NotificationCenter.default.post(
 			name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
@@ -104,7 +110,7 @@ public final class SettingsSyncStore {
 		guard accountSession.isSignedIn else { return }
 		isSyncRunning = true
 		observersRegisteredCount += 1
-		pushSuspended = true
+		syncState = .suspendUntilFirstEdit  // initial barrier; bootSequence overrides
 
 		let task = Task { @MainActor [weak self] in
 			await self?.runBootSequence()
@@ -202,20 +208,28 @@ public final class SettingsSyncStore {
 		// has decided whether the local data belongs there.
 		if inInitialSyncGrace { return }
 
-		if pushSuspended {
+		switch syncState {
+		case .quarantined:
+			// We deliberately did NOT apply cloud (schema-newer or unreadable).
+			// Pushing local now would clobber the cloud blob we refused to
+			// touch. Let the next pull re-evaluate; user's local edit is still
+			// persisted to disk by SettingsStore — it just doesn't reach KVS.
+			return
+
+		case .suspendUntilFirstEdit:
 			// CRITICAL ORDERING: unfreeze BEFORE the push for this same edit so
 			// that quitting after one edit still leaves the cloud blob populated.
-			pushSuspended = false
+			syncState = .active
 			pushLocalToKVS()
 			// Persist the current token — user has accepted identity Y by
 			// authoring data under it.
 			if let token = currentTokenProvider() {
 				tokenStore.persist(token)
 			}
-			return
-		}
 
-		pushLocalToKVS()
+		case .active:
+			pushLocalToKVS()
+		}
 	}
 
 	public func stopSync() {
@@ -229,7 +243,7 @@ public final class SettingsSyncStore {
 			NotificationCenter.default.removeObserver(token)
 			settingsChangeObserver = nil
 		}
-		pushSuspended = true
+		syncState = .suspendUntilFirstEdit
 	}
 
 	private func runBootSequence() async {
@@ -267,31 +281,50 @@ public final class SettingsSyncStore {
 		await applyDecision(decision, currentToken: current)
 	}
 
-	private func decodeCloud() -> SyncableSettings? {
-		guard let data = kvs.data(forKey: Self.kvsKey) else { return nil }
-		return try? SettingsBlobCodec.decode(data)
+	private func decodeCloud() -> CloudReadResult {
+		guard let data = kvs.data(forKey: Self.kvsKey) else { return .absent }
+		do {
+			return .decoded(try SettingsBlobCodec.decode(data))
+		} catch {
+			return .unreadable(error)
+		}
 	}
 
 	private func applyDecision(
 		_ decision: Decision,
 		currentToken: (NSObject & NSCoding & NSCopying)?
 	) async {
+		var applyFailed = false
 		switch decision.action {
 		case .noOp:
 			break
 		case .pushLocal:
 			pushLocalToKVS()
 		case .applyCloud(let blob), .forceApply(let blob):
-			applyCloudToLocal(blob)
+			do {
+				try applyCloudToLocal(blob)
+			} catch {
+				NSLog("[SettingsSyncStore] applyCloudToLocal failed: \(error)")
+				applyFailed = true
+			}
 		case .rejectMerge:
 			break
 		case .suspendUntilFirstEdit:
 			break
 		}
+
+		if applyFailed {
+			// Apply failed mid-decision. Roll back: do NOT persist the
+			// identity token (next boot will re-classify and retry), and do
+			// NOT transition out of the current suspension. The next pull
+			// will reach this code path again with fresh state.
+			return
+		}
+
 		if decision.acceptIdentity, let token = currentToken {
 			tokenStore.persist(token)
 		}
-		pushSuspended = decision.finalSuspensionState
+		syncState = decision.finalState
 	}
 
 	private func pushLocalToKVS() {
@@ -304,13 +337,9 @@ public final class SettingsSyncStore {
 		}
 	}
 
-	private func applyCloudToLocal(_ blob: SyncableSettings) {
+	private func applyCloudToLocal(_ blob: SyncableSettings) throws {
 		let next = blob.toLocal(localMigrationsCompleted: store.settings.migrationsCompleted)
-		do {
-			try store.replaceFromSync(next)
-		} catch {
-			NSLog("[SettingsSyncStore] replaceFromSync failed: \(error)")
-		}
+		try store.replaceFromSync(next)
 	}
 
 	private func knownMigrationsAtBoot() -> Set<String> {
