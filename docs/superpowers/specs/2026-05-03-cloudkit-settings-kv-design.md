@@ -27,7 +27,7 @@
 | Default-seed bootstrap | **Composite `isDefaultSeedUnedited` check; default seeds yield to cloud; pure defaults never pushed up** | Revision tracks file generation time, not user intent — naive LWW silently overwrites real data. Composite check + historical seed table is the only safe gate. |
 | Conflict (both real edits) | **Doc-level revision LWW** | Simplest, mirrors Plan A/C; field-level merge would double schema size and complicate every edit path for a rarely-hit scenario. |
 | Account switch (true identity change) | **Freeze-and-wait + force-apply cloud Y**: suspend pushes; wait for new account's KVS; if KVS Y has schema-compatible data, **force-apply (no LWW)** — local revision from account X is meaningless under identity Y. If KVS Y empty, keep local but stay suspended. | Cross-identity LWW would let account X's newer revision overwrite account Y's older real data. Identity transitions are not edit conflicts. |
-| Account-switch trigger source | **Persisted ubiquity identity token diff + KVS `.accountChange`**, NOT `.catermICloudAccountChanged`. Token transitions classified: `prev nil → curr nonnil = firstObservation` (BootstrapDecider, not AccountSwitch); `prev nonnil → curr nonnil & differ = identityChanged` (AccountSwitchHandler); `prev nonnil → curr nil = signed out` (stopSync). | `.catermICloudAccountChanged` fires on every boot refresh (`CatermApp.swift:99`). Token diff alone would also misclassify the "first time we've ever seen any token" case as a switch — wrong, because there's no prior identity to leak from. |
+| Account-switch trigger source | **Persisted ubiquity identity token diff + KVS `.accountChange`**, NOT `.catermICloudAccountChanged`. Token persisted via `NSKeyedArchiver(requiringSecureCoding: false)` (token only conforms to `NSCoding`, not `NSSecureCoding`). Transitions classified: `prev nil → curr nonnil = firstObservation` (BootstrapDecider); `prev nonnil → curr nonnil & differ = identityChanged` (AccountSwitchHandler); `prev nonnil → curr nil = signedOut` (stopSync); persisted Data == sentinel `"<archive-failed>"` → `unknownPrevious` (route to AccountSwitchHandler conservatively, never to revision LWW). | `.catermICloudAccountChanged` fires on every boot refresh (`CatermApp.swift:99`). Token diff alone would misclassify the "first time we've ever seen any token" case as a switch. The archive sentinel guards against the failure mode where archiving throws and falsely demotes a real prior identity to nil — that case must not fall back to BootstrapDecider's revision LWW. |
 | Push timing post-account-switch | **First local user edit under new identity both unfreezes AND triggers immediate push of that flushed blob** | If we only unfreeze and wait for the *next* edit, quitting after one edit leaves account Y's KVS empty. |
 | Initial sync as write barrier | **`pushSuspended = true` while initial sync is in progress.** `.initialSyncChange` does NOT signal completion — Apple's docs say the local store "is being initialized from iCloud" when this fires. Treat it as confirmation that hydration is in flight, then **extend** the barrier with a short grace backoff (500ms) before re-reading KVS and proceeding. Boot uses the same pattern: 3s wait for the notification; on arrival, add 500ms grace; on timeout, proceed anyway (no notification = nothing fresh to hydrate). | Apple's initial sync indicates hydration in progress; pushing during this window can overwrite cloud before the local view of cloud is populated. Treating `.initialSyncChange` as "ready" was the bug. |
 | Schema version mismatch | **Reject merge if cloud.schemaVersion > local.schemaVersion**, log + keep local | Prevents older app versions from accidentally regressing newer data. Release cadence post-Plan-E is controlled, so version skew should be brief. |
@@ -175,6 +175,11 @@ After `BootSequence.run` returns the `SettingsStore`, construct `SettingsSyncSto
       Read currentToken = FileManager.default.ubiquityIdentityToken (NSObject? conforming
       to NSCoding & NSCopying & NSObjectProtocol).
       Classify:
+        - persisted Data == sentinel "<archive-failed>" → unknownPrevious (treat
+          conservatively as identityChanged — route through AccountSwitchHandler,
+          which is force-apply if Y has data, else stays suspended; never falls
+          back to BootstrapDecider's revision LWW. This guarantees no cross-
+          identity LWW even when archiving the previous token failed.)
         - previousToken == nil && currentToken == nil → notSignedIn (return)
         - previousToken == nil && currentToken != nil → firstObservation
         - previousToken != nil && currentToken == nil → signedOut (defensive — shouldn't
@@ -190,7 +195,7 @@ After `BootSequence.run` returns the `SettingsStore`, construct `SettingsSyncSto
       not complete; the grace gives the in-memory store time to settle.
       If timeout fired: proceed (no notification = no fresh hydration in flight).
 4. Decision:
-   ┌─ identityChanged
+   ┌─ identityChanged OR unknownPrevious
    │    └─ AccountSwitchHandler (see Account Switch Flow below)
    └─ firstObservation OR identitySame
         └─ BootstrapDecider.decide(local: SettingsStore.settings,
@@ -209,17 +214,33 @@ After `BootSequence.run` returns the `SettingsStore`, construct `SettingsSyncSto
                   │      && local.firstUserEditedAt! > bootStartedAt
                   │    if cloudWins && !clockSkewSuspect → applyCloud
                   │    else → pushLocal
-5. Persist current ubiquityIdentityToken via NSKeyedArchiver.archivedData(
-   withRootObject: token, requiringSecureCoding: true) into UserDefaults
-   (so next launch can detect changes).
+5. Persist current ubiquityIdentityToken via `IdentityTokenStore.archive(token)`,
+   which uses `NSKeyedArchiver` with `requiringSecureCoding: false` — Apple only
+   documents the token as `NSCoding & NSCopying & NSObjectProtocol`, NOT
+   `NSSecureCoding`, so secure coding would throw on real-world tokens whose
+   classes do not adopt the secure protocol. If archive throws (corrupt token,
+   future-OS shape change), persist the sentinel string `"<archive-failed>"` as
+   the stored Data marker and log a warning. Next-boot classification handles
+   the sentinel (see step 3d below).
 6. pushSuspended = false. Enter steady-state.
 ```
 
 **`firstObservation` rationale**: this covers v1 → v2 upgraders signing in for the first time post-upgrade, AND fresh installs that signed in only after some local edits were made offline. In both cases there is no prior identity to leak from; treating it as a switch would silently quarantine real local edits until the user happened to make another change. Routing through `BootstrapDecider` lets these edits push naturally if KVS is empty, or yield to cloud if cloud has data.
 
+## Push Pipeline: Control Plane vs Observer Plane
+
+Pushes to KVS happen via two distinct paths and `pushSuspended` only gates the **observer plane**:
+
+- **Observer plane** (gated by `pushSuspended`): `SettingsStore.changeNotification` listener inside `SettingsSyncStore`. When `pushSuspended == true`, the notification is observed but the resulting push is skipped.
+- **Control plane** (NOT gated by `pushSuspended`): direct method calls invoked by `BootstrapDecider`'s `pushLocal` action, `AccountSwitchHandler`'s force-apply (which calls `replaceFromSync`, not push) and its first-edit unfreeze flow. These call the underlying `pushBlob(_:)` private method directly. They are deliberate decisions to push, not observer-triggered side effects.
+
+This split exists because boot runs while `pushSuspended == true` (write barrier active), but the bootstrap decision may legitimately conclude "push local up". That conclusion is a control-plane action and proceeds regardless of the barrier. The barrier is for *uncontrolled* pushes from incidental user edits during hydration.
+
+When AccountSwitchHandler hits the "Y empty, first user edit unfreezes" branch, the unfreeze flips `pushSuspended = false` BEFORE the observer-plane handler processes that notification — so the observer plane sees an unsuspended state and pushes normally. This is the only place where the two planes interact.
+
 ## Steady-State Triggers
 
-### Local → KVS (push)
+### Local → KVS (push, observer plane)
 
 - Source: `SettingsStore.changeNotification`.
 - **Filter on `userInfo[sourceUserInfoKey]`**: if `"sync"`, the change came from `replaceFromSync` and must NOT be re-pushed (breaks the apply→push feedback loop). Otherwise it's a user/code-driven edit; proceed.
@@ -258,7 +279,11 @@ It does **not** subscribe to `.catermICloudAccountChanged` directly — that not
 ```
 1. pushSuspended = true                          // observe local changes, do not push
 2. KVS.synchronize()                             // request fresh pull for new account
-3. Wait for next didChangeExternallyNotification (any reason) OR 3-second timeout.
+3. Wait for next didChangeExternallyNotification (capture reason) OR 3-second timeout.
+3a. If notification reason == .initialSyncChange: hydration is *in progress*; add
+    a 500ms grace backoff before reading KVS, same rule as boot. Keep barrier up.
+    If reason was something else (.serverChange, .accountChange) or timeout fired:
+    proceed immediately — no grace needed.
 4. cloudY = SettingsBlobCodec.decode(KVS.data(forKey: KEY))
    ┌─ cloudY != nil
    │    ├─ cloudY.schemaVersion > local.schemaVersion → rejectMerge (log, keep local,
@@ -324,9 +349,14 @@ It does **not** subscribe to `.catermICloudAccountChanged` directly — that not
   - both nil → notSignedIn no-op
   - `.catermICloudAccountChanged` does NOT trigger account-switch flow on its own
 - **`IdentityTokenStoreTests`** —
-  - archive/unarchive round-trip via `NSKeyedArchiver` with `requiringSecureCoding: true`
+  - archive/unarchive round-trip via `NSKeyedArchiver` with `requiringSecureCoding: false`
+  - **fake token conforming to `NSCoding & NSCopying & NSObjectProtocol` but NOT `NSSecureCoding`** archives successfully (regression guard against accidentally re-enabling secure coding)
   - `isEqual` comparison detects same vs different tokens
   - persisted Data corruption (truncated bytes) → load returns nil, no crash
+  - archive failure path (e.g., token whose encoder throws): persists sentinel `"<archive-failed>"` Data; subsequent load returns the sentinel; classifier maps sentinel → `unknownPrevious`
+- **`AccountSwitchHandlerTests`** (additional) —
+  - `unknownPrevious` classification (sentinel persisted) routes through AccountSwitchHandler regardless of current token: KVS Y has data → force-apply; empty → suspend
+  - notification with reason `.initialSyncChange` adds 500ms grace before reading KVS Y; reason `.serverChange` / `.accountChange` reads immediately
 - **`AccountSwitchHandlerTests`** —
   - Y has data + schema OK → force-apply (verifies revision is NOT compared)
   - Y has data + schema newer than local → rejectMerge, keep local, stay suspended
@@ -346,7 +376,9 @@ Two-Mac simulator using a `FakeKVS` shared between two `SettingsSyncStore` insta
 6. **Account switch — Y empty, first edit pushes.** A is signed in to X with real edits, KVS X has data. User signs out, signs in to Y; KVS Y is empty. Verify: A's local data is preserved but `pushSuspended` stays true. Make a local edit → that single edit's blob is pushed to Y on the same flush cycle. Quit before edit ⇒ Y stays empty.
 7. **`.catermICloudAccountChanged` is not enough alone.** Post the broad notification without changing the persisted ubiquityIdentityToken. Verify: no account-switch path fires; pushes continue normally.
 8. **Initial-sync write barrier.** During the 3-second boot wait, fire local edits via `SettingsStore.update`. Verify: no `KVS.set` calls happen until `.initialSyncChange` arrives + 500ms grace OR timeout fires. Also: a steady-state `.initialSyncChange` mid-session re-suspends pushes for 500ms grace.
-8a. **firstObservation upgrade path.** v2 build's first launch: persisted token absent, current `ubiquityIdentityToken` non-nil. Local has real edits (v1 plist, edited). KVS empty. Verify: `BootstrapDecider` runs (not `AccountSwitchHandler`); local pushed up immediately; persisted token written. NOT silently quarantined.
+8a. **firstObservation upgrade path.** v2 build's first launch: persisted token absent, current `ubiquityIdentityToken` non-nil. Local has real edits (v1 plist, edited). KVS empty. Verify: `BootstrapDecider` runs (not `AccountSwitchHandler`); local pushed up immediately via control-plane (despite `pushSuspended == true` during the boot barrier); persisted token written. NOT silently quarantined.
+8b. **Archive-failure sentinel routes safely.** Inject an `IdentityTokenStore` whose archive throws. Run boot. Verify: sentinel `"<archive-failed>"` is persisted; on the *next* boot, classifier returns `unknownPrevious` and routes to AccountSwitchHandler (force-apply if Y has data, else suspend) — never to BootstrapDecider's revision LWW. This is the cross-identity-leak guard for archive failures.
+8c. **AccountSwitch + initialSyncChange grace.** During account-switch flow, the wait completes with `.initialSyncChange` reason. Verify: 500ms grace fires before KVS read. Without grace, KVS Y is read while still hydrating and may appear empty when it actually has data.
 9. **Schema version reject.** v3 blob in KVS, v2 client decodes → rejectMerge, local untouched.
 10. **`migrationsCompleted` does not sync.** Device A has token `settings-gui-v1` set; pushes blob to KVS. Device B (without the token) decodes — its `migrationsCompleted` is unchanged. Then Device B applies its own filesystem migration, sets the token locally, the token does NOT propagate via `replaceFromSync` from any subsequent A push.
 11. **v1 → v2 unedited migration.** v1 plist with `global == defaultsSeed` and empty `hostOverrides` migrates with `seededByDefault = true`, `firstUserEditedAt = nil`, `canonicalSeedHash` populated. `isDefaultSeedUnedited` returns true. KVS empty + this state ⇒ no push.
@@ -376,7 +408,7 @@ Tracked in plan as a Plan-D-Task-N checklist; done before merging:
 6. `KVSAdapter` protocol (`set(_:forKey:)` Void; `synchronize() -> Bool`; `data(forKey:)`; `removeObject(forKey:)`; `dictionaryRepresentation()`) + `NSUbiquitousKeyValueStore` impl + reason classifier + unit tests. Identity-token persistence is **not** part of this adapter — it lives in `SettingsSyncStore` which reads `FileManager.default.ubiquityIdentityToken` directly and archives via `NSKeyedArchiver`. `IdentityTokenStore` helper handles archive/unarchive + `isEqual(_:)` comparison + UserDefaults plumbing; unit tested separately.
 7. `BootstrapDecider` pure function + unit tests (8 branches).
 8. `AccountSwitchHandler` pure function + unit tests (force-apply, schema reject, empty Y, schema-newer reject).
-9. `SettingsSyncStore` coordinator: install lifecycle observers + `startSync()` / `stopSync()` lifecycle, initial-sync write barrier with 500ms grace backoff, token classification (notSignedIn / firstObservation / identitySame / identityChanged), push listener with `source == "sync"` filter, pull dispatcher by KVS reason, freeze/unfreeze ordering on first edit + unit tests.
+9. `SettingsSyncStore` coordinator: install lifecycle observers + `startSync()` / `stopSync()` lifecycle, initial-sync write barrier with 500ms grace backoff (boot AND in AccountSwitchHandler when reason == .initialSyncChange), control-plane vs observer-plane push split, token classification (notSignedIn / firstObservation / identitySame / identityChanged / unknownPrevious), push listener with `source == "sync"` filter, pull dispatcher by KVS reason, freeze/unfreeze ordering on first edit + unit tests.
 10. `CatermApp` wiring + boot sequence integration. Persists `caterm.settings.lastUbiquityIdentityToken` in UserDefaults.
 11. Two-Mac integration test suite covering all 12 scenarios listed above.
 12. `docs/macos-cloudkit-settings-sync.md` operator-facing doc (architecture diagram + decision tree + identity token semantics).
