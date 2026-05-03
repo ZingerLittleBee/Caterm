@@ -8,6 +8,7 @@ public final class SettingsStore: ObservableObject {
 
     public static let changeNotification = Notification.Name("catermSettingsChanged")
     public static let scopeUserInfoKey = "scope"
+    public static let sourceUserInfoKey = "source"  // values: "local" (default) or "sync"
 
     /// Production location of the user's settings plist. Tests use a temp path
     /// instead (see `BootSequence.run(settingsPlistURL:...)`).
@@ -115,8 +116,41 @@ public final class SettingsStore: ObservableObject {
             NotificationCenter.default.post(
                 name: Self.changeNotification,
                 object: self,
-                userInfo: [Self.scopeUserInfoKey: scope]
+                userInfo: [
+                    Self.scopeUserInfoKey: scope,
+                    Self.sourceUserInfoKey: "local",
+                ]
             )
         }
+    }
+
+    /// Sync-side cloud-apply path. Preserves cloud's revision verbatim (does NOT
+    /// call makeRevision), preserves the local migrationsCompleted set, and posts
+    /// a change notification tagged source == "sync" so SettingsSyncStore can
+    /// filter and avoid an apply→push feedback loop.
+    ///
+    /// `migrationsCompleted` is per-device filesystem migration state and never
+    /// travels — even though `cloud.migrationsCompleted` may have content (it
+    /// shouldn't if the codec strips it correctly, but we defend at the seam).
+    public func replaceFromSync(_ cloud: CatermSettings) throws {
+        var next = cloud
+        next.migrationsCompleted = settings.migrationsCompleted
+        let data = try PropertyListEncoder().encode(next)
+        try FileManager.default.createDirectory(
+            at: path.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: path, options: .atomic)
+        let old = settings
+        self.settings = next
+
+        let scope = SettingsChangeScope.diff(old: old, new: next)
+        var userInfo: [AnyHashable: Any] = [Self.sourceUserInfoKey: "sync"]
+        if let scope = scope {
+            userInfo[Self.scopeUserInfoKey] = scope
+        }
+        NotificationCenter.default.post(
+            name: Self.changeNotification, object: self, userInfo: userInfo
+        )
     }
 }
