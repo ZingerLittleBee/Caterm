@@ -67,6 +67,7 @@ public final class SettingsSyncStore {
 		)
 	}
 	private var bootDecisionTask: Task<Void, Never>?
+	private var pullTask: Task<Void, Never>?
 
 	public func testWaitForBootDecision() async {
 		_ = await bootDecisionTask?.value
@@ -114,7 +115,8 @@ public final class SettingsSyncStore {
 
 		let task = Task { @MainActor [weak self] in
 			await self?.runBootSequence()
-			self?.registerSyncObservers()
+			guard let self = self, !Task.isCancelled, self.isSyncRunning else { return }
+			self.registerSyncObservers()
 		}
 		bootDecisionTask = task
 	}
@@ -150,7 +152,7 @@ public final class SettingsSyncStore {
 		if case .initialSyncChange = reason {
 			inInitialSyncGrace = true
 		}
-		Task { @MainActor [weak self] in
+		pullTask = Task { @MainActor [weak self] in
 			await self?.dispatchPull(reason: reason)
 		}
 	}
@@ -163,6 +165,10 @@ public final class SettingsSyncStore {
 		case .initialSyncChange:
 			inInitialSyncGrace = true
 			try? await Task.sleep(for: testInitialSyncGrace)
+			guard !Task.isCancelled, isSyncRunning else {
+				inInitialSyncGrace = false
+				return
+			}
 			// Clear the grace flag BEFORE classifyAndApply so the decision's
 			// finalSuspensionState is the sole source of truth for whether
 			// subsequent user edits should take the unfreeze path.
@@ -235,6 +241,15 @@ public final class SettingsSyncStore {
 	public func stopSync() {
 		guard isSyncRunning else { return }
 		isSyncRunning = false
+		// Cancel any in-flight boot or pull task. Without this, a sleeping
+		// task wakes up after stopSync, calls applyDecision, persists a
+		// token, transitions state, and (for boot) re-installs the very
+		// observers we just removed.
+		bootDecisionTask?.cancel()
+		bootDecisionTask = nil
+		pullTask?.cancel()
+		pullTask = nil
+		inInitialSyncGrace = false
 		if let token = kvsExternalObserver {
 			NotificationCenter.default.removeObserver(token)
 			kvsExternalObserver = nil
@@ -251,6 +266,10 @@ public final class SettingsSyncStore {
 		// didChangeExternallyNotification — production wiring lands in Task 16.
 		_ = kvs.synchronize()
 		try? await Task.sleep(for: testInitialSyncTimeout)
+		// stopSync may have run while we were sleeping. Bail out before we
+		// touch state — applyDecision would otherwise persist a token and
+		// transition syncState out from under stopSync.
+		guard !Task.isCancelled, isSyncRunning else { return }
 
 		let bootStartedAt = Date()
 		let persisted = tokenStore.loadPersisted()
