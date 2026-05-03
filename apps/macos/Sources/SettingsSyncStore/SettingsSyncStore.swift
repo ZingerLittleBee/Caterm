@@ -38,6 +38,16 @@ public final class SettingsSyncStore {
 	public private(set) var startSyncCallCount = 0
 	public private(set) var observersRegisteredCount = 0
 
+	// MARK: - Test hooks
+	public var testInitialSyncTimeout: Duration = .seconds(3)
+	public var testInitialSyncGrace: Duration = .milliseconds(500)
+	public var testPushSuspended: Bool { pushSuspended }
+	private var bootDecisionTask: Task<Void?, Never>?
+
+	public func testWaitForBootDecision() async {
+		_ = await bootDecisionTask?.value
+	}
+
 	public init(
 		store: SettingsStore,
 		kvs: KVSProtocol,
@@ -76,7 +86,12 @@ public final class SettingsSyncStore {
 		guard accountSession.isSignedIn else { return }
 		isSyncRunning = true
 		observersRegisteredCount += 1
-		// Sync observers wired in Task 13–18.
+		pushSuspended = true
+
+		let task = Task { @MainActor [weak self] in
+			await self?.runBootSequence()
+		}
+		bootDecisionTask = task
 	}
 
 	public func stopSync() {
@@ -91,6 +106,91 @@ public final class SettingsSyncStore {
 			settingsChangeObserver = nil
 		}
 		pushSuspended = true
+	}
+
+	private func runBootSequence() async {
+		// Trigger initial pull and wait briefly. We don't yet subscribe to
+		// didChangeExternallyNotification — production wiring lands in Task 16.
+		_ = kvs.synchronize()
+		try? await Task.sleep(for: testInitialSyncTimeout)
+
+		let bootStartedAt = Date()
+		let persisted = tokenStore.loadPersisted()
+		let current = currentTokenProvider()
+		let classification = TokenClassifier.classify(persisted: persisted, current: current)
+
+		let cloud = decodeCloud()
+		let decision: Decision
+		switch classification {
+		case .notSignedIn:
+			stopSync()
+			return
+		case .firstObservation, .identitySame:
+			decision = BootstrapDecider.decide(
+				local: store.settings, cloud: cloud,
+				bootStartedAt: bootStartedAt,
+				knownMigrations: knownMigrationsAtBoot()
+			)
+		case .identityChanged, .unknownPrevious:
+			decision = AccountSwitchHandler.handle(
+				local: store.settings, cloudY: cloud
+			)
+		case .signedOut:
+			stopSync()
+			return
+		}
+
+		await applyDecision(decision, currentToken: current)
+	}
+
+	private func decodeCloud() -> SyncableSettings? {
+		guard let data = kvs.data(forKey: Self.kvsKey) else { return nil }
+		return try? SettingsBlobCodec.decode(data)
+	}
+
+	private func applyDecision(
+		_ decision: Decision,
+		currentToken: (NSObject & NSCoding & NSCopying)?
+	) async {
+		switch decision.action {
+		case .noOp:
+			break
+		case .pushLocal:
+			pushLocalToKVS()
+		case .applyCloud(let blob), .forceApply(let blob):
+			applyCloudToLocal(blob)
+		case .rejectMerge:
+			break
+		case .suspendUntilFirstEdit:
+			break
+		}
+		if decision.acceptIdentity, let token = currentToken {
+			tokenStore.persist(token)
+		}
+		pushSuspended = decision.finalSuspensionState
+	}
+
+	private func pushLocalToKVS() {
+		do {
+			let blob = try SettingsBlobCodec.encode(store.settings)
+			kvs.set(blob, forKey: Self.kvsKey)
+			_ = kvs.synchronize()
+		} catch {
+			NSLog("[SettingsSyncStore] encode/push failed: \(error)")
+		}
+	}
+
+	private func applyCloudToLocal(_ blob: SyncableSettings) {
+		let next = blob.toLocal(localMigrationsCompleted: store.settings.migrationsCompleted)
+		do {
+			try store.replaceFromSync(next)
+		} catch {
+			NSLog("[SettingsSyncStore] replaceFromSync failed: \(error)")
+		}
+	}
+
+	private func knownMigrationsAtBoot() -> Set<String> {
+		return ["settings-gui-v1"]
 	}
 }
 
