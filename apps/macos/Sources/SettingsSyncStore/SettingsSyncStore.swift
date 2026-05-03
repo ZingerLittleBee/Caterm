@@ -43,6 +43,13 @@ public final class SettingsSyncStore {
 	public var testInitialSyncGrace: Duration = .milliseconds(500)
 	public var testPushSuspended: Bool { pushSuspended }
 	public func testForcePushSuspended(_ v: Bool) { pushSuspended = v }
+	public func testPostExternalChange(reason: Int) {
+		NotificationCenter.default.post(
+			name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+			object: nil,
+			userInfo: [NSUbiquitousKeyValueStoreChangeReasonKey: reason]
+		)
+	}
 	private var bootDecisionTask: Task<Void, Never>?
 
 	public func testWaitForBootDecision() async {
@@ -106,7 +113,67 @@ public final class SettingsSyncStore {
 				}
 			}
 		}
-		// KVS external observer is wired in Task 16.
+		if kvsExternalObserver == nil {
+			kvsExternalObserver = NotificationCenter.default.addObserver(
+				forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+				object: nil, queue: .main
+			) { [weak self] note in
+				MainActor.assumeIsolated {
+					self?.handleKVSExternalChange(note: note)
+				}
+			}
+		}
+	}
+
+	private func handleKVSExternalChange(note: Notification) {
+		let raw = note.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
+		let reason = KVSReasonClassifier.classify(raw)
+		// For .initialSyncChange we set the barrier synchronously so callers
+		// observing immediately after the post see pushSuspended == true.
+		if case .initialSyncChange = reason {
+			pushSuspended = true
+		}
+		Task { @MainActor [weak self] in
+			await self?.dispatchPull(reason: reason)
+		}
+	}
+
+	private func dispatchPull(reason: KVSChangeReason) async {
+		switch reason {
+		case .quotaViolationChange:
+			NSLog("[SettingsSyncStore] quota violation; key present? \(kvs.data(forKey: Self.kvsKey) != nil)")
+			return
+		case .initialSyncChange:
+			pushSuspended = true
+			try? await Task.sleep(for: testInitialSyncGrace)
+			await classifyAndApply()
+		case .serverChange, .accountChange, .unknown:
+			await classifyAndApply()
+		}
+	}
+
+	private func classifyAndApply() async {
+		let bootStartedAt = Date()
+		let persisted = tokenStore.loadPersisted()
+		let current = currentTokenProvider()
+		let classification = TokenClassifier.classify(persisted: persisted, current: current)
+		let cloud = decodeCloud()
+		let decision: Decision
+		switch classification {
+		case .notSignedIn:
+			stopSync(); return
+		case .signedOut:
+			stopSync(); return
+		case .firstObservation, .identitySame:
+			decision = BootstrapDecider.decide(
+				local: store.settings, cloud: cloud,
+				bootStartedAt: bootStartedAt,
+				knownMigrations: knownMigrationsAtBoot()
+			)
+		case .identityChanged, .unknownPrevious:
+			decision = AccountSwitchHandler.handle(local: store.settings, cloudY: cloud)
+		}
+		await applyDecision(decision, currentToken: current)
 	}
 
 	private func handleLocalSettingsChange(note: Notification) {
