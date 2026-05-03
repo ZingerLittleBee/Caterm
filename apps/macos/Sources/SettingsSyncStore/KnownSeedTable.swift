@@ -24,7 +24,7 @@ public enum KnownSeedTable {
             titlebarStyle: .tabs,
             theme: "Catppuccin Mocha"
         )
-        table.append(Entry(seedVersion: 1, snapshot: v1, canonicalSeedHash: canonicalHash(of: v1)))
+        table.append(Entry(seedVersion: 1, snapshot: v1))
         return table
     }()
 
@@ -35,13 +35,30 @@ public enum KnownSeedTable {
         entries.first { $0.seedVersion == v }
     }
 
-    /// Canonical SHA-256 of a `PartialSettings`. Uses sorted-keys plist
-    /// encoding so field reordering doesn't change the hash.
+    /// Canonical SHA-256 of a `PartialSettings`. Binary plist format is used
+    /// because it produces a compact, deterministic byte sequence given that
+    /// `PartialSettings` has synthesized Codable with a fixed property order.
+    /// WARNING: reordering properties in `PartialSettings` will change this
+    /// hash and break recognition of historical seeds. Append-only seed
+    /// entries protect against this only if the property order is preserved.
     public static func canonicalHash(of partial: PartialSettings) -> String {
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         guard let data = try? encoder.encode(partial) else { return "" }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+extension KnownSeedTable.Entry {
+    /// Convenience initializer that derives `canonicalSeedHash` from the snapshot.
+    /// Use this when adding entries to the table to avoid manually computing
+    /// or copy-pasting hashes.
+    public init(seedVersion: Int, snapshot: PartialSettings) {
+        self.init(
+            seedVersion: seedVersion,
+            snapshot: snapshot,
+            canonicalSeedHash: KnownSeedTable.canonicalHash(of: snapshot)
+        )
     }
 }
