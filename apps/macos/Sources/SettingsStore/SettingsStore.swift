@@ -181,6 +181,15 @@ public final class SettingsStore: ObservableObject {
     /// travels — even though `cloud.migrationsCompleted` may have content (it
     /// shouldn't if the codec strips it correctly, but we defend at the seam).
     public func replaceFromSync(_ cloud: CatermSettings) throws {
+        // Cancel any in-flight debounced local edit. The pending draft was
+        // built on a pre-cloud snapshot; flushing it after the cloud apply
+        // would call `save`, which re-stamps `revision` via `makeRevision`,
+        // producing a newer-revision local blob that revision-LWW would push
+        // back to KVS — silently undoing the cloud apply we are about to
+        // perform. Drop the partial draft conservatively.
+        _pending?.task?.cancel()
+        _pending = nil
+
         var next = cloud
         next.migrationsCompleted = settings.migrationsCompleted
         let data = try PropertyListEncoder().encode(next)
