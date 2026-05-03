@@ -49,13 +49,18 @@ final class PushPlaneTests: XCTestCase {
             "sync-sourced change must not loop back into a push")
     }
 
-    func test_pushSuspended_skipsObserverPlanePush() async throws {
+    func test_pushSuspended_firstUserEditUnfreezesAndPushes() async throws {
+        // Under the suspendUntilFirstEdit contract (Task 18), a user edit
+        // while suspended must unfreeze the barrier and push. This replaces
+        // the prior behavior where suspension blocked all pushes.
         let (sync, store, kvs) = try await makeStore()
         kvs.removeObject(forKey: SettingsSyncStore.kvsKey)
         sync.testForcePushSuspended(true)
         store.update { $0.global.fontSize = 88 }
         store.flushNow()
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey))
+        XCTAssertNotNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
+            "first edit under suspension must unfreeze and push")
+        XCTAssertFalse(sync.testPushSuspended)
     }
 }

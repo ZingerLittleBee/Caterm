@@ -179,7 +179,20 @@ public final class SettingsSyncStore {
 	private func handleLocalSettingsChange(note: Notification) {
 		let source = note.userInfo?[SettingsStore.sourceUserInfoKey] as? String ?? "local"
 		if source == "sync" { return }
-		if pushSuspended { return }
+
+		if pushSuspended {
+			// CRITICAL ORDERING: unfreeze BEFORE the push for this same edit so
+			// that quitting after one edit still leaves the cloud blob populated.
+			pushSuspended = false
+			pushLocalToKVS()
+			// Persist the current token — user has accepted identity Y by
+			// authoring data under it.
+			if let token = currentTokenProvider() {
+				tokenStore.persist(token)
+			}
+			return
+		}
+
 		pushLocalToKVS()
 	}
 
