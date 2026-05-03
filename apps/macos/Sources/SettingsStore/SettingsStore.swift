@@ -85,6 +85,9 @@ public final class SettingsStore: ObservableObject {
     public func update(_ mutate: (inout CatermSettings) -> Void) {
         var draft = _pending?.settings ?? settings
         mutate(&draft)
+        if draft.firstUserEditedAt == nil {
+            draft.firstUserEditedAt = Date()
+        }
         let pending = _pending ?? _Pending(draft)
         pending.settings = draft
         pending.task?.cancel()
