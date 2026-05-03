@@ -12,6 +12,7 @@ import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
+import SettingsSyncStore
 import SFTPCommandBuilder
 import SSHCommandBuilder
 import SwiftUI
@@ -38,6 +39,7 @@ struct CatermApp: App {
 
 	let cloudKitClient: CloudKitSyncClient
 	private let accountIdentityTracker: AccountIdentityTracker
+	private let settingsSync: SettingsSyncStore
 	private let masterKeyStore: KeychainSyncMasterKeyStore
 	private let managedKeyStore: ManagedKeyStore
 	private let credentialSyncCoordinator: CredentialSyncCoordinator
@@ -162,6 +164,19 @@ struct CatermApp: App {
 		// registry yet); new surfaces still pick up changes via the
 		// next render of the managed snapshot.
 		self.liveReload = LiveReloadCoordinator(settingsStore: settings)
+		let tokenStore = IdentityTokenStore()
+		let kvsAdapter: KVSProtocol = NSUbiquitousKeyValueStore.default
+		self.settingsSync = SettingsSyncStore(
+			store: settings,
+			kvs: kvsAdapter,
+			accountSession: icloudSession,
+			tokenStore: tokenStore,
+			currentTokenProvider: { FileManager.default.ubiquityIdentityToken as? (NSObject & NSCoding & NSCopying) }
+		)
+		self.settingsSync.installLifecycleObservers()
+		Task { @MainActor [settingsSync = self.settingsSync] in
+			await settingsSync.startSync()
+		}
 	}
 
 	var body: some Scene {
