@@ -23,13 +23,12 @@ extension NSUbiquitousKeyValueStore: KVSProtocol {
 		self.set(data as Any?, forKey: key)
 	}
 
-	// Apple bridges `dictionaryRepresentation` as a property, not a method;
-	// the protocol declares it as a method. Forward via an explicit type
-	// annotation so Swift resolves `self.dictionaryRepresentation` as the
-	// property (not a recursive method reference to ourselves).
+	// Apple bridges `dictionaryRepresentation` as a property; our protocol
+	// declares it as a method. Resolve to Apple's property unambiguously
+	// via a key path — the method we're inside cannot be referenced as a
+	// key path, so this is robust to future toolchain resolution changes.
 	public func dictionaryRepresentation() -> [String: Any] {
-		let snapshot: [String: Any] = self.dictionaryRepresentation
-		return snapshot
+		return self[keyPath: \NSUbiquitousKeyValueStore.dictionaryRepresentation]
 	}
 }
 

@@ -192,13 +192,17 @@ public final class SettingsStore: ObservableObject {
         let old = settings
         self.settings = next
 
-        let scope = SettingsChangeScope.diff(old: old, new: next)
-        var userInfo: [AnyHashable: Any] = [Self.sourceUserInfoKey: "sync"]
-        if let scope = scope {
-            userInfo[Self.scopeUserInfoKey] = scope
-        }
+        // Symmetric with `flushNow`: skip the post on a no-op apply so that
+        // observers don't receive phantom change notifications. Sync-side
+        // observers already filter on source; this guarantees the same shape
+        // for any future observer that doesn't.
+        guard let scope = SettingsChangeScope.diff(old: old, new: next) else { return }
         NotificationCenter.default.post(
-            name: Self.changeNotification, object: self, userInfo: userInfo
+            name: Self.changeNotification, object: self,
+            userInfo: [
+                Self.scopeUserInfoKey: scope,
+                Self.sourceUserInfoKey: "sync",
+            ]
         )
     }
 }
