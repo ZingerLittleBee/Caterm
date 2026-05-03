@@ -117,6 +117,8 @@ extension CatermSettings {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Absent = legacy v1 plist written before this field existed.
+        // Do NOT bump this sentinel when adding v3; gate via a separate check.
         self.version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
         self.revision = try c.decodeIfPresent(String.self, forKey: .revision) ?? ""
         self.global = try c.decodeIfPresent(PartialSettings.self, forKey: .global) ?? PartialSettings()
