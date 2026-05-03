@@ -42,7 +42,8 @@ public final class SettingsSyncStore {
 	public var testInitialSyncTimeout: Duration = .seconds(3)
 	public var testInitialSyncGrace: Duration = .milliseconds(500)
 	public var testPushSuspended: Bool { pushSuspended }
-	private var bootDecisionTask: Task<Void?, Never>?
+	public func testForcePushSuspended(_ v: Bool) { pushSuspended = v }
+	private var bootDecisionTask: Task<Void, Never>?
 
 	public func testWaitForBootDecision() async {
 		_ = await bootDecisionTask?.value
@@ -90,8 +91,29 @@ public final class SettingsSyncStore {
 
 		let task = Task { @MainActor [weak self] in
 			await self?.runBootSequence()
+			self?.registerSyncObservers()
 		}
 		bootDecisionTask = task
+	}
+
+	private func registerSyncObservers() {
+		if settingsChangeObserver == nil {
+			settingsChangeObserver = NotificationCenter.default.addObserver(
+				forName: SettingsStore.changeNotification, object: store, queue: .main
+			) { [weak self] note in
+				Task { @MainActor [weak self] in
+					self?.handleLocalSettingsChange(note: note)
+				}
+			}
+		}
+		// KVS external observer is wired in Task 16.
+	}
+
+	private func handleLocalSettingsChange(note: Notification) {
+		let source = note.userInfo?[SettingsStore.sourceUserInfoKey] as? String ?? "local"
+		if source == "sync" { return }
+		if pushSuspended { return }
+		pushLocalToKVS()
 	}
 
 	public func stopSync() {
