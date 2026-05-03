@@ -16,13 +16,20 @@ public protocol KVSProtocol: AnyObject {
 }
 
 extension NSUbiquitousKeyValueStore: KVSProtocol {
-	// Explicit forwarders to match protocol signature (Apple uses Any? not Data)
+	// Apple's NSUbiquitousKeyValueStore.set(_:forKey:) accepts Any?; the
+	// Data overload is provided here so the protocol's strongly-typed Data
+	// signature matches without ambiguity.
 	public func set(_ data: Data, forKey key: String) {
 		self.set(data as Any?, forKey: key)
 	}
 
+	// Apple bridges `dictionaryRepresentation` as a property, not a method;
+	// the protocol declares it as a method. Forward via an explicit type
+	// annotation so Swift resolves `self.dictionaryRepresentation` as the
+	// property (not a recursive method reference to ourselves).
 	public func dictionaryRepresentation() -> [String: Any] {
-		self.dictionaryRepresentation()
+		let snapshot: [String: Any] = self.dictionaryRepresentation
+		return snapshot
 	}
 }
 
