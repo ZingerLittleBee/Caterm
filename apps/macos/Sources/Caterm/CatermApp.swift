@@ -26,18 +26,15 @@ struct CatermApp: App {
 	@StateObject var preferences: SyncPreferences
 	@StateObject var fileTransferStore: FileTransferStore
 	@StateObject var settingsStore: SettingsStore
+	@StateObject var remoteBookmarks: RemoteBookmarkStore
 	@StateObject private var credentialSync: CredentialSyncPreferencesStore
-	/// Lifetime-owned by the App so the Preferences "Sync" tab can reach
-	/// it. `AuthSession` is not `ObservableObject`, so we inject it via
-	/// `PreferencesWindowController.syncEnvironment` rather than as an env
-	/// object on the WindowGroup.
-	let authSession: AuthSession
 
 	/// Holds the live-reload dispatcher and its NotificationCenter
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
 	let liveReload: LiveReloadCoordinator
 
 	let cloudKitClient: CloudKitSyncClient
+	let icloudSession: iCloudAccountSession
 	private let accountIdentityTracker: AccountIdentityTracker
 	private let settingsSync: SettingsSyncStore
 	private let masterKeyStore: KeychainSyncMasterKeyStore
@@ -48,14 +45,12 @@ struct CatermApp: App {
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
-		// CloudKit-backed sync (replaces the URLSession + better-auth pair).
-		// `AuthSession` reference kept on `CatermApp` for compatibility with
-		// `PreferencesWindowController.syncEnvironment` which still expects
-		// a typed `AuthSession`. Plan E removes the typed reference along
-		// with the login UI.
+		// CloudKit-backed sync (the URLSession + better-auth pair was removed
+		// in Plan E). `iCloudAccountSession` is the AuthSessionProtocol
+		// conformer threaded into HostSyncStore.
 		let cloudContainer = CKContainer(identifier: "iCloud.com.caterm.app")
 		let icloudSession = iCloudAccountSession(provider: cloudContainer)
-		self.authSession = AuthSession(baseURL: ServerURL.current)  // unwired
+		self.icloudSession = icloudSession
 		let client = CloudKitSyncClient(database: cloudContainer.privateCloudDatabase)
 		self.cloudKitClient = client
 		self.accountIdentityTracker = AccountIdentityTracker(
@@ -140,6 +135,13 @@ struct CatermApp: App {
 			)
 		}
 		_settingsStore = StateObject(wrappedValue: settings)
+		// Per-host remote-path bookmarks (SFTP file drawer). Lives next to
+		// hosts.json under Application Support/Caterm/RemoteBookmarks/<hostId>.json.
+		let bookmarksDir = FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("Caterm", isDirectory: true)
+			.appendingPathComponent("RemoteBookmarks", isDirectory: true)
+		_remoteBookmarks = StateObject(wrappedValue: RemoteBookmarkStore(directory: bookmarksDir))
 		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
 			controlPathFor: { hostId in
 				cmDir.appendingPathComponent("\(hostId.uuidString).sock")
@@ -203,6 +205,7 @@ struct CatermApp: App {
 			.environmentObject(preferences)      // NEW (v1.4)
 			.environmentObject(fileTransferStore)
 			.environmentObject(settingsStore)
+			.environmentObject(remoteBookmarks)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -233,7 +236,7 @@ struct CatermApp: App {
 				// notification when the user clicks the indicator; route
 				// it through to the unified Preferences surface.
 				PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
-					authSession: authSession,
+					authSession: icloudSession,
 					syncStore: syncStore,
 					preferences: preferences,
 					credentialSync: credentialSync,
@@ -264,7 +267,7 @@ struct CatermApp: App {
 			CommandGroup(replacing: .appSettings) {
 				Button("Settings…") {
 					PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
-						authSession: authSession,
+						authSession: icloudSession,
 						syncStore: syncStore,
 						preferences: preferences,
 						credentialSync: credentialSync,

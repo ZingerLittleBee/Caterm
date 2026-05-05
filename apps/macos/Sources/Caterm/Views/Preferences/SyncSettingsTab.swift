@@ -5,31 +5,24 @@ import ServerSyncClient
 import SessionStore
 import SwiftUI
 
-/// Wrapper view that adapts the existing four-property `SyncSettingsView` so
-/// it can be embedded as a Preferences tab without changes to its public
-/// signature. Owns the `serverURL` text-field state locally and persists
-/// changes to `ServerURL` on edit.
+/// Wrapper view that adapts `SyncSettingsView` so it can be embedded as a
+/// Preferences tab without changes to its public signature.
 ///
-/// The wrapper exists because:
-/// 1. `SyncSettingsView` predates the unified Preferences window. It
-///    requires `AuthSession` (a non-`ObservableObject` reference type) plus
-///    two `ObservableObject`s. Threading those raw env objects through
-///    `PreferencesTab.viewBuilder` would force every tab builder to know
-///    about sync.
-/// 2. `AuthSession` cannot be injected via `.environmentObject` — it is not
-///    `ObservableObject`. The Preferences window controller therefore holds
-///    the trio as a tuple and passes it explicitly to this wrapper.
+/// The wrapper exists because `SyncSettingsView` requires
+/// `AuthSessionProtocol` (a non-`ObservableObject` reference type) plus two
+/// `ObservableObject`s; threading those through `PreferencesTab.viewBuilder`
+/// would force every tab builder to know about sync. The Preferences window
+/// controller holds the trio as a tuple and passes it explicitly here.
 struct SyncSettingsTab: View {
-    let authSession: AuthSession
+    let authSession: AuthSessionProtocol
     @ObservedObject var syncStore: HostSyncStore
     @ObservedObject var preferences: SyncPreferences
     let credentialSync: CredentialSyncPreferencesStore?
     let credentialSyncCoordinator: CredentialSyncCoordinator?
     let sessionStore: SessionStore?
-    @State private var serverURL: String = ServerURL.current.absoluteString
 
     init(
-        authSession: AuthSession,
+        authSession: AuthSessionProtocol,
         syncStore: HostSyncStore,
         preferences: SyncPreferences,
         credentialSync: CredentialSyncPreferencesStore? = nil,
@@ -49,18 +42,9 @@ struct SyncSettingsTab: View {
             authSession: authSession,
             syncStore: syncStore,
             preferences: preferences,
-            serverURL: $serverURL,
             credentialSync: credentialSync,
             credentialSyncCoordinator: credentialSyncCoordinator,
             sessionStore: sessionStore
         )
-        .onChange(of: serverURL) { _, newValue in
-            // Persist on edit. SyncSettingsView already shows the
-            // "Restart Caterm after changing the server URL." hint, so we
-            // simply trust the user to relaunch.
-            if let parsed = URL(string: newValue) {
-                ServerURL.set(parsed)
-            }
-        }
     }
 }

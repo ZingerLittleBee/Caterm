@@ -2,11 +2,13 @@ import AppKit
 import CloudKitSyncClient
 import FileTransferStore
 import os
+import Security
 import ServerSyncClient
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	private var observer: NSObjectProtocol?
 	private static let pushLog = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
+	private static let signingDiagLog = Logger(subsystem: "com.caterm.app", category: "signing-diag")
 
 	/// On app quit, tear down all live ControlMaster sockets so the
 	/// shared `ssh -M` masters exit cleanly instead of being killed by
@@ -57,6 +59,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 			}
 		}
 		NSApp.registerForRemoteNotifications()
+		Self.logResolvedSigningEnvironment()
+	}
+
+	/// One-shot diagnostic at launch: read the running process's signing
+	/// entitlements via `SecCodeCopySigningInformation` and log the resolved
+	/// CloudKit container env + APS env. Plan E Task 3.0 Step 6.
+	///
+	/// In Production we expect `aps=production`, `ck-env=Production`. In dev
+	/// we expect `aps=development` and `ck-env=<unset>` (the dev entitlements
+	/// file has no `com.apple.developer.icloud-container-environment` — the
+	/// CloudKit framework defaults to Development when unset and a development
+	/// profile is embedded). Filter `Console.app` on subsystem
+	/// `com.caterm.app` and category `signing-diag` to confirm.
+	private static func logResolvedSigningEnvironment() {
+		var dynCode: SecCode?
+		let status = SecCodeCopySelf([], &dynCode)
+		guard status == errSecSuccess, let code = dynCode else {
+			signingDiagLog.error("SecCodeCopySelf failed: status=\(status)")
+			return
+		}
+		var staticCode: SecStaticCode?
+		let s1 = SecCodeCopyStaticCode(code, [], &staticCode)
+		guard s1 == errSecSuccess, let staticCode else {
+			signingDiagLog.error("SecCodeCopyStaticCode failed: status=\(s1)")
+			return
+		}
+		var info: CFDictionary?
+		let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
+		let s2 = SecCodeCopySigningInformation(staticCode, flags, &info)
+		guard s2 == errSecSuccess,
+		      let dict = info as? [String: Any],
+		      let entitlements = dict[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
+		else {
+			signingDiagLog.error("SecCodeCopySigningInformation failed: status=\(s2)")
+			return
+		}
+		let aps = (entitlements["com.apple.developer.aps-environment"] as? String) ?? "<unset>"
+		let ck = (entitlements["com.apple.developer.icloud-container-environment"] as? String) ?? "<unset>"
+		signingDiagLog.info("Resolved entitlements: aps=\(aps, privacy: .public) ck-env=\(ck, privacy: .public)")
 	}
 
 	func application(_: NSApplication,

@@ -54,3 +54,31 @@ Prereq: a reachable SSH host with sftp-server enabled.
 
 ## 15. Path with spaces and unicode
 - Upload `"测试 文件.txt"` → roundtrips back via download with same name.
+
+## 16. Bookmark — add current path
+- Connect to host, drawer at `~` → click bookmark icon → popover opens →
+  click "Add Current" → entry "Home" / `~` appears in the list. Bookmark
+  icon in the path bar fills (`bookmark.fill`).
+
+## 17. Bookmark — navigate
+- With at least one bookmark for `/var/log`, click it in the popover →
+  drawer navigates to `/var/log` and lists its contents. Popover dismisses.
+
+## 18. Bookmark — dedup is lexical, preserves `~`
+- Add `~/projects`. Try to add `~//projects` → "Add Current" stays disabled
+  (tooltip: "This path is already bookmarked"). Add `~` → succeeds.
+  Verify on disk that `~/Library/Application Support/Caterm/RemoteBookmarks/<hostId>.json`
+  contains the literal string `"path": "~"` — NOT `/Users/<localuser>`.
+
+## 19. Bookmark — reorder + remove
+- Add three bookmarks A/B/C. Drag B above A → list shows B, A, C.
+  Click trash on A → A disappears. Quit and relaunch Caterm → reopen the
+  drawer popover → list still shows B, C.
+
+## 20. Bookmark — quarantine on future-version file
+- Quit Caterm. Edit
+  `~/Library/Application Support/Caterm/RemoteBookmarks/<hostId>.json`
+  and change `"version": 1` to `"version": 99`. Relaunch → open drawer
+  popover → red "Bookmarks unavailable" banner appears; "Add Current" is
+  disabled. Quit, restore the file (`mv … .broken-…` or rewrite to
+  `version: 1`) → relaunch → bookmarks load again, no banner.

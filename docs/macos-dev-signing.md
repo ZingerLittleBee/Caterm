@@ -208,3 +208,87 @@ CATERM_DEV_IDENTITY="$PROFILE_CERT_SHA1" make run-app
 ```
 
 `Scripts/dev-run-app.sh` defaults `CATERM_DEV_PROFILE=~/Downloads/Caterm_Mac_Dev_Apple_Dev.provisionprofile`; override with `CATERM_DEV_PROFILE=...` if you keep the profile elsewhere.
+
+## Distribution recipe (Plan E Phase 3)
+
+The dev pipeline (`make run-app`) signs against `aps-environment=development` and Development CloudKit env. Shipping requires the **Production** counterparts:
+
+| | Dev | Distribution |
+|---|---|---|
+| Cert | Apple Development | Developer ID Application **or** Mac App Distribution |
+| Profile | Mac App Development | Distribution profile (App ID with `aps-environment=production` + `icloud-container-environment=Production` enabled in the App ID config) |
+| `aps-environment` (in entitlements) | `development` | `production` |
+| `com.apple.developer.icloud-container-environment` | absent (CloudKit defaults to Development with a Mac App Development profile) | `Production` |
+| Build config | debug | release |
+| Entitlements file | `Resources/Caterm.entitlements` | `Resources/Caterm.distribution.entitlements` |
+| Driver | `make run-app` | `make dist` |
+
+### `make dist`
+
+```bash
+CATERM_DIST_IDENTITY=<SHA-1 or CN of Distribution cert> \
+CATERM_DIST_PROFILE_PATH=~/Downloads/Caterm_Mac_Dist.provisionprofile \
+make dist
+```
+
+Internally:
+1. `swift build -c release` — release-config binaries land at `.build/release/{caterm,caterm-askpass}`.
+2. `Scripts/dev-codesign.sh --profile distribution` — substitutes `$(TeamIdentifierPrefix)` in `Resources/Caterm.distribution.entitlements`, signs each inner binary with `--options runtime`, persists the substituted entitlements alongside the binaries (`.build/release/Caterm.distribution.entitlements` and `.build/release/CatermAskpass.distribution.entitlements`).
+3. `Scripts/dist-package.sh` — assembles the `.app` shell, embeds the Distribution profile, then re-seals in **two passes**:
+   - Pass 1: re-sign `Contents/MacOS/caterm-askpass` with `CatermAskpass.distribution.entitlements`.
+   - Pass 2: outer-bundle seal with `Caterm.distribution.entitlements` (Pitfall 5 — outer codesign without `--entitlements` clears the inner main exe's entitlements).
+4. Three-way `codesign -d --entitlements -` verification on bundle + main + askpass; the script aborts on any failed assertion.
+
+The script does NOT call `open` — Distribution builds are for the test Macs, not local launch.
+
+### Askpass entitlement isolation
+
+`caterm-askpass` is `exec`'d as a plain nested binary by `/usr/bin/ssh`. AMFI **SIGKILLs** it before `main()` if it carries restricted app/team identity entitlements (`application-identifier`, `team-identifier`, `aps-environment`, `icloud-container-environment`, etc.).
+
+Both `dev-codesign.sh` and `dist-package.sh` strip those keys from the helper's entitlements; the helper keeps only `keychain-access-groups` (and only in distribution — dev mode uses the login-keychain fallback and strips even that). The verification step above asserts the helper has `keychain-access-groups` AND none of the restricted keys; failure aborts the pipeline.
+
+### Single-string `icloud-container-environment` form
+
+`Resources/Caterm.distribution.entitlements` uses:
+
+```xml
+<key>com.apple.developer.icloud-container-environment</key>
+<string>Production</string>
+```
+
+Do **not** wrap the value in `<array><string>Production</string></array>`. The array form appears in some provisioning-profile contexts (the profile carries an array because it permits multiple environments), but the **binary's own entitlements** must use the single-string form — otherwise the `cloudd` daemon mismatches the entitlement and downgrades to Development at runtime, leaving you with records flowing into the wrong container with no error message.
+
+### Verifying signatures
+
+After `make dist`, the script's three-way assertions cover the static side:
+
+```bash
+codesign -d --entitlements - .build/release/Caterm.app
+codesign -d --entitlements - .build/release/Caterm.app/Contents/MacOS/caterm
+codesign -d --entitlements - .build/release/Caterm.app/Contents/MacOS/caterm-askpass
+```
+
+Expected:
+
+- **Bundle + main**: `<string>production</string>` for APS, `<string>Production</string>` for CloudKit env, `keychain-access-groups` present.
+- **Askpass**: `keychain-access-groups` present; `aps-environment`, `icloud-container-environment`, `application-identifier`, `com.apple.developer.team-identifier` all **absent**.
+
+For the runtime side, launch the app and filter `Console.app` on subsystem `com.caterm.app`, category `signing-diag`. AppDelegate logs one line at launch:
+
+```
+Resolved entitlements: aps=production ck-env=Production
+```
+
+If `ck-env=<unset>` shows up against a Distribution build, the binary will silently hit the Development container and the two-Mac smoke will fail in confusing ways — re-run `make dist` and re-verify before continuing.
+
+### Notarization (Developer ID path only)
+
+For Mac App Distribution (App Store) you upload the `.app` to App Store Connect via Transporter / `xcrun altool`. For Developer ID (direct distribution outside the App Store) you must notarize:
+
+```bash
+xcrun notarytool submit --keychain-profile <profile-name> \
+    --wait .build/release/Caterm.app
+xcrun stapler staple .build/release/Caterm.app
+```
+
+`make dist` does NOT run notarization — that requires interactive Apple credentials and is left to the human packaging the release.
