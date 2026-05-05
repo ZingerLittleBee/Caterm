@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import SessionStore
 
@@ -225,5 +226,102 @@ final class RemoteBookmarkStoreTests: XCTestCase {
 
     func test_normalizeRemotePath_trimsWhitespace() {
         XCTAssertEqual(normalizeRemotePath("  /var/log  "), "/var/log")
+    }
+
+    // MARK: - ObservableObject contract (regression for B.4 — popover went
+    // stale after move/remove because the store mutated `cache` without
+    // firing `objectWillChange`. SwiftUI saw no change, so the row layout
+    // never re-rendered even though the JSON file on disk was correct.)
+
+    func test_add_firesObjectWillChange() {
+        let store = makeStore()
+        var fired = 0
+        let cancellable = store.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        XCTAssertTrue(store.add(makeBookmark(label: "X", path: "/x"), for: hostA))
+        XCTAssertEqual(fired, 1, "add must fire objectWillChange")
+    }
+
+    func test_add_dedup_doesNotFireObjectWillChange() {
+        let store = makeStore()
+        _ = store.add(makeBookmark(label: "X", path: "/x"), for: hostA)
+
+        var fired = 0
+        let cancellable = store.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        XCTAssertFalse(store.add(makeBookmark(label: "Y", path: "/x"), for: hostA))
+        XCTAssertEqual(fired, 0,
+            "no-op dedup must NOT publish — would cause spurious view re-renders")
+    }
+
+    func test_remove_firesObjectWillChange() {
+        let store = makeStore()
+        let bm = makeBookmark(label: "X", path: "/x")
+        _ = store.add(bm, for: hostA)
+
+        var fired = 0
+        let cancellable = store.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        store.remove(id: bm.id, for: hostA)
+        XCTAssertEqual(fired, 1, "remove must fire objectWillChange")
+    }
+
+    func test_remove_unknownId_doesNotFireObjectWillChange() {
+        let store = makeStore()
+        _ = store.add(makeBookmark(label: "X", path: "/x"), for: hostA)
+
+        var fired = 0
+        let cancellable = store.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        store.remove(id: UUID(), for: hostA)  // not in the list
+        XCTAssertEqual(fired, 0,
+            "no-op remove must NOT publish")
+    }
+
+    func test_move_firesObjectWillChange() {
+        let store = makeStore()
+        _ = store.add(makeBookmark(label: "A", path: "/a"), for: hostA)
+        _ = store.add(makeBookmark(label: "B", path: "/b"), for: hostA)
+
+        var fired = 0
+        let cancellable = store.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        store.move(from: 0, to: 2, for: hostA)
+        XCTAssertEqual(fired, 1, "move must fire objectWillChange")
+    }
+
+    func test_move_outOfBounds_doesNotFireObjectWillChange() {
+        let store = makeStore()
+        _ = store.add(makeBookmark(label: "A", path: "/a"), for: hostA)
+
+        var fired = 0
+        let cancellable = store.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        store.move(from: 5, to: 0, for: hostA)  // out of range
+        XCTAssertEqual(fired, 0, "out-of-bounds move must NOT publish")
+    }
+
+    func test_quarantined_mutationsDoNotFireObjectWillChange() throws {
+        let path = tempDir.appendingPathComponent("\(hostA.uuidString).json")
+        try Data(#"{"version": 99, "bookmarks": []}"#.utf8).write(to: path)
+
+        let store = makeStore()
+        XCTAssertTrue(store.isQuarantined(for: hostA))
+
+        var fired = 0
+        let cancellable = store.objectWillChange.sink { _ in fired += 1 }
+        defer { cancellable.cancel() }
+
+        XCTAssertFalse(store.add(makeBookmark(label: "X", path: "/x"), for: hostA))
+        store.remove(id: UUID(), for: hostA)
+        store.move(from: 0, to: 1, for: hostA)
+        XCTAssertEqual(fired, 0,
+            "no mutations land while quarantined → no publishes")
     }
 }
