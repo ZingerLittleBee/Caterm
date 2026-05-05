@@ -215,23 +215,64 @@ public final class GhosttySurface {
 	/// double-emit it as text — the actual commit comes through
 	/// `sendText` from `NSTextInputClient.insertText`.
 	public func sendKey(_ event: NSEvent, composing: Bool = false) {
-		let chars = event.characters ?? ""
 		let mods = ghosttyMods(event.modifierFlags)
+		// `consumed_mods` reports which modifiers the macOS layout already
+		// consumed to produce `event.characters`. libghostty subtracts these
+		// from `mods` to get the "effective" mods for protocol encoding.
+		// Crucially: never report Ctrl or Cmd as consumed — the layout never
+		// uses them for character translation (they're terminal/shortcut
+		// modifiers). Reporting them as consumed cancels them out and forces
+		// libghostty into Kitty CSI-u fallback (`\e[<cp>;<mods>u`) for
+		// Ctrl+letter, which non-Kitty shells echo back as literal text.
+		// Shift/Option/CapsLock are assumed consumed by translation.
+		let consumedFlags = event.modifierFlags.subtracting([.control, .command])
+		let consumedMods = ghosttyMods(consumedFlags)
 		let action: ghostty_input_action_e = event.isARepeat
 			? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
 
-		// `text` is read by libghostty during the call, so a stack-scoped
-		// pointer (via `withCString`) is sufficient here.
-		_ = chars.withCString { textPtr -> Bool in
-			var k = ghostty_input_key_s()
-			k.action = action
-			k.mods = mods
-			k.consumed_mods = mods
-			k.keycode = UInt32(event.keyCode)
-			k.text = chars.isEmpty ? nil : textPtr
-			k.unshifted_codepoint = chars.unicodeScalars.first.map { UInt32($0.value) } ?? 0
-			k.composing = composing
-			return ghostty_surface_key(raw, k)
+		// `unshifted_codepoint` = codepoint produced with NO modifiers at all
+		// (Shift stripped too, unlike `charactersIgnoringModifiers`).
+		// libghostty's KeyEncoder uses this to derive control bytes for
+		// Ctrl+letter (Ctrl+C needs unshifted='c'=99 to emit \x03).
+		var unshifted: UInt32 = 0
+		if let bare = event.characters(byApplyingModifiers: []),
+			let scalar = bare.unicodeScalars.first {
+			unshifted = scalar.value
+		}
+
+		// `text` payload is only attached when `event.characters` is a
+		// printable codepoint (>= 0x20) AND not a function-key PUA value.
+		// For control bytes (Ctrl+letter producing \x01-\x1F) and arrow /
+		// function keys (NSUpArrowFunctionKey etc., in 0xF700-0xF8FF), we
+		// pass `text = nil` and let libghostty encode from `keycode` + mods.
+		// This matches Ghostty's macOS apprt and avoids double-emission.
+		let textPayload: String? = {
+			guard let chars = event.characters,
+				let scalar = chars.unicodeScalars.first else { return nil }
+			if scalar.value < 0x20 { return nil }
+			if scalar.value >= 0xF700 && scalar.value <= 0xF8FF { return nil }
+			return chars
+		}()
+
+		var k = ghostty_input_key_s()
+		k.action = action
+		k.mods = mods
+		k.consumed_mods = consumedMods
+		// libghostty's macOS path expects the raw `NSEvent.keyCode`
+		// (HID/AppKit virtual keycode), NOT a `ghostty_input_key_e` value —
+		// it does the translation internally.
+		k.keycode = UInt32(event.keyCode)
+		k.unshifted_codepoint = unshifted
+		k.composing = composing
+
+		if let textPayload {
+			textPayload.withCString { ptr in
+				k.text = ptr
+				_ = ghostty_surface_key(raw, k)
+			}
+		} else {
+			k.text = nil
+			_ = ghostty_surface_key(raw, k)
 		}
 	}
 

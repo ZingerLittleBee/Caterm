@@ -26,40 +26,31 @@ extension GhosttySurfaceNSView: NSTextInputClient {
 			s = ""
 		}
 
-		// AppKit calls `insertText` for two distinct flows:
+		// Only handle genuine IME commits here (Pinyin / Hangul / dead-key
+		// composition with non-empty `markedString`). Route those through
+		// `ghostty_surface_text` since they're confirmed multi-char text
+		// input — the same API libghostty uses for paste.
 		//
-		//   1. Genuine IME commit — the user just confirmed a multi-char
-		//      composition (Pinyin, Hangul, US-Intl dead-key, etc.).
-		//      Detected by `!markedString.isEmpty` (preedit was in flight).
-		//      Route through `ghostty_surface_text` so libghostty treats it
-		//      as confirmed text input.
-		//
-		//   2. Plain printable keystroke — `interpretKeyEvents` calls
-		//      `insertText` directly for ASCII keys with no composition,
-		//      with `markedString` empty. Routing this through
-		//      `ghostty_surface_text` is wrong: libghostty wraps that path
-		//      in bracketed-paste delimiters when the application enabled
-		//      `\e[?2004h` (default in bash 5.x). bash's readline then
-		//      treats every keystroke as a one-char paste and applies
-		//      `active-region-start-color` (inverse video) to it — visible
-		//      as a "white background on the last typed char" artifact.
-		//      Skip the IME path entirely for this case and let
-		//      `keyDown`'s `surface.sendKey(event, composing: false)`
-		//      emit the byte through libghostty's regular key path.
-		let wasComposing = !markedString.isEmpty
-		if wasComposing {
+		// For everything else (plain printable ASCII, control bytes from
+		// Ctrl+letter, DEL, etc.), do nothing: `keyDown`'s
+		// `surface.sendKey(event, composing: false)` runs after this and
+		// libghostty's KeyEncoder produces the right bytes from the
+		// `keycode` + `mods` + `unshifted_codepoint` triple. Routing
+		// printable bytes through `sendText` would re-introduce the
+		// bracketed-paste highlight that bash 5.x readline applies to
+		// every paste-wrapped keystroke; routing control bytes through
+		// `sendText` would deliver them as paste content and prevent bash
+		// from interpreting Ctrl+C as SIGINT.
+		if !markedString.isEmpty {
 			if !s.isEmpty {
 				surface?.sendText(s)
 				surface?.setPreedit("")
 			}
 			markedString = ""
-			// IME path produced text — `keyDown` must set `composing: true`
-			// so libghostty does not re-emit the raw key as text.
+			// `sendText` already emitted the commit; keyDown must pass
+			// `composing: true` so `sendKey` does not double-emit.
 			imeConsumedThisEvent = true
 		}
-		// else: plain typing — leave `imeConsumedThisEvent = false` so
-		// `keyDown` calls `sendKey(composing: false)` and libghostty
-		// emits the raw key bytes itself.
 	}
 
 	public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
