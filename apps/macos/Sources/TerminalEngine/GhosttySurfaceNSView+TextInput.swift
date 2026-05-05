@@ -25,15 +25,41 @@ extension GhosttySurfaceNSView: NSTextInputClient {
 		} else {
 			s = ""
 		}
-		if !s.isEmpty {
-			surface?.sendText(s)
-			surface?.setPreedit("")
+
+		// AppKit calls `insertText` for two distinct flows:
+		//
+		//   1. Genuine IME commit — the user just confirmed a multi-char
+		//      composition (Pinyin, Hangul, US-Intl dead-key, etc.).
+		//      Detected by `!markedString.isEmpty` (preedit was in flight).
+		//      Route through `ghostty_surface_text` so libghostty treats it
+		//      as confirmed text input.
+		//
+		//   2. Plain printable keystroke — `interpretKeyEvents` calls
+		//      `insertText` directly for ASCII keys with no composition,
+		//      with `markedString` empty. Routing this through
+		//      `ghostty_surface_text` is wrong: libghostty wraps that path
+		//      in bracketed-paste delimiters when the application enabled
+		//      `\e[?2004h` (default in bash 5.x). bash's readline then
+		//      treats every keystroke as a one-char paste and applies
+		//      `active-region-start-color` (inverse video) to it — visible
+		//      as a "white background on the last typed char" artifact.
+		//      Skip the IME path entirely for this case and let
+		//      `keyDown`'s `surface.sendKey(event, composing: false)`
+		//      emit the byte through libghostty's regular key path.
+		let wasComposing = !markedString.isEmpty
+		if wasComposing {
+			if !s.isEmpty {
+				surface?.sendText(s)
+				surface?.setPreedit("")
+			}
+			markedString = ""
+			// IME path produced text — `keyDown` must set `composing: true`
+			// so libghostty does not re-emit the raw key as text.
+			imeConsumedThisEvent = true
 		}
-		markedString = ""
-		// Tell the surrounding `keyDown` not to also let libghostty emit
-		// this character via `sendKey` — AppKit's IME path is the
-		// authoritative producer for any text it commits, IME-active or not.
-		imeConsumedThisEvent = true
+		// else: plain typing — leave `imeConsumedThisEvent = false` so
+		// `keyDown` calls `sendKey(composing: false)` and libghostty
+		// emits the raw key bytes itself.
 	}
 
 	public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
