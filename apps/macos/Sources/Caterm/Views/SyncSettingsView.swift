@@ -6,27 +6,19 @@ import SessionStore
 import SwiftUI
 import UserNotifications
 
-/// Tri-state derivation for the Account section. Internal so CatermTests
-/// can reach it via `@testable import Caterm`.
+/// Account state derived from iCloud sign-in. Binary post-Plan-E: the email/
+/// password "session expired" branch is gone — iCloud doesn't expose a
+/// pre-failure expired state, and recovery is to sign back in via System
+/// Settings, not via the app.
 enum AccountState: Equatable {
     case signedOut
     case signedIn
-    /// Signed in locally (cookie present), but the server has expired the
-    /// session. Surfaces as "Sign In Again…" so the user doesn't have to
-    /// Sign Out and Sign In as two separate steps.
-    case sessionExpired
 }
 
 /// Pure derivation — no SwiftUI state. Tested directly in
 /// `SyncSettingsAccountStateTests` without any view harness.
-func accountState(isSignedIn: Bool,
-                  lastSyncError: ServerSyncError?,
-                  lastSyncErrorKind: SyncErrorKind?) -> AccountState {
-    guard isSignedIn else { return .signedOut }
-    if (lastSyncError.map(isAuthShape) ?? false) || lastSyncErrorKind == .auth {
-        return .sessionExpired
-    }
-    return .signedIn
+func accountState(isSignedIn: Bool) -> AccountState {
+    isSignedIn ? .signedIn : .signedOut
 }
 
 func shouldShowSyncFailureDetails(for accountState: AccountState) -> Bool {
@@ -51,24 +43,20 @@ func formatFailingSince(_ since: Date, now: Date) -> String {
 }
 
 struct SyncSettingsView: View {
-    let authSession: AuthSession
+    let authSession: AuthSessionProtocol
     @ObservedObject var syncStore: HostSyncStore
     @ObservedObject var preferences: SyncPreferences
-    @Binding var serverURL: String
     let credentialSync: CredentialSyncPreferencesStore?
     let credentialSyncCoordinator: CredentialSyncCoordinator?
     let sessionStore: SessionStore?
-    @State private var isSigningOut = false
     @State private var isSyncing = false
     @State private var lastSyncError: ServerSyncError?
-    @State private var showSignIn = false
     @State private var notifyToggleRequestID = 0
 
     init(
-        authSession: AuthSession,
+        authSession: AuthSessionProtocol,
         syncStore: HostSyncStore,
         preferences: SyncPreferences,
-        serverURL: Binding<String>,
         credentialSync: CredentialSyncPreferencesStore? = nil,
         credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
         sessionStore: SessionStore? = nil
@@ -76,42 +64,24 @@ struct SyncSettingsView: View {
         self.authSession = authSession
         self.syncStore = syncStore
         self.preferences = preferences
-        self._serverURL = serverURL
         self.credentialSync = credentialSync
         self.credentialSyncCoordinator = credentialSyncCoordinator
         self.sessionStore = sessionStore
     }
 
     var body: some View {
-        let derivedAccountState = accountState(isSignedIn: authSession.isSignedIn,
-                                               lastSyncError: lastSyncError,
-                                               lastSyncErrorKind: syncStore.lastSyncErrorKind)
+        let derivedAccountState = accountState(isSignedIn: authSession.isSignedIn)
         Form {
-            Section("Server") {
-                TextField("URL", text: $serverURL)
-                    .disableAutocorrection(true)
-                Text("Restart Caterm after changing the server URL.")
-                    .font(.caption).foregroundColor(.secondary)
-            }
             Section("Account") {
                 switch derivedAccountState {
                 case .signedOut:
-                    Button("Sign In…") { showSignIn = true }
+                    Text("Not signed in to iCloud")
+                        .foregroundColor(.secondary)
+                    Text("Sign in to your iCloud account in System Settings to enable sync.")
+                        .font(.caption).foregroundColor(.secondary)
                 case .signedIn:
-                    Button("Sign Out") { Task { await signOut() } }
-                        .disabled(isSigningOut)
-                case .sessionExpired:
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Session expired")
-                            .font(.caption).foregroundColor(.secondary)
-                        Button("Sign In Again…") {
-                            Task {
-                                try? await authSession.signOut()  // clear local cookie
-                                showSignIn = true
-                                lastSyncError = nil               // hide red text once user moves
-                            }
-                        }
-                    }
+                    Text("Signed in to iCloud")
+                        .foregroundColor(.secondary)
                 }
             }
             Section("Sync") {
@@ -175,21 +145,6 @@ struct SyncSettingsView: View {
         }
         .padding(24)
         .frame(width: 480)
-        .sheet(isPresented: $showSignIn) {
-            SignInView(authSession: authSession, onSignedIn: {
-                showSignIn = false
-                syncStore.clearAuthError()
-                syncStore.syncIfSignedIn()
-            })
-        }
-    }
-
-    private func signOut() async {
-        isSigningOut = true
-        defer { isSigningOut = false }
-        try? await authSession.signOut()
-        syncStore.clearAuthError()
-        lastSyncError = nil
     }
 
     @MainActor

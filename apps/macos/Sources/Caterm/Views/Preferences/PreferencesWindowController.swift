@@ -8,20 +8,20 @@ import SettingsStore
 import SwiftUI
 
 /// Container the app injects into the window controller so the Sync tab can
-/// reach the live `AuthSession` / `HostSyncStore` / `SyncPreferences`.
-/// Bundled into a single tuple-like struct so unit tests can construct a
-/// bare controller without the entire sync stack wired up — the Sync tab
-/// then renders `SyncTabPlaceholderView` instead of crashing.
+/// reach the live iCloud-backed auth surface, `HostSyncStore`, and
+/// `SyncPreferences`. Bundled into a single tuple-like struct so unit tests
+/// can construct a bare controller without the entire sync stack wired up —
+/// the Sync tab then renders `SyncTabPlaceholderView` instead of crashing.
 @MainActor
 public struct SyncEnvironment {
-    public let authSession: AuthSession
+    public let authSession: AuthSessionProtocol
     public let syncStore: HostSyncStore
     public let preferences: SyncPreferences
     public let credentialSync: CredentialSyncPreferencesStore?
     public let credentialSyncCoordinator: CredentialSyncCoordinator?
     public let sessionStore: SessionStore?
 
-    public init(authSession: AuthSession,
+    public init(authSession: AuthSessionProtocol,
                 syncStore: HostSyncStore,
                 preferences: SyncPreferences,
                 credentialSync: CredentialSyncPreferencesStore? = nil,
@@ -100,7 +100,7 @@ public final class PreferencesWindowController: NSWindowController {
     private func renderActiveTab() {
         guard let window else { return }
         let baseView: AnyView
-        // Sync tab is special: it needs the AuthSession/HostSyncStore/
+        // Sync tab is special: it needs the AuthSessionProtocol/HostSyncStore/
         // SyncPreferences trio. When the sync environment isn't injected
         // (unit tests, early app boot before CatermApp wires it up) fall
         // back to the placeholder so the controller is constructible

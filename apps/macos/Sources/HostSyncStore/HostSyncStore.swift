@@ -154,7 +154,8 @@ public final class HostSyncStore: ObservableObject {
     @Published public private(set) var isSyncing: Bool = false
 
     /// Computed proxy so SwiftUI views can read sign-in state without holding
-    /// a direct AuthSession reference (AuthSession is not ObservableObject).
+    /// the AuthSessionProtocol conformer directly (the conformer is not
+    /// ObservableObject).
     /// Re-render relies on the app's coordinated sign-in / sign-out flows
     /// touching at least one @Published property on this store
     /// (sign-in → syncIfSignedIn → startSync flips isSyncing; auth-failure

@@ -5,72 +5,16 @@ import XCTest
 
 final class SyncSettingsAccountStateTests: XCTestCase {
     func testAccountStateSignedOut() {
-        XCTAssertEqual(accountState(isSignedIn: false, lastSyncError: nil, lastSyncErrorKind: nil),
-                       .signedOut)
-    }
-
-    func testAccountStateSignedOutTakesPriorityOverStaleAuthError() {
-        XCTAssertEqual(
-            accountState(isSignedIn: false,
-                         lastSyncError: nil,
-                         lastSyncErrorKind: .auth),
-            .signedOut,
-            "Signed-out users should see the plain Sign In action even if stale auth state exists")
+        XCTAssertEqual(accountState(isSignedIn: false), .signedOut)
     }
 
     func testAccountStateSignedIn() {
-        XCTAssertEqual(accountState(isSignedIn: true, lastSyncError: nil, lastSyncErrorKind: nil),
-                       .signedIn)
-    }
-
-    func testAccountStateSessionExpired401Http() {
-        XCTAssertEqual(
-            accountState(isSignedIn: true,
-                         lastSyncError: .http(status: 401, body: ""),
-                         lastSyncErrorKind: nil),
-            .sessionExpired)
-    }
-
-    func testAccountStateSessionExpired401Orpc() {
-        XCTAssertEqual(
-            accountState(isSignedIn: true,
-                         lastSyncError: .orpc(code: "UNAUTHORIZED",
-                                              status: 401,
-                                              message: "Unauthorized"),
-                         lastSyncErrorKind: nil),
-            .sessionExpired,
-            "oRPC route returns 401 wrapped in .orpc, not .http — see ServerSyncClientHTTPTests:58")
-    }
-
-    func testAccountStateSessionExpiredAuthFailed() {
-        XCTAssertEqual(
-            accountState(isSignedIn: true,
-                         lastSyncError: .authFailed(code: "x", message: "y"),
-                         lastSyncErrorKind: nil),
-            .sessionExpired)
-    }
-
-    func testAccountStateNon401HttpError() {
-        XCTAssertEqual(
-            accountState(isSignedIn: true,
-                         lastSyncError: .http(status: 500, body: ""),
-                         lastSyncErrorKind: nil),
-            .signedIn,
-            "5xx is not an auth failure — Account remains 'Sign Out'")
-    }
-
-    func testAccountState_returnsSessionExpired_whenStoreErrorKindAuth_evenWithNilLastSyncError() {
-        let state = accountState(isSignedIn: true,
-                                 lastSyncError: nil,
-                                 lastSyncErrorKind: .auth)
-        XCTAssertEqual(state, .sessionExpired,
-            "Auto-only 401 must surface as .sessionExpired CTA — auth-priority invariant")
+        XCTAssertEqual(accountState(isSignedIn: true), .signedIn)
     }
 
     func testFailureDetailsOnlyShowWhenSignedIn() {
         XCTAssertTrue(shouldShowSyncFailureDetails(for: .signedIn))
         XCTAssertFalse(shouldShowSyncFailureDetails(for: .signedOut))
-        XCTAssertFalse(shouldShowSyncFailureDetails(for: .sessionExpired))
     }
 
     // MARK: - formatLastSyncedAt (spec §3.3 / §7.5)
