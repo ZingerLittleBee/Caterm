@@ -133,6 +133,31 @@ kill: ## kill any running caterm dev process
 	-pkill -f "$(CATERM_BIN)" || true
 	-pkill -f "Caterm.app/Contents/MacOS/caterm" || true
 
+.PHONY: dist
+dist: build-release ## Distribution build: release config + dist signing + bundle assembly
+	# Production-signed Caterm.app for two-Mac smoke / external distribution.
+	#
+	# Required env (these are NOT auto-detected):
+	#   CATERM_DIST_IDENTITY       Developer ID / Mac App Distribution identity
+	#                              (CN or SHA-1; same form as CATERM_DEV_IDENTITY).
+	#   CATERM_DIST_PROFILE_PATH   path to the Distribution .provisionprofile
+	#                              (App ID configured with aps-environment=
+	#                              production and icloud-container-environment=
+	#                              Production).
+	#
+	# This target intentionally does NOT launch the app — distribution builds
+	# are for the test Macs, not local dev. Output: .build/release/Caterm.app.
+	@if [ -z "$$CATERM_DIST_IDENTITY" ]; then \
+	    echo "Set CATERM_DIST_IDENTITY=... (Developer ID / Mac App Distribution cert)"; \
+	    exit 1; \
+	fi
+	@if [ -z "$$CATERM_DIST_PROFILE_PATH" ]; then \
+	    echo "Set CATERM_DIST_PROFILE_PATH=... (Distribution .provisionprofile)"; \
+	    exit 1; \
+	fi
+	bash Scripts/dev-codesign.sh --profile distribution
+	bash Scripts/dist-package.sh
+
 .PHONY: bootstrap-askpass
 bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)
 	@CATERM_ASKPASS_STUFF=1 "$(ASKPASS_BIN)" || true
