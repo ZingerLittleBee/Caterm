@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import FileTransferStore
+import SessionStore
 import SSHCommandBuilder
 
 @MainActor
@@ -14,6 +15,8 @@ struct FileDrawerView: View {
 	@State private var selection: RemoteEntry.ID?
 	@State private var error: String?
 	@State private var sheetMode: SheetMode?
+	@State private var showBookmarks: Bool = false
+	@EnvironmentObject private var bookmarkStore: RemoteBookmarkStore
 
 	private enum SheetMode: Identifiable {
 		case rename(RemoteEntry)
@@ -43,6 +46,26 @@ struct FileDrawerView: View {
 					.lineLimit(1)
 					.truncationMode(.middle)
 				Spacer(minLength: 8)
+				if let host {
+					Button { showBookmarks.toggle() } label: {
+						Image(systemName: isCurrentPathBookmarked(hostId: host.id)
+							  ? "bookmark.fill" : "bookmark")
+					}
+					.buttonStyle(.borderless)
+					.help("Bookmarks")
+					.popover(isPresented: $showBookmarks, arrowEdge: .bottom) {
+						RemoteBookmarkPopover(
+							hostId: host.id,
+							currentPath: path,
+							onPick: { newPath in
+								path = newPath
+								Task { await refresh() }
+							},
+							isPresented: $showBookmarks
+						)
+						.environmentObject(bookmarkStore)
+					}
+				}
 				Button { sheetMode = .mkdir } label: {
 					Image(systemName: "folder.badge.plus")
 				}
@@ -167,6 +190,14 @@ struct FileDrawerView: View {
 				)
 			}
 		}
+	}
+
+	/// True when the current `path` is already saved as a bookmark for this
+	/// host (using lexical-only normalization, same as the popover's dedup).
+	private func isCurrentPathBookmarked(hostId: UUID) -> Bool {
+		let key = normalizeRemotePath(path)
+		return bookmarkStore.bookmarks(for: hostId)
+			.contains { normalizeRemotePath($0.path) == key }
 	}
 
 	/// Whether the drawer is showing somewhere we can navigate up from.

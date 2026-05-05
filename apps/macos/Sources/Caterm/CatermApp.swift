@@ -26,6 +26,7 @@ struct CatermApp: App {
 	@StateObject var preferences: SyncPreferences
 	@StateObject var fileTransferStore: FileTransferStore
 	@StateObject var settingsStore: SettingsStore
+	@StateObject var remoteBookmarks: RemoteBookmarkStore
 	@StateObject private var credentialSync: CredentialSyncPreferencesStore
 
 	/// Holds the live-reload dispatcher and its NotificationCenter
@@ -134,6 +135,13 @@ struct CatermApp: App {
 			)
 		}
 		_settingsStore = StateObject(wrappedValue: settings)
+		// Per-host remote-path bookmarks (SFTP file drawer). Lives next to
+		// hosts.json under Application Support/Caterm/RemoteBookmarks/<hostId>.json.
+		let bookmarksDir = FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("Caterm", isDirectory: true)
+			.appendingPathComponent("RemoteBookmarks", isDirectory: true)
+		_remoteBookmarks = StateObject(wrappedValue: RemoteBookmarkStore(directory: bookmarksDir))
 		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
 			controlPathFor: { hostId in
 				cmDir.appendingPathComponent("\(hostId.uuidString).sock")
@@ -197,6 +205,7 @@ struct CatermApp: App {
 			.environmentObject(preferences)      // NEW (v1.4)
 			.environmentObject(fileTransferStore)
 			.environmentObject(settingsStore)
+			.environmentObject(remoteBookmarks)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
