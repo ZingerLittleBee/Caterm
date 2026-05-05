@@ -93,8 +93,37 @@ struct RemoteBookmarkPopover: View {
 	}
 
 	private var bookmarkList: some View {
+		// `Array.enumerated()` so each row knows its index for the Move
+		// Up / Move Down context menu actions. We use `id: \.element.id`
+		// (not the index) so SwiftUI's diff stays stable across reorders
+		// — keying by index would re-mount every row on every move.
 		List {
-			ForEach(bookmarks) { bm in
+			ForEach(Array(bookmarks.enumerated()), id: \.element.id) { index, bm in
+				bookmarkRow(index: index, bookmark: bm)
+			}
+			.onMove { source, destination in
+				guard let from = source.first else { return }
+				store.move(from: from, to: destination, for: hostId)
+			}
+		}
+		.listStyle(.plain)
+	}
+
+	/// One row of the bookmark list.
+	///
+	/// Layout split: a navigation Button (whole left side, picks the path)
+	/// and a separate trash Button. Earlier the row used `.onTapGesture`
+	/// on the parent HStack, which intercepted clicks before the inner
+	/// trash Button could see them — so "click trash" silently no-op'd.
+	/// Per-Button hit areas + `.buttonStyle(.plain)` on the navigation
+	/// button restore correct dispatch.
+	@ViewBuilder
+	private func bookmarkRow(index: Int, bookmark bm: RemoteBookmark) -> some View {
+		HStack(spacing: 8) {
+			Button {
+				onPick(bm.path)
+				isPresented = false
+			} label: {
 				HStack(spacing: 8) {
 					Image(systemName: "bookmark.fill")
 						.foregroundColor(.accentColor)
@@ -107,28 +136,41 @@ struct RemoteBookmarkPopover: View {
 							.lineLimit(1)
 							.truncationMode(.middle)
 					}
-					Spacer()
-					Button {
-						store.remove(id: bm.id, for: hostId)
-					} label: {
-						Image(systemName: "trash")
-							.foregroundColor(.secondary)
-					}
-					.buttonStyle(.borderless)
-					.help("Remove bookmark")
+					Spacer(minLength: 0)
 				}
 				.contentShape(Rectangle())
-				.onTapGesture {
-					onPick(bm.path)
-					isPresented = false
-				}
 			}
-			.onMove { source, destination in
-				guard let from = source.first else { return }
-				store.move(from: from, to: destination, for: hostId)
+			.buttonStyle(.plain)
+
+			Button {
+				store.remove(id: bm.id, for: hostId)
+			} label: {
+				Image(systemName: "trash")
+					.foregroundColor(.secondary)
+			}
+			.buttonStyle(.borderless)
+			.help("Remove bookmark")
+		}
+		.contextMenu {
+			// Reliable fallback for Mac users / accessibility tools that
+			// can't drive SwiftUI's drag-reorder on List (which only kicks
+			// in for click-and-hold-then-drag).
+			Button("Move Up") {
+				store.move(from: index, to: index - 1, for: hostId)
+			}
+			.disabled(index == 0)
+			Button("Move Down") {
+				// `move(from:to:)` semantics: the element at `from` is
+				// placed *before* whatever sat at `to`. To swap with the
+				// next row, target offset is `index + 2`.
+				store.move(from: index, to: index + 2, for: hostId)
+			}
+			.disabled(index == bookmarks.count - 1)
+			Divider()
+			Button("Delete", role: .destructive) {
+				store.remove(id: bm.id, for: hostId)
 			}
 		}
-		.listStyle(.plain)
 	}
 
 	// MARK: - Actions

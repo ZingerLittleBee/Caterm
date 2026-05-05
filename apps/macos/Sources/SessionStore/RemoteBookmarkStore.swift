@@ -97,6 +97,12 @@ public final class RemoteBookmarkStore: ObservableObject {
     /// Append a bookmark. Returns `false` if the host is quarantined or if a
     /// bookmark with the same normalized path already exists (first-write
     /// wins — the existing entry's label is preserved).
+    ///
+    /// `objectWillChange.send()` fires before the cache write so SwiftUI views
+    /// observing this `ObservableObject` (the bookmark popover, the file
+    /// drawer's `bookmark.fill` indicator) re-render. Without it the view
+    /// holds onto the previous `bookmarks(for:)` snapshot and the user sees
+    /// "click does nothing" even though the JSON file is correctly updated.
     @discardableResult
     public func add(_ bookmark: RemoteBookmark, for hostId: UUID) -> Bool {
         loadIfNeeded(hostId)
@@ -107,6 +113,7 @@ public final class RemoteBookmarkStore: ObservableObject {
         if list.contains(where: { normalizeRemotePath($0.path) == key }) {
             return false
         }
+        objectWillChange.send()
         list.append(bookmark)
         cache[hostId] = list
         save(hostId)
@@ -118,7 +125,10 @@ public final class RemoteBookmarkStore: ObservableObject {
         if quarantined.contains(hostId) { return }
 
         var list = cache[hostId] ?? []
+        let originalCount = list.count
         list.removeAll { $0.id == id }
+        guard list.count != originalCount else { return }
+        objectWillChange.send()
         cache[hostId] = list
         save(hostId)
     }
@@ -132,6 +142,7 @@ public final class RemoteBookmarkStore: ObservableObject {
 
         var list = cache[hostId] ?? []
         guard from >= 0, from < list.count, to >= 0, to <= list.count, from != to else { return }
+        objectWillChange.send()
         let element = list.remove(at: from)
         let insertAt = from < to ? to - 1 : to
         list.insert(element, at: insertAt)
