@@ -36,6 +36,10 @@ public final class SettingsStore: ObservableObject {
         self.path = path
     }
 
+    public var effectiveSettings: CatermSettings {
+        _pending?.settings ?? settings
+    }
+
     public static func load(from path: URL) throws -> SettingsStore {
         if !FileManager.default.fileExists(atPath: path.path) {
             var seeded = CatermSettings.empty
@@ -147,6 +151,7 @@ public final class SettingsStore: ObservableObject {
             await MainActor.run { self?.flushNow() }
         }
         _pending = pending
+        objectWillChange.send()
     }
 
     public func flushNow() {

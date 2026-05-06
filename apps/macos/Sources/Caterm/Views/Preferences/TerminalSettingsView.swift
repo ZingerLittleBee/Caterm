@@ -9,61 +9,61 @@ public struct TerminalSettingsBindings {
 
     public var fontFamily: Binding<String> {
         Binding(
-            get: { store.settings.global.fontFamily ?? "SF Mono" },
+            get: { store.effectiveSettings.global.fontFamily ?? "SF Mono" },
             set: { v in store.update { $0.global.fontFamily = v } }
         )
     }
     public var fontSize: Binding<Int> {
         Binding(
-            get: { store.settings.global.fontSize ?? 13 },
+            get: { store.effectiveSettings.global.fontSize ?? 13 },
             set: { v in store.update { $0.global.fontSize = v } }
         )
     }
     public var lineHeight: Binding<Double> {
         Binding(
-            get: { store.settings.global.lineHeight ?? 1.0 },
+            get: { store.effectiveSettings.global.lineHeight ?? 1.0 },
             set: { v in store.update { $0.global.lineHeight = v } }
         )
     }
     public var cursorStyle: Binding<CursorStyle> {
         Binding(
-            get: { store.settings.global.cursorStyle ?? .block },
+            get: { store.effectiveSettings.global.cursorStyle ?? .block },
             set: { v in store.update { $0.global.cursorStyle = v } }
         )
     }
     public var cursorBlink: Binding<Bool> {
         Binding(
-            get: { store.settings.global.cursorBlink ?? false },
+            get: { store.effectiveSettings.global.cursorBlink ?? false },
             set: { v in store.update { $0.global.cursorBlink = v } }
         )
     }
     public var bell: Binding<BellMode> {
         Binding(
-            get: { store.settings.global.bell ?? .visual },
+            get: { store.effectiveSettings.global.bell ?? .visual },
             set: { v in store.update { $0.global.bell = v } }
         )
     }
     public var scrollbackMB: Binding<Int> {
         Binding(
-            get: { (store.settings.global.scrollbackBytes ?? 10_000_000) / 1_000_000 },
+            get: { (store.effectiveSettings.global.scrollbackBytes ?? 10_000_000) / 1_000_000 },
             set: { v in store.update { $0.global.scrollbackBytes = v * 1_000_000 } }
         )
     }
     public var windowOpacity: Binding<Double> {
         Binding(
-            get: { store.settings.global.windowOpacity ?? 1.0 },
+            get: { store.effectiveSettings.global.windowOpacity ?? 1.0 },
             set: { v in store.update { $0.global.windowOpacity = v } }
         )
     }
     public var windowPaddingX: Binding<Int> {
         Binding(
-            get: { store.settings.global.windowPaddingX ?? 4 },
+            get: { store.effectiveSettings.global.windowPaddingX ?? 4 },
             set: { v in store.update { $0.global.windowPaddingX = v } }
         )
     }
     public var windowPaddingY: Binding<Int> {
         Binding(
-            get: { store.settings.global.windowPaddingY ?? 4 },
+            get: { store.effectiveSettings.global.windowPaddingY ?? 4 },
             set: { v in store.update { $0.global.windowPaddingY = v } }
         )
     }

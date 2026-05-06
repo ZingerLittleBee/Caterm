@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import SettingsStore
 
 @MainActor
@@ -44,6 +45,39 @@ final class SettingsStoreUpdateTests: XCTestCase {
         store.update { $0.global.fontSize = 22 }
         store.flushNow()
         XCTAssertEqual(store.settings.global.fontSize, 22)
+    }
+
+    func testEffectiveSettingsIncludesPendingChangeBeforeFlush() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SettingsStoreUpdateTests-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try SettingsStore.load(from: dir.appendingPathComponent("settings.plist"))
+        store.debounceInterval = .milliseconds(10_000)
+
+        store.update { $0.global.windowOpacity = 0.82 }
+
+        XCTAssertEqual(store.effectiveSettings.global.windowOpacity, 0.82)
+        XCTAssertNil(store.settings.global.windowOpacity)
+    }
+
+    func testUpdatePublishesPendingChangeBeforeFlush() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SettingsStoreUpdateTests-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try SettingsStore.load(from: dir.appendingPathComponent("settings.plist"))
+        store.debounceInterval = .milliseconds(10_000)
+
+        var updateCount = 0
+        let token = store.objectWillChange.sink {
+            updateCount += 1
+        }
+        defer { token.cancel() }
+
+        store.update { $0.global.windowOpacity = 0.82 }
+
+        XCTAssertEqual(updateCount, 1)
     }
 }
 
