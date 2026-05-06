@@ -134,7 +134,11 @@ public final class SnippetSyncStore {
 			case .pushLocal(let s):
 				do {
 					let saved = try await client.pushSnippet(s)
-					try? store.applyRemote(saved)
+					do {
+						try store.applyRemote(saved)
+					} catch {
+						Self.log.error("applyRemote after push failed for \(s.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+					}
 					locallyDirty.remove(s.id)
 				} catch {
 					Self.log.error("pushSnippet failed for \(s.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
