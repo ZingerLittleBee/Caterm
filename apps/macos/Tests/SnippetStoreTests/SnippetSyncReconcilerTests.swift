@@ -3,13 +3,22 @@ import SnippetSyncClient
 @testable import SnippetStore
 
 final class SnippetSyncReconcilerTests: XCTestCase {
-	private func snip(id: UUID = UUID(), name: String = "n",
-	                  revision: Int = 0,
-	                  metaUpdated: Date? = nil,
-	                  updatedAt: Date = Date(timeIntervalSince1970: 0)) -> Snippet {
-		Snippet(id: id, name: name, content: "c",
-		        createdAt: .distantPast, updatedAt: updatedAt,
-		        revision: revision, metadataUpdatedAt: metaUpdated)
+	private func snip(
+		id: UUID = UUID(),
+		name: String = "n",
+		revision: Int = 0,
+		metaUpdated: Date? = nil,
+		updatedAt: Date = Date(timeIntervalSince1970: 0)
+	) -> Snippet {
+		Snippet(
+			id: id,
+			name: name,
+			content: "c",
+			createdAt: .distantPast,
+			updatedAt: updatedAt,
+			revision: revision,
+			metadataUpdatedAt: metaUpdated
+		)
 	}
 
 	func test_remoteHigherRevision_appliesRemote() {
@@ -34,6 +43,17 @@ final class SnippetSyncReconcilerTests: XCTestCase {
 		XCTAssertEqual(ops, [.pushLocal(local)])
 	}
 
+	func test_remoteLowerRevision_notDirty_isNoOp() {
+		let id = UUID()
+		let local = snip(id: id, revision: 5)
+		let remote = snip(id: id, name: "stale", revision: 2)
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local], changedSnippets: [remote], deletedIDs: [],
+			locallyDirty: []
+		)
+		XCTAssertEqual(ops, [])
+	}
+
 	func test_remoteEqualRevision_metadataUpdatedAtBreaksTie_cloudWins() {
 		let id = UUID()
 		let local = snip(id: id, revision: 1, metaUpdated: Date(timeIntervalSince1970: 100))
@@ -43,6 +63,19 @@ final class SnippetSyncReconcilerTests: XCTestCase {
 			locallyDirty: []
 		)
 		XCTAssertEqual(ops, [.applyRemote(remote)])
+	}
+
+	func test_parity_emitsNoOps() {
+		let id = UUID()
+		let meta = Date(timeIntervalSince1970: 100)
+		let updated = Date(timeIntervalSince1970: 200)
+		let local = snip(id: id, revision: 1, metaUpdated: meta, updatedAt: updated)
+		let remote = snip(id: id, revision: 1, metaUpdated: meta, updatedAt: updated)
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local], changedSnippets: [remote], deletedIDs: [],
+			locallyDirty: []
+		)
+		XCTAssertEqual(ops, [])
 	}
 
 	func test_remoteTombstone_emitsApplyTombstone_evenIfLocalDirty() {
@@ -85,5 +118,12 @@ final class SnippetSyncReconcilerTests: XCTestCase {
 		)
 		// New local snippet not yet pushed — must push, not delete.
 		XCTAssertEqual(ops, [.pushLocal(local[0])])
+	}
+
+	func test_forceFullSnapshot_emptyInputs_emitsNoOps() {
+		let ops = SnippetSyncReconciler.reconcileFullSnapshot(
+			local: [], remote: [], locallyDirty: []
+		)
+		XCTAssertEqual(ops, [])
 	}
 }

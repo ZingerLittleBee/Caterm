@@ -12,7 +12,7 @@ public enum SnippetSyncReconciler {
 		locallyDirty: Set<UUID>
 	) -> [SnippetSyncOperation] {
 		var ops: [SnippetSyncOperation] = []
-		let localById = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
+		let localById = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
 
 		// Tombstones first — terminal.
 		let tombstoneSet = Set(deletedIDs)
@@ -32,7 +32,7 @@ public enum SnippetSyncReconciler {
 				if locallyDirty.contains(l.id) {
 					ops.append(.pushLocal(l))
 				}
-				// else: parity, no-op.
+				// not dirty — no push needed.
 			case .parity: break
 			}
 		}
@@ -59,8 +59,8 @@ public enum SnippetSyncReconciler {
 		locallyDirty: Set<UUID>
 	) -> [SnippetSyncOperation] {
 		var ops: [SnippetSyncOperation] = []
-		let remoteById = Dictionary(uniqueKeysWithValues: remote.map { ($0.id, $0) })
-		let localById = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
+		let remoteById = Dictionary(remote.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+		let localById = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
 
 		for r in remote {
 			guard let l = localById[r.id] else {
