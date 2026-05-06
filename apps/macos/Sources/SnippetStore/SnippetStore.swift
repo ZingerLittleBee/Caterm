@@ -76,6 +76,35 @@ public final class SnippetStore: ObservableObject {
 		try writeOutbox()
 	}
 
+	public func search(_ query: String) -> [Snippet] {
+		let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty else { return snippets }
+		let needle = trimmed.lowercased()
+		return snippets.filter {
+			$0.name.lowercased().contains(needle)
+				|| $0.content.lowercased().contains(needle)
+		}
+	}
+
+	/// Apply a server-authoritative snippet (post-LWW reconciliation).
+	public func applyRemote(_ s: Snippet) throws {
+		if let idx = snippets.firstIndex(where: { $0.id == s.id }) {
+			snippets[idx] = s
+		} else {
+			snippets.append(s)
+		}
+		try writeSnippets()
+	}
+
+	/// Remove the snippet from local state. Also clears any outbox entry —
+	/// a tombstone observed in the cloud supersedes our pending delete.
+	public func applyRemoteTombstone(id: UUID) throws {
+		snippets.removeAll { $0.id == id }
+		pendingDeletedSnippetIDs.remove(id)
+		try writeSnippets()
+		try writeOutbox()
+	}
+
 	// MARK: - Persistence
 
 	private func writeSnippets() throws {
