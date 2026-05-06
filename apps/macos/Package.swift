@@ -81,6 +81,10 @@ let package = Package(
             path: "Sources/SettingsSyncStore"
         ),
         .target(
+            name: "SnippetSyncClient",
+            path: "Sources/SnippetSyncClient"
+        ),
+        .target(
             name: "FileTransferStore",
             dependencies: ["SSHCommandBuilder", "SFTPCommandBuilder"],
             path: "Sources/FileTransferStore"
@@ -201,6 +205,11 @@ let package = Package(
             name: "SettingsSyncStoreTests",
             dependencies: ["SettingsSyncStore", "SettingsStore"],
             path: "Tests/SettingsSyncStoreTests"
+        ),
+        .testTarget(
+            name: "SnippetSyncClientTests",
+            dependencies: ["SnippetSyncClient"],
+            path: "Tests/SnippetSyncClientTests"
         ),
         .testTarget(
             name: "CloudKitSyncClientTests",
