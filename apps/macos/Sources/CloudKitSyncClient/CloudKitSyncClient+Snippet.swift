@@ -70,20 +70,6 @@ extension CloudKitSyncClient: IncrementalSnippetSyncClient {
 		await snippetTokenStore.loadDatabaseToken() != nil
 	}
 
-	// fetchSnippetChanges + fetchSnippetSnapshotAndCheckpoint + commitSnippetCheckpoint
-	// implemented in Task 11. Stubs throw to keep build working.
-	public func fetchSnippetChanges() async throws -> SnippetChangeBatch {
-		fatalError("Implemented in Task 11")
-	}
-
-	public func fetchSnippetSnapshotAndCheckpoint() async throws -> SnippetChangeBatch {
-		fatalError("Implemented in Task 11")
-	}
-
-	public func commitSnippetCheckpoint(_ checkpoint: any SnippetSyncCheckpoint) async throws {
-		fatalError("Implemented in Task 11")
-	}
-
 	// MARK: - Internals
 
 	private func ensureSnippetZone() async throws {

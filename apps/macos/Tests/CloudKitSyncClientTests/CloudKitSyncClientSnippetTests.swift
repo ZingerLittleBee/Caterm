@@ -49,6 +49,131 @@ final class CloudKitSyncClientSnippetTests: XCTestCase {
 	}
 }
 
+// MARK: - CloudKitSyncClient snippet fetch + checkpoint tests
+
+final class CloudKitSyncClientSnippetFetchTests: XCTestCase {
+	private var fakeDB: FakeCloudDatabase!
+	private var snippetTokenStore: InMemoryServerChangeTokenStore!
+	private var client: CloudKitSyncClient!
+	private let snippetZoneID = CKRecordZone.ID(
+		zoneName: CloudKitPushNames.snippetZoneName,
+		ownerName: CKCurrentUserDefaultName
+	)
+
+	override func setUp() async throws {
+		fakeDB = FakeCloudDatabase()
+		snippetTokenStore = InMemoryServerChangeTokenStore()
+		client = CloudKitSyncClient(
+			database: fakeDB,
+			zoneID: CKRecordZone.ID(zoneName: "Caterm"),
+			tokenStore: InMemoryServerChangeTokenStore(),
+			snippetTokenStore: snippetTokenStore
+		)
+	}
+
+	func test_fetchSnippetChanges_decodesChangedRecords() async throws {
+		let id = UUID()
+		fakeDB.enqueueZoneChanges(snippetZoneID, ZoneChangesScript(
+			changedRecords: [makeFakeSnippetRecord(id: id, name: "n")],
+			moreComing: false
+		))
+		let batch = try await client.fetchSnippetChanges()
+		XCTAssertEqual(batch.changedSnippets.count, 1)
+		XCTAssertEqual(batch.changedSnippets.first?.id, id)
+		XCTAssertEqual(batch.mode, .incremental)
+	}
+
+	func test_fetchSnippetChanges_decodesTombstones() async throws {
+		let id = UUID()
+		let deletedID = CKRecord.ID(recordName: id.uuidString, zoneID: snippetZoneID)
+		fakeDB.enqueueZoneChanges(snippetZoneID, ZoneChangesScript(
+			deletedRecords: [(deletedID, CKRecordSnippetMapping.recordType)],
+			moreComing: false
+		))
+		let batch = try await client.fetchSnippetChanges()
+		XCTAssertEqual(batch.deletedSnippetIDs, [id])
+	}
+
+	func test_fetchSnippetChanges_corruptRecordIsSkipped() async throws {
+		let goodID = UUID()
+		fakeDB.enqueueZoneChanges(snippetZoneID, ZoneChangesScript(
+			changedRecords: [
+				makeFakeSnippetRecord(id: goodID, name: "n"),
+				makeBrokenSnippetRecord(),
+			],
+			moreComing: false
+		))
+		let batch = try await client.fetchSnippetChanges()
+		XCTAssertEqual(batch.changedSnippets.map(\.id), [goodID])
+	}
+
+	func test_fetchSnippetChanges_emptyZoneReturnsEmptyBatch() async throws {
+		// No enqueue → FakeCloudDatabase returns ([], [], nil, false)
+		let batch = try await client.fetchSnippetChanges()
+		XCTAssertTrue(batch.changedSnippets.isEmpty)
+		XCTAssertTrue(batch.deletedSnippetIDs.isEmpty)
+		XCTAssertFalse(batch.tokenExpired)
+		XCTAssertNotNil(batch.checkpoint)
+		XCTAssertEqual(batch.mode, .incremental)
+	}
+
+	func test_commitSnippetCheckpoint_persistsZoneToken() async throws {
+		let token: CKServerChangeToken
+		do {
+			token = try FakeCloudDatabase.makeRealishToken()
+		} catch {
+			throw XCTSkip("makeRealishToken byte fixture rejected by current toolchain")
+		}
+		fakeDB.enqueueZoneChanges(snippetZoneID, ZoneChangesScript(
+			newToken: token, moreComing: false
+		))
+		let batch = try await client.fetchSnippetChanges()
+		let checkpoint = try XCTUnwrap(batch.checkpoint)
+		try await client.commitSnippetCheckpoint(checkpoint)
+		let stored = await snippetTokenStore.loadZoneToken(snippetZoneID)
+		XCTAssertNotNil(stored)
+	}
+
+	func test_commitSnippetCheckpoint_rejectsForeignType() async throws {
+		struct ForeignCheckpoint: SnippetSyncCheckpoint { let id = UUID() }
+		try await client.commitSnippetCheckpoint(ForeignCheckpoint())
+		let stored = await snippetTokenStore.loadZoneToken(snippetZoneID)
+		XCTAssertNil(stored, "foreign checkpoint must be silently rejected")
+	}
+
+	func test_resetDuringApply_preventsStaleCheckpointCommit() async throws {
+		fakeDB.enqueueZoneChanges(snippetZoneID, ZoneChangesScript(moreComing: false))
+		let batch = try await client.fetchSnippetChanges()
+		let cp = try XCTUnwrap(batch.checkpoint)
+		await client.resetSnippetSyncState()  // bumps epoch
+		try await client.commitSnippetCheckpoint(cp)
+		let stored = await snippetTokenStore.loadZoneToken(snippetZoneID)
+		XCTAssertNil(stored, "reset bumped epoch ⇒ staleEpoch must prevent commit")
+	}
+
+	// MARK: - Helpers
+
+	private func makeFakeSnippetRecord(id: UUID, name: String) -> CKRecord {
+		let recID = CKRecord.ID(recordName: id.uuidString, zoneID: snippetZoneID)
+		let rec = CKRecord(recordType: CKRecordSnippetMapping.recordType, recordID: recID)
+		rec["name"] = name as CKRecordValue
+		rec["content"] = "c" as CKRecordValue
+		rec["createdAt"] = Date() as CKRecordValue
+		rec["updatedAt"] = Date() as CKRecordValue
+		rec["revision"] = Int64(1) as CKRecordValue
+		rec["schemaVersion"] = Int64(1) as CKRecordValue
+		return rec
+	}
+
+	private func makeBrokenSnippetRecord() -> CKRecord {
+		let recID = CKRecord.ID(recordName: UUID().uuidString, zoneID: snippetZoneID)
+		let rec = CKRecord(recordType: CKRecordSnippetMapping.recordType, recordID: recID)
+		rec["name"] = "n" as CKRecordValue
+		// "content" intentionally omitted — decode must fail gracefully
+		return rec
+	}
+}
+
 // MARK: - CKRecordSnippetMapping encode/decode tests
 
 final class CKRecordSnippetMappingTests: XCTestCase {
