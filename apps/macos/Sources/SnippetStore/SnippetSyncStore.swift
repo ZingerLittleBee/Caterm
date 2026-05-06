@@ -146,8 +146,10 @@ public final class SnippetSyncStore: ObservableObject {
 		for op in ops {
 			switch op {
 			case .applyRemote(let s):
-				try? store.applyRemote(s)
-				locallyDirty.remove(s.id)
+				let applied = (try? store.applyRemote(s)) ?? false
+				if applied {
+					locallyDirty.remove(s.id)
+				}
 			case .applyTombstone(let id):
 				try? store.applyRemoteTombstone(id: id)
 				locallyDirty.remove(id)
