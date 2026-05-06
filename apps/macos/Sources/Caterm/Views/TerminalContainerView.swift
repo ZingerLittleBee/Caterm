@@ -1,5 +1,7 @@
 import HostSyncStore
 import SessionStore
+import SnippetStore
+import SnippetSyncClient
 import SwiftUI
 import TerminalEngine
 
@@ -11,15 +13,44 @@ import TerminalEngine
 /// off a fresh ssh subprocess.
 struct TerminalContainerView: View {
 	@EnvironmentObject var store: SessionStore
+	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
+	@EnvironmentObject var snippetStore: SnippetStore
+	@EnvironmentObject var snippetSync: SnippetSyncStore
+	@State private var showingPalette = false
 	let tabId: UUID
 
 	var body: some View {
-		ZStack {
-			if let tab = store.tabs.first(where: { $0.id == tabId }) {
-				TerminalSurfaceRepresentable(tabId: tabId)
-					.id("\(tabId)-\(tab.surfaceGeneration)")
-				if case let .reconnecting(attempt, nextRetryAt) = tab.state {
-					ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
+		VStack(spacing: 0) {
+			HStack {
+				Spacer()
+				Button(action: { showingPalette.toggle() }) {
+					Image(systemName: "text.cursor")
+						.help("Snippets (⌘⇧P)")
+				}
+				.buttonStyle(.borderless)
+				.padding(.horizontal, 6)
+				.popover(isPresented: $showingPalette) {
+					SnippetPalette(
+						store: snippetStore,
+						sync: snippetSync,
+						capturedSurface: surfaceRegistry.surface(for: tabId) as (any SnippetDispatchTarget)?,
+						onClose: { showingPalette = false },
+						onCreate: {
+							showingPalette = false
+							NotificationCenter.default.post(name: .catermNewSnippet, object: nil)
+						}
+					)
+				}
+			}
+			.frame(height: 22)
+
+			ZStack {
+				if let tab = store.tabs.first(where: { $0.id == tabId }) {
+					TerminalSurfaceRepresentable(tabId: tabId)
+						.id("\(tabId)-\(tab.surfaceGeneration)")
+					if case let .reconnecting(attempt, nextRetryAt) = tab.state {
+						ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
+					}
 				}
 			}
 		}
@@ -41,6 +72,7 @@ struct TerminalContainerView: View {
 struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var preferences: SyncPreferences
+	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	let tabId: UUID
 
 	func makeNSView(context _: Context) -> GhosttySurfaceNSView {
@@ -54,7 +86,7 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		store.markConnecting(tabId: tabId)
 
 		let capturedTabId = tabId
-		Task { @MainActor [weak store, weak view] in
+		Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
 			// `view.surface` is built lazily in `viewDidMoveToWindow`. Yield
 			// until it exists or give up after ~3s.
 			let deadline = Date().addingTimeInterval(3)
@@ -65,6 +97,7 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 							store?.markChildExited(tabId: capturedTabId, exitCode: code)
 						}
 					}
+					surfaceRegistry?.register(surface, for: capturedTabId)
 					break
 				}
 				try? await Task.sleep(nanoseconds: 50_000_000)

@@ -18,7 +18,7 @@ let package = Package(
         // --- Libraries ---
         .target(
             name: "TerminalEngine",
-            dependencies: ["GhosttyKit", "ConfigStore", "SettingsStore"],
+            dependencies: ["GhosttyKit", "ConfigStore", "SettingsStore", "SnippetSyncClient"],
             path: "Sources/TerminalEngine"
         ),
         .target(
@@ -55,7 +55,7 @@ let package = Package(
         ),
         .target(
             name: "CloudKitSyncClient",
-            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SettingsSyncStore"],
+            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SettingsSyncStore", "SnippetSyncClient"],
             path: "Sources/CloudKitSyncClient"
         ),
         .target(
@@ -79,6 +79,15 @@ let package = Package(
             name: "SettingsSyncStore",
             dependencies: ["SettingsStore"],
             path: "Sources/SettingsSyncStore"
+        ),
+        .target(
+            name: "SnippetSyncClient",
+            path: "Sources/SnippetSyncClient"
+        ),
+        .target(
+            name: "SnippetStore",
+            dependencies: ["SnippetSyncClient"],
+            path: "Sources/SnippetStore"
         ),
         .target(
             name: "FileTransferStore",
@@ -117,6 +126,8 @@ let package = Package(
                 "CredentialSync",
                 "CredentialSyncStore",
                 "SettingsSyncStore",
+                "SnippetStore",
+                "SnippetSyncClient",
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
@@ -174,7 +185,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermTests",
-            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore"],
+            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient"],
             path: "Tests/CatermTests"
         ),
         .testTarget(
@@ -203,8 +214,18 @@ let package = Package(
             path: "Tests/SettingsSyncStoreTests"
         ),
         .testTarget(
+            name: "SnippetSyncClientTests",
+            dependencies: ["SnippetSyncClient"],
+            path: "Tests/SnippetSyncClientTests"
+        ),
+        .testTarget(
+            name: "SnippetStoreTests",
+            dependencies: ["SnippetStore", "SnippetSyncClient"],
+            path: "Tests/SnippetStoreTests"
+        ),
+        .testTarget(
             name: "CloudKitSyncClientTests",
-            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes"],
+            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SnippetSyncClient"],
             path: "Tests/CloudKitSyncClientTests"
         ),
         .testTarget(

@@ -2,6 +2,8 @@ import AppKit
 import FileTransferStore
 import SessionStore
 import SFTPCommandBuilder
+import SnippetStore
+import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
@@ -17,12 +19,19 @@ import TerminalEngine
 struct MainWindow: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var fileTransferStore: FileTransferStore
+	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
+	@EnvironmentObject var snippetStore: SnippetStore
+	@EnvironmentObject var snippetSync: SnippetSyncStore
 	@Environment(\.openWindow) private var openWindow
 	@StateObject private var bannerState = SettingsBannerState()
 	@State private var fileDrawerOpen = false
 	@State private var drawerWidth: CGFloat = 320
 	@State private var pendingUploadURLs: [URL] = []
 	@State private var showUploadSheet = false
+	@State private var presentingPalette = false
+	@State private var presentingEditor = false
+	@State private var presentingManager = false
+	@State private var hostWindow: NSWindow?
 	let tabId: UUID
 
 	private static let drawerMinWidth: CGFloat = 240
@@ -55,6 +64,12 @@ struct MainWindow: View {
 			credentials: creds,
 			liveness: cm
 		)
+	}
+
+	/// Returns the surface registered for this window's tab, used to dispatch
+	/// snippet paste/run commands from the palette.
+	private func resolveActiveSurface() -> (any SnippetDispatchTarget)? {
+		surfaceRegistry.surface(for: tabId)
 	}
 
 	var body: some View {
@@ -187,7 +202,36 @@ struct MainWindow: View {
 				}
 			)
 		}
-		.onDisappear { store.closeTab(tabId: tabId) }
+		.background(WindowAccessor(window: $hostWindow))
+		.modifier(SnippetCommandObserver(
+			presentingPalette: $presentingPalette,
+			presentingEditor: $presentingEditor,
+			presentingManager: $presentingManager,
+			isKeyWindow: { hostWindow?.isKeyWindow ?? false }
+		))
+		.popover(isPresented: $presentingPalette) {
+			SnippetPalette(
+				store: snippetStore,
+				sync: snippetSync,
+				capturedSurface: resolveActiveSurface(),
+				onClose: { presentingPalette = false },
+				onCreate: { presentingPalette = false; presentingEditor = true }
+			)
+		}
+		.sheet(isPresented: $presentingEditor) {
+			SnippetEditorSheet(mode: .create)
+				.environmentObject(snippetStore)
+				.environmentObject(snippetSync)
+		}
+		.sheet(isPresented: $presentingManager) {
+			SnippetManagerSheet()
+				.environmentObject(snippetStore)
+				.environmentObject(snippetSync)
+		}
+		.onDisappear {
+			surfaceRegistry.unregister(tabId)
+			store.closeTab(tabId: tabId)
+		}
 	}
 }
 

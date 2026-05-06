@@ -12,6 +12,7 @@ public final class CloudKitSyncClient: ServerSyncClient {
     internal let database: CKDatabaseProtocol
     internal let zoneID: CKRecordZone.ID
     internal let tokenStore: any ServerChangeTokenStoring
+    internal let snippetTokenStore: any ServerChangeTokenStoring
 
     /// Concrete checkpoint payload. Internal — only this module
     /// constructs / interprets values.
@@ -39,16 +40,23 @@ public final class CloudKitSyncClient: ServerSyncClient {
         database: CKDatabaseProtocol,
         zoneID: CKRecordZone.ID = CKRecordZone.ID(zoneName: "Caterm")
     ) {
-        self.init(database: database, zoneID: zoneID,
-                  tokenStore: UserDefaultsServerChangeTokenStore())
+        self.init(
+            database: database, zoneID: zoneID,
+            tokenStore: UserDefaultsServerChangeTokenStore(),
+            snippetTokenStore: UserDefaultsServerChangeTokenStore(
+                keyPrefix: "cloudkit.changeToken.snippet"
+            )
+        )
     }
 
     internal init(database: CKDatabaseProtocol,
                   zoneID: CKRecordZone.ID,
-                  tokenStore: any ServerChangeTokenStoring) {
+                  tokenStore: any ServerChangeTokenStoring,
+                  snippetTokenStore: any ServerChangeTokenStoring = InMemoryServerChangeTokenStore()) {
         self.database = database
         self.zoneID = zoneID
         self.tokenStore = tokenStore
+        self.snippetTokenStore = snippetTokenStore
     }
 
     public func listHosts() async throws -> [RemoteHost] {

@@ -111,39 +111,36 @@ internal actor InMemoryServerChangeTokenStore: ServerChangeTokenStoring {
 }
 
 internal actor UserDefaultsServerChangeTokenStore: ServerChangeTokenStoring {
-	// MIGRATION NOTE: These keys are persisted to UserDefaults across app
-	// launches and app updates. They MUST NOT be renamed without a migration
-	// that reads the old key, writes the new key, and deletes the old one.
-	// A silent rename would orphan existing tokens and force a full re-fetch.
-	private static let dbKey = "cloudkit.changeToken.database"
-	private static let epochKey = "cloudkit.changeToken.epoch"
-	private static let zonePrefix = "cloudkit.changeToken.zone."
-
+	// MIGRATION NOTE: the host instance uses prefix "cloudkit.changeToken".
+	// Plan F's snippet instance uses "cloudkit.changeToken.snippet". Renaming
+	// the prefix orphans existing tokens; treat as load-bearing identity.
+	private let dbKey: String
+	private let epochKey: String
+	private let zonePrefix: String
 	private let defaults: UserDefaults
 
-	init(defaults: UserDefaults = .standard) {
+	init(defaults: UserDefaults = .standard, keyPrefix: String = "cloudkit.changeToken") {
 		self.defaults = defaults
+		self.dbKey = "\(keyPrefix).database"
+		self.epochKey = "\(keyPrefix).epoch"
+		self.zonePrefix = "\(keyPrefix).zone."
 	}
 
 	func currentEpoch() async -> UInt64 {
-		UInt64(bitPattern: Int64(defaults.integer(forKey: Self.epochKey)))
+		UInt64(bitPattern: Int64(defaults.integer(forKey: epochKey)))
 	}
 
-	// Round-trips UInt64 through Int64 bitPattern, then through UserDefaults'
-	// integer(forKey:) which returns Int. Correct only on 64-bit platforms
-	// (Int == Int64). All current Apple platforms qualify; revisit if 32-bit
-	// targets are added.
 	func bumpEpoch() async {
 		let current = await currentEpoch()
-		defaults.set(Int64(bitPattern: current &+ 1), forKey: Self.epochKey)
+		defaults.set(Int64(bitPattern: current &+ 1), forKey: epochKey)
 	}
 
 	func loadDatabaseToken() async -> StoredServerChangeToken? {
-		defaults.data(forKey: Self.dbKey).map { StoredServerChangeToken(archivedData: $0) }
+		defaults.data(forKey: dbKey).map { StoredServerChangeToken(archivedData: $0) }
 	}
 
 	func loadZoneToken(_ zoneID: CKRecordZone.ID) async -> StoredServerChangeToken? {
-		defaults.data(forKey: Self.zoneKey(for: zoneID))
+		defaults.data(forKey: zoneKey(for: zoneID))
 			.map { StoredServerChangeToken(archivedData: $0) }
 	}
 
@@ -151,31 +148,24 @@ internal actor UserDefaultsServerChangeTokenStore: ServerChangeTokenStoring {
 	                  db: TokenCAS,
 	                  zones: [String: TokenCAS]) async -> CommitOutcome {
 		guard await currentEpoch() == expectedEpoch else { return .staleEpoch }
-
 		var skippedZones: [String] = []
 		var skippedDb = false
 
 		for (zoneKey, cas) in zones {
-			let storageKey = Self.zonePrefix + zoneKey
+			let storageKey = zonePrefix + zoneKey
 			let persisted = defaults.data(forKey: storageKey)
 			if persisted == cas.prev {
-				if let new = cas.new {
-					defaults.set(new, forKey: storageKey)
-				} else {
-					defaults.removeObject(forKey: storageKey)
-				}
+				if let new = cas.new { defaults.set(new, forKey: storageKey) }
+				else { defaults.removeObject(forKey: storageKey) }
 			} else {
 				skippedZones.append(zoneKey)
 			}
 		}
 
-		let persistedDb = defaults.data(forKey: Self.dbKey)
+		let persistedDb = defaults.data(forKey: dbKey)
 		if persistedDb == db.prev {
-			if let new = db.new {
-				defaults.set(new, forKey: Self.dbKey)
-			} else {
-				defaults.removeObject(forKey: Self.dbKey)
-			}
+			if let new = db.new { defaults.set(new, forKey: dbKey) }
+			else { defaults.removeObject(forKey: dbKey) }
 		} else {
 			skippedDb = true
 		}
@@ -186,14 +176,14 @@ internal actor UserDefaultsServerChangeTokenStore: ServerChangeTokenStoring {
 
 	func clearAll() async {
 		await bumpEpoch()
-		defaults.removeObject(forKey: Self.dbKey)
+		defaults.removeObject(forKey: dbKey)
 		for key in defaults.dictionaryRepresentation().keys
-		where key.hasPrefix(Self.zonePrefix) {
+		where key.hasPrefix(zonePrefix) {
 			defaults.removeObject(forKey: key)
 		}
 	}
 
-	private static func zoneKey(for zoneID: CKRecordZone.ID) -> String {
+	private func zoneKey(for zoneID: CKRecordZone.ID) -> String {
 		zonePrefix + InMemoryServerChangeTokenStore.key(for: zoneID)
 	}
 }

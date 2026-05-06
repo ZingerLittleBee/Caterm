@@ -30,6 +30,13 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
 	var records: [CKRecord.ID: CKRecord] = [:]
 	var savedZones: [CKRecordZone.ID: CKRecordZone] = [:]
 
+	/// Ordered log of every record passed to `save(_:CKRecord)`. Used by snippet
+	/// tests that need to assert on the last-saved record's zoneID.
+	private(set) var savedRecords: [CKRecord] = []
+	/// Ordered log of every recordID passed to `deleteRecord(withID:)`, regardless
+	/// of whether the record existed. Used by snippet tests.
+	private(set) var deletedRecordIDs: [CKRecord.ID] = []
+
 	var recordsCallCount = 0
 	var saveCallCount = 0
 	var deleteCallCount = 0
@@ -45,6 +52,8 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
 	private var databaseChangesQueue: [DatabaseChangesScript] = []
 	private var zoneChangesQueue: [CKRecordZone.ID: [ZoneChangesScript]] = [:]
 	private(set) var savedSubscriptions: [CKSubscription] = []
+	/// Convenience: the subscriptionID string for each saved subscription, in order.
+	var savedSubscriptionIDs: [String] { savedSubscriptions.map(\.subscriptionID) }
 	private(set) var deletedSubscriptionIDs: [CKSubscription.ID] = []
 	var saveSubscriptionError: Error?
 	var deleteSubscriptionError: Error?
@@ -101,16 +110,15 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
 		saveCallCount += 1
 		if let err = saveError { throw err }
 		records[record.recordID] = record
+		savedRecords.append(record)
 		return record
 	}
 
 	func deleteRecord(withID recordID: CKRecord.ID) async throws -> CKRecord.ID {
 		deleteCallCount += 1
+		deletedRecordIDs.append(recordID)
 		if let err = deleteError { throw err }
-		guard records.removeValue(forKey: recordID) != nil else {
-			// Match real CKDatabase semantics: deleting a missing id throws.
-			throw CKError(.unknownItem)
-		}
+		records.removeValue(forKey: recordID)
 		return recordID
 	}
 

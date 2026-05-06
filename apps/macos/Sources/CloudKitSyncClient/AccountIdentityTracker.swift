@@ -5,6 +5,8 @@ import os
 public protocol AccountSensitiveClient: Sendable {
 	func resetHostSyncState() async
 	func deleteHostSubscription() async throws
+	func resetSnippetSyncState() async
+	func deleteSnippetSubscription() async throws
 }
 
 extension CloudKitSyncClient: AccountSensitiveClient {}
@@ -49,8 +51,9 @@ public actor AccountIdentityTracker {
 		// forceFull pass on first sync of the current account.
 		case (nil, .some(let new)):
 			if await tokensExistProvider() {
-				Self.log.info("first identity observation with existing tokens → resetting")
+				Self.log.info("first identity observation with existing tokens → resetting host AND snippet")
 				await client.resetHostSyncState()
+				await client.resetSnippetSyncState()
 			}
 			defaults.set(new, forKey: Self.storageKey)
 			return .firstObservation
@@ -58,7 +61,9 @@ public actor AccountIdentityTracker {
 			return .unchanged
 		case (.some, _):
 			await client.resetHostSyncState()
+			await client.resetSnippetSyncState()
 			try? await client.deleteHostSubscription()
+			try? await client.deleteSnippetSubscription()
 			if let new = current {
 				defaults.set(new, forKey: Self.storageKey)
 			} else {

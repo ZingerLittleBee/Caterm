@@ -3,6 +3,8 @@ import Foundation
 
 public enum CloudKitPushNames {
 	public static let hostSubscriptionID = "caterm.host.changes.v1"
+	public static let snippetSubscriptionID = "com.caterm.app.snippet-changes"
+	public static let snippetZoneName = "Snippets"
 }
 
 /// Returns true iff `userInfo` is a CloudKit silent-push payload whose

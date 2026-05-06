@@ -12,6 +12,8 @@ import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
+import SnippetStore
+import SnippetSyncClient
 import SettingsSyncStore
 import SFTPCommandBuilder
 import SSHCommandBuilder
@@ -28,6 +30,9 @@ struct CatermApp: App {
 	@StateObject var settingsStore: SettingsStore
 	@StateObject var remoteBookmarks: RemoteBookmarkStore
 	@StateObject private var credentialSync: CredentialSyncPreferencesStore
+	@StateObject var surfaceRegistry: SurfaceRegistry = SurfaceRegistry()
+	@StateObject private var snippetStore: SnippetStore
+	@StateObject private var snippetSync: SnippetSyncStore
 
 	/// Holds the live-reload dispatcher and its NotificationCenter
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
@@ -55,7 +60,11 @@ struct CatermApp: App {
 		self.cloudKitClient = client
 		self.accountIdentityTracker = AccountIdentityTracker(
 			currentUserRecordID: { try? await cloudContainer.userRecordID() },
-			tokensExist: { await client.hasAnyHostSyncTokens() }
+			tokensExist: {
+				let hostTokens = await client.hasAnyHostSyncTokens()
+				let snippetTokens = await client.hasAnySnippetSyncTokens()
+				return hostTokens || snippetTokens
+			}
 		)
 		let prefs = SyncPreferences()
 		// Single instances shared across HostSyncStore + Coordinator + UI so
@@ -142,6 +151,16 @@ struct CatermApp: App {
 			.appendingPathComponent("Caterm", isDirectory: true)
 			.appendingPathComponent("RemoteBookmarks", isDirectory: true)
 		_remoteBookmarks = StateObject(wrappedValue: RemoteBookmarkStore(directory: bookmarksDir))
+		// Snippet store: JSON files under Application Support/Caterm/Snippets/.
+		// Loaded eagerly so the palette and editor have data on first launch.
+		let snippetsDir = FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("Caterm", isDirectory: true)
+		let snippetStoreInstance = SnippetStore(directory: snippetsDir)
+		try? snippetStoreInstance.load()
+		_snippetStore = StateObject(wrappedValue: snippetStoreInstance)
+		let snippetSyncInstance = SnippetSyncStore(store: snippetStoreInstance, client: client)
+		_snippetSync = StateObject(wrappedValue: snippetSyncInstance)
 		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
 			controlPathFor: { hostId in
 				cmDir.appendingPathComponent("\(hostId.uuidString).sock")
@@ -206,6 +225,9 @@ struct CatermApp: App {
 			.environmentObject(fileTransferStore)
 			.environmentObject(settingsStore)
 			.environmentObject(remoteBookmarks)
+			.environmentObject(surfaceRegistry)
+			.environmentObject(snippetStore)
+			.environmentObject(snippetSync)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -215,6 +237,18 @@ struct CatermApp: App {
 			.task { syncStore.syncIfSignedIn() }
 			.task {
 				try? await cloudKitClient.ensureHostSubscription()
+			}
+			.task {
+				let mode = await cloudKitClient.preferredSnippetSyncMode()
+				snippetSync.scheduleSyncPass(mode: mode)
+				snippetSync.startForceFullTimer()
+			}
+			.task {
+				try? await cloudKitClient.ensureSnippetSubscription()
+			}
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermCloudKitSnippetChanged)) { _ in
+				snippetSync.scheduleSyncPass(mode: .incremental)
 			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermICloudAccountChanged)) { _ in
@@ -226,6 +260,8 @@ struct CatermApp: App {
 					let outcome = await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
 					if outcome == .identityChanged {
 						await credentialSyncAccountReset.resetForAccountChange()
+						try? snippetStore.wipeLocal()
+						snippetSync.scheduleSyncPass(mode: .forceFull)
 					}
 				}
 			}
@@ -324,11 +360,45 @@ struct CatermApp: App {
 				}
 				.keyboardShortcut("f", modifiers: [.command, .shift])
 			}
+			// Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
+			// These post notifications that `SnippetCommandObserver` picks up
+			// in the key window only, avoiding multi-window broadcast.
+			CommandGroup(after: .toolbar) {
+				Button("Open Snippet Palette") {
+					NotificationCenter.default.post(name: .catermOpenSnippetPalette, object: nil)
+				}
+				.keyboardShortcut("p", modifiers: [.command, .shift])
+
+				Button("New Snippet…") {
+					NotificationCenter.default.post(name: .catermNewSnippet, object: nil)
+				}
+				.keyboardShortcut("s", modifiers: [.command, .shift])
+
+				Button("Manage Snippets…") {
+					NotificationCenter.default.post(name: .catermOpenSnippetManager, object: nil)
+				}
+			}
 			// Help menu → GitHub documentation page.
 			CommandGroup(replacing: .help) {
 				Link("Caterm Documentation",
 				     destination: URL(string: "https://github.com/ZingerLittleBee/Caterm")!)
 			}
+			#if DEBUG
+			// Debug menu — only present in DEBUG builds. Exists so UI
+			// automation has a top-level menu item it can reliably hit
+			// (AX-stable) instead of fighting SwiftUI List row gestures.
+			// Posts a notification that `HostListSidebar` picks up and
+			// feeds through the real `connect(_:)` path, so the resulting
+			// behavior is identical to a sidebar double-click.
+			CommandMenu("Debug") {
+				Button("Open Tab for First Host") {
+					NotificationCenter.default.post(
+						name: .catermDebugOpenFirstHost, object: nil
+					)
+				}
+				.keyboardShortcut("o", modifiers: [.control, .option, .command])
+			}
+			#endif
 		}
 	}
 }
@@ -371,6 +441,12 @@ struct OpenTabBridge: View {
 /// MainWindow rather than spawning a separate window/tab.
 struct LandingView: View {
 	@Binding var tabId: UUID?
+	@EnvironmentObject var snippetStore: SnippetStore
+	@EnvironmentObject var snippetSync: SnippetSyncStore
+	@State private var presentingPalette = false
+	@State private var presentingEditor = false
+	@State private var presentingManager = false
+	@State private var hostWindow: NSWindow?
 
 	var body: some View {
 		NavigationSplitView {
@@ -387,6 +463,32 @@ struct LandingView: View {
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
 		.frame(minWidth: 1000, minHeight: 600)
+		.background(WindowAccessor(window: $hostWindow))
+		.modifier(SnippetCommandObserver(
+			presentingPalette: $presentingPalette,
+			presentingEditor: $presentingEditor,
+			presentingManager: $presentingManager,
+			isKeyWindow: { hostWindow?.isKeyWindow ?? false }
+		))
+		.popover(isPresented: $presentingPalette) {
+			SnippetPalette(
+				store: snippetStore,
+				sync: snippetSync,
+				capturedSurface: nil,
+				onClose: { presentingPalette = false },
+				onCreate: { presentingPalette = false; presentingEditor = true }
+			)
+		}
+		.sheet(isPresented: $presentingEditor) {
+			SnippetEditorSheet(mode: .create)
+				.environmentObject(snippetStore)
+				.environmentObject(snippetSync)
+		}
+		.sheet(isPresented: $presentingManager) {
+			SnippetManagerSheet()
+				.environmentObject(snippetStore)
+				.environmentObject(snippetSync)
+		}
 	}
 }
 
