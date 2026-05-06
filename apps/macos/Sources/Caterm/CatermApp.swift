@@ -60,7 +60,11 @@ struct CatermApp: App {
 		self.cloudKitClient = client
 		self.accountIdentityTracker = AccountIdentityTracker(
 			currentUserRecordID: { try? await cloudContainer.userRecordID() },
-			tokensExist: { await client.hasAnyHostSyncTokens() }
+			tokensExist: {
+				let hostTokens = await client.hasAnyHostSyncTokens()
+				let snippetTokens = await client.hasAnySnippetSyncTokens()
+				return hostTokens || snippetTokens
+			}
 		)
 		let prefs = SyncPreferences()
 		// Single instances shared across HostSyncStore + Coordinator + UI so
@@ -235,7 +239,8 @@ struct CatermApp: App {
 				try? await cloudKitClient.ensureHostSubscription()
 			}
 			.task {
-				snippetSync.scheduleSyncPass(mode: .incremental)
+				let mode = await cloudKitClient.preferredSnippetSyncMode()
+				snippetSync.scheduleSyncPass(mode: mode)
 				snippetSync.startForceFullTimer()
 			}
 			.task {
@@ -452,6 +457,7 @@ struct LandingView: View {
 		.popover(isPresented: $presentingPalette) {
 			SnippetPalette(
 				store: snippetStore,
+				sync: snippetSync,
 				capturedSurface: nil,
 				onClose: { presentingPalette = false },
 				onCreate: { presentingPalette = false; presentingEditor = true }
