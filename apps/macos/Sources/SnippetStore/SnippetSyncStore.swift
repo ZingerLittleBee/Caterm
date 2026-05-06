@@ -155,11 +155,19 @@ public final class SnippetSyncStore: ObservableObject {
 				do {
 					let saved = try await client.pushSnippet(s)
 					do {
-						try store.applyRemote(saved)
+						let applied = try store.applyRemote(saved)
+						// Only clear the dirty flag when the pushed copy was
+						// actually stored.  If the user edited the snippet
+						// between the push start and its completion, the local
+						// revision is now higher than `saved`, applyRemote
+						// returned false, and we must keep the dirty flag so
+						// the next pass re-pushes the newer edit.
+						if applied {
+							locallyDirty.remove(s.id)
+						}
 					} catch {
 						Self.log.error("applyRemote after push failed for \(s.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
 					}
-					locallyDirty.remove(s.id)
 				} catch {
 					Self.log.error("pushSnippet failed for \(s.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
 					// Stay dirty; next pass retries.

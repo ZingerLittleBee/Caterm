@@ -86,14 +86,50 @@ public final class SnippetStore: ObservableObject {
 		}
 	}
 
-	/// Apply a server-authoritative snippet (post-LWW reconciliation).
-	public func applyRemote(_ s: Snippet) throws {
+	/// Apply a server-authoritative snippet using LWW precedence.
+	///
+	/// Returns `true` when the remote snippet was written (remote wins or new),
+	/// `false` when the local revision is strictly newer and the write was
+	/// skipped.  The caller can use the return value to decide whether to clear
+	/// a dirty flag — it should only clear when `true` (remote was applied).
+	///
+	/// Precedence order (mirrors `SnippetSyncReconciler.compare`):
+	///   1. revision (higher wins)
+	///   2. metadataUpdatedAt (server-authoritative; present > absent)
+	///   3. updatedAt
+	///   4. tie → remote (cloud) wins
+	@discardableResult
+	public func applyRemote(_ s: Snippet) throws -> Bool {
 		if let idx = snippets.firstIndex(where: { $0.id == s.id }) {
+			let local = snippets[idx]
+			// Skip if local is strictly newer.
+			if isLocalNewer(local: local, remote: s) {
+				return false
+			}
 			snippets[idx] = s
 		} else {
 			snippets.append(s)
 		}
 		try writeSnippets()
+		return true
+	}
+
+	/// Returns true when `local` is strictly newer than `remote` under the
+	/// same LWW ordering used by `SnippetSyncReconciler`.
+	private func isLocalNewer(local: Snippet, remote: Snippet) -> Bool {
+		if local.revision > remote.revision { return true }
+		if local.revision < remote.revision { return false }
+		// Equal revision — compare metadataUpdatedAt.
+		switch (remote.metadataUpdatedAt, local.metadataUpdatedAt) {
+		case let (.some(r), .some(l)):
+			if l > r { return true }
+			if l < r { return false }
+		case (.some, nil): return false  // remote has it, local doesn't → remote newer
+		case (nil, .some): return true   // local has it, remote doesn't → local newer
+		case (nil, nil): break
+		}
+		// Final tie-break: updatedAt; tie → remote wins (not local-newer).
+		return local.updatedAt > remote.updatedAt
 	}
 
 	/// Remove the snippet from local state. Also clears any outbox entry —

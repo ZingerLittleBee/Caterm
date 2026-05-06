@@ -98,13 +98,56 @@ extension SnippetStoreTests {
 		try store.upsert(Snippet(id: id, name: "old", content: "x",
 		                         createdAt: .now, updatedAt: Date(timeIntervalSince1970: 1),
 		                         revision: 1))
-		// Server-authoritative version arrives.
+		// Server-authoritative version arrives with higher revision.
 		let remote = Snippet(id: id, name: "new", content: "y",
 		                     createdAt: .now, updatedAt: Date(timeIntervalSince1970: 100),
 		                     revision: 5)
-		try store.applyRemote(remote)
+		let applied = try store.applyRemote(remote)
+		XCTAssertTrue(applied, "remote with higher revision must be applied")
 		XCTAssertEqual(store.snippets.first?.name, "new")
 		XCTAssertEqual(store.snippets.first?.revision, 5)
+	}
+
+	func test_applyRemote_skipsWhenLocalRevisionHigher() throws {
+		let store = SnippetStore(directory: tempDir())
+		try store.load()
+		let id = UUID()
+		// Local has been edited and has a higher revision than the just-pushed copy.
+		try store.upsert(Snippet(id: id, name: "edited-locally", content: "new-content",
+		                         createdAt: .now, updatedAt: Date(timeIntervalSince1970: 200),
+		                         revision: 3))
+		// Simulate the server echo of the older push (lower revision).
+		let savedByServer = Snippet(id: id, name: "pushed-copy", content: "old-content",
+		                            createdAt: .now, updatedAt: Date(timeIntervalSince1970: 50),
+		                            revision: 2)
+		let applied = try store.applyRemote(savedByServer)
+		XCTAssertFalse(applied, "local with higher revision must not be overwritten")
+		XCTAssertEqual(store.snippets.first?.name, "edited-locally",
+		               "local edit must survive the applyRemote call")
+		XCTAssertEqual(store.snippets.first?.revision, 3)
+	}
+
+	func test_applyRemote_skipsWhenLocalRevisionHigher_onTiedRevisionLaterUpdatedAt() throws {
+		let store = SnippetStore(directory: tempDir())
+		try store.load()
+		let id = UUID()
+		let localUpdatedAt = Date(timeIntervalSince1970: 300)
+		let remoteUpdatedAt = Date(timeIntervalSince1970: 100)
+		try store.upsert(Snippet(id: id, name: "local", content: "c",
+		                         createdAt: .now, updatedAt: localUpdatedAt,
+		                         revision: 2))
+		// Manually set snippet to keep revision at 2 (upsert bumps it; use applyRemote to seed).
+		let seed = Snippet(id: id, name: "local", content: "c",
+		                   createdAt: .now, updatedAt: localUpdatedAt,
+		                   revision: 2)
+		_ = try store.applyRemote(seed)  // set to known state
+
+		let remote = Snippet(id: id, name: "remote", content: "r",
+		                     createdAt: .now, updatedAt: remoteUpdatedAt,
+		                     revision: 2)
+		let applied = try store.applyRemote(remote)
+		XCTAssertFalse(applied, "local with same revision but later updatedAt must win")
+		XCTAssertEqual(store.snippets.first?.name, "local")
 	}
 
 	func test_applyRemoteTombstone_removesEvenIfDirty() throws {
