@@ -55,7 +55,7 @@ let package = Package(
         ),
         .target(
             name: "CloudKitSyncClient",
-            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SettingsSyncStore"],
+            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SettingsSyncStore", "SnippetSyncClient"],
             path: "Sources/CloudKitSyncClient"
         ),
         .target(
@@ -223,7 +223,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CloudKitSyncClientTests",
-            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes"],
+            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SnippetSyncClient"],
             path: "Tests/CloudKitSyncClientTests"
         ),
         .testTarget(
