@@ -9,6 +9,10 @@ public final class SnippetPaletteViewModel: ObservableObject {
 	public let store: SnippetStore
 	public let capturedSurface: (any SnippetDispatchTarget)?
 	@Published public var query: String = ""
+	/// The currently highlighted snippet's ID. Drives `List(selection:)` and
+	/// is mutated by `moveSelectionUp/Down` so the search field can keep
+	/// keyboard focus while ↑/↓ still navigate the list (Spotlight-style).
+	@Published public var selectedID: UUID?
 
 	public init(store: SnippetStore, capturedSurface: (any SnippetDispatchTarget)?) {
 		self.store = store
@@ -21,6 +25,43 @@ public final class SnippetPaletteViewModel: ObservableObject {
 	}
 
 	public var canDispatch: Bool { capturedSurface != nil }
+
+	/// The snippet Enter should dispatch. Returns the snippet matching
+	/// `selectedID` when present in `results`; otherwise falls back to the
+	/// first result so a fresh-typed query Enter "just works" before the
+	/// user has moved selection.
+	public var currentSelection: Snippet? {
+		if let id = selectedID, let s = results.first(where: { $0.id == id }) {
+			return s
+		}
+		return results.first
+	}
+
+	public func moveSelectionDown() {
+		let r = results
+		guard !r.isEmpty else { return }
+		guard
+			let id = selectedID,
+			let i = r.firstIndex(where: { $0.id == id })
+		else {
+			selectedID = r.first?.id
+			return
+		}
+		selectedID = r[min(i + 1, r.count - 1)].id
+	}
+
+	public func moveSelectionUp() {
+		let r = results
+		guard !r.isEmpty else { return }
+		guard
+			let id = selectedID,
+			let i = r.firstIndex(where: { $0.id == id })
+		else {
+			selectedID = r.first?.id
+			return
+		}
+		selectedID = r[max(i - 1, 0)].id
+	}
 
 	public func paste(_ s: Snippet) {
 		capturedSurface?.paste(s.content)
@@ -36,7 +77,6 @@ public final class SnippetPaletteViewModel: ObservableObject {
 struct SnippetPalette: View {
 	@StateObject private var vm: SnippetPaletteViewModel
 	@FocusState private var searchFocused: Bool
-	@State private var selectedID: UUID?
 	let sync: SnippetSyncStore
 	let onClose: () -> Void
 	let onCreate: () -> Void
@@ -78,23 +118,31 @@ struct SnippetPalette: View {
 				}
 				.padding()
 			} else {
-				List(vm.results, selection: $selectedID) { s in
-					SnippetRowView(
-						snippet: s,
-						onEdit: { openManagerForEdit() },
-						onDelete: { deleteSnippet(s) },
-						onCopy: { copyToClipboard(s) }
-					)
-					.tag(s.id)
+				ScrollViewReader { proxy in
+					List(vm.results, selection: $vm.selectedID) { s in
+						SnippetRowView(
+							snippet: s,
+							onEdit: { openManagerForEdit() },
+							onDelete: { deleteSnippet(s) },
+							onCopy: { copyToClipboard(s) }
+						)
+						.tag(s.id)
+					}
+					.listStyle(.plain)
+					.onChange(of: vm.selectedID) { _, newID in
+						guard let newID else { return }
+						withAnimation(.easeOut(duration: 0.1)) {
+							proxy.scrollTo(newID, anchor: .center)
+						}
+					}
 				}
-				.listStyle(.plain)
 			}
 
 			Divider()
 			HStack {
 				Text(
 					vm.canDispatch
-						? "Enter — paste · ⌘+Enter — run · Esc — close"
+						? "↑↓ — navigate · Enter — paste · ⌘+Enter — run · Esc — close"
 						: "Connect a host to enable dispatch"
 				)
 				.font(.caption)
@@ -107,6 +155,8 @@ struct SnippetPalette: View {
 		.onAppear { searchFocused = true }
 		.onKeyPress(.escape) { onClose(); return .handled }
 		.onKeyPress(.return) { handleEnter(); return .handled }
+		.onKeyPress(.downArrow) { vm.moveSelectionDown(); return .handled }
+		.onKeyPress(.upArrow) { vm.moveSelectionUp(); return .handled }
 		// Hidden buttons provide ⌘+Enter keyboard dispatch without
 		// requiring the `onKeyPress(_:modifiers:)` overload.
 		.background {
@@ -126,20 +176,14 @@ struct SnippetPalette: View {
 		sync.scheduleSyncPass(debounceMs: 0)
 	}
 
-	private func selected() -> Snippet? {
-		let id = selectedID ?? vm.results.first?.id
-		guard let id else { return nil }
-		return vm.results.first { $0.id == id }
-	}
-
 	private func handleEnter() {
-		guard let s = selected(), vm.canDispatch else { return }
+		guard let s = vm.currentSelection, vm.canDispatch else { return }
 		vm.paste(s)
 		onClose()
 	}
 
 	private func handleCmdEnter() {
-		guard let s = selected(), vm.canDispatch else { return }
+		guard let s = vm.currentSelection, vm.canDispatch else { return }
 		vm.run(s)
 		onClose()
 	}
