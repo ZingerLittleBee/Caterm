@@ -2,13 +2,6 @@ import SnippetStore
 import SnippetSyncClient
 import SwiftUI
 
-// MARK: - Dispatch Protocol
-
-public protocol SnippetDispatchTarget: AnyObject {
-	func paste(_ text: String)
-	func run(_ text: String)
-}
-
 // MARK: - View Model
 
 @MainActor
