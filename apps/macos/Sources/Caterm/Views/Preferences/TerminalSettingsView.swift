@@ -111,6 +111,8 @@ public struct TerminalSettingsView: View {
                 Slider(value: b.windowOpacity, in: 0.7...1.0) {
                     Text("Background opacity: \(b.windowOpacity.wrappedValue, specifier: "%.2f")")
                 }
+                Text("Background opacity applies to new terminals on macOS.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Stepper("Padding X: \(b.windowPaddingX.wrappedValue)", value: b.windowPaddingX, in: 0...40)
                 Stepper("Padding Y: \(b.windowPaddingY.wrappedValue)", value: b.windowPaddingY, in: 0...40)
             }

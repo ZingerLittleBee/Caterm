@@ -126,7 +126,5 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		return view
 	}
 
-	func updateNSView(_ nsView: GhosttySurfaceNSView, context _: Context) {
-		nsView.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
-	}
+	func updateNSView(_: GhosttySurfaceNSView, context _: Context) {}
 }

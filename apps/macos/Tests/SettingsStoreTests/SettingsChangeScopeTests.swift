@@ -23,6 +23,14 @@ final class SettingsChangeScopeTests: XCTestCase {
         XCTAssertEqual(SettingsChangeScope.diff(old: old, new: new), .globalNewSurface)
     }
 
+    func testWindowOpacityIsNewSurfaceOnlyOnMacOS() {
+        var old = CatermSettings.empty
+        var new = old
+        old.global.windowOpacity = 1.0
+        new.global.windowOpacity = 0.85
+        XCTAssertEqual(SettingsChangeScope.diff(old: old, new: new), .globalNewSurface)
+    }
+
     func testGlobalLiveWhenBothLiveAndNewSurfaceChange() {
         var old = CatermSettings.empty
         var new = old

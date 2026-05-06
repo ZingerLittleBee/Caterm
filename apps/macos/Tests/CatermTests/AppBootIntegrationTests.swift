@@ -117,7 +117,7 @@ final class AppBootIntegrationTests: XCTestCase {
 		XCTAssertEqual(reloadedTabs, [tabId])
 	}
 
-	func testNewSurfaceOnlySettingsChangeReloadsAppWithoutReloadingSurfaces() throws {
+	func testNewSurfaceOnlySettingsChangeDoesNotTouchLiveGhosttyConfig() throws {
 		let dir = try makeTempDir()
 		defer { try? FileManager.default.removeItem(at: dir) }
 		let plist = dir.appendingPathComponent("settings.plist")
@@ -140,7 +140,7 @@ final class AppBootIntegrationTests: XCTestCase {
 		settingsStore.flushNow()
 		_ = coordinator
 
-		XCTAssertEqual(appReloadCount, 1)
+		XCTAssertEqual(appReloadCount, 0)
 		XCTAssertEqual(reloadedTabs, [])
 	}
 

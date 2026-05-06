@@ -17,7 +17,7 @@ public enum SettingsChangeScope: Equatable {
         .cursorStyle: .live,
         .cursorBlink: .live,
         .bell: .live,
-        .windowOpacity: .live,
+        .windowOpacity: .newSurface,
         .windowPaddingX: .live,
         .windowPaddingY: .live,
         .theme: .live,

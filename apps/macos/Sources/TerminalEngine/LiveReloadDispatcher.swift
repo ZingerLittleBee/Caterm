@@ -25,18 +25,17 @@ public struct LiveReloadDispatcher {
 
 	public func handle(scope: SettingsChangeScope, settings: CatermSettings) {
 		try? renderManagedSnapshot(settings.global)
-		let diagnostics = buildConfig()
-		if !diagnostics.isEmpty {
-			postDiagnosticsBanner(diagnostics)
-		}
 		switch scope {
 		case .globalLive:
+			let diagnostics = buildConfig()
+			if !diagnostics.isEmpty {
+				postDiagnosticsBanner(diagnostics)
+			}
 			applyToApp()
 			for id in surfaceIds() {
 				applyToSurface(id)
 			}
 		case .globalNewSurface:
-			applyToApp()
 			postNewSurfaceBanner()
 		case .hostOverride:
 			// No-op for existing surfaces; new surfaces apply patch via the
