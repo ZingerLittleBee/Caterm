@@ -17,6 +17,7 @@ import TerminalEngine
 struct MainWindow: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var fileTransferStore: FileTransferStore
+	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	@Environment(\.openWindow) private var openWindow
 	@StateObject private var bannerState = SettingsBannerState()
 	@State private var fileDrawerOpen = false
@@ -187,7 +188,10 @@ struct MainWindow: View {
 				}
 			)
 		}
-		.onDisappear { store.closeTab(tabId: tabId) }
+		.onDisappear {
+			surfaceRegistry.unregister(tabId)
+			store.closeTab(tabId: tabId)
+		}
 	}
 }
 

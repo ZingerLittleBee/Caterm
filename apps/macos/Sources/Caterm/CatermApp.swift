@@ -28,6 +28,7 @@ struct CatermApp: App {
 	@StateObject var settingsStore: SettingsStore
 	@StateObject var remoteBookmarks: RemoteBookmarkStore
 	@StateObject private var credentialSync: CredentialSyncPreferencesStore
+	@StateObject var surfaceRegistry: SurfaceRegistry = SurfaceRegistry()
 
 	/// Holds the live-reload dispatcher and its NotificationCenter
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
@@ -206,6 +207,7 @@ struct CatermApp: App {
 			.environmentObject(fileTransferStore)
 			.environmentObject(settingsStore)
 			.environmentObject(remoteBookmarks)
+			.environmentObject(surfaceRegistry)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by

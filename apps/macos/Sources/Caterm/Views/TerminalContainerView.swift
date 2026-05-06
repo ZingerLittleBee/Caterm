@@ -41,6 +41,7 @@ struct TerminalContainerView: View {
 struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var preferences: SyncPreferences
+	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	let tabId: UUID
 
 	func makeNSView(context _: Context) -> GhosttySurfaceNSView {
@@ -54,7 +55,7 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		store.markConnecting(tabId: tabId)
 
 		let capturedTabId = tabId
-		Task { @MainActor [weak store, weak view] in
+		Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
 			// `view.surface` is built lazily in `viewDidMoveToWindow`. Yield
 			// until it exists or give up after ~3s.
 			let deadline = Date().addingTimeInterval(3)
@@ -65,6 +66,7 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 							store?.markChildExited(tabId: capturedTabId, exitCode: code)
 						}
 					}
+					surfaceRegistry?.register(surface, for: capturedTabId)
 					break
 				}
 				try? await Task.sleep(nanoseconds: 50_000_000)
