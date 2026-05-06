@@ -1,3 +1,4 @@
+import AppKit
 import HostSyncStore
 import SessionStore
 import SSHCommandBuilder
@@ -39,7 +40,14 @@ struct HostListSidebar: View {
 								catch { errorMessage = error.localizedDescription }
 							}
 						}
-						.onTapGesture(count: 2) { connect(host) }
+				}
+			}
+			.overlay {
+				GeometryReader { proxy in
+					HostListDoubleClickConnector(hosts: store.hosts) { host in
+						connect(host)
+					}
+					.frame(width: proxy.size.width, height: proxy.size.height)
 				}
 			}
 			.overlay {
@@ -181,6 +189,112 @@ struct HostListSidebar: View {
 			let tabId = store.openTab(host: host)
 			onOpenTab(tabId)
 		}
+	}
+}
+
+/// SwiftUI's `List(selection:)` swallows row double-tap gestures on macOS.
+/// Install the native AppKit double-action on the backing table instead.
+private struct HostListDoubleClickConnector: NSViewRepresentable {
+	let hosts: [SSHHost]
+	let onDoubleClick: (SSHHost) -> Void
+
+	func makeCoordinator() -> Coordinator {
+		Coordinator()
+	}
+
+	func makeNSView(context: Context) -> InstallerView {
+		let view = InstallerView()
+		context.coordinator.update(hosts: hosts, onDoubleClick: onDoubleClick)
+		context.coordinator.scheduleInstall(from: view)
+		return view
+	}
+
+	func updateNSView(_ nsView: InstallerView, context: Context) {
+		context.coordinator.update(hosts: hosts, onDoubleClick: onDoubleClick)
+		context.coordinator.scheduleInstall(from: nsView)
+	}
+
+	static func dismantleNSView(_ nsView: InstallerView, coordinator: Coordinator) {
+		coordinator.restorePreviousDoubleAction()
+	}
+
+	final class InstallerView: NSView {
+		override func hitTest(_ point: NSPoint) -> NSView? {
+			nil
+		}
+	}
+
+	@MainActor
+	final class Coordinator: NSObject {
+		private var hosts: [SSHHost] = []
+		private var onDoubleClick: ((SSHHost) -> Void)?
+		private weak var tableView: NSTableView?
+		private weak var previousTarget: AnyObject?
+		private var previousDoubleAction: Selector?
+
+		func update(hosts: [SSHHost], onDoubleClick: @escaping (SSHHost) -> Void) {
+			self.hosts = hosts
+			self.onDoubleClick = onDoubleClick
+		}
+
+		func scheduleInstall(from view: NSView) {
+			DispatchQueue.main.async { [weak self, weak view] in
+				guard let self, let view else { return }
+				self.install(from: view)
+			}
+		}
+
+		func restorePreviousDoubleAction() {
+			guard let tableView else { return }
+			tableView.target = previousTarget
+			tableView.doubleAction = previousDoubleAction
+			self.tableView = nil
+			previousTarget = nil
+			previousDoubleAction = nil
+		}
+
+		@objc private func openClickedRow(_ sender: NSTableView) {
+			let row = sender.clickedRow
+			guard hosts.indices.contains(row) else { return }
+			onDoubleClick?(hosts[row])
+		}
+
+		private func install(from view: NSView) {
+			guard !hosts.isEmpty,
+			      let tableView = findHostTableView(from: view),
+			      tableView !== self.tableView
+			else { return }
+
+			restorePreviousDoubleAction()
+			previousTarget = tableView.target as AnyObject?
+			previousDoubleAction = tableView.doubleAction
+			tableView.target = self
+			tableView.doubleAction = #selector(openClickedRow(_:))
+			self.tableView = tableView
+		}
+
+		private func findHostTableView(from view: NSView) -> NSTableView? {
+			guard let contentView = view.window?.contentView else { return nil }
+			return contentView
+				.descendants(of: NSTableView.self)
+				.filter { $0.numberOfRows == hosts.count }
+				.min { lhs, rhs in
+					lhs.convert(lhs.bounds, to: nil).minX < rhs.convert(rhs.bounds, to: nil).minX
+				}
+		}
+	}
+}
+
+private extension NSView {
+	func descendants<T: NSView>(of type: T.Type) -> [T] {
+		var matches: [T] = []
+		if let match = self as? T {
+			matches.append(match)
+		}
+		for subview in subviews {
+			matches.append(contentsOf: subview.descendants(of: type))
+		}
+		return matches
 	}
 }
 
