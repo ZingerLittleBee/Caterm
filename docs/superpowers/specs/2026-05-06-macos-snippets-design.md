@@ -209,7 +209,13 @@ struct SnippetOutbox: Codable {
 3. **Only when `outcome == .identityChanged`**: call `client.resetSnippetSyncState()` (clear snippet tokens) and `SnippetStore.wipeLocal()` (atomic-clear `snippets.json` + `pendingDeletedSnippetIDs`). For `.firstObservation` and `.unchanged`, do nothing destructive — token-reset on `.firstObservation` is already handled by the tracker against the host client; the snippet token store does not need a wipe because the persisted snippet token (if any) was written under the same `prior` identity that `handleAccountChange` will already have validated.
 4. Subsequent `syncIfSignedIn()` runs `forceFull` on the new account and repopulates from cloud.
 
-> **Implementation note on tracker reuse:** `AccountIdentityTracker.handleAccountChange` mutates persisted state on the *first* call after a real identity change (writes the new `recordName` to UserDefaults). If a second observer calls it again for the same change, the second call sees the now-equal persisted prior and returns `.unchanged`. Plan F therefore must NOT call `handleAccountChange` from a second observer — it must consume the existing host-path outcome (e.g. by widening the host observer to also kick the snippet wipe, or by extracting the outcome into a shared `@Published var lastAccountChangeOutcome`). The implementation plan picks one; both are acceptable.
+> **Implementation note on tracker reuse — single-call rule:** `AccountIdentityTracker.handleAccountChange` mutates persisted state on the *first* call after a real identity change (writes the new `recordName` to UserDefaults at `AccountIdentityTracker.swift:55,63`). A second call from a different observer for the same notification sees the now-equal persisted prior and returns `.unchanged` — the tracker is **not** safe to call from multiple observers per notification. Plan F therefore must consume the host-path outcome (e.g. widen the existing host observer at `CatermApp.swift:225-231` to also kick the snippet wipe, or extract the outcome into a shared `@Published var lastAccountChangeOutcome`). The implementation plan picks one.
+
+> **Implementation note on first-observation token cleanup:** the tracker's `.firstObservation` branch resets sync state when `tokensExist` returns `true` (`AccountIdentityTracker.swift:50-55`). The current `tokensExist` closure is wired to `cloudKitClient.hasAnyHostSyncTokens()` only (`CatermApp.swift:58`). Plan F must either:
+> - **(preferred)** widen `tokensExist` to also probe `hasAnySnippetSyncTokens()`, AND widen `AccountSensitiveClient.resetHostSyncState` callsites to also call `resetSnippetSyncState()` on `.firstObservation` and `.identityChanged`. This keeps a single tracker authoritative.
+> - **(fallback)** install a Plan F-local first-observation guard that probes snippet tokens and clears them when no prior identity is recorded.
+>
+> Either way, **stale snippet tokens must not survive an unknown-prior identity transition** — otherwise the new account's first incremental fetch would resume from a token issued for the previous account's snippet zone, silently dropping records.
 
 This path is symmetric with how host credential-reset is gated (Plan C) — same gate, separate target.
 
@@ -306,11 +312,23 @@ MainWindow
 
 App-scoped shortcuts (only fire when Caterm is frontmost), registered as SwiftUI `CommandGroup(after: .toolbar)` items in the View menu — matching the existing `Toggle Files Drawer` pattern at `CatermApp.swift:321`:
 
-- **View → Open Snippet Palette** — `⌘⇧P` (posts a `Notification.Name.catermOpenSnippetPalette`; observed by `MainWindow`)
+- **View → Open Snippet Palette** — `⌘⇧P` (posts `Notification.Name.catermOpenSnippetPalette`)
 - **View → New Snippet…** — `⌘⇧S` (posts `.catermNewSnippet`)
 - **View → Manage Snippets…** — no default shortcut (posts `.catermOpenSnippetManager`)
 
 The notification-broadcast pattern is used (rather than direct binding) because window-local `@State` cannot be reached from `App.commands` without threading bindings through scenes — same constraint that drove the Files-drawer choice.
+
+**Observers — both `MainWindow` AND `LandingView`:** Caterm's window can be in either state (`MainWindow` when a tab is active, `LandingView` at `CatermApp.swift:372` when `tabId == nil`). All three notifications must work in both states:
+
+| Notification | MainWindow | LandingView |
+|---|---|---|
+| `.catermNewSnippet` | Open EditorSheet (create mode). | Open EditorSheet (create mode). Identical behavior — sheet is terminal-independent. |
+| `.catermOpenSnippetManager` | Open ManagerSheet. | Open ManagerSheet. Identical behavior — sheet is terminal-independent. |
+| `.catermOpenSnippetPalette` | Open palette; capture target surface (§3.10). | Open palette in **disabled state** with header `No active terminal — connect to a host first` (§4.4 already specifies this exact UX for nil-surface case). |
+
+**Multi-window filter (continuation of §3.10):** every observer (in both `MainWindow` and `LandingView`) gates on `NSWindow.isKeyWindow == true` before responding. Without the gate, a `⌘⇧S` press would open EditorSheet in every visible window simultaneously.
+
+To avoid duplicating observer code in two scenes, the implementation plan should consider extracting a `SnippetCommandObserver` view modifier shared by both `MainWindow` and `LandingView`. This is an implementation refactor; the spec only mandates the *behavior*, not the file layout.
 
 If `⌘⇧P` collides with an OS or system service binding observed during implementation, fall back to `⌘'`. Final shortcut values are confirmed during implementation, not pre-committed in spec.
 
@@ -469,7 +487,9 @@ This work lands as **Plan F**, independent of the pending Plan E.
 | Surface-registry weak refs leak or never resolve. | Low. §3.10 weak; nil resolution gracefully degrades to disabled palette + toast. |
 | Account-switch wipe fires on every app boot, destroying local snippets. | **Was the original §3.9 design**; fixed by gating wipe on `AccountIdentityTracker` outcome `.identityChanged`. Test in §6.1 enforces inertness on same-identity notification. |
 | Local edit pushed without first reconciling with cloud, overwriting newer remote version. | **Was the original §3.11 design**; fixed by sync-pass shape (§3.11) — push only happens after fetch + LWW reconcile. Test in §6.1 enforces. |
-| Multi-window broadcast: menu shortcut opens palettes in every window. | Fixed by §3.10 key-window filter on each `MainWindow` observer. |
+| Multi-window broadcast: menu shortcut opens palettes in every window. | Fixed by §3.10 / §4.3 key-window filter on each scene observer (both `MainWindow` and `LandingView`). |
+| Stale snippet tokens survive an unknown-prior identity transition, causing the new account's first sync to resume from the previous account's token. | Fixed by §3.9 first-observation note — `tokensExist` must include snippet tokens, and the reset path must clear them. |
+| Menu actions silently no-op when the user is on `LandingView`. | Fixed by §4.3 — both `MainWindow` and `LandingView` observe the three notifications. |
 
 ## 9. Open questions for implementation
 
