@@ -8,6 +8,25 @@ import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
 
+enum MainWindowToolbarAction: CaseIterable {
+	case snippets
+	case files
+
+	var systemImage: String {
+		switch self {
+		case .snippets: "text.cursor"
+		case .files: "folder"
+		}
+	}
+
+	var help: String {
+		switch self {
+		case .snippets: "Snippets (⌘⇧P)"
+		case .files: "Toggle Files Drawer (⌘⇧F)"
+		}
+	}
+}
+
 /// Content of one window in the multi-tab `WindowGroup(for: UUID.self)`. Each
 /// SwiftUI window represents one SessionStore tab; macOS merges them into
 /// native tabs because `NSWindow.allowsAutomaticWindowTabbing = true` (set in
@@ -162,12 +181,14 @@ struct MainWindow: View {
 		.frame(minWidth: 1000, minHeight: 600)
 		.toolbar {
 			ToolbarItemGroup(placement: .primaryAction) {
-				Button {
-					fileDrawerOpen.toggle()
-				} label: {
-					Image(systemName: "folder")
+				ForEach(MainWindowToolbarAction.allCases, id: \.self) { action in
+					Button {
+						handlePrimaryToolbarAction(action)
+					} label: {
+						Image(systemName: action.systemImage)
+					}
+					.help(action.help)
 				}
-				.help("Toggle Files Drawer (⌘⇧F)")
 			}
 		}
 		.onReceive(NotificationCenter.default
@@ -231,6 +252,15 @@ struct MainWindow: View {
 		.onDisappear {
 			surfaceRegistry.unregister(tabId)
 			store.closeTab(tabId: tabId)
+		}
+	}
+
+	private func handlePrimaryToolbarAction(_ action: MainWindowToolbarAction) {
+		switch action {
+		case .snippets:
+			presentingPalette = true
+		case .files:
+			fileDrawerOpen.toggle()
 		}
 	}
 }

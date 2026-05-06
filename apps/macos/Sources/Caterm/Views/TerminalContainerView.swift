@@ -1,8 +1,6 @@
 import HostSyncStore
 import SessionStore
 import SettingsStore
-import SnippetStore
-import SnippetSyncClient
 import SwiftUI
 import TerminalEngine
 
@@ -16,9 +14,6 @@ struct TerminalContainerView: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var settingsStore: SettingsStore
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
-	@EnvironmentObject var snippetStore: SnippetStore
-	@EnvironmentObject var snippetSync: SnippetSyncStore
-	@State private var showingPalette = false
 	let tabId: UUID
 
 	private var backgroundTransparencyEnabled: Bool {
@@ -26,40 +21,15 @@ struct TerminalContainerView: View {
 	}
 
 	var body: some View {
-		VStack(spacing: 0) {
-			HStack {
-				Spacer()
-				Button(action: { showingPalette.toggle() }) {
-					Image(systemName: "text.cursor")
-						.help("Snippets (⌘⇧P)")
-				}
-				.buttonStyle(.borderless)
-				.padding(.horizontal, 6)
-				.popover(isPresented: $showingPalette) {
-					SnippetPalette(
-						store: snippetStore,
-						sync: snippetSync,
-						capturedSurface: surfaceRegistry.surface(for: tabId) as (any SnippetDispatchTarget)?,
-						onClose: { showingPalette = false },
-						onCreate: {
-							showingPalette = false
-							NotificationCenter.default.post(name: .catermNewSnippet, object: nil)
-						}
-					)
-				}
-			}
-			.frame(height: 22)
-
-			ZStack {
-				if let tab = store.tabs.first(where: { $0.id == tabId }) {
-					TerminalSurfaceRepresentable(
-						tabId: tabId,
-						backgroundTransparencyEnabled: backgroundTransparencyEnabled
-					)
-						.id("\(tabId)-\(tab.surfaceGeneration)")
-					if case let .reconnecting(attempt, nextRetryAt) = tab.state {
-						ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
-					}
+		ZStack {
+			if let tab = store.tabs.first(where: { $0.id == tabId }) {
+				TerminalSurfaceRepresentable(
+					tabId: tabId,
+					backgroundTransparencyEnabled: backgroundTransparencyEnabled
+				)
+					.id("\(tabId)-\(tab.surfaceGeneration)")
+				if case let .reconnecting(attempt, nextRetryAt) = tab.state {
+					ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
 				}
 			}
 		}
