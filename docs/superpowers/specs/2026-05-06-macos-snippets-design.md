@@ -198,13 +198,20 @@ struct SnippetOutbox: Codable {
 
 ### 3.9 Account-switch wipe semantics
 
-`AccountIdentityTracker.handleAccountChange` (`AccountIdentityTracker.swift:38`) currently resets sync tokens and deletes subscriptions. **It does not touch local user content** — that responsibility lives in the high-level stores. For snippets:
+`AccountIdentityTracker.handleAccountChange` (`AccountIdentityTracker.swift:38`) currently resets sync tokens and deletes subscriptions. **It does not touch local user content** — that responsibility lives in the high-level stores.
 
-1. App boot wires `SnippetSyncStore` to observe `.catermICloudAccountChanged` (existing notification, posted by `iCloudAccountSession`).
-2. On notification: `SnippetSyncStore` calls `client.resetSnippetSyncState()` (clear tokens, identical to host path), then `SnippetStore.wipeLocal()` which atomically clears `snippets.json` + `pendingDeletedSnippetIDs`, posts a `@Published` change.
-3. Subsequent `syncIfSignedIn()` runs `forceFull` on the new account and repopulates from cloud.
+**Critical: gate on actual identity change, not on every notification.** `.catermICloudAccountChanged` is posted on **every app boot** after `icloudSession.refresh()` at `CatermApp.swift:99`. The settings-sync test suite explicitly asserts this notification alone **must not** trigger account-switch behavior (`TwoMacIntegrationTests.swift:204`, `test_scenario7_catermICloudAccountChanged_doesNotTriggerSwitch`). The host-sync flow at `CatermApp.swift:225-229` correctly gates the destructive credential-reset on `outcome == .identityChanged` from `AccountIdentityTracker.handleAccountChange(...)`. Snippets follow the same gate.
 
-This path is symmetric with how Plan A wipes host state — same sequence, separate target.
+**Sequence:**
+
+1. App boot wires `SnippetSyncStore` to observe `.catermICloudAccountChanged`.
+2. On notification: call the **shared** `accountIdentityTracker.handleAccountChange(client: cloudKitClient)`. (One tracker, one call; subsequent observers — host, snippet — share the outcome via either the tracker's idempotent return value, or by a coalesced post-tracker dispatch in `CatermApp`'s `onReceive`.)
+3. **Only when `outcome == .identityChanged`**: call `client.resetSnippetSyncState()` (clear snippet tokens) and `SnippetStore.wipeLocal()` (atomic-clear `snippets.json` + `pendingDeletedSnippetIDs`). For `.firstObservation` and `.unchanged`, do nothing destructive — token-reset on `.firstObservation` is already handled by the tracker against the host client; the snippet token store does not need a wipe because the persisted snippet token (if any) was written under the same `prior` identity that `handleAccountChange` will already have validated.
+4. Subsequent `syncIfSignedIn()` runs `forceFull` on the new account and repopulates from cloud.
+
+> **Implementation note on tracker reuse:** `AccountIdentityTracker.handleAccountChange` mutates persisted state on the *first* call after a real identity change (writes the new `recordName` to UserDefaults). If a second observer calls it again for the same change, the second call sees the now-equal persisted prior and returns `.unchanged`. Plan F therefore must NOT call `handleAccountChange` from a second observer — it must consume the existing host-path outcome (e.g. by widening the host observer to also kick the snippet wipe, or by extracting the outcome into a shared `@Published var lastAccountChangeOutcome`). The implementation plan picks one; both are acceptable.
+
+This path is symmetric with how host credential-reset is gated (Plan C) — same gate, separate target.
 
 ### 3.10 Active terminal targeting (surface registry)
 
@@ -217,20 +224,42 @@ The palette must dispatch to the *terminal session that was active when the user
 3. The palette (and its toolbar-button popover variant) **captures the active tab's surface reference at open time** — stores it in local view state. Focus changes during palette interaction do not affect the captured target.
 4. If the captured surface releases mid-flight (reconnect, tab closed), `weak` resolves to nil; Enter / ⌘+Enter shows the toast described in §5.4 and closes the palette.
 
-**Active-tab resolution:** read from existing `SessionStore` ("which tab is currently selected in the focused window"). If multiple windows are open, the palette is window-scoped — the menu-shortcut path opens a palette anchored to the key window's selected tab. Toolbar-button popover is inherently anchored to its window.
+**Active-tab resolution:** read from existing `SessionStore` ("which tab is currently selected in the focused window").
 
-### 3.11 Sync triggers
+**Multi-window dispatch (resolves the §4.3 broadcast / §3.10 key-window contradiction):** menu shortcuts post `.catermOpenSnippetPalette` / `.catermNewSnippet` / `.catermOpenSnippetManager` via NotificationCenter. Each `MainWindow` observes these but **only acts when its backing `NSWindow.isKeyWindow == true`**. Implementation: the SwiftUI view captures `NSApp.keyWindow` (or uses `.window` accessory in a `NSViewRepresentable`) inside the `onReceive` closure, compares against the window hosting the observer, and ignores the notification otherwise.
+
+Toolbar-button popover is inherently anchored to its window — no broadcast involved, no ambiguity.
+
+### 3.11 Sync pass — fetch-first-then-push
+
+**Critical correctness requirement:** local mutations must NOT push directly. They schedule a **sync pass** that follows the host pattern (`HostSyncStore.swift:429`):
+
+```
+sync pass (single serialized async function):
+  1. drain pending-delete outbox    (§3.8 — push tombstones for queued deletes)
+  2. fetch remote changes           (incremental or forceFull per preferredSnippetSyncMode)
+  3. reconcile (LWW per §3.7)       (compute ops: apply remote tombstones,
+                                     accept newer-cloud, retain newer-local-with-dirty-flag)
+  4. push local winners             (locally edited snippets that beat remote, or are new)
+  5. commit checkpoint              (advance tokens via CAS — §3.5)
+```
+
+If steps 2–3 produce a remote tombstone for a snippet the user is locally editing, the tombstone wins (delete is terminal — §3.7). If the cloud version has a higher revision than the dirty local edit, the cloud overwrites; the local edit is lost. This is the same loss model as host sync — the LWW algorithm is documented up-front so users do not get a different surprise here.
+
+### 3.12 Sync triggers
 
 | Trigger | Path |
 |---|---|
-| App launch | `syncIfSignedIn()` runs incremental fetch using persisted `CKServerChangeToken`. Pending-delete outbox drained first. |
-| Local edit | Debounce 500 ms, then `pushSnippet`. Coalesces rapid edits. |
-| Local delete | Outbox + immediate retry (see §3.8). |
-| Remote push (silent push) | APS `parsePushUserInfo` dispatch — `AppDelegate` adds case `.snippet` alongside the existing `.host` case. New subscription ID `CloudKitPushNames.snippetSubscriptionID`. |
-| 60-min force-full safety net | New timer in `SnippetSyncStore`, independent cadence from the host force-full. |
-| iCloud account change | `.catermICloudAccountChanged` → §3.9 wipe sequence. |
+| App launch | `syncIfSignedIn()` schedules a sync pass (incremental). |
+| Local edit | Debounce 500 ms, then **schedule a sync pass**. Coalesces rapid edits. Push is a step inside the pass, never a direct call. |
+| Local delete | Outbox add (§3.8) + schedule sync pass. |
+| Remote push (silent push) | APS `parsePushUserInfo` dispatch — `AppDelegate` adds case `.snippet` alongside the existing `.host` case. New subscription ID `CloudKitPushNames.snippetSubscriptionID`. Triggers a sync pass. |
+| 60-min force-full safety net | New timer in `SnippetSyncStore`, independent cadence from the host force-full. Schedules a sync pass with `mode = .forceFull`. |
+| iCloud account change | `.catermICloudAccountChanged` → §3.9 outcome-gated wipe (only on `.identityChanged`) → schedule sync pass on the new identity. |
 
-### 3.12 Out-of-band CloudKit Dashboard setup
+**Concurrency:** sync passes are serialized by an actor / `Task` ownership (the same shape `HostSyncStore` uses). A new trigger arriving mid-pass either coalesces with the in-flight pass or queues exactly one follow-up pass — never spawns parallel passes against the same snippet zone.
+
+### 3.13 Out-of-band CloudKit Dashboard setup
 
 Required once per environment (Development + Production). **Cannot be automated — requires Apple Developer console.**
 
@@ -365,9 +394,20 @@ If A passes: implement A. If A fails but B/B' pass on all three shells: implemen
 
 ### 5.6 Failure modes (post-implementation)
 
-- **No active terminal**: palette buttons disabled, header explains. Surface-registry capture (§3.10) returned nil at open.
-- **Surface released mid-flight**: weak ref nil; show transient toast `Snippet not sent — terminal not ready`; close palette.
-- **`sendText`/`sendKey` returns failure**: same toast; do not retry automatically.
+The current ghostty wrappers have asymmetric error-reporting:
+
+- `sendText(_:)` returns `Void` (`GhosttySurface+IME.swift:17`).
+- `sendKey(_:composing:)` returns `Void` (`GhosttySurface.swift:217`).
+- `triggerBindingAction(_:)` returns `Bool` (`GhosttySurface+Clipboard.swift:30`).
+
+So failure surfaces are limited to (a) the captured weak surface ref resolving to nil, and (b) `triggerBindingAction` returning `false` (only relevant if the Run-mode spike picks a path that uses it).
+
+| Failure | Detection | UX |
+|---|---|---|
+| No active terminal at palette open. | Surface-registry capture (§3.10) returned nil. | Buttons disabled; header explains. |
+| Surface released mid-flight (weak ref nil). | Optional unwrap fails at dispatch. | Transient toast `Snippet not sent — terminal not ready`; close palette. |
+| Run-mode binding-action call fails (only if spike picks the `triggerBindingAction` path). | Returns `false`. | Same toast. |
+| `sendText` / `sendKey` themselves silently no-op or under-deliver. | Not detectable from these wrappers. | Out of scope for v1 — if observed, file a follow-up to either widen the wrappers' return types or detect via output observation. |
 
 ## 6. Testing
 
@@ -376,7 +416,7 @@ If A passes: implement A. If A fails but B/B' pass on all three shells: implemen
 | Target | Coverage |
 |---|---|
 | `SnippetStoreTests` | JSON encode/decode round-trip, CRUD, `@Published` emission, search filter (case-insensitive, name + content), pending-delete outbox round-trip, `wipeLocal` clears both files. |
-| `SnippetSyncStoreTests` | LWW reconciliation matrix (revision <, =, > with metadataUpdatedAt and updatedAt tie-breakers), tombstone application, outbox-driven delete retry, incremental token advance, force-full path, account-switch wipe sequence (tokens cleared + local cleared + repopulate). |
+| `SnippetSyncStoreTests` | LWW reconciliation matrix (revision <, =, > with metadataUpdatedAt and updatedAt tie-breakers), tombstone application, outbox-driven delete retry, incremental token advance, force-full path, account-switch wipe sequence (tokens cleared + local cleared + repopulate), **stale-local-edit not overwriting newer cloud** (sync pass fetch-first reconciles correctly), **remote tombstone beats dirty local edit** (delete is terminal even when local has uncommitted changes), **same-identity `.catermICloudAccountChanged` does NOT wipe local** (boot-time notification must be inert per `TwoMacIntegrationTests.swift:204`'s pattern). |
 | `CloudKitSyncClientSnippetTests` | `CKDatabaseProtocol` mock — fetch returns deltas, push round-trips metadata, delete propagates, subscription created idempotently, separate-zone enforcement (record IDs land in `Snippets` zone, never in `Caterm` zone). |
 | `SnippetPaletteTests` | Search filtering, Enter / ⌘+Enter dispatch via captured surface (§3.10), disabled state when capture is nil, empty-store CTA, focus-loss does not change captured target. |
 | `SnippetEditorSheetTests` | Required-field validation, save invokes store.upsert, cancel does not write. |
@@ -427,6 +467,9 @@ This work lands as **Plan F**, independent of the pending Plan E.
 | Snippet zone token gets stuck after unrecoverable record corruption. | Low. Force-full safety net (§3.11 60-min) recovers; manual `Reset Sync State` debug command can also be wired if needed. |
 | Outbox grows unbounded if pushes consistently fail. | Very low. §3.8 retries on every sync pass; size capped by user delete behavior. If a runaway is observed, add a max-age TTL in a follow-up. |
 | Surface-registry weak refs leak or never resolve. | Low. §3.10 weak; nil resolution gracefully degrades to disabled palette + toast. |
+| Account-switch wipe fires on every app boot, destroying local snippets. | **Was the original §3.9 design**; fixed by gating wipe on `AccountIdentityTracker` outcome `.identityChanged`. Test in §6.1 enforces inertness on same-identity notification. |
+| Local edit pushed without first reconciling with cloud, overwriting newer remote version. | **Was the original §3.11 design**; fixed by sync-pass shape (§3.11) — push only happens after fetch + LWW reconcile. Test in §6.1 enforces. |
+| Multi-window broadcast: menu shortcut opens palettes in every window. | Fixed by §3.10 key-window filter on each `MainWindow` observer. |
 
 ## 9. Open questions for implementation
 
