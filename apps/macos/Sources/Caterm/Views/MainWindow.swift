@@ -212,6 +212,7 @@ struct MainWindow: View {
 		.popover(isPresented: $presentingPalette) {
 			SnippetPalette(
 				store: snippetStore,
+				sync: snippetSync,
 				capturedSurface: resolveActiveSurface(),
 				onClose: { presentingPalette = false },
 				onCreate: { presentingPalette = false; presentingEditor = true }

@@ -37,11 +37,13 @@ struct SnippetPalette: View {
 	@StateObject private var vm: SnippetPaletteViewModel
 	@FocusState private var searchFocused: Bool
 	@State private var selectedID: UUID?
+	let sync: SnippetSyncStore
 	let onClose: () -> Void
 	let onCreate: () -> Void
 
 	init(
 		store: SnippetStore,
+		sync: SnippetSyncStore,
 		capturedSurface: (any SnippetDispatchTarget)?,
 		onClose: @escaping () -> Void,
 		onCreate: @escaping () -> Void
@@ -49,6 +51,7 @@ struct SnippetPalette: View {
 		_vm = StateObject(wrappedValue: SnippetPaletteViewModel(
 			store: store, capturedSurface: capturedSurface
 		))
+		self.sync = sync
 		self.onClose = onClose
 		self.onCreate = onCreate
 	}
@@ -78,8 +81,8 @@ struct SnippetPalette: View {
 				List(vm.results, selection: $selectedID) { s in
 					SnippetRowView(
 						snippet: s,
-						onEdit: { /* hooked in Task 18 */ },
-						onDelete: { /* hooked in Task 18 */ },
+						onEdit: { openManagerForEdit() },
+						onDelete: { deleteSnippet(s) },
 						onCopy: { copyToClipboard(s) }
 					)
 					.tag(s.id)
@@ -111,6 +114,16 @@ struct SnippetPalette: View {
 				.keyboardShortcut(.return, modifiers: .command)
 				.hidden()
 		}
+	}
+
+	private func openManagerForEdit() {
+		NotificationCenter.default.post(name: .catermOpenSnippetManager, object: nil)
+		onClose()
+	}
+
+	private func deleteSnippet(_ s: Snippet) {
+		try? vm.store.delete(id: s.id)
+		sync.scheduleSyncPass(debounceMs: 0)
 	}
 
 	private func selected() -> Snippet? {

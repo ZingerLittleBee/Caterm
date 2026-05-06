@@ -31,6 +31,8 @@ struct SnippetEditorSheet: View {
 				.font(.system(.body, design: .monospaced))
 				.frame(minHeight: 240)
 				.border(Color.secondary.opacity(0.3))
+			Text("⚠ Snippets travel through CloudKit. Do not store passwords or other secrets here.")
+				.font(.caption).foregroundColor(.secondary)
 			HStack {
 				Spacer()
 				Button("Cancel", role: .cancel) { dismiss() }

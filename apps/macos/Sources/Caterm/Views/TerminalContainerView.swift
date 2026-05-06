@@ -15,6 +15,7 @@ struct TerminalContainerView: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	@EnvironmentObject var snippetStore: SnippetStore
+	@EnvironmentObject var snippetSync: SnippetSyncStore
 	@State private var showingPalette = false
 	let tabId: UUID
 
@@ -31,6 +32,7 @@ struct TerminalContainerView: View {
 				.popover(isPresented: $showingPalette) {
 					SnippetPalette(
 						store: snippetStore,
+						sync: snippetSync,
 						capturedSurface: surfaceRegistry.surface(for: tabId) as (any SnippetDispatchTarget)?,
 						onClose: { showingPalette = false },
 						onCreate: {
