@@ -207,6 +207,10 @@ public final class SessionStore: ObservableObject {
         return (cmd.command, env)
     }
 
+    public func hostId(for tabId: UUID) -> UUID? {
+        tabs.first(where: { $0.id == tabId })?.host.id
+    }
+
     public func markConnecting(tabId: UUID) {
         update(tabId) { $0.state = .connecting(startedAt: Date()) }
     }

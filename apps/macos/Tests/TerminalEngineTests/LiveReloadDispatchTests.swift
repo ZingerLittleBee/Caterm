@@ -19,15 +19,22 @@ final class LiveReloadDispatchTests: XCTestCase {
 
     func testGlobalNewSurfaceDoesNotRefreshExisting() {
         var refreshedSurfaces: [String] = []
+        var appReloads = 0
+        var configBuilds = 0
         let dispatcher = LiveReloadDispatcher(
             surfaceIds: { ["a", "b"] },
             applyToSurface: { refreshedSurfaces.append($0) },
-            applyToApp: { },
+            applyToApp: { appReloads += 1 },
             renderManagedSnapshot: { _ in },
-            buildConfig: { [] }
+            buildConfig: {
+                configBuilds += 1
+                return []
+            }
         )
         dispatcher.handle(scope: .globalNewSurface, settings: CatermSettings.empty)
         XCTAssertEqual(refreshedSurfaces, [])
+        XCTAssertEqual(appReloads, 0)
+        XCTAssertEqual(configBuilds, 0)
     }
 
     func testHostOverrideDoesNotRefreshExisting() {

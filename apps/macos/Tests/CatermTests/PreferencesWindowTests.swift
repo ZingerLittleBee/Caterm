@@ -1,4 +1,5 @@
 import XCTest
+import SettingsStore
 @testable import Caterm
 
 @MainActor
@@ -12,6 +13,16 @@ final class PreferencesWindowTests: XCTestCase {
         let ctrl = PreferencesWindowController()
         ctrl.activate(tabIndex: 2)
         XCTAssertEqual(ctrl.activeTabIndex, 2)
+    }
+
+    func testUseSettingsStoreReplacesFallbackStore() throws {
+        let first = try makeSettingsStore()
+        let second = try makeSettingsStore()
+        let ctrl = PreferencesWindowController(settingsStore: first)
+
+        ctrl.use(settingsStore: second)
+
+        XCTAssertTrue(ctrl.settingsStore === second)
     }
 }
 
@@ -31,5 +42,12 @@ extension PreferencesWindowTests {
         // sync stack.
         XCTAssertNotNil(ctrl.window?.contentViewController)
         XCTAssertEqual(ctrl.activeTabIndex, 3)
+    }
+
+    private func makeSettingsStore() throws -> SettingsStore {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreferencesWindowTests-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return try SettingsStore.load(from: dir.appendingPathComponent("settings.plist"))
     }
 }

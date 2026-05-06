@@ -32,6 +32,11 @@ public final class SurfaceRegistry: ObservableObject {
 		surfaces[tabId]?.surface
 	}
 
+	public func activeTabIds() -> [UUID] {
+		surfaces = surfaces.filter { $0.value.surface != nil }
+		return Array(surfaces.keys)
+	}
+
 	public func unregister(_ tabId: UUID) {
 		surfaces.removeValue(forKey: tabId)
 	}

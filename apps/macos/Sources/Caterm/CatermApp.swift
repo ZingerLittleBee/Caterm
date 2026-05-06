@@ -30,7 +30,7 @@ struct CatermApp: App {
 	@StateObject var settingsStore: SettingsStore
 	@StateObject var remoteBookmarks: RemoteBookmarkStore
 	@StateObject private var credentialSync: CredentialSyncPreferencesStore
-	@StateObject var surfaceRegistry: SurfaceRegistry = SurfaceRegistry()
+	@StateObject var surfaceRegistry: SurfaceRegistry
 	@StateObject private var snippetStore: SnippetStore
 	@StateObject private var snippetSync: SnippetSyncStore
 
@@ -50,6 +50,8 @@ struct CatermApp: App {
 	init() {
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
+		let surfaceRegistry = SurfaceRegistry()
+		_surfaceRegistry = StateObject(wrappedValue: surfaceRegistry)
 		// CloudKit-backed sync (the URLSession + better-auth pair was removed
 		// in Plan E). `iCloudAccountSession` is the AuthSessionProtocol
 		// conformer threaded into HostSyncStore.
@@ -176,15 +178,21 @@ struct CatermApp: App {
 			},
 			liveness: ControlMasterManager.shared
 		))
-		// Wire the live-reload pipeline. `LiveReloadDispatcher` already
-		// posts `catermNewSurfaceBanner` / `catermConfigDiagnostics`
-		// notifications internally — `SettingsBannerState` listens to
-		// both — so banner + managed-snapshot rerender works today.
-		// Per-surface live application of font/theme/cursor onto
-		// already-mounted Ghostty surfaces is deferred (no surface
-		// registry yet); new surfaces still pick up changes via the
-		// next render of the managed snapshot.
-		self.liveReload = LiveReloadCoordinator(settingsStore: settings)
+		// Wire the live-reload pipeline. `LiveReloadDispatcher` posts
+		// `catermNewSurfaceBanner` / `catermConfigDiagnostics`; active
+		// terminal surfaces get their Ghostty config rebuilt from disk.
+		self.liveReload = LiveReloadCoordinator(
+			settingsStore: settings,
+			activeSurfaceTabIds: { surfaceRegistry.activeTabIds() },
+			reloadApp: {
+				GhosttyApp.updateSharedConfigIfInitialized()
+			},
+			reloadSurface: { tabId in
+				guard let surface = surfaceRegistry.surface(for: tabId) else { return }
+				let hostId = session.hostId(for: tabId).map { HostId($0.uuidString) }
+				surface.applyConfig(hostId: hostId)
+			}
+		)
 		let tokenStore = IdentityTokenStore()
 		let kvsAdapter: KVSProtocol = NSUbiquitousKeyValueStore.default
 		self.settingsSync = SettingsSyncStore(
@@ -271,7 +279,9 @@ struct CatermApp: App {
 				// window (Task 25). SyncStatusRow still posts this
 				// notification when the user clicks the indicator; route
 				// it through to the unified Preferences surface.
-				PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
+				let preferencesWindow = PreferencesWindowController.shared
+				preferencesWindow.use(settingsStore: settingsStore)
+				preferencesWindow.syncEnvironment = SyncEnvironment(
 					authSession: icloudSession,
 					syncStore: syncStore,
 					preferences: preferences,
@@ -279,8 +289,8 @@ struct CatermApp: App {
 					credentialSyncCoordinator: credentialSyncCoordinator,
 					sessionStore: store
 				)
-				PreferencesWindowController.shared.activate(tabIndex: 3)
-				PreferencesWindowController.shared.showAndActivate()
+				preferencesWindow.activate(tabIndex: 3)
+				preferencesWindow.showAndActivate()
 			}
 		}
 		.commands {
@@ -302,7 +312,9 @@ struct CatermApp: App {
 			// config in Finder for power users, so no functionality is lost.
 			CommandGroup(replacing: .appSettings) {
 				Button("Settings…") {
-					PreferencesWindowController.shared.syncEnvironment = SyncEnvironment(
+					let preferencesWindow = PreferencesWindowController.shared
+					preferencesWindow.use(settingsStore: settingsStore)
+					preferencesWindow.syncEnvironment = SyncEnvironment(
 						authSession: icloudSession,
 						syncStore: syncStore,
 						preferences: preferences,
@@ -310,7 +322,7 @@ struct CatermApp: App {
 						credentialSyncCoordinator: credentialSyncCoordinator,
 						sessionStore: store
 					)
-					PreferencesWindowController.shared.showAndActivate()
+					preferencesWindow.showAndActivate()
 				}
 				.keyboardShortcut(",", modifiers: .command)
 			}

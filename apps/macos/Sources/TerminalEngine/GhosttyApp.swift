@@ -16,13 +16,26 @@ import GhosttyKit
 ///      effort.
 @MainActor
 public final class GhosttyApp {
-	public static let shared: GhosttyApp = {
+	private static var instance: GhosttyApp?
+
+	public static var shared: GhosttyApp {
+		if let instance { return instance }
 		do {
-			return try GhosttyApp()
+			let created = try GhosttyApp()
+			instance = created
+			return created
 		} catch {
 			fatalError("GhosttyApp init failed: \(error)")
 		}
-	}()
+	}
+
+	@discardableResult
+	public static func updateSharedConfigIfInitialized(
+		catermConfigPath: String? = ConfigStore.defaultPath.path
+	) -> [ConfigDiagnostic] {
+		guard let instance else { return [] }
+		return instance.updateConfig(catermConfigPath: catermConfigPath)
+	}
 
 	public let raw: ghostty_app_t
 	public let config: GhosttyConfig
@@ -62,6 +75,25 @@ public final class GhosttyApp {
 
 	deinit {
 		ghostty_app_free(raw)
+	}
+
+	@discardableResult
+	public func updateConfig(
+		catermConfigPath: String? = ConfigStore.defaultPath.path
+	) -> [ConfigDiagnostic] {
+		let cfg: ghostty_config_t
+		do {
+			cfg = try GhosttyConfigLoader.make(
+				catermConfigPath: catermConfigPath,
+				perHostConfigPath: nil
+			)
+		} catch {
+			return [ConfigDiagnostic(message: "Ghostty app config reload failed: \(error)")]
+		}
+		let diagnostics = ConfigDiagnostic.collect(from: cfg)
+		ghostty_app_update_config(raw, cfg)
+		ghostty_config_free(cfg)
+		return diagnostics
 	}
 
 	// MARK: - C callback trampolines

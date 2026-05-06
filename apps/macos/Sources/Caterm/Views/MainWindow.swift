@@ -8,6 +8,40 @@ import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
 
+enum MainWindowToolbarAction: CaseIterable {
+	case snippets
+	case files
+
+	var systemImage: String {
+		switch self {
+		case .snippets: "text.cursor"
+		case .files: "folder"
+		}
+	}
+
+	var help: String {
+		switch self {
+		case .snippets: "Snippets (⌘⇧P)"
+		case .files: "Toggle Files Drawer (⌘⇧F)"
+		}
+	}
+}
+
+enum MainWindowSnippetPalettePlacement {
+	static let preferredSize = CGSize(width: 520, height: 380)
+
+	static func frame(in container: CGSize) -> CGRect {
+		let width = min(preferredSize.width, container.width)
+		let height = min(preferredSize.height, container.height)
+		return CGRect(
+			x: (container.width - width) / 2,
+			y: (container.height - height) / 2,
+			width: width,
+			height: height
+		)
+	}
+}
+
 /// Content of one window in the multi-tab `WindowGroup(for: UUID.self)`. Each
 /// SwiftUI window represents one SessionStore tab; macOS merges them into
 /// native tabs because `NSWindow.allowsAutomaticWindowTabbing = true` (set in
@@ -155,6 +189,26 @@ struct MainWindow: View {
 						.offset(x: geo.size.width - drawerTotal, y: 0)
 						.transition(.move(edge: .trailing))
 					}
+
+					if presentingPalette {
+						Color.black.opacity(0.001)
+							.contentShape(Rectangle())
+							.onTapGesture { presentingPalette = false }
+							.zIndex(9)
+
+						let paletteFrame = MainWindowSnippetPalettePlacement.frame(in: geo.size)
+						snippetPalette
+							.frame(width: paletteFrame.width, height: paletteFrame.height)
+							.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+							.clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+							.overlay(
+								RoundedRectangle(cornerRadius: 14, style: .continuous)
+									.stroke(Color(NSColor.separatorColor), lineWidth: 1)
+							)
+							.shadow(color: .black.opacity(0.28), radius: 24, y: 12)
+							.position(x: paletteFrame.midX, y: paletteFrame.midY)
+							.zIndex(10)
+					}
 				}
 				.animation(.easeInOut(duration: 0.22), value: fileDrawerOpen)
 			}
@@ -162,12 +216,14 @@ struct MainWindow: View {
 		.frame(minWidth: 1000, minHeight: 600)
 		.toolbar {
 			ToolbarItemGroup(placement: .primaryAction) {
-				Button {
-					fileDrawerOpen.toggle()
-				} label: {
-					Image(systemName: "folder")
+				ForEach(MainWindowToolbarAction.allCases, id: \.self) { action in
+					Button {
+						handlePrimaryToolbarAction(action)
+					} label: {
+						Image(systemName: action.systemImage)
+					}
+					.help(action.help)
 				}
-				.help("Toggle Files Drawer (⌘⇧F)")
 			}
 		}
 		.onReceive(NotificationCenter.default
@@ -209,15 +265,6 @@ struct MainWindow: View {
 			presentingManager: $presentingManager,
 			isKeyWindow: { hostWindow?.isKeyWindow ?? false }
 		))
-		.popover(isPresented: $presentingPalette) {
-			SnippetPalette(
-				store: snippetStore,
-				sync: snippetSync,
-				capturedSurface: resolveActiveSurface(),
-				onClose: { presentingPalette = false },
-				onCreate: { presentingPalette = false; presentingEditor = true }
-			)
-		}
 		.sheet(isPresented: $presentingEditor) {
 			SnippetEditorSheet(mode: .create)
 				.environmentObject(snippetStore)
@@ -232,6 +279,25 @@ struct MainWindow: View {
 			surfaceRegistry.unregister(tabId)
 			store.closeTab(tabId: tabId)
 		}
+	}
+
+	private func handlePrimaryToolbarAction(_ action: MainWindowToolbarAction) {
+		switch action {
+		case .snippets:
+			presentingPalette = true
+		case .files:
+			fileDrawerOpen.toggle()
+		}
+	}
+
+	private var snippetPalette: some View {
+		SnippetPalette(
+			store: snippetStore,
+			sync: snippetSync,
+			capturedSurface: resolveActiveSurface(),
+			onClose: { presentingPalette = false },
+			onCreate: { presentingPalette = false; presentingEditor = true }
+		)
 	}
 }
 

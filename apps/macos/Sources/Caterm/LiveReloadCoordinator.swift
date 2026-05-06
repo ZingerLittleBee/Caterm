@@ -10,34 +10,40 @@ import TerminalEngine
 ///
 /// Today's coverage:
 /// - `globalLive` / `globalNewSurface`: re-renders managed snapshot,
-///   posts the new-surface banner notification when applicable.
+///   updates active Ghostty surfaces for live fields, and posts the
+///   new-surface banner notification when applicable.
 /// - `hostOverride`: re-renders the per-host patch directory so the next
 ///   surface for that host picks up the new theme.
-///
-/// Deferred (follow-up): per-surface application of font/theme/cursor
-/// onto already-mounted Ghostty surfaces. There is no surface registry
-/// at the App level today, so `surfaceIds` returns `[]` and
-/// `applyToSurface` is a no-op. The rendered snapshot + banner is
-/// enough to (a) drive the integration tests and (b) make new surfaces
-/// reflect the change without requiring a Caterm restart.
 @MainActor
 final class LiveReloadCoordinator {
 	private let dispatcher: LiveReloadDispatcher
 	private let settingsStore: SettingsStore
 	private var observerToken: NSObjectProtocol?
 
-	init(settingsStore: SettingsStore) {
+	init(
+		settingsStore: SettingsStore,
+		activeSurfaceTabIds: @escaping @MainActor () -> [UUID] = { [] },
+		reloadApp: @escaping @MainActor () -> Void = {},
+		reloadSurface: @escaping @MainActor (UUID) -> Void = { _ in },
+		renderManagedSnapshot: @escaping @MainActor (PartialSettings) throws -> Void = {
+			try ConfigStore.renderManagedSnapshot(from: $0)
+		},
+		buildConfig: @escaping @MainActor () -> [ConfigDiagnostic] = {
+			GhosttyConfig.diagnostics()
+		}
+	) {
 		self.settingsStore = settingsStore
 		// Closures capture only value types / the SettingsStore reference
 		// so they remain main-actor-safe.
 		self.dispatcher = LiveReloadDispatcher(
-			surfaceIds: { [] },
-			applyToSurface: { _ in },
-			applyToApp: {},
-			renderManagedSnapshot: { partial in
-				try ConfigStore.renderManagedSnapshot(from: partial)
+			surfaceIds: { activeSurfaceTabIds().map(\.uuidString) },
+			applyToSurface: { id in
+				guard let tabId = UUID(uuidString: id) else { return }
+				reloadSurface(tabId)
 			},
-			buildConfig: { [] }
+			applyToApp: reloadApp,
+			renderManagedSnapshot: renderManagedSnapshot,
+			buildConfig: buildConfig
 		)
 		self.observerToken = NotificationCenter.default.addObserver(
 			forName: SettingsStore.changeNotification,

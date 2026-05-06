@@ -41,7 +41,7 @@ public final class PreferencesWindowController: NSWindowController {
     public private(set) var tabs: [PreferencesTab] = []
     public private(set) var activeTabIndex: Int = 0
     private var hostingController: NSHostingController<AnyView>?
-    private let settingsStore: SettingsStore
+    public private(set) var settingsStore: SettingsStore
     /// Set by the app once the sync stack is constructed; nil during tests.
     /// Re-renders the active tab when assigned so a deferred wiring (e.g.
     /// from `CatermApp`'s notification observer) takes effect immediately.
@@ -86,6 +86,12 @@ public final class PreferencesWindowController: NSWindowController {
     public func activate(tabIndex: Int) {
         guard tabIndex >= 0, tabIndex < tabs.count else { return }
         activeTabIndex = tabIndex
+        renderActiveTab()
+    }
+
+    public func use(settingsStore: SettingsStore) {
+        if self.settingsStore === settingsStore { return }
+        self.settingsStore = settingsStore
         renderActiveTab()
     }
 

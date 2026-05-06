@@ -3,18 +3,18 @@ import SettingsStore
 
 @MainActor
 public struct LiveReloadDispatcher {
-	public let surfaceIds: () -> [String]
-	public let applyToSurface: (String) -> Void
-	public let applyToApp: () -> Void
-	public let renderManagedSnapshot: (PartialSettings) throws -> Void
-	public let buildConfig: () -> [ConfigDiagnostic]
+	public let surfaceIds: @MainActor () -> [String]
+	public let applyToSurface: @MainActor (String) -> Void
+	public let applyToApp: @MainActor () -> Void
+	public let renderManagedSnapshot: @MainActor (PartialSettings) throws -> Void
+	public let buildConfig: @MainActor () -> [ConfigDiagnostic]
 
 	public init(
-		surfaceIds: @escaping () -> [String],
-		applyToSurface: @escaping (String) -> Void,
-		applyToApp: @escaping () -> Void,
-		renderManagedSnapshot: @escaping (PartialSettings) throws -> Void,
-		buildConfig: @escaping () -> [ConfigDiagnostic]
+		surfaceIds: @escaping @MainActor () -> [String],
+		applyToSurface: @escaping @MainActor (String) -> Void,
+		applyToApp: @escaping @MainActor () -> Void,
+		renderManagedSnapshot: @escaping @MainActor (PartialSettings) throws -> Void,
+		buildConfig: @escaping @MainActor () -> [ConfigDiagnostic]
 	) {
 		self.surfaceIds = surfaceIds
 		self.applyToSurface = applyToSurface
@@ -25,18 +25,17 @@ public struct LiveReloadDispatcher {
 
 	public func handle(scope: SettingsChangeScope, settings: CatermSettings) {
 		try? renderManagedSnapshot(settings.global)
-		let diagnostics = buildConfig()
-		if !diagnostics.isEmpty {
-			postDiagnosticsBanner(diagnostics)
-		}
 		switch scope {
 		case .globalLive:
+			let diagnostics = buildConfig()
+			if !diagnostics.isEmpty {
+				postDiagnosticsBanner(diagnostics)
+			}
 			applyToApp()
 			for id in surfaceIds() {
 				applyToSurface(id)
 			}
 		case .globalNewSurface:
-			applyToApp()
 			postNewSurfaceBanner()
 		case .hostOverride:
 			// No-op for existing surfaces; new surfaces apply patch via the
