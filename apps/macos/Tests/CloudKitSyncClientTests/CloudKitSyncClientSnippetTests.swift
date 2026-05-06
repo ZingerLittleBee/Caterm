@@ -3,6 +3,54 @@ import XCTest
 import SnippetSyncClient
 @testable import CloudKitSyncClient
 
+// MARK: - CloudKitSyncClient snippet push/delete/subscription tests
+
+final class CloudKitSyncClientSnippetTests: XCTestCase {
+	func test_pushSnippet_savesToSnippetsZone() async throws {
+		let fakeDB = FakeCloudDatabase()
+		let client = CloudKitSyncClient(
+			database: fakeDB,
+			zoneID: CKRecordZone.ID(zoneName: "Caterm", ownerName: CKCurrentUserDefaultName)
+		)
+		let s = Snippet(id: UUID(), name: "n", content: "c",
+		                createdAt: .now, updatedAt: .now)
+		_ = try await client.pushSnippet(s)
+		let saved = try XCTUnwrap(fakeDB.savedRecords.last)
+		XCTAssertEqual(saved.recordID.zoneID.zoneName,
+		               CloudKitPushNames.snippetZoneName,
+		               "Snippets must land in the Snippets zone, not the Caterm host zone")
+	}
+
+	func test_deleteSnippet_callsDeleteWithSnippetZoneID() async throws {
+		let fakeDB = FakeCloudDatabase()
+		let client = CloudKitSyncClient(
+			database: fakeDB,
+			zoneID: CKRecordZone.ID(zoneName: "Caterm", ownerName: CKCurrentUserDefaultName)
+		)
+		let id = UUID()
+		try await client.deleteSnippet(id: id)
+		let deleted = try XCTUnwrap(fakeDB.deletedRecordIDs.last)
+		XCTAssertEqual(deleted.recordName, id.uuidString)
+		XCTAssertEqual(deleted.zoneID.zoneName, CloudKitPushNames.snippetZoneName)
+	}
+
+	func test_ensureSnippetSubscription_isIdempotent() async throws {
+		let fakeDB = FakeCloudDatabase()
+		let client = CloudKitSyncClient(
+			database: fakeDB,
+			zoneID: CKRecordZone.ID(zoneName: "Caterm", ownerName: CKCurrentUserDefaultName)
+		)
+		try await client.ensureSnippetSubscription()
+		try await client.ensureSnippetSubscription()
+		// Both calls must succeed and each must have saved a subscription.
+		XCTAssertEqual(fakeDB.savedSubscriptionIDs.filter {
+			$0 == CloudKitPushNames.snippetSubscriptionID
+		}.count, 2)
+	}
+}
+
+// MARK: - CKRecordSnippetMapping encode/decode tests
+
 final class CKRecordSnippetMappingTests: XCTestCase {
 	func test_encode_setsAllFields() {
 		let id = UUID()
