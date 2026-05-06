@@ -12,6 +12,8 @@ import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
+import SnippetStore
+import SnippetSyncClient
 import SettingsSyncStore
 import SFTPCommandBuilder
 import SSHCommandBuilder
@@ -326,6 +328,24 @@ struct CatermApp: App {
 				}
 				.keyboardShortcut("f", modifiers: [.command, .shift])
 			}
+			// Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
+			// These post notifications that `SnippetCommandObserver` picks up
+			// in the key window only, avoiding multi-window broadcast.
+			CommandGroup(after: .toolbar) {
+				Button("Open Snippet Palette") {
+					NotificationCenter.default.post(name: .catermOpenSnippetPalette, object: nil)
+				}
+				.keyboardShortcut("p", modifiers: [.command, .shift])
+
+				Button("New Snippet…") {
+					NotificationCenter.default.post(name: .catermNewSnippet, object: nil)
+				}
+				.keyboardShortcut("s", modifiers: [.command, .shift])
+
+				Button("Manage Snippets…") {
+					NotificationCenter.default.post(name: .catermOpenSnippetManager, object: nil)
+				}
+			}
 			// Help menu → GitHub documentation page.
 			CommandGroup(replacing: .help) {
 				Link("Caterm Documentation",
@@ -373,6 +393,12 @@ struct OpenTabBridge: View {
 /// MainWindow rather than spawning a separate window/tab.
 struct LandingView: View {
 	@Binding var tabId: UUID?
+	@EnvironmentObject var snippetStore: SnippetStore
+	@EnvironmentObject var snippetSync: SnippetSyncStore
+	@State private var presentingPalette = false
+	@State private var presentingEditor = false
+	@State private var presentingManager = false
+	@State private var hostWindow: NSWindow?
 
 	var body: some View {
 		NavigationSplitView {
@@ -389,6 +415,31 @@ struct LandingView: View {
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
 		}
 		.frame(minWidth: 1000, minHeight: 600)
+		.background(WindowAccessor(window: $hostWindow))
+		.modifier(SnippetCommandObserver(
+			presentingPalette: $presentingPalette,
+			presentingEditor: $presentingEditor,
+			presentingManager: $presentingManager,
+			isKeyWindow: { hostWindow?.isKeyWindow ?? false }
+		))
+		.popover(isPresented: $presentingPalette) {
+			SnippetPalette(
+				store: snippetStore,
+				capturedSurface: nil,
+				onClose: { presentingPalette = false },
+				onCreate: { presentingPalette = false; presentingEditor = true }
+			)
+		}
+		.sheet(isPresented: $presentingEditor) {
+			SnippetEditorSheet(mode: .create)
+				.environmentObject(snippetStore)
+				.environmentObject(snippetSync)
+		}
+		.sheet(isPresented: $presentingManager) {
+			SnippetManagerSheet()
+				.environmentObject(snippetStore)
+				.environmentObject(snippetSync)
+		}
 	}
 }
 
