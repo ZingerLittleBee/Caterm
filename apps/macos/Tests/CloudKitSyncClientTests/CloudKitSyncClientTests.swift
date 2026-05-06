@@ -127,7 +127,8 @@ final class CloudKitSyncClientTests: XCTestCase {
         // CKDatabase throws CKError.unknownItem when deleting a record
         // that does not exist. deleteHost catches that case and treats it
         // as a successful no-op (idempotent semantics). FakeCloudDatabase
-        // mirrors the real throw-on-missing behavior.
+        // records the delete call without auto-throwing on missing IDs;
+        // tests that need the missing-item throw inject it via `deleteError`.
         try await sut.deleteHost(id: "missing")
         XCTAssertEqual(fakeDb.deleteCallCount, 1)
     }
