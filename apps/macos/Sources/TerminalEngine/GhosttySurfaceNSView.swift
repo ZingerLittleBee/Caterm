@@ -13,6 +13,7 @@ public final class GhosttySurfaceNSView: NSView {
 	private let pendingCommand: String?
 	private let pendingEnv: [(String, String)]
 	private var didCreateSurface = false
+	private var backgroundTransparencyEnabled = false
 
 	/// Last shape libghostty asked us to render. Updated by
 	/// `GhosttySurface.onMouseShape`; consumed by `cursorUpdate(with:)` to
@@ -63,6 +64,7 @@ public final class GhosttySurfaceNSView: NSView {
 
 	public override func viewDidMoveToWindow() {
 		super.viewDidMoveToWindow()
+		applyBackgroundTransparency()
 		guard !didCreateSurface, window != nil else { return }
 		do {
 			let surface = try GhosttySurface(
@@ -94,6 +96,7 @@ public final class GhosttySurfaceNSView: NSView {
 			wireURLHandlers()
 			window?.makeFirstResponder(self)
 			propagateSize()
+			applyBackgroundTransparency()
 			surface.setFocus(true)
 		} catch {
 			// Surfacing this through the UI is Task 1.4's job; for the smoke
@@ -190,6 +193,11 @@ public final class GhosttySurfaceNSView: NSView {
 		super.flagsChanged(with: event)
 	}
 
+	public func setBackgroundTransparencyEnabled(_ enabled: Bool) {
+		backgroundTransparencyEnabled = enabled
+		applyBackgroundTransparency()
+	}
+
 	/// Map libghostty's cursor-shape enum onto `NSCursor`. Unmapped shapes
 	/// fall back to `.arrow`; see ghostty.h ~line 685 for the full list.
 	private func nsCursor(for shape: ghostty_action_mouse_shape_e) -> NSCursor {
@@ -213,5 +221,13 @@ public final class GhosttySurfaceNSView: NSView {
 		let width = UInt32(max(1, scaled.width))
 		let height = UInt32(max(1, scaled.height))
 		surface.setSize(width: width, height: height)
+	}
+
+	private func applyBackgroundTransparency() {
+		TerminalWindowTransparency.apply(
+			enabled: backgroundTransparencyEnabled,
+			to: window,
+			layer: layer
+		)
 	}
 }

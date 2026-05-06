@@ -1,5 +1,6 @@
 import HostSyncStore
 import SessionStore
+import SettingsStore
 import SnippetStore
 import SnippetSyncClient
 import SwiftUI
@@ -13,11 +14,16 @@ import TerminalEngine
 /// off a fresh ssh subprocess.
 struct TerminalContainerView: View {
 	@EnvironmentObject var store: SessionStore
+	@EnvironmentObject var settingsStore: SettingsStore
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	@EnvironmentObject var snippetStore: SnippetStore
 	@EnvironmentObject var snippetSync: SnippetSyncStore
 	@State private var showingPalette = false
 	let tabId: UUID
+
+	private var backgroundTransparencyEnabled: Bool {
+		(settingsStore.settings.global.windowOpacity ?? 1.0) < 0.999
+	}
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -46,7 +52,10 @@ struct TerminalContainerView: View {
 
 			ZStack {
 				if let tab = store.tabs.first(where: { $0.id == tabId }) {
-					TerminalSurfaceRepresentable(tabId: tabId)
+					TerminalSurfaceRepresentable(
+						tabId: tabId,
+						backgroundTransparencyEnabled: backgroundTransparencyEnabled
+					)
 						.id("\(tabId)-\(tab.surfaceGeneration)")
 					if case let .reconnecting(attempt, nextRetryAt) = tab.state {
 						ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
@@ -74,15 +83,19 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	@EnvironmentObject var preferences: SyncPreferences
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	let tabId: UUID
+	let backgroundTransparencyEnabled: Bool
 
 	func makeNSView(context _: Context) -> GhosttySurfaceNSView {
 		guard let cfg = store.surfaceConfig(
 			for: tabId,
 			installTerminfo: preferences.installTerminfoEnabled
 		) else {
-			return GhosttySurfaceNSView(command: nil)
+			let view = GhosttySurfaceNSView(command: nil)
+			view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
+			return view
 		}
 		let view = GhosttySurfaceNSView(command: cfg.command, env: cfg.env)
+		view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
 		store.markConnecting(tabId: tabId)
 
 		let capturedTabId = tabId
@@ -98,6 +111,8 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 						}
 					}
 					surfaceRegistry?.register(surface, for: capturedTabId)
+					let hostId = store?.hostId(for: capturedTabId).map { HostId($0.uuidString) }
+					surface.applyConfig(hostId: hostId)
 					break
 				}
 				try? await Task.sleep(nanoseconds: 50_000_000)
@@ -111,5 +126,7 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		return view
 	}
 
-	func updateNSView(_: GhosttySurfaceNSView, context _: Context) {}
+	func updateNSView(_ nsView: GhosttySurfaceNSView, context _: Context) {
+		nsView.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
+	}
 }

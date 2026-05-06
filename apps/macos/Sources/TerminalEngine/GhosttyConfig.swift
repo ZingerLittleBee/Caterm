@@ -14,26 +14,21 @@ public final class GhosttyConfig {
 	public let raw: ghostty_config_t
 
 	public init(catermConfigPath: String? = nil) throws {
-		guard let cfg = ghostty_config_new() else {
-			throw GhosttyError.configCreateFailed
-		}
-		ghostty_config_load_default_files(cfg)
-
-		// Caterm-managed snapshot — loaded BEFORE user file so user keybinds win.
-		do {
-			try ConfigStore.writeManagedConfig()
-			ghostty_config_load_file(cfg, ConfigStore.managedConfigPath.path)
-		} catch {
-			NSLog("[GhosttyConfig] managed config write failed: \(error)")
-		}
-
-		if let path = catermConfigPath,
-			FileManager.default.fileExists(atPath: path)
-		{
-			ghostty_config_load_file(cfg, path)
-		}
-		ghostty_config_finalize(cfg)
+		let cfg = try GhosttyConfigLoader.make(
+			catermConfigPath: catermConfigPath,
+			perHostConfigPath: nil
+		)
 		self.raw = cfg
+	}
+
+	public static func diagnostics(
+		catermConfigPath: String? = ConfigStore.defaultPath.path,
+		perHostConfigPath: String? = nil
+	) -> [ConfigDiagnostic] {
+		GhosttyConfigLoader.diagnostics(
+			catermConfigPath: catermConfigPath,
+			perHostConfigPath: perHostConfigPath
+		)
 	}
 
 	deinit {
@@ -53,6 +48,67 @@ public enum GhosttyError: Error, CustomStringConvertible {
 		case .configCreateFailed: return "ghostty_config_new returned nil"
 		case .appCreateFailed: return "ghostty_app_new returned nil"
 		case .surfaceCreateFailed: return "ghostty_surface_new returned nil"
+		}
+	}
+}
+
+@MainActor
+enum GhosttyConfigLoader {
+	static func make(
+		catermConfigPath: String?,
+		perHostConfigPath: String?
+	) throws -> ghostty_config_t {
+		guard let cfg = ghostty_config_new() else {
+			throw GhosttyError.configCreateFailed
+		}
+		loadFiles(
+			into: cfg,
+			catermConfigPath: catermConfigPath,
+			perHostConfigPath: perHostConfigPath
+		)
+		return cfg
+	}
+
+	static func diagnostics(
+		catermConfigPath: String? = ConfigStore.defaultPath.path,
+		perHostConfigPath: String? = nil
+	) -> [ConfigDiagnostic] {
+		do {
+			let cfg = try make(
+				catermConfigPath: catermConfigPath,
+				perHostConfigPath: perHostConfigPath
+			)
+			defer { ghostty_config_free(cfg) }
+			return ConfigDiagnostic.collect(from: cfg)
+		} catch {
+			return [ConfigDiagnostic(message: "Ghostty config reload failed: \(error)")]
+		}
+	}
+
+	private static func loadFiles(
+		into cfg: ghostty_config_t,
+		catermConfigPath: String?,
+		perHostConfigPath: String?
+	) {
+		ghostty_config_load_default_files(cfg)
+		do {
+			try ConfigStore.ensureManagedSnapshotExists()
+		} catch {
+			NSLog("[GhosttyConfig] managed config seed failed: \(error)")
+		}
+		loadFileIfPresent(ConfigStore.managedConfigPath.path, into: cfg)
+		if let catermConfigPath {
+			loadFileIfPresent(catermConfigPath, into: cfg)
+		}
+		if let perHostConfigPath {
+			loadFileIfPresent(perHostConfigPath, into: cfg)
+		}
+		ghostty_config_finalize(cfg)
+	}
+
+	private static func loadFileIfPresent(_ path: String, into cfg: ghostty_config_t) {
+		if FileManager.default.fileExists(atPath: path) {
+			ghostty_config_load_file(cfg, path)
 		}
 	}
 }

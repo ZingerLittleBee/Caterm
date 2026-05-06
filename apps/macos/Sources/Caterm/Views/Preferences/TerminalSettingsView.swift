@@ -109,7 +109,7 @@ public struct TerminalSettingsView: View {
             }
             Section("Window") {
                 Slider(value: b.windowOpacity, in: 0.7...1.0) {
-                    Text("Opacity: \(b.windowOpacity.wrappedValue, specifier: "%.2f")")
+                    Text("Background opacity: \(b.windowOpacity.wrappedValue, specifier: "%.2f")")
                 }
                 Stepper("Padding X: \(b.windowPaddingX.wrappedValue)", value: b.windowPaddingX, in: 0...40)
                 Stepper("Padding Y: \(b.windowPaddingY.wrappedValue)", value: b.windowPaddingY, in: 0...40)

@@ -184,16 +184,31 @@ public final class GhosttySurface {
 	public func applyPerHostPatch(hostId: HostId, userConfigPath: String? = nil) {
 		let path = ConfigStore.perHostPatchPath(for: hostId)
 		guard FileManager.default.fileExists(atPath: path.path) else { return }
-		guard let cfg = ghostty_config_new() else { return }
-		ghostty_config_load_default_files(cfg)
-		ghostty_config_load_file(cfg, ConfigStore.managedConfigPath.path)
-		if let userConfigPath, FileManager.default.fileExists(atPath: userConfigPath) {
-			ghostty_config_load_file(cfg, userConfigPath)
+		applyConfig(hostId: hostId, userConfigPath: userConfigPath)
+	}
+
+	/// Rebuilds the Ghostty config stack from disk and applies it to this live
+	/// surface. This mirrors Ghostty's reload flow: defaults → Caterm managed
+	/// snapshot → user config → optional per-host patch.
+	@discardableResult
+	public func applyConfig(
+		hostId: HostId? = nil,
+		userConfigPath: String? = ConfigStore.defaultPath.path
+	) -> [ConfigDiagnostic] {
+		let perHostPath = hostId.map { ConfigStore.perHostPatchPath(for: $0).path }
+		let cfg: ghostty_config_t
+		do {
+			cfg = try GhosttyConfigLoader.make(
+				catermConfigPath: userConfigPath,
+				perHostConfigPath: perHostPath
+			)
+		} catch {
+			return [ConfigDiagnostic(message: "Ghostty surface config reload failed: \(error)")]
 		}
-		ghostty_config_load_file(cfg, path.path)
-		ghostty_config_finalize(cfg)
+		let diagnostics = ConfigDiagnostic.collect(from: cfg)
 		ghostty_surface_update_config(raw, cfg)
 		ghostty_config_free(cfg)
+		return diagnostics
 	}
 
 	public func setContentScale(_ scale: CGFloat) {

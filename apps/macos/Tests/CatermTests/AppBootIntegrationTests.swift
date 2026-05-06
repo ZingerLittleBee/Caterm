@@ -90,6 +90,60 @@ final class AppBootIntegrationTests: XCTestCase {
 		               "fontSize is a live field so flush should publish .globalLive")
 	}
 
+	func testGlobalLiveSettingsChangeReloadsActiveSurfaces() throws {
+		let dir = try makeTempDir()
+		defer { try? FileManager.default.removeItem(at: dir) }
+		let plist = dir.appendingPathComponent("settings.plist")
+		let settingsStore = try SettingsStore.load(from: plist)
+		let tabId = UUID()
+		var appReloadCount = 0
+		var reloadedTabs: [UUID] = []
+		let coordinator = LiveReloadCoordinator(
+			settingsStore: settingsStore,
+			activeSurfaceTabIds: { [tabId] },
+			reloadApp: { appReloadCount += 1 },
+			reloadSurface: { id in reloadedTabs.append(id) },
+			renderManagedSnapshot: { _ in },
+			buildConfig: { [] }
+		)
+
+		settingsStore.update { settings in
+			settings.global.fontSize = (settings.global.fontSize ?? 13) + 1
+		}
+		settingsStore.flushNow()
+		_ = coordinator
+
+		XCTAssertEqual(appReloadCount, 1)
+		XCTAssertEqual(reloadedTabs, [tabId])
+	}
+
+	func testNewSurfaceOnlySettingsChangeReloadsAppWithoutReloadingSurfaces() throws {
+		let dir = try makeTempDir()
+		defer { try? FileManager.default.removeItem(at: dir) }
+		let plist = dir.appendingPathComponent("settings.plist")
+		let settingsStore = try SettingsStore.load(from: plist)
+		let tabId = UUID()
+		var appReloadCount = 0
+		var reloadedTabs: [UUID] = []
+		let coordinator = LiveReloadCoordinator(
+			settingsStore: settingsStore,
+			activeSurfaceTabIds: { [tabId] },
+			reloadApp: { appReloadCount += 1 },
+			reloadSurface: { id in reloadedTabs.append(id) },
+			renderManagedSnapshot: { _ in },
+			buildConfig: { [] }
+		)
+
+		settingsStore.update { settings in
+			settings.global.scrollbackBytes = 50_000_000
+		}
+		settingsStore.flushNow()
+		_ = coordinator
+
+		XCTAssertEqual(appReloadCount, 1)
+		XCTAssertEqual(reloadedTabs, [])
+	}
+
 	// MARK: - Blocker 3: openTab registers with ControlMasterManager
 
 	func testOpenTabRegistersHostIdAndDestinationWithControlMaster() throws {

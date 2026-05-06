@@ -23,6 +23,22 @@ final class ConfigStoreSnapshotTests: XCTestCase {
         XCTAssertEqual(mtime1, mtime2)
     }
 
+    func testEnsureManagedSnapshotExistsDoesNotOverwriteRenderedSettings() throws {
+        let tmp = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let target = tmp.appendingPathComponent("managed.config")
+        var settings = PartialSettings()
+        settings.fontSize = 19
+        settings.theme = "Dracula"
+        try ConfigStore.renderManagedSnapshot(from: settings, to: target)
+
+        try ConfigStore.ensureManagedSnapshotExists(at: target)
+
+        let contents = try String(contentsOf: target, encoding: .utf8)
+        XCTAssertTrue(contents.contains("font-size = 19"))
+        XCTAssertTrue(contents.contains("theme = Dracula"))
+    }
+
     func testPerHostPatchPathInApplicationSupport() {
         let url = ConfigStore.perHostPatchPath(for: HostId("abc-123"))
         XCTAssertTrue(url.path.contains("/Application Support/Caterm/per-host/abc-123.config"))
