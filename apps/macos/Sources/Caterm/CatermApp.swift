@@ -383,6 +383,22 @@ struct CatermApp: App {
 				Link("Caterm Documentation",
 				     destination: URL(string: "https://github.com/ZingerLittleBee/Caterm")!)
 			}
+			#if DEBUG
+			// Debug menu — only present in DEBUG builds. Exists so UI
+			// automation has a top-level menu item it can reliably hit
+			// (AX-stable) instead of fighting SwiftUI List row gestures.
+			// Posts a notification that `HostListSidebar` picks up and
+			// feeds through the real `connect(_:)` path, so the resulting
+			// behavior is identical to a sidebar double-click.
+			CommandMenu("Debug") {
+				Button("Open Tab for First Host") {
+					NotificationCenter.default.post(
+						name: .catermDebugOpenFirstHost, object: nil
+					)
+				}
+				.keyboardShortcut("o", modifiers: [.control, .option, .command])
+			}
+			#endif
 		}
 	}
 }

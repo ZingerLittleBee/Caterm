@@ -140,6 +140,13 @@ struct HostListSidebar: View {
 			.onReceive(NotificationCenter.default.publisher(for: .catermAddHost)) { _ in
 				showingAddSheet = true
 			}
+			#if DEBUG
+			.onReceive(NotificationCenter.default.publisher(for: .catermDebugOpenFirstHost)) { _ in
+				if let target = debugPickConnectTarget(in: store) {
+					connect(target)
+				}
+			}
+			#endif
 
 			Divider()
 			SyncStatusRow()
