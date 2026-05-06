@@ -106,6 +106,26 @@ public final class SnippetSyncStore: ObservableObject {
 		}
 	}
 
+	// MARK: - Force-full periodic timer
+
+	private var forceFullTimer: Task<Void, Never>?
+
+	public func startForceFullTimer() {
+		forceFullTimer?.cancel()
+		forceFullTimer = Task { @MainActor [weak self] in
+			while !Task.isCancelled {
+				try? await Task.sleep(for: .seconds(60 * 60))
+				guard !Task.isCancelled, let self else { return }
+				self.scheduleSyncPass(mode: .forceFull)
+			}
+		}
+	}
+
+	public func stopForceFullTimer() {
+		forceFullTimer?.cancel()
+		forceFullTimer = nil
+	}
+
 	private func applyBatch(_ batch: SnippetChangeBatch) async {
 		let ops: [SnippetSyncOperation]
 		switch batch.mode {

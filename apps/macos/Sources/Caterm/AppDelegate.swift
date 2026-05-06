@@ -1,9 +1,11 @@
 import AppKit
+import CloudKit
 import CloudKitSyncClient
 import FileTransferStore
 import os
 import Security
 import ServerSyncClient
+import SnippetSyncClient
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 	private var observer: NSObjectProtocol?
@@ -102,9 +104,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 	func application(_: NSApplication,
 	                 didReceiveRemoteNotification userInfo: [String: Any]) {
-		guard parsePushUserInfo(userInfo) else { return }
-		Self.pushLog.info("CloudKit Host push received → triggering sync")
-		NotificationCenter.default.post(name: .catermCloudKitHostChanged, object: nil)
+		guard let note = CKNotification(fromRemoteNotificationDictionary: userInfo) else { return }
+		switch note.subscriptionID {
+		case CloudKitPushNames.hostSubscriptionID:
+			Self.pushLog.info("CloudKit Host push received → triggering sync")
+			NotificationCenter.default.post(name: .catermCloudKitHostChanged, object: nil)
+		case CloudKitPushNames.snippetSubscriptionID:
+			Self.pushLog.info("CloudKit Snippet push received → triggering sync")
+			NotificationCenter.default.post(name: .catermCloudKitSnippetChanged, object: nil)
+		default:
+			break
+		}
 	}
 
 	func application(_: NSApplication,

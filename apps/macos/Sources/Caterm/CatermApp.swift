@@ -236,6 +236,7 @@ struct CatermApp: App {
 			}
 			.task {
 				snippetSync.scheduleSyncPass(mode: .incremental)
+				snippetSync.startForceFullTimer()
 			}
 			.task {
 				try? await cloudKitClient.ensureSnippetSubscription()
