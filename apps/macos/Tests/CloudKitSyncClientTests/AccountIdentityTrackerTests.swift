@@ -36,6 +36,7 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		)
 		await tracker.handleAccountChange(client: client)
 		XCTAssertTrue(client.didReset)
+		XCTAssertTrue(client.didResetSnippet)
 		XCTAssertEqual(defaults.string(forKey: "cloudkit.lastKnownUserRecordName"), "USER-A")
 	}
 
@@ -91,6 +92,8 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		XCTAssertEqual(outcome, .identityChanged)
 		XCTAssertTrue(client.didReset)
 		XCTAssertTrue(client.didResetSnippet)
+		XCTAssertTrue(client.didDeleteSubscription)
+		XCTAssertTrue(client.didDeleteSnippetSubscription)
 	}
 
 	// Test-only spy; per-test instance, never accessed concurrently.
