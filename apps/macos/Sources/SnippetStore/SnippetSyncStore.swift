@@ -3,7 +3,7 @@ import SnippetSyncClient
 import os
 
 @MainActor
-public final class SnippetSyncStore {
+public final class SnippetSyncStore: ObservableObject {
 	private static let log = Logger(subsystem: "com.caterm.app", category: "snippet-sync")
 	private let store: SnippetStore
 	private let client: any IncrementalSnippetSyncClient

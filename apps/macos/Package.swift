@@ -126,6 +126,8 @@ let package = Package(
                 "CredentialSync",
                 "CredentialSyncStore",
                 "SettingsSyncStore",
+                "SnippetStore",
+                "SnippetSyncClient",
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
