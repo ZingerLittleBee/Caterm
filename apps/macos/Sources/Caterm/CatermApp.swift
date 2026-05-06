@@ -31,6 +31,8 @@ struct CatermApp: App {
 	@StateObject var remoteBookmarks: RemoteBookmarkStore
 	@StateObject private var credentialSync: CredentialSyncPreferencesStore
 	@StateObject var surfaceRegistry: SurfaceRegistry = SurfaceRegistry()
+	@StateObject private var snippetStore: SnippetStore
+	@StateObject private var snippetSync: SnippetSyncStore
 
 	/// Holds the live-reload dispatcher and its NotificationCenter
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
@@ -145,6 +147,16 @@ struct CatermApp: App {
 			.appendingPathComponent("Caterm", isDirectory: true)
 			.appendingPathComponent("RemoteBookmarks", isDirectory: true)
 		_remoteBookmarks = StateObject(wrappedValue: RemoteBookmarkStore(directory: bookmarksDir))
+		// Snippet store: JSON files under Application Support/Caterm/Snippets/.
+		// Loaded eagerly so the palette and editor have data on first launch.
+		let snippetsDir = FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("Caterm", isDirectory: true)
+		let snippetStoreInstance = SnippetStore(directory: snippetsDir)
+		try? snippetStoreInstance.load()
+		_snippetStore = StateObject(wrappedValue: snippetStoreInstance)
+		let snippetSyncInstance = SnippetSyncStore(store: snippetStoreInstance, client: client)
+		_snippetSync = StateObject(wrappedValue: snippetSyncInstance)
 		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
 			controlPathFor: { hostId in
 				cmDir.appendingPathComponent("\(hostId.uuidString).sock")
@@ -210,6 +222,8 @@ struct CatermApp: App {
 			.environmentObject(settingsStore)
 			.environmentObject(remoteBookmarks)
 			.environmentObject(surfaceRegistry)
+			.environmentObject(snippetStore)
+			.environmentObject(snippetSync)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -219,6 +233,16 @@ struct CatermApp: App {
 			.task { syncStore.syncIfSignedIn() }
 			.task {
 				try? await cloudKitClient.ensureHostSubscription()
+			}
+			.task {
+				snippetSync.scheduleSyncPass(mode: .incremental)
+			}
+			.task {
+				try? await cloudKitClient.ensureSnippetSubscription()
+			}
+			.onReceive(NotificationCenter.default
+				.publisher(for: .catermCloudKitSnippetChanged)) { _ in
+				snippetSync.scheduleSyncPass(mode: .incremental)
 			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermICloudAccountChanged)) { _ in
@@ -230,6 +254,8 @@ struct CatermApp: App {
 					let outcome = await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
 					if outcome == .identityChanged {
 						await credentialSyncAccountReset.resetForAccountChange()
+						try? snippetStore.wipeLocal()
+						snippetSync.scheduleSyncPass(mode: .forceFull)
 					}
 				}
 			}

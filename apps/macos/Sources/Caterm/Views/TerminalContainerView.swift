@@ -1,5 +1,7 @@
 import HostSyncStore
 import SessionStore
+import SnippetStore
+import SnippetSyncClient
 import SwiftUI
 import TerminalEngine
 
@@ -11,15 +13,42 @@ import TerminalEngine
 /// off a fresh ssh subprocess.
 struct TerminalContainerView: View {
 	@EnvironmentObject var store: SessionStore
+	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
+	@EnvironmentObject var snippetStore: SnippetStore
+	@State private var showingPalette = false
 	let tabId: UUID
 
 	var body: some View {
-		ZStack {
-			if let tab = store.tabs.first(where: { $0.id == tabId }) {
-				TerminalSurfaceRepresentable(tabId: tabId)
-					.id("\(tabId)-\(tab.surfaceGeneration)")
-				if case let .reconnecting(attempt, nextRetryAt) = tab.state {
-					ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
+		VStack(spacing: 0) {
+			HStack {
+				Spacer()
+				Button(action: { showingPalette.toggle() }) {
+					Image(systemName: "text.cursor")
+						.help("Snippets (⌘⇧P)")
+				}
+				.buttonStyle(.borderless)
+				.padding(.horizontal, 6)
+				.popover(isPresented: $showingPalette) {
+					SnippetPalette(
+						store: snippetStore,
+						capturedSurface: surfaceRegistry.surface(for: tabId) as (any SnippetDispatchTarget)?,
+						onClose: { showingPalette = false },
+						onCreate: {
+							showingPalette = false
+							NotificationCenter.default.post(name: .catermNewSnippet, object: nil)
+						}
+					)
+				}
+			}
+			.frame(height: 22)
+
+			ZStack {
+				if let tab = store.tabs.first(where: { $0.id == tabId }) {
+					TerminalSurfaceRepresentable(tabId: tabId)
+						.id("\(tabId)-\(tab.surfaceGeneration)")
+					if case let .reconnecting(attempt, nextRetryAt) = tab.state {
+						ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
+					}
 				}
 			}
 		}
