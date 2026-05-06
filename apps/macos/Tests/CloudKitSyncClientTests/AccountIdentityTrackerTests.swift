@@ -79,11 +79,29 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		XCTAssertNil(defaults.string(forKey: "cloudkit.lastKnownUserRecordName"))
 	}
 
+	func test_handleAccountChange_identityChange_resetsHostAndSnippet() async {
+		defaults.set("USER-A", forKey: "cloudkit.lastKnownUserRecordName")
+		let client = SpyClient()
+		let tracker = AccountIdentityTracker(
+			defaults: defaults,
+			currentUserRecordID: { CKRecord.ID(recordName: "USER-B") },
+			tokensExist: { true }
+		)
+		let outcome = await tracker.handleAccountChange(client: client)
+		XCTAssertEqual(outcome, .identityChanged)
+		XCTAssertTrue(client.didReset)
+		XCTAssertTrue(client.didResetSnippet)
+	}
+
 	// Test-only spy; per-test instance, never accessed concurrently.
 	private final class SpyClient: AccountSensitiveClient {
 		nonisolated(unsafe) var didReset = false
 		nonisolated(unsafe) var didDeleteSubscription = false
+		nonisolated(unsafe) var didResetSnippet = false
+		nonisolated(unsafe) var didDeleteSnippetSubscription = false
 		func resetHostSyncState() async { didReset = true }
 		func deleteHostSubscription() async throws { didDeleteSubscription = true }
+		func resetSnippetSyncState() async { didResetSnippet = true }
+		func deleteSnippetSubscription() async throws { didDeleteSnippetSubscription = true }
 	}
 }
