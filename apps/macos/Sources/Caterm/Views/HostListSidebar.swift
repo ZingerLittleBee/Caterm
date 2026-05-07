@@ -28,7 +28,6 @@ struct HostListSidebar: View {
 
 	private struct PendingFanoutDelete: Identifiable {
 		let host: SSHHost
-		let serverId: String
 		let dependents: [SSHHost]
 		var id: UUID { host.id }
 	}
@@ -222,16 +221,21 @@ struct HostListSidebar: View {
 	}
 
 	private func deleteHost(_ host: SSHHost) {
-		let dependents = store.hosts.filter {
-			$0.id != host.id && $0.jumpHostServerId == host.serverId
-		}
-		if !dependents.isEmpty, let serverId = host.serverId {
-			pendingFanoutDelete = PendingFanoutDelete(
-				host: host, serverId: serverId, dependents: dependents)
+		// Never-synced hosts have no serverId, so no other host can chain through them.
+		guard let serverId = host.serverId else {
+			do { try store.deleteHost(id: host.id) }
+			catch { errorMessage = error.localizedDescription }
 			return
 		}
-		do { try store.deleteHost(id: host.id) }
-		catch { errorMessage = error.localizedDescription }
+		let dependents = store.hosts.filter {
+			$0.id != host.id && $0.jumpHostServerId == serverId
+		}
+		if dependents.isEmpty {
+			do { try store.deleteHost(id: host.id) }
+			catch { errorMessage = error.localizedDescription }
+			return
+		}
+		pendingFanoutDelete = PendingFanoutDelete(host: host, dependents: dependents)
 	}
 }
 
