@@ -17,7 +17,7 @@ public final class InMemorySSHConfigSink: SSHConfigSink, @unchecked Sendable {
 	public private(set) var cleanups: [URL] = []
 	public init() {}
 	public func write(_ config: String) throws -> URL {
-		let url = URL(string: "tmpfs://\(writes.count)")!
+		let url = URL(string: "tmpfs:///\(writes.count)")!
 		writes.append((url, config))
 		return url
 	}

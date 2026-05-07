@@ -53,6 +53,12 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 		// Command uses the target alias.
 		XCTAssertTrue(out.command.contains(
 			"caterm-h-\(target.id.uuidString)"))
+		// Full command shape: -F '<configPath>' caterm-h-<target-uuid>
+		// configURL.path returns "/0" (non-empty due to triple-slash tmpfs:///0),
+		// which ShellQuote.posix wraps in single quotes in the emitted command.
+		let expectedFlag = "-F \(ShellQuote.posix(out.configURL!.path)) caterm-h-\(target.id.uuidString)"
+		XCTAssertTrue(out.command.contains(expectedFlag),
+		              "expected command to contain '\(expectedFlag)', got: \(out.command)")
 	}
 
 	func testMultiHopConfigHasProxyJumpExceptOnDeepest() throws {
@@ -128,6 +134,32 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 			XCTAssertEqual(error as? SSHConfigQuoteError, .controlCharacter)
 		}
 		XCTAssertTrue(sink.writes.isEmpty)
+	}
+
+	func testCATERMChainEnvHasSortedJSONKeys() throws {
+		let bastion = host("bastion", "rh-bastion",
+			cred: .keyFile(keyPath: "/k", hasPassphrase: false))
+		let target = host("target", "rh-target", jump: "rh-bastion")
+		let sink = InMemorySSHConfigSink()
+		let out = try SSHCommandBuilder.build(
+			host: target, ancestors: [bastion],
+			configSink: sink,
+			askpassPath: "/usr/local/bin/caterm-askpass",
+			knownHostsCaterm: "/k1", knownHostsUser: "/k2",
+			installTerminfo: false, sshPath: "/usr/bin/ssh",
+			terminfoDump: nil
+		)
+		guard let json = out.env.first(where: { $0.0 == "CATERM_CHAIN" })?.1
+		else { return XCTFail("no CATERM_CHAIN") }
+		// With .sortedKeys, the first hop's first key is "alias",
+		// because alphabetically "alias" < "hostId" < "hostname" < "keyPath" < "port" < "user".
+		XCTAssertTrue(json.contains("\"alias\""), "json must contain alias key")
+		// Heuristic: the literal `"alias":` must appear before `"hostId":` for
+		// every entry, demonstrating .sortedKeys is in effect.
+		let aliasIdx = json.range(of: "\"alias\"")!.lowerBound
+		let hostIdIdx = json.range(of: "\"hostId\"")!.lowerBound
+		XCTAssertLessThan(aliasIdx, hostIdIdx,
+			"with .sortedKeys, 'alias' must come before 'hostId' alphabetically; json=\(json)")
 	}
 
 	private func blockFor(_ alias: String, in config: String) -> String {

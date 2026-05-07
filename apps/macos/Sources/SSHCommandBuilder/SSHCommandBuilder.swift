@@ -384,7 +384,7 @@ public enum SSHCommandBuilder {
 			}
 			chainEntries.append(entry)
 		}
-		let chainData = try JSONSerialization.data(withJSONObject: chainEntries)
+		let chainData = try JSONSerialization.data(withJSONObject: chainEntries, options: [.sortedKeys])
 		let chainJSON = String(data: chainData, encoding: .utf8) ?? "[]"
 		env.append(("CATERM_CHAIN", chainJSON))
 
