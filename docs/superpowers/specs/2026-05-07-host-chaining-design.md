@@ -219,23 +219,35 @@ can clean it up. Three changes:
 
 (a) The internal "per-host options" generator is **factored out** so
 the chain code path uses the exact same set of options the direct
-path uses today (`UserKnownHostsFile`, `StrictHostKeyChecking`,
-`PreferredAuthentications`, `PubkeyAuthentication=no`,
-`PasswordAuthentication=no`, `KbdInteractiveAuthentication=no`,
-`IdentitiesOnly=yes`, `IdentityFile`, `BatchMode=yes`,
-`ControlMaster=auto`, `ControlPersist=10m`,
-`ControlPath ~/Library/Caches/Caterm/cm/<host-id>.sock`,
-`ServerAliveInterval`, terminfo wrapper). Each `Host` block in the
-generated config is the moral equivalent of "what we'd build on the
-command line for that host alone".
+path uses today (verified against `SSHCommandBuilder.swift:63-106`):
+
+- Always: `StrictHostKeyChecking=accept-new`, `UserKnownHostsFile=<caterm> <user>`,
+  `ControlMaster=auto`, `ControlPersist=10m`,
+  `ControlPath=~/Library/Caches/Caterm/cm/<host-id>.sock`.
+- `.password` only: `PreferredAuthentications=password,keyboard-interactive`,
+  `PubkeyAuthentication=no`, `NumberOfPasswordPrompts=1`.
+- `.keyFile` only: `IdentitiesOnly=yes`,
+  `PreferredAuthentications=publickey`, `PasswordAuthentication=no`,
+  `KbdInteractiveAuthentication=no`, `IdentityFile=<keyPath>`.
+- `.agent` only: `BatchMode=yes`.
+
+Each `Host` block in the generated config is the moral equivalent of
+"what we'd build on the command line for that host alone". `IdentityFile`
+is rendered via the ssh_config option line (no need for a separate `-i`
+flag at the chain command line). `ServerAliveInterval` is **not** added
+in either path — direct doesn't set it today and v1 keeps parity. The
+terminfo wrapper still wraps the outer command (it runs once for the
+session, not per hop).
 
 ```swift
 internal struct PerHostOptions {
-    let hostName: String
+    let hostName: String          // raw — encoded by SSHConfigQuote at emit time
     let port: Int
-    let user: String
-    let lines: [String]    // "<key> <value>" — already escaped
-    let env: [(String, String)]   // SSH_ASKPASS / CATERM_HOST_ID etc — only for target
+    let user: String              // raw
+    let identityFile: String?     // raw, nil for password / agent
+    let optionLines: [String]     // each "<key> <value>" with both halves
+                                  // ALREADY encoded by SSHConfigQuote
+    let env: [(String, String)]   // SSH_ASKPASS / CATERM_HOST_ID — only for target
 }
 
 internal func perHostOptions(
@@ -245,6 +257,12 @@ internal func perHostOptions(
     accessGroup: String?
 ) -> PerHostOptions
 ```
+
+**Encoding rules — see §4.4.1 for the `SSHConfigQuote` helper.** ssh_config
+is *not* shell — `ShellQuote.posix` is the wrong tool here (it escapes for
+`/bin/sh -c`, not for `ssh -F`). Naively writing
+`HostName <hostname>` into the file is an injection vector if the
+hostname contains a newline.
 
 The direct (non-chain) path `build()` already calls a function with
 this shape implicitly; the refactor just lifts and names it.
@@ -304,6 +322,56 @@ public extension SSHCommandBuilder {
 `InMemorySSHConfigSink` (a test fake) records calls without touching
 the filesystem. Real implementation is `CatermSSHConfigSink` in
 `SessionStore` (sibling file of `SessionStore.swift`).
+
+### 4.4.1 `SSHConfigQuote` — ssh_config-specific escaping
+
+ssh_config is line-oriented: each `\n` (or `\r`) starts a new directive.
+A hostname like `bastion.example.com\nProxyCommand /tmp/evil` would
+inject a `ProxyCommand` directive into the generated config — a
+remote-code-execution-class bug, since ssh runs ProxyCommand as a
+shell command.
+
+We **must not** rely on shell quoting (`ShellQuote.posix` from the
+existing module): that escapes for `/bin/sh -c`, not for ssh's config
+parser. Characters like `\n` survive shell quoting unchanged.
+
+A new helper at
+`apps/macos/Sources/SSHCommandBuilder/SSHConfigQuote.swift`:
+
+```swift
+enum SSHConfigQuoteError: Error, Equatable {
+    /// Value contains a newline (\n) or carriage return (\r). ssh_config
+    /// is line-oriented; embedded line terminators would inject new
+    /// directives. We reject rather than escape.
+    case controlCharacter
+}
+
+enum SSHConfigQuote {
+    /// Encodes a value for safe inclusion as the right-hand side of an
+    /// ssh_config option line. Rules:
+    ///
+    /// - Reject if value contains \n, \r, or NUL (throw
+    ///   `.controlCharacter`).
+    /// - If value contains a space, double quote, or backslash:
+    ///   wrap in double quotes; inside, escape `\` → `\\` and
+    ///   `"` → `\"`. (OpenSSH ssh_config quoting rule.)
+    /// - Otherwise return the value unchanged.
+    static func encode(_ value: String) throws -> String
+}
+```
+
+Every value written into a generated ssh_config — `HostName`, `User`,
+`IdentityFile`, `UserKnownHostsFile` (the path pair),
+`ControlPath`, `ProxyJump`, anywhere — goes through
+`SSHConfigQuote.encode`. The chain alias name
+(`caterm-h-<uuid>`) is built from a constant prefix and a UUID
+string, so it never trips the encoder; it's encoded anyway for
+defense in depth.
+
+Tests cover: plain ASCII, value with space, value with double quote,
+value with backslash, value with both quote and backslash, empty
+string (allowed, encoded as `""`), value with `\n` / `\r` / NUL
+(throws), unicode (allowed, no special handling needed).
 
 ### 4.5 Chain-aware `caterm-askpass`
 
@@ -488,24 +556,115 @@ The state machine is **unchanged** — no new states, no per-hop
 substates. Aggregate `Connecting…` / `Authenticating…` /
 `Reconnecting…` covers chains transparently from the user's POV.
 
-### 4.10 CloudKit sync
+### 4.10 Sync — full wire model coverage
 
-`apps/macos/Sources/CloudKitSyncClient/CKRecordHostMapping.swift`:
+Caterm syncs hosts through **two** parallel paths today (the codebase
+is mid-migration from the custom server backend toward CloudKit; both
+are live). The `jumpHostServerId` field has to be carried by both —
+otherwise pushing from device A and pulling on device B drops the
+chain reference silently.
 
-- `Field` enum gains `case jumpHostServerId` mapped to record key
+The Swift call graph (verified against the current code):
+
+```
+LOCAL → SERVER (push)
+  SSHHost
+    → HostSyncStore.apply(.createRemote / .updateRemote)
+        constructs RemoteHostCreateInput / RemoteHostUpdateInput
+        client.createHost / client.updateHost  → server (oRPC)
+
+SERVER → LOCAL (pull)
+  RemoteHost (oRPC list response)
+    → HostSyncStore.apply(.createLocal / .updateLocal)
+        SessionStore.addRemoteHost(remote)
+        SessionStore.applyRemoteMetadata(localHostId, remote)
+
+CLOUDKIT side (independent of the above)
+  SSHHost ↔ CKRecordHostMapping ↔ CKRecord (CloudKit)
+```
+
+Concrete edits:
+
+**`apps/macos/Sources/ServerSyncClient/RemoteHost.swift`**:
+- `RemoteHost`: add `let jumpHostServerId: String?`. Codable
+  synthesized; nil-decodes when key absent.
+- `RemoteHostCreateInput`: add `let jumpHostServerId: String?` and
+  the corresponding `init(... jumpHostServerId: String? = nil)`
+  parameter at the end.
+- `RemoteHostUpdateInput`: same treatment.
+
+**`apps/macos/Sources/HostSyncStore/HostSyncStore.swift`**:
+- Line ~624 (`.createRemote`): the `RemoteHostCreateInput` constructor
+  call gains `jumpHostServerId: host.jumpHostServerId`.
+- Line ~646 (`.updateRemote`): same for `RemoteHostUpdateInput`.
+
+**`apps/macos/Sources/SessionStore/SessionStore.swift`**:
+- `addRemoteHost(_:)`: when materializing a fresh local `SSHHost`
+  from `RemoteHost`, copy `jumpHostServerId` over.
+- `applyRemoteMetadata(localHostId:remote:)`: also copy
+  `jumpHostServerId` (it's metadata, not credential — same channel
+  as `name`/`hostname`/`port`/`username`).
+
+**`apps/macos/Sources/CloudKitSyncClient/CKRecordHostMapping.swift`**
+(unchanged from prior revision):
+- `Field` enum gains `case jumpHostServerId` mapped to key
   `"jumpHostServerId"`.
-- `makeRecord(_:)` writes `host.jumpHostServerId as String?` (nil
-  when no chain).
-- `applyMetadata(_:to:)` reads the key as `String?`, assigns to
-  `host.jumpHostServerId`. Missing key → unchanged
-  (decode-old-records compat).
-- `decode(_:)` adds the same parse step.
+- `makeRecord(_:)` writes `host.jumpHostServerId as String?`.
+- `applyMetadata(_:to:)` and `decode(_:)` both parse the key.
 
-Eventual consistency: a device may pull the target host before its
-referenced jump-host record arrives. The form / overlays render the
-referenced jump as `(deleted)` until the second pull lands and the
-hosts list rebuilds — no special-case sync logic needed; the rest of
-the system is already idempotent.
+**Backend dependency (NOT in apps/macos)**: the oRPC route
+`packages/api/src/routers/ssh-host.ts` and the Drizzle schema in
+`packages/db` need a `jumpHostServerId` column on the `sshHost` row.
+This is a separate (small) server-side commit that lands BEFORE the
+macOS plan tasks that exercise the wire path. The macOS plan's
+prerequisites section will call this out as a manual checklist item;
+the macOS Swift tests use mocked `RemoteHost`/clients and don't
+require the server to be live.
+
+**Eventual consistency**: a device may pull the target host before
+its referenced jump-host record arrives (either via the server pull
+or the CloudKit fetch). The form / overlays render the referenced
+jump as `(deleted)` until the second record lands and the hosts list
+rebuilds — no special-case sync logic needed; the rest of the
+system is already idempotent.
+
+### 4.11 Package layout — `CatermAskpassCore` library target
+
+`CatermAskpass` is an executable SPM target (it has a `main.swift`).
+SPM does not allow `@testable import` of executable targets, so the
+`resolveAskpassPrompt` helper cannot live alongside `main.swift` if
+we want to unit-test it.
+
+We add a small library target `CatermAskpassCore` that holds the
+pure helpers; both the executable and the test target depend on it:
+
+```
+apps/macos/Sources/CatermAskpassCore/   (NEW library target)
+    ChainResolver.swift                 (resolveAskpassPrompt + AskpassChainEntry)
+
+apps/macos/Sources/CatermAskpass/       (EXISTING executable target)
+    main.swift                          (imports CatermAskpassCore;
+                                         delegates parsing/lookup to it)
+
+apps/macos/Tests/CatermAskpassCoreTests/  (NEW test target)
+    ChainResolverTests.swift
+```
+
+`Package.swift` gains:
+```swift
+.target(
+    name: "CatermAskpassCore",
+    path: "Sources/CatermAskpassCore"
+),
+.testTarget(
+    name: "CatermAskpassCoreTests",
+    dependencies: ["CatermAskpassCore"],
+    path: "Tests/CatermAskpassCoreTests"
+),
+```
+
+The existing `.executableTarget(name: "CatermAskpass", ...)` gains
+`"CatermAskpassCore"` in its `dependencies` array.
 
 ## 5. Testing
 
@@ -526,6 +685,12 @@ the system is already idempotent.
   absolute path, passphrase prompt with `~/...` path (must NOT
   match — ssh always resolves these), unknown prompt format, empty
   chain.
+- **`SSHConfigQuote.encode(_:)`** — plain ASCII (no quoting), value
+  with space (wrapped in `"..."`), value with double quote (escaped
+  to `\"`), value with backslash (escaped to `\\`), value with both
+  (`\\` and `\"` in correct order), empty string (yields `""`),
+  unicode (passes through), `\n` / `\r` / NUL (throws
+  `.controlCharacter`).
 - **`SSHCommandBuilder.perHostOptions(...)`** — covers each of the
   three credential kinds; output options match what `build()` used
   to inline-emit before the refactor (golden snapshots of the
@@ -538,7 +703,19 @@ the system is already idempotent.
   jumps keyFile, target keyFile-with-passphrase + jumps password).
   Asserts: alias names = `caterm-h-<uuid>`; `CATERM_CHAIN` env
   contains every chain host; `Output.configURL` non-nil; ControlPath
-  uses `cm/<host-id>.sock` matching the existing convention.
+  uses `cm/<host-id>.sock` matching the existing convention; values
+  containing `\n` (e.g., a malicious hostname) cause `build()` to
+  throw `SSHConfigQuoteError.controlCharacter` rather than emit
+  attacker-controlled directives.
+- **`RemoteHost` / `RemoteHostCreateInput` / `RemoteHostUpdateInput`
+  Codable round-trips** — `jumpHostServerId` non-nil and nil
+  encode/decode; old-payload decode (key absent) decodes to nil.
+- **`SessionStore.addRemoteHost(_:)`** — pushing a `RemoteHost` with
+  non-nil `jumpHostServerId` materializes a local `SSHHost` whose
+  `jumpHostServerId` matches.
+- **`SessionStore.applyRemoteMetadata(localHostId:remote:)`** —
+  changing `remote.jumpHostServerId` updates the corresponding
+  field on the local host.
 - **CloudKit `CKRecordHostMapping` round-trip** — encode + decode
   for `jumpHostServerId`-nil and -non-nil hosts; old-record decode
   (no field present) yields nil.
@@ -601,30 +778,44 @@ until they configure one.
 
 Order of changes inside the PR (matches plan task order):
 
+0. **Prerequisite (server-side, separate commit)**: add
+   `jumpHostServerId` column to the `sshHost` table in `packages/db`
+   (Drizzle migration) and surface it in
+   `packages/api/src/routers/ssh-host.ts` (output schema +
+   create/update inputs). This commit lands BEFORE any macOS commit
+   that actually pushes a `RemoteHostCreateInput` with the field.
+   The macOS Swift tests run with mocked clients so they don't
+   require the server change to be live.
 1. **Prerequisite fix**: standardize on `keyPassphrase`. One-line
    env value change in `SSHCommandBuilder`; validation update in
    `CatermAskpass`. No Keychain account migration is needed because
    `SessionStore.setHostCredentialMaterial` already writes
    `.keyPassphrase`.
-2. Data model — `SSHHost.jumpHostServerId`, Codable + CloudKit
-   field.
-3. Pure helpers — `resolvedChain`, `firstHopAddress`, cycle filter,
-   `resolveAskpassPrompt`. All unit-tested.
-4. SSHCommandBuilder refactor — extract `perHostOptions`, no
+2. Data model — `SSHHost.jumpHostServerId`, Codable.
+3. Wire model — `RemoteHost` / `RemoteHostCreateInput` /
+   `RemoteHostUpdateInput` gain `jumpHostServerId`; `HostSyncStore`
+   threads it into the create/update calls; `SessionStore.addRemoteHost`
+   and `applyRemoteMetadata` propagate it on pull.
+4. CloudKit mapping — `CKRecordHostMapping` gains the field.
+5. Pure helpers — `resolvedChain`, `firstHopAddress`, cycle filter,
+   `SSHConfigQuote`, `resolveAskpassPrompt`. All unit-tested.
+6. `CatermAskpassCore` library target + Package.swift wiring.
+7. SSHCommandBuilder refactor — extract `perHostOptions`, no
    behavior change; followed by the chain config emission +
    `Output.configURL`.
-5. caterm-askpass — chain-aware mode.
-6. SessionStore — `Tab.resolvedChain`, `Tab.sshConfigURL`,
+8. caterm-askpass — chain-aware mode (depends on
+   `CatermAskpassCore`).
+9. SessionStore — `Tab.resolvedChain`, `Tab.sshConfigURL`,
    openTab early-fail (broken chain + missing credential), runConnection
    firstHop preflight, closeTab + markChildExited cleanup.
-7. CatermSSHConfigSink concrete impl in `SessionStore` module.
-8. HostFormView — Via picker + cycle filter + chain preview +
-   `isValid` update.
-9. HostListSidebar — chain icon + fan-out delete alert.
-10. Overlays — chain caption in three overlays.
-11. EndToEndSSHTests chain cases.
-12. Manual checklist.
-13. Final lint + smoke.
+10. `CatermSSHConfigSink` concrete impl in `SessionStore` module.
+11. HostFormView — Via picker + cycle filter + chain preview +
+    `isValid` update.
+12. HostListSidebar — chain icon + fan-out delete alert.
+13. Overlays — chain caption in three overlays.
+14. EndToEndSSHTests chain cases.
+15. Manual checklist.
+16. Final lint + smoke.
 
 No data migrations; old hosts simply have `jumpHostServerId == nil`
 and take the existing code path.
@@ -640,23 +831,28 @@ above.
 ## Appendix A — files touched
 
 ```
-NEW:
+NEW (apps/macos):
 apps/macos/Sources/SSHCommandBuilder/Chain.swift                 // resolvedChain, firstHopAddress, ChainResolutionError
 apps/macos/Sources/SSHCommandBuilder/HostFormCycleFilter.swift   // pure helper
+apps/macos/Sources/SSHCommandBuilder/SSHConfigQuote.swift        // ssh_config-safe value escaping
 apps/macos/Sources/SSHCommandBuilder/SSHConfigSink.swift         // protocol
 apps/macos/Sources/SessionStore/CatermSSHConfigSink.swift        // real impl + cleanup
-apps/macos/Sources/CatermAskpass/ChainResolver.swift             // resolveAskpassPrompt + AskpassChainEntry
+apps/macos/Sources/CatermAskpassCore/ChainResolver.swift         // resolveAskpassPrompt + AskpassChainEntry
 apps/macos/Tests/SSHCommandBuilderTests/ChainTests.swift
+apps/macos/Tests/SSHCommandBuilderTests/SSHConfigQuoteTests.swift
 apps/macos/Tests/SSHCommandBuilderTests/SSHCommandBuilderChainTests.swift
-apps/macos/Tests/CatermAskpassTests/ChainResolverTests.swift
+apps/macos/Tests/CatermAskpassCoreTests/ChainResolverTests.swift
 apps/macos/Tests/SessionStoreTests/SessionStoreChainTests.swift
 apps/macos/Manual/host-chaining-checklist.md
 
-MODIFY:
+MODIFY (apps/macos):
+apps/macos/Package.swift                                         // + CatermAskpassCore target & test target
 apps/macos/Sources/SSHCommandBuilder/Host.swift                  // + jumpHostServerId
-apps/macos/Sources/SSHCommandBuilder/SSHCommandBuilder.swift     // perHostOptions extraction; chain config emission; CATERM_ASKPASS_KIND=keyPassphrase
-apps/macos/Sources/CatermAskpass/main.swift                      // CATERM_CHAIN parse; accept kind=keyPassphrase
-apps/macos/Sources/SessionStore/SessionStore.swift               // Tab.resolvedChain, Tab.sshConfigURL, openTab precheck, runConnection, closeTab, markChildExited
+apps/macos/Sources/SSHCommandBuilder/SSHCommandBuilder.swift     // perHostOptions extraction; chain config emission; CATERM_ASKPASS_KIND=keyPassphrase; SSHConfigQuote at every value site
+apps/macos/Sources/CatermAskpass/main.swift                      // CATERM_CHAIN parse; accept kind=keyPassphrase; depend on CatermAskpassCore
+apps/macos/Sources/ServerSyncClient/RemoteHost.swift             // + jumpHostServerId on RemoteHost / RemoteHostCreateInput / RemoteHostUpdateInput
+apps/macos/Sources/HostSyncStore/HostSyncStore.swift             // thread jumpHostServerId through createRemote / updateRemote
+apps/macos/Sources/SessionStore/SessionStore.swift               // addRemoteHost / applyRemoteMetadata propagate field; Tab.resolvedChain, Tab.sshConfigURL; openTab precheck; runConnection; closeTab; markChildExited
 apps/macos/Sources/CloudKitSyncClient/CKRecordHostMapping.swift  // + jumpHostServerId field
 apps/macos/Sources/Caterm/Views/HostFormView.swift               // Via picker, preview, isValid
 apps/macos/Sources/Caterm/Views/HostListSidebar.swift            // chain icon, fan-out alert
@@ -664,4 +860,8 @@ apps/macos/Sources/Caterm/Views/ConnectingOverlay.swift          // chain captio
 apps/macos/Sources/Caterm/Views/FailureOverlay.swift             // chain caption
 apps/macos/Sources/Caterm/Views/ReconnectOverlay.swift           // chain caption
 apps/macos/Tests/SessionStoreTests/EndToEndSSHTests.swift        // chain integration cases
+
+MODIFY (server-side, separate commit, prerequisite):
+packages/db/<schema files>                                       // + jumpHostServerId column on sshHost
+packages/api/src/routers/ssh-host.ts                             // + jumpHostServerId in input/output schemas
 ```
