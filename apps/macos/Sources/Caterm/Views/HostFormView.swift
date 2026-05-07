@@ -27,22 +27,6 @@ struct HostFormView: View {
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
 
-	enum CredKind: CaseIterable, Identifiable {
-		case password
-		case keyFile
-		case agent
-
-		var id: Self { self }
-
-		var displayName: String {
-			switch self {
-			case .password: "Password"
-			case .keyFile: "Key File"
-			case .agent: "Agent"
-			}
-		}
-	}
-
 	var body: some View {
 		VStack(spacing: 0) {
 			Form {
@@ -70,7 +54,14 @@ struct HostFormView: View {
 					.pickerStyle(.segmented)
 					.labelsHidden()
 
-					authDetails
+					AuthMethodFields(
+						credKind: $credKind,
+						keyPath: $keyPath,
+						hasPassphrase: $hasPassphrase,
+						pendingSecret: $pendingSecret,
+						onBrowse: browseKey
+					)
+					.frame(minHeight: 96, alignment: .top)
 				}
 
 				// Theme override only makes sense for an existing host —
@@ -100,45 +91,6 @@ struct HostFormView: View {
 		}
 		.frame(width: 520, height: 460)
 		.onAppear { populate() }
-	}
-
-	/// Variable-content area for the chosen credential method. Reserves a
-	/// consistent minimum height across all variants so that switching
-	/// methods doesn't shift the buttons or other sections.
-	@ViewBuilder
-	private var authDetails: some View {
-		VStack(alignment: .leading, spacing: 8) {
-			switch credKind {
-			case .password:
-				SecureField("Password", text: $pendingSecret)
-					.textContentType(.password)
-				footnote("Stored in Keychain.")
-			case .keyFile:
-				HStack {
-					TextField("Private key path", text: $keyPath)
-					Button("Browse…") { browseKey() }
-				}
-				Toggle("Key has passphrase", isOn: $hasPassphrase)
-				if hasPassphrase {
-					SecureField("Passphrase", text: $pendingSecret)
-						.textContentType(.password)
-				}
-				footnote(
-					hasPassphrase
-						? "Path stored locally; passphrase stored in Keychain."
-						: "Path stored locally."
-				)
-			case .agent:
-				footnote("Caterm will use the running ssh-agent for authentication.")
-			}
-		}
-		.frame(minHeight: 96, alignment: .top)
-	}
-
-	private func footnote(_ text: String) -> some View {
-		Text(text)
-			.font(.caption)
-			.foregroundStyle(.secondary)
 	}
 
 	private var isValid: Bool {
