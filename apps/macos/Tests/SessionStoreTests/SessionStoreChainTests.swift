@@ -95,6 +95,36 @@ final class SessionStoreChainTests: XCTestCase {
 		              "surfaceConfig env must contain CATERM_CHAIN")
 	}
 
+	func testSurfaceConfigForChainedTabRespectsInstallTerminfoFromBuild() throws {
+		// Pin the I-1 regression: installTerminfo=true on chain build must
+		// produce a command with terminfo wrapping (e.g., contains TERM=xterm-ghostty).
+		let bastion = host("bastion", "rh-bastion")
+		let target = host("target", "rh-target", jump: "rh-bastion")
+		let sink = InMemorySSHConfigSink()
+		let store = SessionStore.makeForTest(
+			hosts: [bastion, target],
+			credentialsAvailableFor: [bastion.id, target.id],
+			configSink: sink
+		)
+		let tabId = store.openTab(host: target)
+		// Synthesize a chain build with installTerminfo=true.
+		store.populateChainOutputForTest(tabId: tabId, installTerminfo: true)
+
+		let cfg = store.surfaceConfig(for: tabId)
+		XCTAssertNotNil(cfg)
+		// Terminfo wrapping is identifiable by `TERM=xterm-ghostty` in the env.
+		XCTAssertTrue(cfg!.env.contains(where: { $0.0 == "TERM" && $0.1 == "xterm-ghostty" }),
+		              "chained tab with installTerminfo=true must have TERM=xterm-ghostty env; got: \(cfg!.env)")
+		// The command must contain the `-t` flag (PTY allocation) that the
+		// terminfo install wrapper requires, confirming wrapping is active.
+		XCTAssertTrue(cfg!.command.contains(" -t "),
+		              "chained tab with installTerminfo=true must have -t flag in command; got: \(cfg!.command)")
+		// The command must also contain the infocmp check that is the outer
+		// guard of the install wrapper.
+		XCTAssertTrue(cfg!.command.contains("infocmp xterm-ghostty"),
+		              "chained tab with installTerminfo=true must have terminfo wrap in command; got: \(cfg!.command)")
+	}
+
 	func testRetryTabCleansOldSshConfigURL() throws {
 		// Pin the regression: retryTab must clean the prior sshConfigURL before
 		// starting a fresh connection, otherwise the old temp file is leaked.

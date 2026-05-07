@@ -268,6 +268,12 @@ public enum SSHCommandBuilder {
 	/// When `ancestors` is non-empty, writes a per-session ssh_config snippet
 	/// via `configSink` and returns an `Output` whose `configURL` identifies
 	/// the written file for later cleanup.
+	///
+	/// `terminfoDump` is an optional test seam. When `nil` (the default),
+	/// the bundled resource is resolved via `TerminfoSource` — matching the
+	/// behaviour of the direct-path `build(host:askpassPath:…)` overload.
+	/// Pass a non-nil string (including an empty string sentinel) explicitly
+	/// in tests to control what dump content is used.
 	public static func build(
 		host: SSHHost,
 		ancestors: [SSHHost] = [],
@@ -279,6 +285,10 @@ public enum SSHCommandBuilder {
 		sshPath: String = "/usr/bin/ssh",
 		terminfoDump: String? = nil
 	) throws -> Output {
+		// Resolve the terminfo dump from the bundle when not supplied by the
+		// caller. This mirrors the direct-path build overload which always
+		// calls TerminfoSource.terminfoDump() internally.
+		let resolvedDump: String? = terminfoDump ?? TerminfoSource.terminfoDump()
 		if ancestors.isEmpty {
 			return _build(
 				host: host,
@@ -287,7 +297,7 @@ public enum SSHCommandBuilder {
 				knownHostsUser: knownHostsUser,
 				installTerminfo: installTerminfo,
 				sshPath: sshPath,
-				terminfoDump: terminfoDump
+				terminfoDump: resolvedDump
 			)
 		}
 		return try buildChain(
@@ -299,7 +309,7 @@ public enum SSHCommandBuilder {
 			knownHostsUser: knownHostsUser,
 			installTerminfo: installTerminfo,
 			sshPath: sshPath,
-			terminfoDump: terminfoDump
+			terminfoDump: resolvedDump
 		)
 	}
 

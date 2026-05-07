@@ -215,7 +215,8 @@ struct HostListSidebar: View {
 		case .promptCredentials:
 			pendingCredentialHost = host
 		case .openTab:
-			let tabId = store.openTab(host: host)
+			let tabId = store.openTab(host: host,
+			                          installTerminfo: preferences.installTerminfoEnabled)
 			onOpenTab(tabId)
 		}
 	}

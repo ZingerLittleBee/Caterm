@@ -47,6 +47,10 @@ public final class SessionStore: ObservableObject {
         /// and the build succeeded. `surfaceConfig` returns its (command, env)
         /// directly so the chain feature works end-to-end.
         public var chainOutput: SSHCommandBuilder.Output? = nil
+        /// Whether to install terminfo on connect (v1.6 feature). Snapshotted
+        /// at `openTab` time so `runConnection` passes the correct value to
+        /// `SSHCommandBuilder.build` when building chain commands.
+        public var installTerminfo: Bool = false
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
@@ -60,11 +64,12 @@ public final class SessionStore: ObservableObject {
             self.state = .failed(kind)
         }
         /// Convenience initialiser for happy-path tabs that carry a pre-resolved chain.
-        init(id: UUID, host: SSHHost, resolvedChain: [SSHHost]) {
+        init(id: UUID, host: SSHHost, resolvedChain: [SSHHost], installTerminfo: Bool = false) {
             self.id = id
             self.host = host
             self.state = .idle
             self.resolvedChain = resolvedChain
+            self.installTerminfo = installTerminfo
         }
     }
 
@@ -181,7 +186,7 @@ public final class SessionStore: ObservableObject {
     // MARK: - Tabs
 
     @discardableResult
-    public func openTab(host: SSHHost) -> UUID {
+    public func openTab(host: SSHHost, installTerminfo: Bool = false) -> UUID {
         // 1. Resolve the jump-host chain. Fail-fast if broken or cyclic.
         let chain: [SSHHost]
         do {
@@ -226,7 +231,8 @@ public final class SessionStore: ObservableObject {
         let destination = "\(host.username)@\(host.hostname)"
         controlMasterManager?.register(hostId: host.id, destination: destination)
         let id = UUID()
-        tabs.append(Tab(id: id, host: host, resolvedChain: chain))
+        tabs.append(Tab(id: id, host: host, resolvedChain: chain,
+                        installTerminfo: installTerminfo))
         startConnection(tabId: id)
         return id
     }
@@ -376,7 +382,8 @@ public final class SessionStore: ObservableObject {
 							configSink: self.configSink,
 							askpassPath: self.askpassPath,
 							knownHostsCaterm: self.knownHostsCaterm,
-							knownHostsUser: self.knownHostsUser
+							knownHostsUser: self.knownHostsUser,
+							installTerminfo: t.installTerminfo
 						)
 						t.chainOutput = output
 						t.sshConfigURL = output.configURL
@@ -655,7 +662,10 @@ public final class SessionStore: ObservableObject {
 	/// simulating what `runConnection` does after a successful preflight probe.
 	/// Used by tests that need `surfaceConfig` to return a chain-aware result
 	/// without running the async connection flow.
-	internal func populateChainOutputForTest(tabId: UUID) {
+	///
+	/// Pass `installTerminfo: true` to exercise the terminfo-wrapping path
+	/// (I-1 regression: chain build must respect this flag).
+	internal func populateChainOutputForTest(tabId: UUID, installTerminfo: Bool = false) {
 		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
 		do {
 			let output = try SSHCommandBuilder.build(
@@ -664,7 +674,8 @@ public final class SessionStore: ObservableObject {
 				configSink: configSink,
 				askpassPath: askpassPath,
 				knownHostsCaterm: knownHostsCaterm,
-				knownHostsUser: knownHostsUser
+				knownHostsUser: knownHostsUser,
+				installTerminfo: installTerminfo
 			)
 			tabs[idx].chainOutput = output
 			tabs[idx].sshConfigURL = output.configURL
