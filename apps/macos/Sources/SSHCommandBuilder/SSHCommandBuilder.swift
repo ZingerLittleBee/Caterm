@@ -4,10 +4,19 @@ public enum SSHCommandBuilder {
 	public struct Output: Equatable {
 		public let command: String
 		public let env: [(String, String)]
+		public let configURL: URL?
+
+		public init(command: String, env: [(String, String)],
+		            configURL: URL? = nil) {
+			self.command = command
+			self.env = env
+			self.configURL = configURL
+		}
 
 		public static func == (lhs: Output, rhs: Output) -> Bool {
 			lhs.command == rhs.command &&
-				lhs.env.map { [$0.0, $0.1] } == rhs.env.map { [$0.0, $0.1] }
+				lhs.env.map { [$0.0, $0.1] } == rhs.env.map { [$0.0, $0.1] } &&
+				lhs.configURL == rhs.configURL
 		}
 	}
 
@@ -250,5 +259,167 @@ public enum SSHCommandBuilder {
 		}.joined(separator: " ")
 
 		return Output(command: cmd, env: env)
+	}
+
+	// MARK: - Chain-aware build (T10)
+
+	/// Entry point for chain-aware connections. When `ancestors` is empty,
+	/// delegates to the direct path and returns byte-identical output.
+	/// When `ancestors` is non-empty, writes a per-session ssh_config snippet
+	/// via `configSink` and returns an `Output` whose `configURL` identifies
+	/// the written file for later cleanup.
+	public static func build(
+		host: SSHHost,
+		ancestors: [SSHHost] = [],
+		configSink: SSHConfigSink,
+		askpassPath: String,
+		knownHostsCaterm: String,
+		knownHostsUser: String,
+		installTerminfo: Bool = false,
+		sshPath: String = "/usr/bin/ssh",
+		terminfoDump: String? = nil
+	) throws -> Output {
+		if ancestors.isEmpty {
+			return _build(
+				host: host,
+				askpassPath: askpassPath,
+				knownHostsCaterm: knownHostsCaterm,
+				knownHostsUser: knownHostsUser,
+				installTerminfo: installTerminfo,
+				sshPath: sshPath,
+				terminfoDump: terminfoDump
+			)
+		}
+		return try buildChain(
+			target: host,
+			ancestors: ancestors,
+			configSink: configSink,
+			askpassPath: askpassPath,
+			knownHostsCaterm: knownHostsCaterm,
+			knownHostsUser: knownHostsUser,
+			installTerminfo: installTerminfo,
+			sshPath: sshPath,
+			terminfoDump: terminfoDump
+		)
+	}
+
+	/// Builds a multi-hop connection by writing a per-session ssh_config
+	/// with one `Host caterm-h-<uuid>` block per hop and ProxyJump linking
+	/// each hop to the previous one. Returns `configURL` set to the written
+	/// file URL for later cleanup.
+	private static func buildChain(
+		target: SSHHost,
+		ancestors: [SSHHost],
+		configSink: SSHConfigSink,
+		askpassPath: String,
+		knownHostsCaterm: String,
+		knownHostsUser: String,
+		installTerminfo: Bool,
+		sshPath: String,
+		terminfoDump: String?
+	) throws -> Output {
+		// Full hop list in dial order: [deepest ancestor … target]
+		let hops: [SSHHost] = ancestors + [target]
+
+		// Build one Host block per hop. May throw SSHConfigQuoteError if
+		// any hostname / value contains a control character.
+		var blocks: [String] = []
+		for (index, hop) in hops.enumerated() {
+			let alias = "caterm-h-\(hop.id.uuidString)"
+			let opts = try perHostOptions(
+				for: hop,
+				isTarget: hop.id == target.id,
+				askpassPath: askpassPath,
+				knownHostsCaterm: knownHostsCaterm,
+				knownHostsUser: knownHostsUser,
+				accessGroup: nil
+			)
+
+			var lines: [String] = ["Host \(alias)"]
+			lines.append("\tHostName \(try SSHConfigQuote.encode(opts.hostName))")
+			lines.append("\tPort \(opts.port)")
+			lines.append("\tUser \(try SSHConfigQuote.encode(opts.user))")
+
+			// ProxyJump: every hop except the deepest (index 0) points at
+			// the previous hop's alias.
+			if index > 0 {
+				let prevAlias = "caterm-h-\(hops[index - 1].id.uuidString)"
+				lines.append("\tProxyJump \(prevAlias)")
+			}
+
+			for line in opts.optionLines {
+				lines.append("\t\(line)")
+			}
+
+			blocks.append(lines.joined(separator: "\n"))
+		}
+
+		let configContent = blocks.joined(separator: "\n\n") + "\n"
+		let configURL = try configSink.write(configContent)
+
+		// Build target env from perHostOptions (contains askpass, CATERM_HOST_ID…)
+		let targetOpts = try perHostOptions(
+			for: target,
+			isTarget: true,
+			askpassPath: askpassPath,
+			knownHostsCaterm: knownHostsCaterm,
+			knownHostsUser: knownHostsUser,
+			accessGroup: nil
+		)
+		var env: [(String, String)] = targetOpts.env
+
+		// Build CATERM_CHAIN JSON array — one entry per hop.
+		var chainEntries: [[String: Any]] = []
+		for hop in hops {
+			let alias = "caterm-h-\(hop.id.uuidString)"
+			var entry: [String: Any] = [
+				"alias": alias,
+				"hostId": hop.id.uuidString,
+				"user": hop.username,
+				"hostname": hop.hostname,
+				"port": hop.port,
+			]
+			if case let .keyFile(keyPath, _) = hop.credential {
+				entry["keyPath"] = keyPath
+			}
+			chainEntries.append(entry)
+		}
+		let chainData = try JSONSerialization.data(withJSONObject: chainEntries)
+		let chainJSON = String(data: chainData, encoding: .utf8) ?? "[]"
+		env.append(("CATERM_CHAIN", chainJSON))
+
+		// Assemble the final command: ssh -F <configPath> caterm-h-<target-uuid>
+		let targetAlias = "caterm-h-\(target.id.uuidString)"
+		let sshArg: String = sshPath == "/usr/bin/ssh" ? sshPath : ShellQuote.posix(sshPath)
+		let configPathArg = ShellQuote.posix(configURL.path)
+
+		let willInstall = installTerminfo && terminfoDump != nil
+
+		var cmdParts: [String] = [sshArg, "-F", configPathArg]
+		if willInstall {
+			cmdParts.append("-t")
+		}
+		cmdParts.append(targetAlias)
+
+		if willInstall, let dump = terminfoDump {
+			let wrapper = """
+			if ! infocmp xterm-ghostty >/dev/null 2>&1; then
+			  if command -v tic >/dev/null 2>&1; then
+			    tic -x - 2>/dev/null <<'TERMINFO_EOF'
+			\(dump)
+			TERMINFO_EOF
+			    [ $? -ne 0 ] && export TERM=xterm-256color
+			  else
+			    export TERM=xterm-256color
+			  fi
+			fi
+			exec "${SHELL:-/bin/sh}" -l
+			"""
+			cmdParts.append(ShellQuote.posix(wrapper))
+			env.append(("TERM", "xterm-ghostty"))
+		}
+
+		let cmd = cmdParts.joined(separator: " ")
+		return Output(command: cmd, env: env, configURL: configURL)
 	}
 }
