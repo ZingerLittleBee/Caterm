@@ -7,7 +7,7 @@ import KeychainStore
 // password (or passphrase) to stdout. We pick the Keychain item via two env
 // vars set by SSHCommandBuilder:
 //   CATERM_HOST_ID    — UUID of the host
-//   CATERM_ASKPASS_KIND — "password" or "passphrase"
+//   CATERM_ASKPASS_KIND — "password" or "keyPassphrase"
 //
 // Keychain account format: "<host-id>.<kind>"
 // Keychain access group:   "$(TeamIdentifierPrefix)caterm.shared"
@@ -57,7 +57,7 @@ func logLine(_ message: String) {
 if env["CATERM_ASKPASS_STUFF"] == "1" {
     guard let hostId = env["CATERM_HOST_ID"], !hostId.isEmpty,
           let kind = env["CATERM_ASKPASS_KIND"],
-          kind == "password" || kind == "passphrase",
+          kind == "password" || kind == "keyPassphrase",
           let secret = env["CATERM_ASKPASS_SECRET"]
     else {
         FileHandle.standardError.write(Data("stuff: missing required env\n".utf8))
@@ -80,7 +80,7 @@ guard let hostId = env["CATERM_HOST_ID"], !hostId.isEmpty else {
     exit(1)
 }
 guard let kind = env["CATERM_ASKPASS_KIND"],
-      kind == "password" || kind == "passphrase" else {
+      kind == "password" || kind == "keyPassphrase" else {
     FileHandle.standardError.write(Data("CATERM_ASKPASS_KIND invalid\n".utf8))
     logLine("FAIL exit=1 reason=CATERM_ASKPASS_KIND-invalid host=\(hostId)")
     exit(1)

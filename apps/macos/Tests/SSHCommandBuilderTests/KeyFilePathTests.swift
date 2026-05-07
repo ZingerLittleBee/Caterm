@@ -25,7 +25,7 @@ final class KeyFilePathTests: XCTestCase {
                                              knownHostsCaterm: "/A", knownHostsUser: "/B")
         let envDict = Dictionary(uniqueKeysWithValues: result.env.map { ($0.0, $0.1) })
         XCTAssertEqual(envDict["SSH_ASKPASS"], "/askpass")
-        XCTAssertEqual(envDict["CATERM_ASKPASS_KIND"], "passphrase")
+        XCTAssertEqual(envDict["CATERM_ASKPASS_KIND"], "keyPassphrase")
     }
 
     func testKeyFilePathWithSpaces() {

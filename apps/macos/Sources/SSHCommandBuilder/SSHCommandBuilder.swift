@@ -97,7 +97,7 @@ public enum SSHCommandBuilder {
 					("SSH_ASKPASS", askpassPath),
 					("SSH_ASKPASS_REQUIRE", "force"),
 					("CATERM_HOST_ID", host.id.uuidString),
-					("CATERM_ASKPASS_KIND", "passphrase"),
+					("CATERM_ASKPASS_KIND", "keyPassphrase"),
 				]
 			}
 
