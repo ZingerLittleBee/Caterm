@@ -42,6 +42,11 @@ public final class SessionStore: ObservableObject {
         /// for chain connections. Nil for direct (no-jump) connections. Cleaned
         /// up by `closeTab` and `markChildExited`.
         public var sshConfigURL: URL? = nil
+        /// Full `SSHCommandBuilder.Output` captured from the chain-aware build
+        /// in `runConnection`. Non-nil only when `resolvedChain` is non-empty
+        /// and the build succeeded. `surfaceConfig` returns its (command, env)
+        /// directly so the chain feature works end-to-end.
+        public var chainOutput: SSHCommandBuilder.Output? = nil
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
@@ -273,8 +278,18 @@ public final class SessionStore: ObservableObject {
     /// Build the (commandString, env) pair for a given tab. `installTerminfo`
     /// (v1.6) drives whether the resulting command appends an inline
     /// terminfo-install wrapper and a `TERM=xterm-ghostty` env override.
+    ///
+    /// For chained (jump-host) connections the full `SSHCommandBuilder.Output`
+    /// is captured in `tab.chainOutput` by `runConnection`. We return its
+    /// (command, env) directly so the chain feature works end-to-end. The
+    /// direct-path build is only invoked for single-hop (no-jump) tabs.
     public func surfaceConfig(for tabId: UUID, installTerminfo: Bool = false) -> (command: String, env: [(String, String)])? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
+        if let chainOut = tab.chainOutput {
+            var env = chainOut.env
+            if let accessGroup { env.append(("CATERM_ACCESS_GROUP", accessGroup)) }
+            return (chainOut.command, env)
+        }
         let cmd = SSHCommandBuilder.build(
             host: tab.host,
             askpassPath: askpassPath,
@@ -351,18 +366,25 @@ public final class SessionStore: ObservableObject {
 		applyIfCurrent(tabId: tabId, token: token) { t in
 			switch outcome {
 			case .ok:
-				// Capture configURL from SSHCommandBuilder into the tab before
+				// Capture the full chain Output from SSHCommandBuilder before
 				// transitioning to .authenticating so surfaceConfig callers see it.
 				if !chain.isEmpty {
-					let configURL = try? SSHCommandBuilder.build(
-						host: host,
-						ancestors: chain,
-						configSink: self.configSink,
-						askpassPath: self.askpassPath,
-						knownHostsCaterm: self.knownHostsCaterm,
-						knownHostsUser: self.knownHostsUser
-					).configURL
-					t.sshConfigURL = configURL
+					do {
+						let output = try SSHCommandBuilder.build(
+							host: host,
+							ancestors: chain,
+							configSink: self.configSink,
+							askpassPath: self.askpassPath,
+							knownHostsCaterm: self.knownHostsCaterm,
+							knownHostsUser: self.knownHostsUser
+						)
+						t.chainOutput = output
+						t.sshConfigURL = output.configURL
+					} catch {
+						let msg = "Failed to build chain SSH config: \(error)"
+						t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
+						return
+					}
 				}
 				t.surfaceGeneration += 1
 				t.state = .authenticating(startedAt: Date())
@@ -386,6 +408,15 @@ public final class SessionStore: ObservableObject {
 	}
 
 	public func retryTab(tabId: UUID) {
+		// Clean any ssh_config written by the previous attempt before starting
+		// a fresh connection. Without this the old URL would be leaked when
+		// `startConnection` overwrites `sshConfigURL` with a new value.
+		if let idx = tabs.firstIndex(where: { $0.id == tabId }),
+		   let oldURL = tabs[idx].sshConfigURL {
+			configSink.cleanup(oldURL)
+			tabs[idx].sshConfigURL = nil
+			tabs[idx].chainOutput = nil
+		}
 		update(tabId) {
 			$0.lastFailure = nil
 			$0.state = .idle
@@ -415,6 +446,7 @@ public final class SessionStore: ObservableObject {
            let configURL = tabs[idx].sshConfigURL {
             configSink.cleanup(configURL)
             tabs[idx].sshConfigURL = nil
+            tabs[idx].chainOutput = nil
         }
         update(tabId) { tab in
             let kind = FailureKind.classify(exitCode: exitCode,
@@ -617,6 +649,29 @@ public final class SessionStore: ObservableObject {
 	internal func setSSHConfigURLForTest(_ url: URL, tabId: UUID) {
 		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
 		tabs[idx].sshConfigURL = url
+	}
+
+	/// Synthesise a chain build and store the full `Output` on the tab,
+	/// simulating what `runConnection` does after a successful preflight probe.
+	/// Used by tests that need `surfaceConfig` to return a chain-aware result
+	/// without running the async connection flow.
+	internal func populateChainOutputForTest(tabId: UUID) {
+		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+		do {
+			let output = try SSHCommandBuilder.build(
+				host: tabs[idx].host,
+				ancestors: tabs[idx].resolvedChain,
+				configSink: configSink,
+				askpassPath: askpassPath,
+				knownHostsCaterm: knownHostsCaterm,
+				knownHostsUser: knownHostsUser
+			)
+			tabs[idx].chainOutput = output
+			tabs[idx].sshConfigURL = output.configURL
+		} catch {
+			// Test setup error — surface it so the calling test can diagnose it.
+			print("populateChainOutputForTest failed: \(error)")
+		}
 	}
 
 	/// Construct a `SessionStore` suitable for unit tests.
