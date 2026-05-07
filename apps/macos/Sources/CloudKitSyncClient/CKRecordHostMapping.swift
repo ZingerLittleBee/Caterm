@@ -15,6 +15,7 @@ public enum CKRecordHostMapping {
 		static let username = "username"
 		static let authType = "authType"
 		static let metadataUpdatedAt = "metadataUpdatedAt"
+		static let jumpHostServerId = "jumpHostServerId"
 		// Credential blob
 		static let credentialBlobState = "credentialBlobState"
 		static let credentialBlobRevision = "credentialBlobRevision"
@@ -47,6 +48,9 @@ public enum CKRecordHostMapping {
 		rec[Field.username] = input.username as CKRecordValue
 		rec[Field.authType] = input.authType as CKRecordValue
 		rec[Field.metadataUpdatedAt] = Date() as CKRecordValue
+		if let jumpHostServerId = input.jumpHostServerId {
+			rec[Field.jumpHostServerId] = jumpHostServerId as CKRecordValue
+		}
 		rec[Field.credentialBlobState] = "none" as CKRecordValue
 		rec[Field.credentialBlobRevision] = Int64(0) as CKRecordValue
 		rec[Field.credentialCryptoVersion] = Int64(1) as CKRecordValue
@@ -61,6 +65,11 @@ public enum CKRecordHostMapping {
 		existing[Field.port] = host.port as CKRecordValue
 		existing[Field.username] = host.username as CKRecordValue
 		existing[Field.metadataUpdatedAt] = host.updatedAt as CKRecordValue
+		if let jumpHostServerId = host.jumpHostServerId {
+			existing[Field.jumpHostServerId] = jumpHostServerId as CKRecordValue
+		} else {
+			existing[Field.jumpHostServerId] = nil
+		}
 	}
 
 	/// Used by `.updateRemoteCredentials`. Mutates ONLY credential fields.
@@ -114,7 +123,8 @@ public enum CKRecordHostMapping {
 			username: username,
 			authType: authType,
 			createdAt: rec.creationDate ?? .distantPast,
-			updatedAt: updatedAt
+			updatedAt: updatedAt,
+			jumpHostServerId: rec[Field.jumpHostServerId] as? String
 		)
 
 		let blob: CredentialBlob?
