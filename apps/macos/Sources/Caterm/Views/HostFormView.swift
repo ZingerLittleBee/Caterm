@@ -17,6 +17,7 @@ struct HostFormView: View {
 	let mode: HostFormMode
 	let onSubmit: (SSHHost, String?) -> Void
 	@Environment(\.dismiss) private var dismiss
+	@EnvironmentObject private var sessionStore: SessionStore
 
 	@State private var label = ""
 	@State private var hostname = ""
@@ -26,6 +27,7 @@ struct HostFormView: View {
 	@State private var keyPath = ""
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
+	@State private var jumpHostServerId: String? = nil
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -42,6 +44,22 @@ struct HostFormView: View {
 					}
 					LabeledContent("Username") {
 						TextField("", text: $username)
+					}
+					LabeledContent("Via host") {
+						Picker("Via host", selection: $jumpHostServerId) {
+							Text("(none)").tag(String?.none)
+							ForEach(eligibleJumpHosts, id: \.id) { other in
+								Text("\(other.name) (\(other.username)@\(other.hostname))")
+									.tag(String?.some(other.serverId!))
+							}
+						}
+						.pickerStyle(.menu)
+						.labelsHidden()
+					}
+					if !chainPreviewText.isEmpty {
+						Text(chainPreviewText)
+							.font(.caption)
+							.foregroundStyle(chainHasMissingHost ? .red : .secondary)
 					}
 				}
 
@@ -94,10 +112,74 @@ struct HostFormView: View {
 	}
 
 	private var isValid: Bool {
-		!hostname.isEmpty
-			&& !username.isEmpty
-			&& (credKind != .keyFile || !keyPath.isEmpty)
-			&& (Int(port).map { (1...65535).contains($0) } ?? false)
+		guard !hostname.isEmpty,
+		      !username.isEmpty,
+		      credKind != .keyFile || !keyPath.isEmpty,
+		      Int(port).map({ (1...65535).contains($0) }) ?? false
+		else { return false }
+		// Chain must resolve — reject broken/cyclic jump references.
+		let cred: CredentialSource
+		switch credKind {
+		case .password: cred = .password
+		case .keyFile:  cred = .keyFile(keyPath: keyPath, hasPassphrase: hasPassphrase)
+		case .agent:    cred = .agent
+		}
+		var draft = HostFormView.buildHost(
+			mode: mode,
+			name: resolvedName,
+			hostname: hostname,
+			port: Int(port) ?? 22,
+			username: username,
+			credential: cred
+		)
+		draft.jumpHostServerId = jumpHostServerId
+		do {
+			_ = try draft.resolvedChain(in: sessionStore.hosts)
+		} catch {
+			return false
+		}
+		return true
+	}
+
+	/// Hosts eligible for use as the jump host for this form's target.
+	/// In `.add` mode the new host has no id yet, so only `serverId` presence
+	/// is required (no cycle risk from a host that doesn't exist yet).
+	private var eligibleJumpHosts: [SSHHost] {
+		guard case let .edit(currentHost) = mode else {
+			return sessionStore.hosts.filter { $0.serverId != nil }
+		}
+		return HostFormCycleFilter.eligibleJumpHosts(
+			editingHost: currentHost,
+			allHosts: sessionStore.hosts
+		)
+	}
+
+	/// Human-readable chain preview, e.g. "Will connect via bastion → target".
+	/// Returns an empty string when no jump host is selected.
+	private var chainPreviewText: String {
+		guard let sid = jumpHostServerId else { return "" }
+		var names: [String] = []
+		var cursor: String? = sid
+		var visited: Set<String> = []
+		while let nextSid = cursor {
+			if visited.contains(nextSid) {
+				names.append("(cycle)")
+				break
+			}
+			visited.insert(nextSid)
+			if let h = sessionStore.hosts.first(where: { $0.serverId == nextSid }) {
+				names.append(h.name)
+				cursor = h.jumpHostServerId
+			} else {
+				names.append("(deleted)")
+				break
+			}
+		}
+		return "Will connect via \(names.joined(separator: " → "))"
+	}
+
+	private var chainHasMissingHost: Bool {
+		chainPreviewText.contains("(deleted)") || chainPreviewText.contains("(cycle)")
 	}
 
 	/// Falls back to `username@hostname` when the user leaves the label
@@ -129,6 +211,7 @@ struct HostFormView: View {
 		case .agent:
 			credKind = .agent
 		}
+		jumpHostServerId = host.jumpHostServerId
 	}
 
 	private func browseKey() {
@@ -153,7 +236,7 @@ struct HostFormView: View {
 		case .agent:
 			cred = .agent
 		}
-		let host = HostFormView.buildHost(
+		var host = HostFormView.buildHost(
 			mode: mode,
 			name: resolvedName,
 			hostname: hostname,
@@ -161,6 +244,7 @@ struct HostFormView: View {
 			username: username,
 			credential: cred
 		)
+		host.jumpHostServerId = jumpHostServerId
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {
