@@ -72,6 +72,69 @@ final class EndToEndSSHTests: XCTestCase {
         }
     }
 
+	// MARK: - Chain integration cases
+
+	/// Single-hop chain: target → jump → target. Requires two independent sshd
+	/// containers that can reach each other over the Docker network; the current
+	/// smoke fixture only starts one container, so this test is skipped until a
+	/// two-container fixture is wired.
+	func testSingleHopChainConnects() async throws {
+		throw XCTSkip("chain e2e requires two independent sshd containers; not supported by the current single-container smoke fixture")
+	}
+
+	/// Single-hop chain where the jump host uses password auth. Requires a
+	/// two-container fixture.
+	func testSingleHopChainWithPasswordOnJump() async throws {
+		throw XCTSkip("chain e2e requires two independent sshd containers; not supported by the current single-container smoke fixture")
+	}
+
+	/// Single-hop chain where the jump host uses a key with passphrase. Requires
+	/// a two-container fixture.
+	func testSingleHopChainWithKeyPassphraseOnJump() async throws {
+		throw XCTSkip("chain e2e requires two independent sshd containers; not supported by the current single-container smoke fixture")
+	}
+
+	/// Broken chain (jumpHostServerId references a non-existent host) must fail
+	/// synchronously in openTab without ever spawning an ssh process.
+	/// Uses makeForTest — does NOT depend on the Docker container.
+	func testBrokenChainFailsFastWithoutSpawningSsh() throws {
+		var b = SSHHost(name: "target", hostname: "127.0.0.1", port: 2222,
+		                username: "spike", credential: .password)
+		b.jumpHostServerId = "nonexistent-server-id"
+		let store = SessionStore.makeForTest(hosts: [b])
+		let tabId = store.openTab(host: b)
+		guard case .failed(let kind) = store.tabs.first(where: { $0.id == tabId })?.state
+		else { return XCTFail("expected tab to be in .failed state") }
+		guard case .networkUnreachable(.other(_, let msg)) = kind
+		else { return XCTFail("expected .networkUnreachable(.other), got \(kind)") }
+		XCTAssertTrue(msg.contains("Jump host chain is broken"),
+		              "failure message should mention broken chain; got: \(msg)")
+	}
+
+	/// Missing credential on the jump host must fail synchronously in openTab
+	/// without ever spawning an ssh process.
+	/// Uses makeForTest — does NOT depend on the Docker container.
+	func testMissingCredentialOnJumpFailsFastWithoutSpawningSsh() throws {
+		// Build two hosts: jump host with a serverId, target pointing at it.
+		var a = SSHHost(name: "bastion", hostname: "127.0.0.1", port: 2222,
+		                username: "spike", credential: .password)
+		a.serverId = "rh-bastion-e2e"
+		var b = SSHHost(name: "target", hostname: "127.0.0.1", port: 2223,
+		                username: "spike", credential: .password)
+		b.jumpHostServerId = "rh-bastion-e2e"
+		// Provide credentials for target but NOT for bastion (jump host).
+		let store = SessionStore.makeForTest(hosts: [a, b],
+		                                    credentialsAvailableFor: [b.id])
+		let tabId = store.openTab(host: b)
+		guard case .failed(let kind) = store.tabs.first(where: { $0.id == tabId })?.state
+		else { return XCTFail("expected tab to be in .failed state") }
+		guard case .networkUnreachable(.other(_, let msg)) = kind
+		else { return XCTFail("expected .networkUnreachable(.other), got \(kind)") }
+		XCTAssertTrue(msg.contains("bastion") &&
+		              msg.contains("needs credentials configured first"),
+		              "failure message should identify the jump host; got: \(msg)")
+	}
+
     func testBuildersWireToWorkingSSHConnection() async throws {
         // askpassPath was resolved + verified in setUp.
         let supportDir = FileManager.default
