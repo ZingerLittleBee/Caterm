@@ -145,7 +145,7 @@ struct HostFormView: View {
 		!hostname.isEmpty
 			&& !username.isEmpty
 			&& (credKind != .keyFile || !keyPath.isEmpty)
-			&& Int(port) != nil
+			&& (Int(port).map { (1...65535).contains($0) } ?? false)
 	}
 
 	/// Falls back to `username@hostname` when the user leaves the label
