@@ -63,7 +63,16 @@ final class EndToEndSSHTests: XCTestCase {
         }
     }
 
-    func testBuildersWireToWorkingSSHConnection() throws {
+    /// Test-local stub: the assertion under test is the FailureKind.cleanExit
+    /// transition, not preflight behavior. A pass-through `.ok` keeps the
+    /// state machine moving without depending on real network reachability.
+    private final class FakePreflight: PreflightProbing, @unchecked Sendable {
+        func probe(host _: String, port _: UInt16, timeout _: TimeInterval) async -> PreflightOutcome {
+            .ok
+        }
+    }
+
+    func testBuildersWireToWorkingSSHConnection() async throws {
         // askpassPath was resolved + verified in setUp.
         let supportDir = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -135,9 +144,13 @@ final class EndToEndSSHTests: XCTestCase {
                                  knownHostsUser: knownUser,
                                  accessGroup: nil,
                                  hostsURL: tmpHostsURL,
-                                 keychain: keychain)
+                                 keychain: keychain,
+                                 preflight: FakePreflight())
         let tabId = store.openTab(host: host)
-        store.markAuthenticating(tabId: tabId)
+        // openTab → startConnection (T6) kicks off the preflight Task.
+        // Wait for it to settle into .authenticating before recording the
+        // connect → cleanExit transitions we actually want to verify.
+        await store.awaitConnectionAttempt(tabId: tabId)
         store.markConnected(tabId: tabId)
         store.markChildExited(tabId: tabId, exitCode: 0)
         let tab = store.tabs.first { $0.id == tabId }

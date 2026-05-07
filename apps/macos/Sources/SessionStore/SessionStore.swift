@@ -229,10 +229,6 @@ public final class SessionStore: ObservableObject {
         tabs.first(where: { $0.id == tabId })?.host.id
     }
 
-    public func markAuthenticating(tabId: UUID) {
-        update(tabId) { $0.state = .authenticating(startedAt: Date()) }
-    }
-
 	/// Single entry point for "kick off connection for this tab". Idempotent:
 	/// callers (`openTab`, `retryTab`, reconnect timer) can all invoke; the
 	/// attempt token guards stale results.
