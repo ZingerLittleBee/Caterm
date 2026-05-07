@@ -37,4 +37,14 @@ final class HostJumpHostServerIdTests: XCTestCase {
 		XCTAssertNotNil(decoded, "Legacy payload must still decode")
 		XCTAssertNil(decoded?.jumpHostServerId)
 	}
+
+	func testEncoderOmitsKeyWhenJumpHostServerIdIsNil() throws {
+		// Pin the contract that downstream wire-format key-absence checks
+		// rely on: the synthesized encoder must not emit the key when nil.
+		let h = SSHHost(name: "n", hostname: "h", port: 22,
+		                username: "u", credential: .password)
+		let json = String(data: try JSONEncoder().encode(h), encoding: .utf8)!
+		XCTAssertFalse(json.contains("jumpHostServerId"),
+		               "nil jumpHostServerId should be omitted, got: \(json)")
+	}
 }
