@@ -108,6 +108,10 @@ let package = Package(
             dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Sources/CredentialSync"
         ),
+        .target(
+            name: "CatermAskpassCore",
+            path: "Sources/CatermAskpassCore"
+        ),
 
         // --- Executables ---
         .executableTarget(
@@ -148,7 +152,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "CatermAskpass",
-            dependencies: ["KeychainStore"],
+            dependencies: [
+                "KeychainStore",
+                "CatermAskpassCore",
+            ],
             path: "Sources/CatermAskpass"
         ),
 
@@ -242,6 +249,11 @@ let package = Package(
             name: "CredentialSyncTypesTests",
             dependencies: ["CredentialSyncTypes"],
             path: "Tests/CredentialSyncTypesTests"
+        ),
+        .testTarget(
+            name: "CatermAskpassCoreTests",
+            dependencies: ["CatermAskpassCore"],
+            path: "Tests/CatermAskpassCoreTests"
         ),
     ]
 )
