@@ -130,26 +130,28 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		let gated = GatedPreflight()
 		let store = makeStore(preflight: gated)
 		let id = store.openTab(host: makeHost())
-		store.startConnection(tabId: id)  // attempt 1 — token=1
-		store.startConnection(tabId: id)  // attempt 2 — token=2 (supersedes)
+		// openTab fires startConnection → token=1 (Task A, stale)
+		store.startConnection(tabId: id)  // token=2 — cancels Task A, still parks (Task B, stale)
+		store.startConnection(tabId: id)  // token=3 — cancels Task B, supersedes (Task C, current)
 
-		// Wait until both probes are parked.
+		// Wait until all three probes are parked (openTab's + both explicit calls).
 		let deadline = Date().addingTimeInterval(2)
-		while gated.count() < 2, Date() < deadline {
+		while gated.count() < 3, Date() < deadline {
 			await Task.yield()
 		}
-		XCTAssertEqual(gated.count(), 2, "both probes should be in flight")
+		XCTAssertEqual(gated.count(), 3, "all three probes should be in flight")
 
-		// Resolve STALE (token=1) probe first with .ok — must NOT mutate state
-		// away from .preflight, because token check fails.
+		// Resolve STALE probes (token=1 and token=2) with .ok — must NOT mutate
+		// state away from .preflight, because token check fails for both.
 		gated.continuations[0].resume(returning: .ok)
+		gated.continuations[1].resume(returning: .ok)
 		await Task.yield(); await Task.yield()
 		if case .authenticating = store.tabs.first?.state {
 			XCTFail("stale .ok must not transition to .authenticating")
 		}
 
-		// Resolve CURRENT (token=2) probe with failure — should mutate.
-		gated.continuations[1].resume(returning: .failed(.dnsFailed))
+		// Resolve CURRENT (token=3) probe with failure — should mutate.
+		gated.continuations[2].resume(returning: .failed(.dnsFailed))
 		await Task.yield(); await Task.yield()
 		XCTAssertEqual(store.tabs.first?.state,
 		               .failed(.networkUnreachable(.dnsFailed)),
@@ -173,15 +175,15 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		let gated = GatedPreflight()
 		let store = makeStore(preflight: gated)
 		let id = store.openTab(host: makeHost())
-		store.startConnection(tabId: id)
-		// Wait for first probe to be parked.
+		// openTab fires startConnection → Task A (token=1) is queued.
+		// Wait for that first probe to be parked.
 		let deadline = Date().addingTimeInterval(2)
 		while gated.count() < 1, Date() < deadline {
 			await Task.yield()
 		}
 		XCTAssertEqual(gated.count(), 1)
 
-		// Trigger a second start — should cancel the first task (its Task gets
+		// Trigger a second start — should cancel Task A (its Task gets
 		// cancelled, but the parked continuation in the fake never resumes, so
 		// we resolve it manually below).
 		store.startConnection(tabId: id)
@@ -190,9 +192,9 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		}
 		XCTAssertEqual(gated.count(), 2)
 
-		// Resolve both probes (.ok). The first task was cancelled; its outcome
+		// Resolve both probes (.ok). Task A was cancelled; its outcome
 		// will be discarded both by Task cancellation AND the attempt-token
-		// guard. The second task's outcome should win.
+		// guard. Task B's (token=2) outcome should win.
 		gated.continuations[0].resume(returning: .ok)
 		gated.continuations[1].resume(returning: .ok)
 		await store.awaitConnectionAttempt(tabId: id)
@@ -216,7 +218,7 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		let gated = GatedPreflight()
 		let store = makeStore(preflight: gated)
 		let id = store.openTab(host: makeHost())
-		store.startConnection(tabId: id)
+		// openTab now fires startConnection automatically — no explicit call needed.
 		// Let the probe park.
 		let deadline = Date().addingTimeInterval(2)
 		while true {
@@ -236,5 +238,39 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		// Note: we don't call awaitConnectionAttempt here because closeTab
 		// removed the entry from pendingStartTasks; awaitConnectionAttempt
 		// would just no-op.
+	}
+
+	func testOpenTabFiresStartConnection() async {
+		let fake = FakePreflight()
+		fake.nextOutcome = .ok
+		let store = makeStore(preflight: fake)
+		_ = store.openTab(host: makeHost())
+		XCTAssertEqual(store.tabs.count, 1)
+		// openTab should kick off probe — wait for it.
+		await store.awaitConnectionAttempt(tabId: store.tabs[0].id)
+		XCTAssertEqual(fake.probeCount, 1)
+	}
+
+	func testReconnectTimerGoesThroughPreflight() async {
+		// Force the FSM into .reconnecting by calling markChildExited from a
+		// .connected state on a tab that already had hadConnected=true.
+		let fake = FakePreflight()
+		fake.nextOutcome = .ok
+		let store = makeStore(preflight: fake)
+		let id = store.openTab(host: makeHost())
+		await store.awaitConnectionAttempt(tabId: id)
+		store.markConnected(tabId: id)
+
+		// Trigger reconnect path: ssh exits with non-zero AFTER hadConnected=true
+		// → FailureKind.connectionDropped → scheduleReconnect (1s backoff).
+		store.markChildExited(tabId: id, exitCode: 1) // -> .reconnecting
+
+		// Wait until the probe count rises above the initial open's count.
+		let deadline = Date().addingTimeInterval(6)
+		while fake.probeCount < 2, Date() < deadline {
+			try? await Task.sleep(nanoseconds: 100_000_000)
+		}
+		XCTAssertGreaterThanOrEqual(fake.probeCount, 2,
+			"scheduleReconnect should route through startConnection")
 	}
 }

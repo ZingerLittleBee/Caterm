@@ -164,6 +164,7 @@ public final class SessionStore: ObservableObject {
         controlMasterManager?.register(hostId: host.id, destination: destination)
         let tab = Tab(host: host)
         tabs.append(tab)
+        startConnection(tabId: tab.id)            // NEW
         return tab.id
     }
 
@@ -343,7 +344,11 @@ public final class SessionStore: ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self else { return }
-            self.update(tabId) { $0.surfaceGeneration += 1; $0.state = .authenticating(startedAt: Date()) }
+            // Route through startConnection so the reconnect attempt also gets
+            // TCP preflight + typed networkUnreachable failure if the network
+            // is still down. surfaceGeneration is bumped inside startConnection
+            // when probe succeeds.
+            self.startConnection(tabId: tabId)
         }
     }
 
