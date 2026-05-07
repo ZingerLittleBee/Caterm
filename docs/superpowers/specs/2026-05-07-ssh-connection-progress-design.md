@@ -108,6 +108,8 @@ public enum ConnectionState: Equatable {
 
 `.connecting` 废弃。所有调用点(目前仅 `TerminalSurfaceRepresentable`、`SessionStore` 内部、相关测试)迁移到 `.authenticating` 或 `.preflight`。
 
+**端口校验顺手收紧**:`HostFormView.isValid`(`HostFormView.swift:144`)当前仅 `Int(port) != nil`,允许 `-1` / `99999` 之类越界值进入数据层。本 spec 顺带改成 `Int(port).map { (1...65535).contains($0) } ?? false`,从入口处堵住非法端口,避免 `UInt16(host.port)` 在 `Preflight` 里崩溃。已存在的旧数据由 `startConnection` 内部的 `(1...65535).contains(host.port)` 检查兜底,转 `.invalidPort` 失败态(详见 §4.4),不会进入 `NWConnection` 路径。
+
 ### 4.2 `FailureKind`(扩展)
 
 ```swift
@@ -131,6 +133,7 @@ public enum NetworkErrorReason: Equatable {
     case connectionRefused
     case timedOut
     case networkDown
+    case invalidPort(Int)                          // 新: host.port ∉ 1...65535
     case other(code: Int, message: String)
 }
 ```
@@ -180,29 +183,61 @@ public struct Preflight: PreflightProbing {
 ```swift
 private let preflight: PreflightProbing  // injected via init, default Preflight()
 
+/// Per-tab attempt token. Bumped by every `startConnection` invocation so
+/// stale probe results from a cancelled attempt cannot mutate state.
+private var connectionAttempts: [UUID: UInt64] = [:]
+
+/// Single entry point for "kick off connection for this tab". Idempotent:
+/// callers (`openTab` follow-up, `retryTab`) can both call it; the attempt
+/// token guards against stale async results.
+///
+/// Validates `host.port` ∈ 1...65535 before launching the probe. Out-of-range
+/// ports return `.networkUnreachable(.invalidPort)` directly without touching
+/// NWConnection (whose `NWEndpoint.Port` initializer would trap on UInt16
+/// overflow).
 public func startConnection(tabId: UUID) async {
     guard let host = tabs.first(where: { $0.id == tabId })?.host else { return }
-    update(tabId) { $0.state = .preflight(startedAt: Date()) }
-    let outcome = await preflight.probe(host: host.hostname,
-                                        port: UInt16(host.port),
-                                        timeout: 5)
-    switch outcome {
-    case .ok:
-        update(tabId) { $0.state = .authenticating(startedAt: Date()) }
-    case .failed(let reason):
-        update(tabId) { $0.state = .failed(.networkUnreachable(reason)) }
+    let token = (connectionAttempts[tabId] ?? 0) &+ 1
+    connectionAttempts[tabId] = token
+
+    guard (1...65535).contains(host.port) else {
+        applyIfCurrent(tabId: tabId, token: token) {
+            $0.state = .failed(.networkUnreachable(.invalidPort(host.port)))
+        }
+        return
+    }
+
+    applyIfCurrent(tabId: tabId, token: token) {
+        $0.state = .preflight(startedAt: Date())
+    }
+
+    let outcome = await preflight.probe(
+        host: host.hostname,
+        port: UInt16(host.port),
+        timeout: 5
+    )
+
+    applyIfCurrent(tabId: tabId, token: token) { tab in
+        switch outcome {
+        case .ok:
+            tab.surfaceGeneration += 1               // ← forces SwiftUI to
+            tab.state = .authenticating(startedAt: Date())  //   recreate the surface
+        case .failed(let reason):
+            tab.state = .failed(.networkUnreachable(reason))
+        }
     }
 }
 
-public func markAuthenticating(tabId: UUID) {
-    // Kept for the rare case that callers want to manually transition; main
-    // entry remains startConnection. Replaces the old markConnecting.
-    update(tabId) { $0.state = .authenticating(startedAt: Date()) }
+/// Apply a tab mutation only if the recorded attempt token still matches
+/// — i.e., a newer `startConnection` hasn't superseded this one.
+private func applyIfCurrent(tabId: UUID, token: UInt64,
+                             _ mutate: (inout Tab) -> Void) {
+    guard connectionAttempts[tabId] == token else { return }
+    update(tabId, mutate)
 }
 
 public func retryTab(tabId: UUID) {
     update(tabId) {
-        $0.surfaceGeneration += 1
         $0.lastFailure = nil
         $0.state = .idle
     }
@@ -210,74 +245,68 @@ public func retryTab(tabId: UUID) {
 }
 ```
 
-`markConnecting` 删除(项目内调用点只有 `TerminalSurfaceRepresentable.makeNSView`,该处会在重写中调用 `startConnection`)。
+`markConnecting` 删除。新的连接触发**仅**由两处发起,`makeNSView` 不再有任何 `startConnection` 副作用(避免与 retry 路径并发):
 
-### 4.5 `TerminalSurfaceRepresentable` 重写
+- `openTab(host:)` 返回前增加 `Task { await startConnection(tabId: id) }`
+- `retryTab(tabId:)` 内部启动
 
-关键变化:**只有 `state == .authenticating`(或之后)时才创建真正的 ssh-driving `GhosttySurfaceNSView`**。`.preflight` / `.failed` 阶段返回空占位。
+`startConnection` 的 attempt token 保证哪怕真的因为视图生命周期被叫两次,后到的 outcome 也只能写到当前 token 对应的 tab 上,陈旧的探测结果会被静默丢弃。
+
+### 4.5 `TerminalContainerView` 占位 / 真 surface 切换
+
+⚠️ **关键约束**:`GhosttySurfaceNSView.viewDidMoveToWindow` 在 `command == nil` 时会让 `GhosttySurface` 回退到 `$SHELL`,**会真的 fork 一个本地 shell**。所以 placeholder 绝不能用 `GhosttySurfaceNSView`。
+
+正确做法:**在 `TerminalContainerView` 内根据 state 二选一渲染**,让 `TerminalSurfaceRepresentable`(及它内部的 `GhosttySurfaceNSView`)**只在 `.authenticating | .connected | .reconnecting` 时存在于视图树**。`.idle | .preflight | .failed` 时渲染纯 SwiftUI 占位(深色 `Color`,带 ssh 终端默认背景的色调),没有任何 NSView 被创建。
 
 ```swift
-struct TerminalSurfaceRepresentable: NSViewRepresentable {
+struct TerminalContainerView: View {
     @EnvironmentObject var store: SessionStore
     let tabId: UUID
-    let backgroundTransparencyEnabled: Bool
 
-    func makeNSView(context _: Context) -> GhosttySurfaceNSView {
-        guard let tab = store.tabs.first(where: { $0.id == tabId }) else {
-            return GhosttySurfaceNSView(command: nil)
-        }
-
-        switch tab.state {
-        case .idle, .preflight, .failed:
-            // Placeholder — once startConnection completes successfully and
-            // surfaceGeneration increments, SwiftUI will recreate this view.
-            let view = GhosttySurfaceNSView(command: nil)
-            view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
-            // Kick off the preflight + auth on first appearance:
-            if case .idle = tab.state {
-                Task { @MainActor in await store.startConnection(tabId: tabId) }
+    var body: some View {
+        ZStack {
+            if let tab = store.tabs.first(where: { $0.id == tabId }) {
+                surfaceOrPlaceholder(for: tab)
+                overlay(for: tab.state, host: tab.host)
             }
-            return view
+        }
+        .animation(.easeOut(duration: 0.15), value: store.tabs.first(where: { $0.id == tabId })?.state)
+    }
 
+    @ViewBuilder
+    private func surfaceOrPlaceholder(for tab: SessionStore.Tab) -> some View {
+        switch tab.state {
         case .authenticating, .connected, .reconnecting:
-            // Build the real surface. Reuses the current implementation
-            // body (config lookup, GhosttySurfaceNSView construction, the
-            // `view.surface` polling Task that wires `onChildExit` and
-            // schedules `markConnected` after the 3s grace period). The
-            // ONLY change vs current code: the existing `store.markConnecting`
-            // call at the top is removed — by this point state is already
-            // `.authenticating`, set by `startConnection` before the
-            // surfaceGeneration bump caused us to enter this branch.
-            return makeRealSurface(...)
+            TerminalSurfaceRepresentable(
+                tabId: tabId,
+                backgroundTransparencyEnabled: backgroundTransparencyEnabled
+            )
+            .id("\(tabId)-\(tab.surfaceGeneration)")
+
+        case .idle, .preflight, .failed:
+            // Inert SwiftUI background — no NSView, no $SHELL fork.
+            Color.black.opacity(0.95).ignoresSafeArea()
         }
     }
 
-    func updateNSView(_ nsView: GhosttySurfaceNSView, context: Context) {
-        // When state transitions to .authenticating, we rely on
-        // surfaceGeneration to trigger SwiftUI to call makeNSView again with
-        // the new state. updateNSView itself remains a no-op.
-    }
+    // overlay(for:host:) — see §4.6
 }
 ```
 
-**`surfaceGeneration` 在哪里 +1**:`startConnection` 进入 `.authenticating` 时,view 当前是 placeholder,我们需要 SwiftUI 重建 — 因此在 `startConnection` 内部把状态切换到 `.authenticating` 时同步执行 `update(tabId) { $0.surfaceGeneration += 1; $0.state = .authenticating(...) }`。`.id("\(tabId)-\(surfaceGeneration)")` 触发 SwiftUI 卸载 placeholder、重建真 surface。
+`TerminalSurfaceRepresentable` 本体几乎不用改:
 
-**为什么 placeholder 也用 `GhosttySurfaceNSView(command: nil)`**:复用同一类型简化 `NSViewRepresentable` 的类型签名;`command: nil` 时 `GhosttySurfaceNSView` 不 fork 任何子进程,只是个深色 NSView,正好用作 overlay 后面的背景。
+- 删除现有的 `store.markConnecting(tabId: tabId)` 调用 — 进入这个分支时 state 已经是 `.authenticating`,由 `startConnection` 推过来
+- 删除 3s grace + `markConnected` 的 `Task.sleep(3_000_000_000)` 部分 — 由 `startConnection` 的语义接管:authenticating 进来意味着 TCP 已通,3s grace 改成"surface 创建后 3s 内进程未退出 → markConnected"的现有逻辑可以保留(避免破坏现有测试,且 ssh 子进程刚 fork 出来仍可能瞬间失败)
 
-### 4.6 `TerminalContainerView` 蒙层路由
+**`startConnection` 在何时 bump `surfaceGeneration`**:见 §4.4 代码块 — 与 `.authenticating` 状态切换在同一 `update` 闭包里原子完成,SwiftUI 看到 id 变化就会卸载占位、装入真 surface。
+
+**Retry 不会有 race**:retry 路径是 `state = .idle → startConnection → .preflight → .authenticating(+gen)`。中间 `.idle / .preflight` 阶段 surface 不存在(被 `Color` 占位替换),不存在两个并发 ssh 子进程的可能。
+
+### 4.6 蒙层路由(`overlay(for:host:)` 实现)
+
+承接 §4.5 的 `TerminalContainerView.body` 结构,`overlay(for:host:)` 函数:
 
 ```swift
-ZStack {
-    TerminalSurfaceRepresentable(
-        tabId: tabId,
-        backgroundTransparencyEnabled: backgroundTransparencyEnabled
-    )
-    .id("\(tabId)-\(tab.surfaceGeneration)")
-
-    overlay(for: tab.state, host: tab.host)
-}
-.animation(.easeOut(duration: 0.15), value: tab.state)
-
 @ViewBuilder
 private func overlay(for state: ConnectionState, host: SSHHost) -> some View {
     switch state {
@@ -346,6 +375,9 @@ func presentation(for failure: FailureKind, host: SSHHost) -> FailurePresentatio
     case .networkUnreachable(.networkDown):
         return .init(icon: .orange, title: "No network",
                      detail: "Check your internet connection")
+    case .networkUnreachable(.invalidPort(let p)):
+        return .init(icon: .red, title: "Invalid port",
+                     detail: "Port \(p) is out of range (1–65535) — edit host to fix")
     case .networkUnreachable(.other(_, let msg)):
         return .init(icon: .orange, title: "Connection failed", detail: msg)
     case .authOrSetupFail:
@@ -358,9 +390,34 @@ func presentation(for failure: FailureKind, host: SSHHost) -> FailurePresentatio
 }
 ```
 
-### 4.9 Edit Host 跳转
+### 4.9 Edit Host 跳转(NotificationCenter 桥接)
 
-`MainWindow` 已有 host 编辑入口(`HostFormView`)。`onEditHost` 通过现有的 sheet 触发机制弹出当前 host 的编辑表单。具体路径在 plan 阶段确认 `MainWindow` 的 host-form-presentation 状态变量,通过 `EnvironmentObject` 或 `NotificationCenter` 触发。
+实际调研:edit sheet state 不在 `MainWindow`,而是 `HostListSidebar` 的 `@State var editingHost: SSHHost?`(`HostListSidebar.swift:24`),sheet 绑定在 `HostListSidebar.swift:94` 的 `.sheet(item: $editingHost)`。
+
+把这个状态提到全局(EnvironmentObject 或 SessionStore)会牵动 sidebar 的责任边界,且 `editingHost` 是临时 UI 状态、不应进数据层。**采用 NotificationCenter 桥接** — 改动最小:
+
+```swift
+// 新增 in apps/macos/Sources/Caterm/Views/HostListSidebar.swift 同文件
+extension Notification.Name {
+    static let catermEditHostRequested = Notification.Name("catermEditHostRequested")
+}
+struct CatermEditHostRequestedKeys {
+    static let hostId = "hostId"
+}
+```
+
+`FailureOverlay.onEditHost`:
+```swift
+NotificationCenter.default.post(
+    name: .catermEditHostRequested,
+    object: nil,
+    userInfo: [CatermEditHostRequestedKeys.hostId: host.id]
+)
+```
+
+`HostListSidebar.body` 加 `.onReceive(NotificationCenter.default.publisher(for: .catermEditHostRequested))`,从 userInfo 取出 hostId,在 `store.hosts` 里找到 host,设 `editingHost = host` 触发 sheet。如果 host 已被删除则忽略。
+
+为什么这条路径合理:与项目里已有的 `catermHostCredentialMaterialChanged`(`SessionStore.swift`)是同种模式,保持一致。
 
 ## 5. Testing
 
@@ -368,10 +425,11 @@ func presentation(for failure: FailureKind, host: SSHHost) -> FailurePresentatio
 
 `apps/macos/Tests/SessionStoreTests/PreflightTests.swift`(新)
 
-- `127.0.0.1` 的随机未监听端口 → `.connectionRefused`
-- `*.invalid` 域名 → `.dnsFailed`
-- 测试中起一个临时 `NWListener` 监听 → 探测成功 `.ok`
-- 注入 `timeout=0.1s` 探测一个 black-hole IP(如 `10.255.255.1`)→ `.timedOut`
+- `127.0.0.1` + 随机未监听端口 → `.connectionRefused`(快速、确定性)
+- 测试中起一个临时 `NWListener` 监听随机端口 → 探测成功 `.ok`
+- ❌ 不再放黑洞 IP 超时测试 — 跨 VPN/路由会非确定性返回 unreachable 而不是 timed out;同时 `*.invalid` DNS 测试也移除(各 macOS 版本 / DNSSEC 行为不一)。这两类语义改成由 SessionStore 测试覆盖(注入 `FakePreflight` 直接返回对应 outcome)。
+- 真实 timeout 路径:用 `NWListener` 起一个 accept-then-stall 的服务(接受 TCP 但不发 SYN-ACK 之外的字节;实际更简单:用 firewall rule 不可行,改成纯计时验证 — 在 `Preflight` 内部抽出一个 `internal func makeTimeoutTask(_:)`,单独测它能在 timeout 时 cancel connection 并返回 `.timedOut`)。
+- DNS / networkDown 等 reason 的映射验证:抽出 `internal func mapNWError(_ err: NWError) -> NetworkErrorReason`,直接喂构造好的 `NWError` 值进去断言映射,不依赖真实网络。
 
 `apps/macos/Tests/SessionStoreTests/SessionStoreConnectionFlowTests.swift`(新)
 
@@ -414,6 +472,5 @@ final class FakePreflight: PreflightProbing {
 
 ## 7. Open Questions(留给 plan 阶段)
 
-- `Edit Host` 的精确 UI 跳转路径(读 `MainWindow` 现有 host-form 触发机制后定)
-- `Preflight` 在测试中如何起 mock TCP listener:用 `NWListener` 直接起一个 TCP server,选随机端口 → 已知方案,plan 时确认 macOS sandbox/entitlements 限制
-- `Edit Host` 触发后,如果 `MainWindow` 当前没有合适的 sheet 通道,是用 `NotificationCenter.post` 通知 `HostListSidebar`/`MainWindow` 弹 form 的方式,还是把 host-form-presentation state 提升到 `SessionStore`?plan 阶段读现有 `MainWindow.swift` 后定
+- `Preflight` 在测试中起 `NWListener` 监听随机端口 — plan 时确认 macOS sandbox / SPM test target entitlements 是否允许(预期允许,因为绑 `127.0.0.1` 的 loopback listener 在 sandbox 下通常是 OK 的;如果不允许,fallback 是把 `Preflight` 的 connection 部分接口化,纯单元测打 mock)
+- `openTab` 触发 `startConnection` 的具体方式:`openTab` 当前是同步 `-> UUID`,`Task { @MainActor in await store.startConnection(tabId: id) }` 在返回前 fire-and-forget。需要在 plan 时确认,把异步 fire 放在 `openTab` 内部(对所有调用点透明),还是在每个 caller 处显式触发。前者更不容易漏,选前者。
