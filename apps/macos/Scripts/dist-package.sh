@@ -19,8 +19,18 @@ set -euo pipefail
 #
 # Optional env:
 #   CATERM_APP_ID             — bundle id (default: com.caterm.app)
-#   CATERM_DIST_VERSION       — CFBundleShortVersionString (default: 0.1.0)
+#   CATERM_DIST_VERSION       — CFBundleShortVersionString (default: 1.0.0)
 #   CATERM_DIST_BUILD         — CFBundleVersion (default: 1)
+#   CATERM_NOTARY_PROFILE     — keychain profile for `notarytool`. When set,
+#                               this script ditto-zips the .app, submits to
+#                               Apple notary service (synchronous --wait),
+#                               then staples the ticket back into the .app.
+#                               Create with:
+#                                 xcrun notarytool store-credentials <profile> \
+#                                     --apple-id <email> --team-id <TEAMID> \
+#                                     --password <app-specific-password>
+#                               Leave unset to skip — the bundle is still
+#                               valid for local install.
 #
 # Pre-conditions:
 #   `swift build -c release` completed, and dev-codesign.sh --profile
@@ -34,7 +44,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/.build/release"
 APP="$BIN_DIR/Caterm.app"
 APP_BUNDLE_ID="${CATERM_APP_ID:-com.caterm.app}"
-APP_VERSION="${CATERM_DIST_VERSION:-0.1.0}"
+APP_VERSION="${CATERM_DIST_VERSION:-1.0.0}"
 APP_BUILD="${CATERM_DIST_BUILD:-1}"
 
 MAIN_ENT="$BIN_DIR/Caterm.distribution.entitlements"
@@ -78,8 +88,12 @@ mkdir -p "$APP/Contents/Resources"
 cp "$BIN_DIR/caterm" "$APP/Contents/MacOS/caterm"
 cp "$BIN_DIR/caterm-askpass" "$APP/Contents/MacOS/caterm-askpass"
 
+# Strip xattrs after copy: icon generators (Image2Icon, etc.) routinely leave
+# com.apple.FinderInfo / ResourceFork / quarantine, which codesign rejects with
+# "resource fork, Finder information, or similar detritus not allowed".
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+    xattr -c "$APP/Contents/Resources/AppIcon.icns"
 fi
 
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -179,12 +193,48 @@ if echo "$helper_ents" | grep -Eq \
 fi
 
 echo "==> Verification OK"
+
+# ---------------------------------------------------------------------------
+# Optional: notarize + staple.
+#
+# `notarytool submit` accepts .zip / .pkg / .dmg, NOT a raw .app bundle, so
+# we ditto-zip first (ditto preserves resource forks + xattrs better than
+# `zip`, which Apple's docs explicitly recommend). After Apple issues a
+# ticket, `stapler staple` writes it into the .app's Contents/CodeResources
+# so Gatekeeper can validate offline.
+# ---------------------------------------------------------------------------
+if [[ -n "${CATERM_NOTARY_PROFILE:-}" ]]; then
+    NOTARY_ZIP="$BIN_DIR/Caterm.notarize.zip"
+    rm -f "$NOTARY_ZIP"
+
+    echo "==> Zipping for notary submission"
+    /usr/bin/ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
+
+    echo "==> Submitting to Apple notary service (this can take a few minutes)"
+    xcrun notarytool submit "$NOTARY_ZIP" \
+        --keychain-profile "$CATERM_NOTARY_PROFILE" \
+        --wait
+
+    rm -f "$NOTARY_ZIP"
+
+    echo "==> Stapling ticket"
+    xcrun stapler staple "$APP"
+    xcrun stapler validate "$APP"
+    echo "==> Notarization OK"
+fi
+
 echo
 echo "Bundle: $APP"
 echo
-echo "Next steps:"
-echo "  1. Notarize (if shipping outside the App Store):"
-echo "       xcrun notarytool submit --keychain-profile <profile> $APP"
-echo "  2. Staple after notarization succeeds:"
-echo "       xcrun stapler staple $APP"
-echo "  3. Run two-Mac smoke per Manual/pre-ship-two-mac-smoke.md"
+if [[ -z "${CATERM_NOTARY_PROFILE:-}" ]]; then
+    echo "Next steps:"
+    echo "  1. Notarize (set CATERM_NOTARY_PROFILE and re-run, or run manually):"
+    echo "       xcrun notarytool submit --keychain-profile <profile> $APP"
+    echo "  2. Staple after notarization succeeds:"
+    echo "       xcrun stapler staple $APP"
+    echo "  3. Run two-Mac smoke per Manual/pre-ship-two-mac-smoke.md"
+else
+    echo "Next steps:"
+    echo "  1. Optionally wrap in a DMG: Scripts/build-dmg.sh"
+    echo "  2. Run two-Mac smoke per Manual/pre-ship-two-mac-smoke.md"
+fi

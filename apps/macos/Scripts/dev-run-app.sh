@@ -67,8 +67,12 @@ cp "$BIN_DIR/caterm-askpass" "$APP/Contents/MacOS/caterm-askpass"
 # (Static-linked .a inside the xcframework needs no runtime copy.)
 
 # Pick an icon if one is checked in (optional).
+# Strip xattrs after copy: icon generators (Image2Icon, etc.) routinely leave
+# com.apple.FinderInfo / ResourceFork / quarantine, which codesign rejects with
+# "resource fork, Finder information, or similar detritus not allowed".
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+    xattr -c "$APP/Contents/Resources/AppIcon.icns"
 fi
 
 cat > "$APP/Contents/Info.plist" <<EOF
