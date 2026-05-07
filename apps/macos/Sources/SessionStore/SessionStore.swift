@@ -74,6 +74,17 @@ public final class SessionStore: ObservableObject {
     /// the scheduled teardown via `cancel()`.
     private var teardownWorkItems: [UUID: DispatchWorkItem] = [:]
 
+	private let preflight: PreflightProbing
+
+	/// Per-tab attempt token — bumped on every `startConnection` invocation
+	/// so a stale async probe outcome from a cancelled retry cannot mutate
+	/// the current tab state.
+	private var connectionAttempts: [UUID: UInt64] = [:]
+
+	/// In-flight `startConnection` Tasks per tab. Tests use
+	/// `awaitConnectionAttempt(tabId:)` to await them deterministically.
+	private var pendingStartTasks: [UUID: Task<Void, Never>] = [:]
+
     /// Grace period in seconds before tearing down ControlMaster after the
     /// last tab for a host closes. Internal/mutable so tests can override
     /// it through `@testable import` (default 30s in production).
@@ -89,7 +100,8 @@ public final class SessionStore: ObservableObject {
     public init(askpassPath: String, knownHostsCaterm: String,
                 knownHostsUser: String, accessGroup: String?,
                 hostsURL: URL, keychain: KeychainStore,
-                controlMasterManager: ControlMasterTearDowning? = nil) {
+                controlMasterManager: ControlMasterTearDowning? = nil,
+                preflight: PreflightProbing = Preflight()) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
         self.knownHostsUser = knownHostsUser
@@ -97,6 +109,7 @@ public final class SessionStore: ObservableObject {
         self.hostsURL = hostsURL
         self.keychain = keychain
         self.controlMasterManager = controlMasterManager
+        self.preflight = preflight
         do {
             self.hosts = try HostPersistence.load(from: hostsURL)
         } catch {
@@ -214,6 +227,72 @@ public final class SessionStore: ObservableObject {
     public func markAuthenticating(tabId: UUID) {
         update(tabId) { $0.state = .authenticating(startedAt: Date()) }
     }
+
+	/// Single entry point for "kick off connection for this tab". Idempotent:
+	/// callers (`openTab`, `retryTab`, reconnect timer) can all invoke; the
+	/// attempt token guards stale results.
+	public func startConnection(tabId: UUID) {
+		let task = Task { @MainActor [weak self] in
+			guard let self else { return }
+			await self.runConnection(tabId: tabId)
+		}
+		pendingStartTasks[tabId] = task
+	}
+
+	private func runConnection(tabId: UUID) async {
+		guard let host = tabs.first(where: { $0.id == tabId })?.host else { return }
+		let token = (connectionAttempts[tabId] ?? 0) &+ 1
+		connectionAttempts[tabId] = token
+
+		guard (1...65535).contains(host.port) else {
+			applyIfCurrent(tabId: tabId, token: token) { tab in
+				tab.state = .failed(.networkUnreachable(.invalidPort(host.port)))
+			}
+			return
+		}
+
+		applyIfCurrent(tabId: tabId, token: token) { tab in
+			tab.state = .preflight(startedAt: Date())
+		}
+
+		let outcome = await preflight.probe(
+			host: host.hostname,
+			port: UInt16(host.port),
+			timeout: 5
+		)
+
+		applyIfCurrent(tabId: tabId, token: token) { tab in
+			switch outcome {
+			case .ok:
+				tab.surfaceGeneration += 1
+				tab.state = .authenticating(startedAt: Date())
+			case .failed(let reason):
+				tab.state = .failed(.networkUnreachable(reason))
+			}
+		}
+	}
+
+	private func applyIfCurrent(tabId: UUID, token: UInt64,
+	                            _ mutate: (inout Tab) -> Void) {
+		guard connectionAttempts[tabId] == token else { return }
+		update(tabId, mutate)
+	}
+
+	public func retryTab(tabId: UUID) {
+		update(tabId) {
+			$0.lastFailure = nil
+			$0.state = .idle
+		}
+		startConnection(tabId: tabId)
+	}
+
+	/// Test-only: await the most recent in-flight `startConnection` Task.
+	/// Marked public so XCTest can call it; production code never needs to.
+	public func awaitConnectionAttempt(tabId: UUID) async {
+		if let t = pendingStartTasks[tabId] {
+			await t.value
+		}
+	}
 
     public func markConnected(tabId: UUID) {
         update(tabId) {
