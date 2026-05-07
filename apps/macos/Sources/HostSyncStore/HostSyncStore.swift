@@ -623,7 +623,8 @@ public final class HostSyncStore: ObservableObject {
             guard let host = sessionStore.hosts.first(where: { $0.id == localHostId }) else { return }
             let input = RemoteHostCreateInput(
                 name: host.name, hostname: host.hostname,
-                port: host.port, username: host.username
+                port: host.port, username: host.username,
+                jumpHostServerId: host.jumpHostServerId
             )
             let out = try await client.createHost(input)
             try sessionStore.setServerId(out.id, for: localHostId)
@@ -645,7 +646,8 @@ public final class HostSyncStore: ObservableObject {
             guard let host = sessionStore.hosts.first(where: { $0.id == localHostId }) else { return }
             let input = RemoteHostUpdateInput(
                 id: serverId, name: host.name, hostname: host.hostname,
-                port: host.port, username: host.username
+                port: host.port, username: host.username,
+                jumpHostServerId: host.jumpHostServerId
             )
             try await client.updateHost(input)
 

@@ -388,8 +388,8 @@ public final class SessionStore: ObservableObject {
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
-    /// Replace metadata fields (name/hostname/port/username/updatedAt) without
-    /// touching credential or serverId. Used when a remote update lands.
+    /// Replace metadata fields (name/hostname/port/username/updatedAt/jumpHostServerId)
+    /// without touching credential or serverId. Used when a remote update lands.
     public func applyRemoteMetadata(localHostId: UUID, remote: RemoteHost) throws {
         guard let idx = hosts.firstIndex(where: { $0.id == localHostId }) else { return }
         hosts[idx].name = remote.name
@@ -397,6 +397,7 @@ public final class SessionStore: ObservableObject {
         hosts[idx].port = remote.port
         hosts[idx].username = remote.username
         hosts[idx].updatedAt = remote.updatedAt
+        hosts[idx].jumpHostServerId = remote.jumpHostServerId
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -410,7 +411,8 @@ public final class SessionStore: ObservableObject {
             name: remote.name, hostname: remote.hostname,
             port: remote.port, username: remote.username,
             credential: .password,
-            createdAt: remote.createdAt, updatedAt: remote.updatedAt
+            createdAt: remote.createdAt, updatedAt: remote.updatedAt,
+            jumpHostServerId: remote.jumpHostServerId
         )
         hosts.append(h)
         try HostPersistence.save(hosts, to: hostsURL)
