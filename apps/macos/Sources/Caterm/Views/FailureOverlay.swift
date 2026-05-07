@@ -8,6 +8,7 @@ import SwiftUI
 struct FailureOverlay: View {
 	let failure: FailureKind
 	let host: SSHHost
+	let chain: [SSHHost]
 	let onRetry: () -> Void
 	let onEditHost: () -> Void
 
@@ -24,6 +25,11 @@ struct FailureOverlay: View {
 					.font(.system(size: 14, weight: .medium))
 					.foregroundColor(.white)
 				hostLine
+				if !chain.isEmpty {
+					Text("via \(chain.map { "\($0.username)@\($0.hostname)" }.joined(separator: " → "))")
+						.font(.caption)
+						.foregroundStyle(.secondary)
+				}
 				if let detail = presentation.detail, !detail.isEmpty {
 					Text(detail)
 						.font(.system(size: 12, design: .monospaced))

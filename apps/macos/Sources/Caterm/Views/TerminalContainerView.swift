@@ -25,7 +25,7 @@ struct TerminalContainerView: View {
 		ZStack {
 			if let tab = store.tabs.first(where: { $0.id == tabId }) {
 				surfaceOrPlaceholder(for: tab)
-				stateOverlay(for: tab.state, host: tab.host)
+				stateOverlay(for: tab.state, host: tab.host, chain: tab.resolvedChain)
 			}
 		}
 		.animation(.easeOut(duration: 0.15),
@@ -49,18 +49,19 @@ struct TerminalContainerView: View {
 	}
 
 	@ViewBuilder
-	private func stateOverlay(for state: ConnectionState, host: SSHHost) -> some View {
+	private func stateOverlay(for state: ConnectionState, host: SSHHost, chain: [SSHHost]) -> some View {
 		switch state {
 		case .preflight(let startedAt):
-			ConnectingOverlay(stage: .preflight, host: host, startedAt: startedAt)
+			ConnectingOverlay(stage: .preflight, host: host, startedAt: startedAt, chain: chain)
 		case .authenticating(let startedAt):
-			ConnectingOverlay(stage: .authenticating, host: host, startedAt: startedAt)
+			ConnectingOverlay(stage: .authenticating, host: host, startedAt: startedAt, chain: chain)
 		case .reconnecting(let attempt, let nextRetryAt):
-			ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
+			ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt, host: host, chain: chain)
 		case .failed(let kind) where shouldShowFailureOverlay(kind):
 			FailureOverlay(
 				failure: kind,
 				host: host,
+				chain: chain,
 				onRetry: { store.retryTab(tabId: tabId) },
 				onEditHost: {
 					NotificationCenter.default.post(

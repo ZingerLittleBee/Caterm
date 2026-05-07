@@ -20,6 +20,7 @@ struct ConnectingOverlay: View {
 	let stage: ConnectingStage
 	let host: SSHHost
 	let startedAt: Date
+	let chain: [SSHHost]
 
 	@State private var now = Date()
 	private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
@@ -39,6 +40,11 @@ struct ConnectingOverlay: View {
 					.font(.system(size: 14, weight: .medium))
 					.foregroundColor(.white)
 				hostLine
+				if !chain.isEmpty {
+					Text("via \(chain.map { "\($0.username)@\($0.hostname)" }.joined(separator: " → "))")
+						.font(.caption)
+						.foregroundStyle(.secondary)
+				}
 				if elapsed >= 2 {
 					Text(String(format: "elapsed %.0fs", elapsed))
 						.font(.system(size: 11))
