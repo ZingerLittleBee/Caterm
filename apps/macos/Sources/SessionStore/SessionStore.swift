@@ -211,8 +211,8 @@ public final class SessionStore: ObservableObject {
         tabs.first(where: { $0.id == tabId })?.host.id
     }
 
-    public func markConnecting(tabId: UUID) {
-        update(tabId) { $0.state = .connecting(startedAt: Date()) }
+    public func markAuthenticating(tabId: UUID) {
+        update(tabId) { $0.state = .authenticating(startedAt: Date()) }
     }
 
     public func markConnected(tabId: UUID) {
@@ -245,7 +245,7 @@ public final class SessionStore: ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self else { return }
-            self.update(tabId) { $0.surfaceGeneration += 1; $0.state = .connecting(startedAt: Date()) }
+            self.update(tabId) { $0.surfaceGeneration += 1; $0.state = .authenticating(startedAt: Date()) }
         }
     }
 

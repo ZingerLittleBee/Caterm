@@ -137,7 +137,7 @@ final class EndToEndSSHTests: XCTestCase {
                                  hostsURL: tmpHostsURL,
                                  keychain: keychain)
         let tabId = store.openTab(host: host)
-        store.markConnecting(tabId: tabId)
+        store.markAuthenticating(tabId: tabId)
         store.markConnected(tabId: tabId)
         store.markChildExited(tabId: tabId, exitCode: 0)
         let tab = store.tabs.first { $0.id == tabId }

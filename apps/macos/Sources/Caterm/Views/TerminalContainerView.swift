@@ -38,7 +38,7 @@ struct TerminalContainerView: View {
 
 /// Renders one `SessionStore.Tab`'s libghostty surface. Independent of the
 /// connect-flow UI; just consumes a `tabId` and binds to its surface, wiring
-/// `markConnecting / markConnected / markChildExited` for state tracking.
+/// `markAuthenticating / markConnected / markChildExited` for state tracking.
 ///
 /// `GhosttySurfaceNSView.surface` is built lazily inside `viewDidMoveToWindow`,
 /// so we poll briefly until it's available before attaching the `onChildExit`
@@ -66,7 +66,7 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		}
 		let view = GhosttySurfaceNSView(command: cfg.command, env: cfg.env)
 		view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
-		store.markConnecting(tabId: tabId)
+		store.markAuthenticating(tabId: tabId)
 
 		let capturedTabId = tabId
 		Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
