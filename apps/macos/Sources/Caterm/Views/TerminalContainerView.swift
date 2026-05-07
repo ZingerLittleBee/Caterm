@@ -1,6 +1,7 @@
 import HostSyncStore
 import SessionStore
 import SettingsStore
+import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
 
@@ -23,22 +24,71 @@ struct TerminalContainerView: View {
 	var body: some View {
 		ZStack {
 			if let tab = store.tabs.first(where: { $0.id == tabId }) {
-				TerminalSurfaceRepresentable(
-					tabId: tabId,
-					backgroundTransparencyEnabled: backgroundTransparencyEnabled
-				)
-					.id("\(tabId)-\(tab.surfaceGeneration)")
-				if case let .reconnecting(attempt, nextRetryAt) = tab.state {
-					ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt)
-				}
+				surfaceOrPlaceholder(for: tab)
+				stateOverlay(for: tab.state, host: tab.host, chain: tab.resolvedChain)
 			}
+		}
+		.animation(.easeOut(duration: 0.15),
+		           value: store.tabs.first(where: { $0.id == tabId })?.state)
+	}
+
+	@ViewBuilder
+	private func surfaceOrPlaceholder(for tab: SessionStore.Tab) -> some View {
+		switch tab.state {
+		case .authenticating, .connected, .reconnecting:
+			TerminalSurfaceRepresentable(
+				tabId: tabId,
+				backgroundTransparencyEnabled: backgroundTransparencyEnabled
+			)
+			.id("\(tabId)-\(tab.surfaceGeneration)")
+
+		case .idle, .preflight, .failed:
+			// Inert SwiftUI background — no NSView, no $SHELL fork.
+			Color.black.opacity(0.95).ignoresSafeArea()
+		}
+	}
+
+	@ViewBuilder
+	private func stateOverlay(for state: ConnectionState, host: SSHHost, chain: [SSHHost]) -> some View {
+		switch state {
+		case .preflight(let startedAt):
+			ConnectingOverlay(stage: .preflight, host: host, startedAt: startedAt, chain: chain)
+		case .authenticating(let startedAt):
+			ConnectingOverlay(stage: .authenticating, host: host, startedAt: startedAt, chain: chain)
+		case .reconnecting(let attempt, let nextRetryAt):
+			ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt, host: host, chain: chain)
+		case .failed(let kind) where shouldShowFailureOverlay(kind):
+			FailureOverlay(
+				failure: kind,
+				host: host,
+				chain: chain,
+				onRetry: { store.retryTab(tabId: tabId) },
+				onEditHost: {
+					NotificationCenter.default.post(
+						name: .catermEditHostRequested,
+						object: nil,
+						userInfo: [CatermEditHostRequestedKeys.hostId: host.id]
+					)
+				}
+			)
+		case .idle, .connected, .failed:
+			EmptyView()
+		}
+	}
+
+	private func shouldShowFailureOverlay(_ kind: FailureKind) -> Bool {
+		switch kind {
+		case .cleanExit, .connectionDropped: return false
+		case .authOrSetupFail, .networkUnreachable: return true
 		}
 	}
 }
 
 /// Renders one `SessionStore.Tab`'s libghostty surface. Independent of the
 /// connect-flow UI; just consumes a `tabId` and binds to its surface, wiring
-/// `markConnecting / markConnected / markChildExited` for state tracking.
+/// `markConnected / markChildExited` for state tracking. The
+/// `.authenticating` transition is owned by `SessionStore.startConnection`
+/// and happens before this representable is even mounted.
 ///
 /// `GhosttySurfaceNSView.surface` is built lazily inside `viewDidMoveToWindow`,
 /// so we poll briefly until it's available before attaching the `onChildExit`
@@ -66,7 +116,6 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		}
 		let view = GhosttySurfaceNSView(command: cfg.command, env: cfg.env)
 		view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
-		store.markConnecting(tabId: tabId)
 
 		let capturedTabId = tabId
 		Task { @MainActor [weak store, weak surfaceRegistry, weak view] in

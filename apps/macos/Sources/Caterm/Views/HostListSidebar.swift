@@ -24,6 +24,13 @@ struct HostListSidebar: View {
 	@State var editingHost: SSHHost?
 	@State var errorMessage: String?
 	@State var pendingCredentialHost: SSHHost?
+	@State private var pendingFanoutDelete: PendingFanoutDelete?
+
+	private struct PendingFanoutDelete: Identifiable {
+		let host: SSHHost
+		let dependents: [SSHHost]
+		var id: UUID { host.id }
+	}
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -36,8 +43,7 @@ struct HostListSidebar: View {
 							Button("Edit") { editingHost = host }
 							Divider()
 							Button("Delete", role: .destructive) {
-								do { try store.deleteHost(id: host.id) }
-								catch { errorMessage = error.localizedDescription }
+								deleteHost(host)
 							}
 						}
 				}
@@ -114,6 +120,13 @@ struct HostListSidebar: View {
 				}
 				.environmentObject(store)
 			}
+			.onReceive(NotificationCenter.default.publisher(for: .catermEditHostRequested)) { note in
+				guard let hostId = note.userInfo?[CatermEditHostRequestedKeys.hostId] as? UUID,
+				      let host = store.hosts.first(where: { $0.id == hostId }) else {
+					return
+				}
+				editingHost = host
+			}
 			.sheet(item: $pendingCredentialHost) { host in
 				CredentialSetupView(host: host) { cred, secret in
 					try store.setHostCredentialMaterial(
@@ -144,6 +157,22 @@ struct HostListSidebar: View {
 				Button("OK") { errorMessage = nil }
 			} message: { msg in
 				Text(msg)
+			}
+			.alert(
+				"Delete \(pendingFanoutDelete?.host.name ?? "")?",
+				isPresented: Binding(
+					get: { pendingFanoutDelete != nil },
+					set: { if !$0 { pendingFanoutDelete = nil } }
+				),
+				presenting: pendingFanoutDelete
+			) { pending in
+				Button("Delete anyway", role: .destructive) {
+					do { try store.deleteHost(id: pending.host.id) }
+					catch { errorMessage = error.localizedDescription }
+				}
+				Button("Cancel", role: .cancel) { }
+			} message: { pending in
+				Text("\(pending.host.name) is used by \(pending.dependents.count) host(s) as their jump host. Deleting will leave their chain references dangling.")
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .catermAddHost)) { _ in
 				showingAddSheet = true
@@ -186,9 +215,28 @@ struct HostListSidebar: View {
 		case .promptCredentials:
 			pendingCredentialHost = host
 		case .openTab:
-			let tabId = store.openTab(host: host)
+			let tabId = store.openTab(host: host,
+			                          installTerminfo: preferences.installTerminfoEnabled)
 			onOpenTab(tabId)
 		}
+	}
+
+	private func deleteHost(_ host: SSHHost) {
+		// Never-synced hosts have no serverId, so no other host can chain through them.
+		guard let serverId = host.serverId else {
+			do { try store.deleteHost(id: host.id) }
+			catch { errorMessage = error.localizedDescription }
+			return
+		}
+		let dependents = store.hosts.filter {
+			$0.id != host.id && $0.jumpHostServerId == serverId
+		}
+		if dependents.isEmpty {
+			do { try store.deleteHost(id: host.id) }
+			catch { errorMessage = error.localizedDescription }
+			return
+		}
+		pendingFanoutDelete = PendingFanoutDelete(host: host, dependents: dependents)
 	}
 }
 
@@ -333,6 +381,13 @@ struct HostRow: View {
 				)
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
+			if host.jumpHostServerId != nil {
+				Image(systemName: "arrow.triangle.branch")
+					.font(.caption2)
+					.foregroundStyle(.secondary)
+					.help(chainTooltip(for: host))
+					.layoutPriority(1)
+			}
 			if store.needsCredentialSetup(host) {
 				Image(systemName: "lock")
 					.foregroundColor(.orange)
@@ -355,5 +410,23 @@ struct HostRow: View {
 		case .keyFile: return "lock.shield.fill"
 		case .agent: return "key.icloud.fill"
 		}
+	}
+
+	private func chainTooltip(for host: SSHHost) -> String {
+		var names: [String] = []
+		var cursor: String? = host.jumpHostServerId
+		var visited: Set<String> = []
+		while let nextSid = cursor {
+			if visited.contains(nextSid) { names.append("(cycle)"); break }
+			visited.insert(nextSid)
+			if let h = store.hosts.first(where: { $0.serverId == nextSid }) {
+				names.append(h.name)
+				cursor = h.jumpHostServerId
+			} else {
+				names.append("(deleted)")
+				break
+			}
+		}
+		return "via \(names.joined(separator: " → "))"
 	}
 }

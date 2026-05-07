@@ -34,10 +34,42 @@ public final class SessionStore: ObservableObject {
         public var reconnectAttempts: Int = 0
         public var lastFailure: FailureKind?
         public var surfaceGeneration: Int = 0
+        /// Resolved jump-host chain in dial order (deepest ancestor first).
+        /// Empty when the target has no `jumpHostServerId`. Populated at
+        /// `openTab` time so `runConnection` and `surfaceConfig` can use it.
+        public var resolvedChain: [SSHHost] = []
+        /// URL of the per-session ssh_config written by `SSHCommandBuilder.build`
+        /// for chain connections. Nil for direct (no-jump) connections. Cleaned
+        /// up by `closeTab` and `markChildExited`.
+        public var sshConfigURL: URL? = nil
+        /// Full `SSHCommandBuilder.Output` captured from the chain-aware build
+        /// in `runConnection`. Non-nil only when `resolvedChain` is non-empty
+        /// and the build succeeded. `surfaceConfig` returns its (command, env)
+        /// directly so the chain feature works end-to-end.
+        public var chainOutput: SSHCommandBuilder.Output? = nil
+        /// Whether to install terminfo on connect (v1.6 feature). Snapshotted
+        /// at `openTab` time so `runConnection` passes the correct value to
+        /// `SSHCommandBuilder.build` when building chain commands.
+        public var installTerminfo: Bool = false
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
             self.state = .idle
+        }
+        /// Convenience initialiser for pre-failed tabs created synchronously
+        /// in `openTab` when chain resolution or credential pre-check fails.
+        init(id: UUID, host: SSHHost, failedWith kind: FailureKind) {
+            self.id = id
+            self.host = host
+            self.state = .failed(kind)
+        }
+        /// Convenience initialiser for happy-path tabs that carry a pre-resolved chain.
+        init(id: UUID, host: SSHHost, resolvedChain: [SSHHost], installTerminfo: Bool = false) {
+            self.id = id
+            self.host = host
+            self.state = .idle
+            self.resolvedChain = resolvedChain
+            self.installTerminfo = installTerminfo
         }
     }
 
@@ -74,6 +106,18 @@ public final class SessionStore: ObservableObject {
     /// the scheduled teardown via `cancel()`.
     private var teardownWorkItems: [UUID: DispatchWorkItem] = [:]
 
+	private let preflight: PreflightProbing
+	private let configSink: SSHConfigSink
+
+	/// Per-tab attempt token — bumped on every `startConnection` invocation
+	/// so a stale async probe outcome from a cancelled retry cannot mutate
+	/// the current tab state.
+	private var connectionAttempts: [UUID: UInt64] = [:]
+
+	/// In-flight `startConnection` Tasks per tab. Tests use
+	/// `awaitConnectionAttempt(tabId:)` to await them deterministically.
+	private var pendingStartTasks: [UUID: Task<Void, Never>] = [:]
+
     /// Grace period in seconds before tearing down ControlMaster after the
     /// last tab for a host closes. Internal/mutable so tests can override
     /// it through `@testable import` (default 30s in production).
@@ -89,7 +133,9 @@ public final class SessionStore: ObservableObject {
     public init(askpassPath: String, knownHostsCaterm: String,
                 knownHostsUser: String, accessGroup: String?,
                 hostsURL: URL, keychain: KeychainStore,
-                controlMasterManager: ControlMasterTearDowning? = nil) {
+                controlMasterManager: ControlMasterTearDowning? = nil,
+                preflight: PreflightProbing = Preflight(),
+                configSink: SSHConfigSink = CatermSSHConfigSink()) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
         self.knownHostsUser = knownHostsUser
@@ -97,6 +143,8 @@ public final class SessionStore: ObservableObject {
         self.hostsURL = hostsURL
         self.keychain = keychain
         self.controlMasterManager = controlMasterManager
+        self.preflight = preflight
+        self.configSink = configSink
         do {
             self.hosts = try HostPersistence.load(from: hostsURL)
         } catch {
@@ -137,7 +185,40 @@ public final class SessionStore: ObservableObject {
 
     // MARK: - Tabs
 
-    public func openTab(host: SSHHost) -> UUID {
+    @discardableResult
+    public func openTab(host: SSHHost, installTerminfo: Bool = false) -> UUID {
+        // 1. Resolve the jump-host chain. Fail-fast if broken or cyclic.
+        let chain: [SSHHost]
+        do {
+            chain = try host.resolvedChain(in: hosts)
+        } catch ChainResolutionError.cycle, ChainResolutionError.missingHost {
+            let id = UUID()
+            let msg = "Jump host chain is broken — edit host to fix"
+            tabs.append(Tab(id: id, host: host,
+                            failedWith: .networkUnreachable(.other(code: 0, message: msg))))
+            return id
+        } catch {
+            let id = UUID()
+            let msg = "Jump host chain error: \(error)"
+            tabs.append(Tab(id: id, host: host,
+                            failedWith: .networkUnreachable(.other(code: 0, message: msg))))
+            return id
+        }
+
+        // 2. Credential pre-check: every ancestor in the chain must be ready.
+        // The target's credential state is handled by the interactive SSH auth
+        // flow (caterm-askpass). Ancestors cannot be interactively authenticated
+        // through a jump hop, so they must be preconfigured.
+        let needsCred = chain.first { needsCredentialSetup($0) }
+        if let h = needsCred {
+            let id = UUID()
+            let msg = "\(h.name) needs credentials configured first — connect to it directly to set them up"
+            tabs.append(Tab(id: id, host: host,
+                            failedWith: .networkUnreachable(.other(code: 0, message: msg))))
+            return id
+        }
+
+        // 3. Happy path — register with ControlMaster and start connection.
         // Re-opening a tab for the same host within the grace window
         // cancels any pending ControlMaster teardown so we keep reusing
         // the existing shared connection.
@@ -149,9 +230,11 @@ public final class SessionStore: ObservableObject {
         // Idempotent: re-registering the same destination is a no-op.
         let destination = "\(host.username)@\(host.hostname)"
         controlMasterManager?.register(hostId: host.id, destination: destination)
-        let tab = Tab(host: host)
-        tabs.append(tab)
-        return tab.id
+        let id = UUID()
+        tabs.append(Tab(id: id, host: host, resolvedChain: chain,
+                        installTerminfo: installTerminfo))
+        startConnection(tabId: id)
+        return id
     }
 
     /// Remove a tab from the store. The actual libghostty surface destruction
@@ -167,6 +250,14 @@ public final class SessionStore: ObservableObject {
     /// full SSH handshake cost again.
     public func closeTab(tabId: UUID) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        // Cancel any in-flight startConnection probe for this tab so we don't
+        // leak the underlying NWConnection while the user moves on.
+        pendingStartTasks.removeValue(forKey: tabId)?.cancel()
+        connectionAttempts.removeValue(forKey: tabId)
+        // Clean up any per-session ssh_config written for a chained connection.
+        if let configURL = tabs[idx].sshConfigURL {
+            configSink.cleanup(configURL)
+        }
         let hostId = tabs[idx].host.id
         tabs.remove(at: idx)
         let stillReferenced = tabs.contains { $0.host.id == hostId }
@@ -193,8 +284,18 @@ public final class SessionStore: ObservableObject {
     /// Build the (commandString, env) pair for a given tab. `installTerminfo`
     /// (v1.6) drives whether the resulting command appends an inline
     /// terminfo-install wrapper and a `TERM=xterm-ghostty` env override.
+    ///
+    /// For chained (jump-host) connections the full `SSHCommandBuilder.Output`
+    /// is captured in `tab.chainOutput` by `runConnection`. We return its
+    /// (command, env) directly so the chain feature works end-to-end. The
+    /// direct-path build is only invoked for single-hop (no-jump) tabs.
     public func surfaceConfig(for tabId: UUID, installTerminfo: Bool = false) -> (command: String, env: [(String, String)])? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
+        if let chainOut = tab.chainOutput {
+            var env = chainOut.env
+            if let accessGroup { env.append(("CATERM_ACCESS_GROUP", accessGroup)) }
+            return (chainOut.command, env)
+        }
         let cmd = SSHCommandBuilder.build(
             host: tab.host,
             askpassPath: askpassPath,
@@ -211,9 +312,132 @@ public final class SessionStore: ObservableObject {
         tabs.first(where: { $0.id == tabId })?.host.id
     }
 
-    public func markConnecting(tabId: UUID) {
-        update(tabId) { $0.state = .connecting(startedAt: Date()) }
-    }
+	/// Single entry point for "kick off connection for this tab". Idempotent:
+	/// callers (`openTab`, `retryTab`, reconnect timer) can all invoke; the
+	/// attempt token guards stale results.
+	public func startConnection(tabId: UUID) {
+		// Cancel any in-flight probe for this tab — its outcome would be
+		// discarded by the attempt-token guard anyway, but cancellation
+		// releases the underlying NWConnection and stops a pending Preflight.probe
+		// from holding a socket open for the full 5s timeout.
+		pendingStartTasks[tabId]?.cancel()
+		let task = Task { @MainActor [weak self] in
+			guard let self else { return }
+			await self.runConnection(tabId: tabId)
+		}
+		pendingStartTasks[tabId] = task
+	}
+
+	private func runConnection(tabId: UUID) async {
+		guard let tab = tabs.first(where: { $0.id == tabId }) else { return }
+		let host = tab.host
+		let chain = tab.resolvedChain
+		let token = (connectionAttempts[tabId] ?? 0) &+ 1
+		connectionAttempts[tabId] = token
+
+		// Determine the first TCP hop address. Defense-in-depth: openTab already
+		// validated the chain, but broken configurations can arise from race
+		// conditions (host deleted while tab is open).
+		guard let firstHop = host.firstHopAddress(in: hosts) else {
+			applyIfCurrent(tabId: tabId, token: token) { t in
+				let msg = "Jump host chain is broken — edit host to fix"
+				t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
+			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		guard (1...65535).contains(firstHop.port) else {
+			applyIfCurrent(tabId: tabId, token: token) { t in
+				t.state = .failed(.networkUnreachable(.invalidPort(firstHop.port)))
+			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		applyIfCurrent(tabId: tabId, token: token) { t in
+			t.state = .preflight(startedAt: Date())
+		}
+
+		let outcome = await preflight.probe(
+			host: firstHop.hostname,
+			port: UInt16(firstHop.port),
+			timeout: 5
+		)
+
+		applyIfCurrent(tabId: tabId, token: token) { t in
+			switch outcome {
+			case .ok:
+				// Capture the full chain Output from SSHCommandBuilder before
+				// transitioning to .authenticating so surfaceConfig callers see it.
+				if !chain.isEmpty {
+					do {
+						let output = try SSHCommandBuilder.build(
+							host: host,
+							ancestors: chain,
+							configSink: self.configSink,
+							askpassPath: self.askpassPath,
+							knownHostsCaterm: self.knownHostsCaterm,
+							knownHostsUser: self.knownHostsUser,
+							installTerminfo: t.installTerminfo
+						)
+						t.chainOutput = output
+						t.sshConfigURL = output.configURL
+					} catch {
+						let msg = "Failed to build chain SSH config: \(error)"
+						t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
+						return
+					}
+				}
+				t.surfaceGeneration += 1
+				t.state = .authenticating(startedAt: Date())
+			case .failed(let reason):
+				t.state = .failed(.networkUnreachable(reason))
+			}
+		}
+
+		// Clear our pending-task entry only if we are still the current attempt.
+		// If a newer startConnection() ran, it has already replaced the entry,
+		// and we must not stomp on it.
+		if connectionAttempts[tabId] == token {
+			pendingStartTasks.removeValue(forKey: tabId)
+		}
+	}
+
+	private func applyIfCurrent(tabId: UUID, token: UInt64,
+	                            _ mutate: (inout Tab) -> Void) {
+		guard connectionAttempts[tabId] == token else { return }
+		update(tabId, mutate)
+	}
+
+	public func retryTab(tabId: UUID) {
+		// Clean any ssh_config written by the previous attempt before starting
+		// a fresh connection. Without this the old URL would be leaked when
+		// `startConnection` overwrites `sshConfigURL` with a new value.
+		if let idx = tabs.firstIndex(where: { $0.id == tabId }),
+		   let oldURL = tabs[idx].sshConfigURL {
+			configSink.cleanup(oldURL)
+			tabs[idx].sshConfigURL = nil
+			tabs[idx].chainOutput = nil
+		}
+		update(tabId) {
+			$0.lastFailure = nil
+			$0.state = .idle
+		}
+		startConnection(tabId: tabId)
+	}
+
+	/// Test-only: await the most recent in-flight `startConnection` Task.
+	/// Marked public so XCTest can call it; production code never needs to.
+	public func awaitConnectionAttempt(tabId: UUID) async {
+		if let t = pendingStartTasks[tabId] {
+			await t.value
+		}
+	}
 
     public func markConnected(tabId: UUID) {
         update(tabId) {
@@ -224,6 +448,13 @@ public final class SessionStore: ObservableObject {
     }
 
     public func markChildExited(tabId: UUID, exitCode: Int32) {
+        // Clean up any per-session ssh_config before state transition.
+        if let idx = tabs.firstIndex(where: { $0.id == tabId }),
+           let configURL = tabs[idx].sshConfigURL {
+            configSink.cleanup(configURL)
+            tabs[idx].sshConfigURL = nil
+            tabs[idx].chainOutput = nil
+        }
         update(tabId) { tab in
             let kind = FailureKind.classify(exitCode: exitCode,
                                             hadConnected: tab.hadConnected)
@@ -245,7 +476,16 @@ public final class SessionStore: ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self else { return }
-            self.update(tabId) { $0.surfaceGeneration += 1; $0.state = .connecting(startedAt: Date()) }
+            // Bump surfaceGeneration synchronously here so SwiftUI tears down
+            // the dead libghostty surface immediately, even on unhealthy
+            // networks where the probe in startConnection will fail. The
+            // success-path bump inside runConnection is harmless — the id
+            // changes either way.
+            self.update(tabId) { $0.surfaceGeneration += 1 }
+            // Route through startConnection so the reconnect attempt also gets
+            // TCP preflight + typed networkUnreachable failure if the network
+            // is still down.
+            self.startConnection(tabId: tabId)
         }
     }
 
@@ -284,8 +524,8 @@ public final class SessionStore: ObservableObject {
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
-    /// Replace metadata fields (name/hostname/port/username/updatedAt) without
-    /// touching credential or serverId. Used when a remote update lands.
+    /// Replace metadata fields (name/hostname/port/username/updatedAt/jumpHostServerId)
+    /// without touching credential or serverId. Used when a remote update lands.
     public func applyRemoteMetadata(localHostId: UUID, remote: RemoteHost) throws {
         guard let idx = hosts.firstIndex(where: { $0.id == localHostId }) else { return }
         hosts[idx].name = remote.name
@@ -293,6 +533,7 @@ public final class SessionStore: ObservableObject {
         hosts[idx].port = remote.port
         hosts[idx].username = remote.username
         hosts[idx].updatedAt = remote.updatedAt
+        hosts[idx].jumpHostServerId = remote.jumpHostServerId
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -306,7 +547,8 @@ public final class SessionStore: ObservableObject {
             name: remote.name, hostname: remote.hostname,
             port: remote.port, username: remote.username,
             credential: .password,
-            createdAt: remote.createdAt, updatedAt: remote.updatedAt
+            createdAt: remote.createdAt, updatedAt: remote.updatedAt,
+            jumpHostServerId: remote.jumpHostServerId
         )
         hosts.append(h)
         try HostPersistence.save(hosts, to: hostsURL)
@@ -405,5 +647,80 @@ public final class SessionStore: ObservableObject {
 		}  // else: leave existing credential alone (e.g., .agent)
 		try HostPersistence.save(updated, to: hostsURL)
 		hosts = updated
+	}
+
+	// MARK: - Test helpers (internal — accessible via @testable import)
+
+	/// Inject a `sshConfigURL` onto a tab without going through the async
+	/// connection flow. Used by tests that want to verify `closeTab` cleanup.
+	internal func setSSHConfigURLForTest(_ url: URL, tabId: UUID) {
+		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+		tabs[idx].sshConfigURL = url
+	}
+
+	/// Synthesise a chain build and store the full `Output` on the tab,
+	/// simulating what `runConnection` does after a successful preflight probe.
+	/// Used by tests that need `surfaceConfig` to return a chain-aware result
+	/// without running the async connection flow.
+	///
+	/// Pass `installTerminfo: true` to exercise the terminfo-wrapping path
+	/// (I-1 regression: chain build must respect this flag).
+	internal func populateChainOutputForTest(tabId: UUID, installTerminfo: Bool = false) {
+		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+		do {
+			let output = try SSHCommandBuilder.build(
+				host: tabs[idx].host,
+				ancestors: tabs[idx].resolvedChain,
+				configSink: configSink,
+				askpassPath: askpassPath,
+				knownHostsCaterm: knownHostsCaterm,
+				knownHostsUser: knownHostsUser,
+				installTerminfo: installTerminfo
+			)
+			tabs[idx].chainOutput = output
+			tabs[idx].sshConfigURL = output.configURL
+		} catch {
+			// Test setup error — surface it so the calling test can diagnose it.
+			print("populateChainOutputForTest failed: \(error)")
+		}
+	}
+
+	/// Construct a `SessionStore` suitable for unit tests.
+	///
+	/// - `hosts`: Pre-populated host list; injected directly so no disk I/O
+	///   is needed.
+	/// - `credentialsAvailableFor`: Set of host `id`s for which
+	///   `needsCredentialSetup` should return `false`. The factory writes a
+	///   dummy password to the isolated test keychain for each listed id so
+	///   the existing Keychain-backed `needsCredentialSetup` logic works
+	///   without modification.
+	/// - `configSink`: Injected `SSHConfigSink`; defaults to
+	///   `InMemorySSHConfigSink` so tests never touch the filesystem.
+	public static func makeForTest(
+		hosts: [SSHHost] = [],
+		credentialsAvailableFor: Set<UUID> = [],
+		configSink: SSHConfigSink = InMemorySSHConfigSink()
+	) -> SessionStore {
+		let tmp = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-chain-test-\(UUID().uuidString).json")
+		let kc = KeychainStore(service: "com.caterm.test.\(UUID().uuidString)",
+		                       accessGroup: nil)
+		// Write a dummy password for each host that should appear credentialed.
+		for hostId in credentialsAvailableFor {
+			try? kc.set(account: "\(hostId.uuidString).password", secret: "dummy")
+		}
+		let store = SessionStore(
+			askpassPath: "/dev/null",
+			knownHostsCaterm: "/dev/null",
+			knownHostsUser: "/dev/null",
+			accessGroup: nil,
+			hostsURL: tmp,
+			keychain: kc,
+			configSink: configSink
+		)
+		// Inject hosts directly — bypasses disk persistence and
+		// avoids HostPersistence.save touching tmp.
+		store.hosts = hosts
+		return store
 	}
 }

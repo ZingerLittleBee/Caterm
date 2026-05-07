@@ -17,6 +17,7 @@ struct HostFormView: View {
 	let mode: HostFormMode
 	let onSubmit: (SSHHost, String?) -> Void
 	@Environment(\.dismiss) private var dismiss
+	@EnvironmentObject private var sessionStore: SessionStore
 
 	@State private var label = ""
 	@State private var hostname = ""
@@ -26,22 +27,7 @@ struct HostFormView: View {
 	@State private var keyPath = ""
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
-
-	enum CredKind: CaseIterable, Identifiable {
-		case password
-		case keyFile
-		case agent
-
-		var id: Self { self }
-
-		var displayName: String {
-			switch self {
-			case .password: "Password"
-			case .keyFile: "Key File"
-			case .agent: "Agent"
-			}
-		}
-	}
+	@State private var jumpHostServerId: String? = nil
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -59,6 +45,22 @@ struct HostFormView: View {
 					LabeledContent("Username") {
 						TextField("", text: $username)
 					}
+					LabeledContent("Via host") {
+						Picker("Via host", selection: $jumpHostServerId) {
+							Text("(none)").tag(String?.none)
+							ForEach(eligibleJumpHosts, id: \.host.id) { entry in
+								Text("\(entry.host.name) (\(entry.host.username)@\(entry.host.hostname))")
+									.tag(String?.some(entry.serverId))
+							}
+						}
+						.pickerStyle(.menu)
+						.labelsHidden()
+					}
+					if !chainPreviewText.isEmpty {
+						Text(chainPreviewText)
+							.font(.caption)
+							.foregroundStyle(chainHasMissingHost ? .red : .secondary)
+					}
 				}
 
 				Section("Authentication") {
@@ -70,7 +72,14 @@ struct HostFormView: View {
 					.pickerStyle(.segmented)
 					.labelsHidden()
 
-					authDetails
+					AuthMethodFields(
+						credKind: $credKind,
+						keyPath: $keyPath,
+						hasPassphrase: $hasPassphrase,
+						pendingSecret: $pendingSecret,
+						onBrowse: browseKey
+					)
+					.frame(minHeight: 96, alignment: .top)
 				}
 
 				// Theme override only makes sense for an existing host —
@@ -102,50 +111,99 @@ struct HostFormView: View {
 		.onAppear { populate() }
 	}
 
-	/// Variable-content area for the chosen credential method. Reserves a
-	/// consistent minimum height across all variants so that switching
-	/// methods doesn't shift the buttons or other sections.
-	@ViewBuilder
-	private var authDetails: some View {
-		VStack(alignment: .leading, spacing: 8) {
-			switch credKind {
-			case .password:
-				SecureField("Password", text: $pendingSecret)
-					.textContentType(.password)
-				footnote("Stored in Keychain.")
-			case .keyFile:
-				HStack {
-					TextField("Private key path", text: $keyPath)
-					Button("Browse…") { browseKey() }
-				}
-				Toggle("Key has passphrase", isOn: $hasPassphrase)
-				if hasPassphrase {
-					SecureField("Passphrase", text: $pendingSecret)
-						.textContentType(.password)
-				}
-				footnote(
-					hasPassphrase
-						? "Path stored locally; passphrase stored in Keychain."
-						: "Path stored locally."
-				)
-			case .agent:
-				footnote("Caterm will use the running ssh-agent for authentication.")
+	private var isValid: Bool {
+		guard !hostname.isEmpty,
+		      !username.isEmpty,
+		      credKind != .keyFile || !keyPath.isEmpty,
+		      Int(port).map({ (1...65535).contains($0) }) ?? false
+		else { return false }
+		// Chain must resolve — reject broken/cyclic jump references.
+		let cred: CredentialSource
+		switch credKind {
+		case .password: cred = .password
+		case .keyFile:  cred = .keyFile(keyPath: keyPath, hasPassphrase: hasPassphrase)
+		case .agent:    cred = .agent
+		}
+		var draft = HostFormView.buildHost(
+			mode: mode,
+			name: resolvedName,
+			hostname: hostname,
+			port: Int(port) ?? 22,
+			username: username,
+			credential: cred
+		)
+		draft.jumpHostServerId = jumpHostServerId
+		do {
+			_ = try draft.resolvedChain(in: sessionStore.hosts)
+		} catch {
+			return false
+		}
+		return true
+	}
+
+	private enum ChainPreviewState {
+		case none
+		case ok(names: [String])
+		case missing(names: [String])     // "(deleted)" or "(cycle)" reached
+		case cycle(names: [String])
+	}
+
+	/// Hosts eligible for use as the jump host for this form's target.
+	/// In `.add` mode the new host has no id yet, so only `serverId` presence
+	/// is required (no cycle risk from a host that doesn't exist yet).
+	private var eligibleJumpHosts: [(host: SSHHost, serverId: String)] {
+		let hosts: [SSHHost]
+		if case let .edit(currentHost) = mode {
+			hosts = HostFormCycleFilter.eligibleJumpHosts(
+				editingHost: currentHost,
+				allHosts: sessionStore.hosts
+			)
+		} else {
+			hosts = sessionStore.hosts.filter { $0.serverId != nil }
+		}
+		return hosts.compactMap { h in
+			guard let sid = h.serverId else { return nil }
+			return (h, sid)
+		}
+	}
+
+	private var chainPreview: ChainPreviewState {
+		guard let sid = jumpHostServerId else { return .none }
+		var names: [String] = []
+		var cursor: String? = sid
+		var visited: Set<String> = []
+		while let nextSid = cursor {
+			if visited.contains(nextSid) {
+				names.append("(cycle)")
+				return .cycle(names: names)
+			}
+			visited.insert(nextSid)
+			if let h = sessionStore.hosts.first(where: { $0.serverId == nextSid }) {
+				names.append(h.name)
+				cursor = h.jumpHostServerId
+			} else {
+				names.append("(deleted)")
+				return .missing(names: names)
 			}
 		}
-		.frame(minHeight: 96, alignment: .top)
+		return .ok(names: names)
 	}
 
-	private func footnote(_ text: String) -> some View {
-		Text(text)
-			.font(.caption)
-			.foregroundStyle(.secondary)
+	/// Human-readable chain preview, e.g. "Will connect via bastion → target".
+	/// Returns an empty string when no jump host is selected.
+	private var chainPreviewText: String {
+		switch chainPreview {
+		case .none: return ""
+		case .ok(let n), .missing(let n), .cycle(let n):
+			return "Will connect via \(n.joined(separator: " → "))"
+		}
 	}
 
-	private var isValid: Bool {
-		!hostname.isEmpty
-			&& !username.isEmpty
-			&& (credKind != .keyFile || !keyPath.isEmpty)
-			&& Int(port) != nil
+	private var chainHasMissingHost: Bool {
+		switch chainPreview {
+		case .missing, .cycle: return true
+		case .none, .ok: return false
+		}
 	}
 
 	/// Falls back to `username@hostname` when the user leaves the label
@@ -177,6 +235,7 @@ struct HostFormView: View {
 		case .agent:
 			credKind = .agent
 		}
+		jumpHostServerId = host.jumpHostServerId
 	}
 
 	private func browseKey() {
@@ -201,7 +260,7 @@ struct HostFormView: View {
 		case .agent:
 			cred = .agent
 		}
-		let host = HostFormView.buildHost(
+		var host = HostFormView.buildHost(
 			mode: mode,
 			name: resolvedName,
 			hostname: hostname,
@@ -209,6 +268,7 @@ struct HostFormView: View {
 			username: username,
 			credential: cred
 		)
+		host.jumpHostServerId = jumpHostServerId
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {

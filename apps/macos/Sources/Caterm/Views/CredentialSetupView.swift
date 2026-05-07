@@ -23,66 +23,62 @@ struct CredentialSetupView: View {
 	@State var errorMessage: String?
 	@State var isSaving = false
 
-	enum CredKind: String, CaseIterable, Identifiable {
-		case password
-		case keyFile = "key file"
-		case agent
-		var id: String { rawValue }
-	}
-
 	var body: some View {
-		Form {
-			Section {
-				VStack(alignment: .leading, spacing: 2) {
-					Text(host.name).font(.headline)
-					Text("\(host.username)@\(host.hostname):\(host.port)")
-						.font(.caption)
-						.foregroundColor(.secondary)
-				}
-			}
-
-			Section("Authentication") {
-				Picker("Method", selection: $credKind) {
-					ForEach(CredKind.allCases) { Text($0.rawValue).tag($0) }
-				}
-				.pickerStyle(.segmented)
-
-				if credKind == .keyFile {
-					HStack {
-						TextField("Private key path", text: $keyPath)
-						Button("Browse…") { browseKey() }
-					}
-					Toggle("Key has passphrase", isOn: $hasPassphrase)
-				}
-
-				if credKind == .password {
-					SecureField("Password (stored in Keychain)", text: $pendingSecret)
-				} else if credKind == .keyFile, hasPassphrase {
-					SecureField("Passphrase (stored in Keychain)", text: $pendingSecret)
-				}
-			}
-
-			Section {
-				HStack {
-					Button("Cancel") { onCancel() }
-						.disabled(isSaving)
-					Spacer()
-					Button("Save") { save() }
-						.keyboardShortcut(.return)
-						.disabled(!isValid || isSaving)
-				}
-			}
-
-			if let errorMessage {
+		VStack(spacing: 0) {
+			Form {
 				Section {
-					Text(errorMessage)
-						.foregroundColor(.red)
-						.font(.caption)
+					VStack(alignment: .leading, spacing: 2) {
+						Text(host.name).font(.headline)
+						Text("\(host.username)@\(host.hostname):\(host.port)")
+							.font(.caption)
+							.foregroundStyle(.secondary)
+					}
+				}
+
+				Section("Authentication") {
+					Picker("Method", selection: $credKind) {
+						ForEach(CredKind.allCases) { kind in
+							Text(kind.displayName).tag(kind)
+						}
+					}
+					.pickerStyle(.segmented)
+
+					AuthMethodFields(
+						credKind: $credKind,
+						keyPath: $keyPath,
+						hasPassphrase: $hasPassphrase,
+						pendingSecret: $pendingSecret,
+						onBrowse: browseKey
+					)
+					.frame(minHeight: 96, alignment: .top)
+				}
+
+				if let errorMessage {
+					Section {
+						Text(errorMessage)
+							.font(.caption)
+							.foregroundStyle(.red)
+					}
 				}
 			}
+			.formStyle(.grouped)
+			.scrollDisabled(true)
+
+			Divider()
+
+			HStack {
+				Button("Cancel") { onCancel() }
+					.keyboardShortcut(.cancelAction)
+					.disabled(isSaving)
+				Spacer()
+				Button("Save") { save() }
+					.keyboardShortcut(.defaultAction)
+					.disabled(!isValid || isSaving)
+			}
+			.padding(.horizontal, 20)
+			.padding(.vertical, 14)
 		}
-		.padding(20)
-		.frame(width: 480)
+		.frame(width: 480, height: 360)
 	}
 
 	/// Save is enabled only when the inputs are usable. For .keyFile we

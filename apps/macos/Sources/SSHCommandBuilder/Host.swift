@@ -20,12 +20,17 @@ public struct Host: Codable, Identifiable, Hashable {
 	/// `.updateRemoteCredentials` push has not yet succeeded; cleared by
 	/// HostSyncStore on push success. Persisted in hosts.json.
 	public var credentialMaterialDirty: Bool
+	/// CloudKit-stable reference to another saved host that should be used
+	/// as the jump host. Stored as `serverId` (not the local `id`) because
+	/// local UUIDs are regenerated on each device's pull. Nil = no chain.
+	public var jumpHostServerId: String?
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
 	            username: String, credential: CredentialSource,
 	            createdAt: Date = Date(), updatedAt: Date = Date(),
-	            credentialMaterialDirty: Bool = false) {
+	            credentialMaterialDirty: Bool = false,
+	            jumpHostServerId: String? = nil) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -36,14 +41,17 @@ public struct Host: Codable, Identifiable, Hashable {
 		self.createdAt = createdAt
 		self.updatedAt = updatedAt
 		self.credentialMaterialDirty = credentialMaterialDirty
+		self.jumpHostServerId = jumpHostServerId
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
-	// key) decodes successfully. Synthesized init(from:) would require
-	// the key and would fail every Plan A/B-written hosts.json.
+	// or `jumpHostServerId` key) decodes successfully. Synthesized
+	// init(from:) would require the keys and would fail every Plan A/B-written
+	// hosts.json.
 	private enum CodingKeys: String, CodingKey {
 		case id, serverId, name, hostname, port, username, credential
 		case createdAt, updatedAt, credentialMaterialDirty
+		case jumpHostServerId
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -58,8 +66,9 @@ public struct Host: Codable, Identifiable, Hashable {
 		createdAt = try c.decode(Date.self, forKey: .createdAt)
 		updatedAt = try c.decode(Date.self, forKey: .updatedAt)
 		credentialMaterialDirty = try c.decodeIfPresent(Bool.self, forKey: .credentialMaterialDirty) ?? false
+		jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
 	}
-	// Synthesized encode(to:) is fine — it writes the new key.
+	// Synthesized encode(to:) is fine — it writes all keys.
 }
 
 public enum CredentialSource: Codable, Hashable {

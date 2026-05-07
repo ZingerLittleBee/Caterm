@@ -17,7 +17,7 @@ public enum ReconnectScheduler {
 		guard attempt <= maxAttempts else { return false }
 		switch failureKind {
 		case .connectionDropped: return true
-		case .authOrSetupFail, .cleanExit: return false
+		case .authOrSetupFail, .cleanExit, .networkUnreachable: return false
 		}
 	}
 }
