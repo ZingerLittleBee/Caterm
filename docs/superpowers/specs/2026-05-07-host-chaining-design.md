@@ -385,17 +385,23 @@ on **this device**:
 
 ```json
 [
-  { "hostId": "<local UUID>", "user": "admin",
-    "hostname": "jump1.example.com", "port": 22,
+  { "hostId": "<local UUID>", "alias": "caterm-h-<uuid>",
+    "user": "admin", "hostname": "jump1.example.com", "port": 22,
     "keyPath": "/Users/u/.ssh/jump1_key" },
-  { "hostId": "<local UUID>", "user": "app",
-    "hostname": "target.example.com", "port": 22,
+  { "hostId": "<local UUID>", "alias": "caterm-h-<uuid>",
+    "user": "app",   "hostname": "target.example.com", "port": 22,
     "keyPath": null }
 ]
 ```
 
-`hostId` is the **local UUID** (Keychain is local). `keyPath` is null
-when the host's credential is `.password` or `.agent`.
+- `hostId` is the **local UUID** (Keychain is local).
+- `alias` is the same `caterm-h-<uuid>` string used as the `Host`
+  block name in the generated ssh_config. Carrying it lets the
+  askpass match prompts that use the alias instead of the resolved
+  hostname (different OpenSSH versions vary on whether the password
+  prompt prints the connect alias or the `HostName` value).
+- `keyPath` is null when the host's credential is `.password` or
+  `.agent`.
 
 The askpass binary's main routine, when `CATERM_CHAIN` is present:
 
@@ -403,11 +409,27 @@ The askpass binary's main routine, when `CATERM_CHAIN` is present:
 2. Match against two regexes:
    - Password: `^(?P<user>[^@]+)@(?P<host>[^:'\s]+)(:(?P<port>\d+))?'s password: $`
    - Passphrase: `^Enter passphrase for key '(?P<path>.+)': $`
-3. On password match: scan `CATERM_CHAIN` for the entry with matching
-   `user` and `hostname` (port enforced only when the prompt includes
-   one). Look up Keychain `<entry.hostId>.password`.
+3. On password match: scan `CATERM_CHAIN` and collect every entry
+   where `entry.user == matched.user` AND
+   (`entry.alias == matched.host` OR `entry.hostname == matched.host`).
+   Then narrow:
+   - If the prompt includes a port (`matched.port != nil`): keep
+     entries where `entry.port == matched.port`. (This always
+     yields ≤ 1 because chain construction guarantees alias-uniqueness
+     and `(user, hostname, port)` uniqueness within a chain.)
+   - If the prompt has no port: if exactly one candidate remains,
+     use it. If multiple remain (same user+hostname, different
+     ports), **fail closed**: exit 2 with diagnostic
+     `askpass: ambiguous chain entry for prompt: <prompt>`. Do NOT
+     pick the first match — picking the wrong host's secret can
+     leak a credential to the wrong remote.
+   - If zero candidates: exit 2 with diagnostic
+     `askpass: no chain entry matches prompt: <prompt>`.
+
+   On the unique candidate, look up Keychain `<entry.hostId>.password`.
 4. On passphrase match: scan `CATERM_CHAIN` for the entry with
-   matching `keyPath`. Look up Keychain
+   matching `keyPath`. (Paths are unique per host by construction —
+   IdentityFile is the resolved absolute path.) Look up Keychain
    `<entry.hostId>.keyPassphrase` — note the `.keyPassphrase` suffix,
    matching the prerequisite fix in §1.1.
 5. On no match (unrecognized prompt format) **while in chain mode**:
@@ -428,6 +450,7 @@ The matching logic is extracted into a pure helper in
 ```swift
 struct AskpassChainEntry: Decodable, Equatable {
     let hostId: String
+    let alias: String       // "caterm-h-<uuid>" — matches the Host block name in the generated ssh_config
     let user: String
     let hostname: String
     let port: Int
@@ -439,8 +462,19 @@ enum AskpassLookup: Equatable {
     case passphrase(hostId: String)
 }
 
-func resolveAskpassPrompt(_ prompt: String, chain: [AskpassChainEntry]) -> AskpassLookup?
+enum AskpassResolution: Equatable {
+    case found(AskpassLookup)
+    case ambiguous              // multiple candidates, prompt has no port disambiguator
+    case noMatch                // unknown prompt format or no chain entry
+}
+
+func resolveAskpassPrompt(_ prompt: String,
+                          chain: [AskpassChainEntry]) -> AskpassResolution
 ```
+
+`main.swift` maps `.ambiguous` and `.noMatch` to exit 2 with the
+appropriate diagnostic; `.found(.password(...))` and
+`.found(.passphrase(...))` drive the existing Keychain lookup.
 
 Unit-tested independently of any keychain or filesystem.
 
@@ -680,11 +714,22 @@ The existing `.executableTarget(name: "CatermAskpass", ...)` gains
   + "exclude hosts with nil serverId" case.
 - **`AskpassChainEntry` JSON decode** — round-trip golden + missing
   fields tolerance.
-- **`resolveAskpassPrompt(prompt:chain:)`** — password prompt with no
-  port, password prompt with `:port`, passphrase prompt with
-  absolute path, passphrase prompt with `~/...` path (must NOT
-  match — ssh always resolves these), unknown prompt format, empty
-  chain.
+- **`resolveAskpassPrompt(prompt:chain:)`** —
+  - password prompt with no port, single candidate → `.found`.
+  - password prompt with `:port`, picks the entry with matching port → `.found`.
+  - **password prompt where the host segment is the alias** (`caterm-h-<uuid>`)
+    rather than the resolved hostname → `.found`. (Different OpenSSH
+    versions emit either form; the resolver matches both.)
+  - **password prompt without port and TWO chain entries share
+    user + hostname differing only in port** → `.ambiguous`. Verifies
+    we don't silently serve the wrong secret.
+  - password prompt without port but only ONE matching candidate
+    even though another entry has a different user → `.found`.
+  - passphrase prompt with absolute path → `.found`.
+  - passphrase prompt with `~/...` path (must NOT match — ssh always
+    expands this before prompting) → `.noMatch`.
+  - unknown prompt format → `.noMatch`.
+  - empty chain → `.noMatch` for any prompt.
 - **`SSHConfigQuote.encode(_:)`** — plain ASCII (no quoting), value
   with space (wrapped in `"..."`), value with double quote (escaped
   to `\"`), value with backslash (escaped to `\\`), value with both
@@ -701,12 +746,14 @@ The existing `.executableTarget(name: "CatermAskpass", ...)` gains
   (deepest ancestor has no `ProxyJump`, others do), credential
   combinations (all keyFile, all agent, mixed, target password +
   jumps keyFile, target keyFile-with-passphrase + jumps password).
-  Asserts: alias names = `caterm-h-<uuid>`; `CATERM_CHAIN` env
-  contains every chain host; `Output.configURL` non-nil; ControlPath
-  uses `cm/<host-id>.sock` matching the existing convention; values
-  containing `\n` (e.g., a malicious hostname) cause `build()` to
-  throw `SSHConfigQuoteError.controlCharacter` rather than emit
-  attacker-controlled directives.
+  Asserts: alias names = `caterm-h-<uuid>`; **every alias in the
+  generated ssh_config is also present as `alias` on the
+  corresponding `CATERM_CHAIN` entry, byte-for-byte**; `CATERM_CHAIN`
+  env contains every chain host; `Output.configURL` non-nil;
+  ControlPath uses `cm/<host-id>.sock` matching the existing
+  convention; values containing `\n` (e.g., a malicious hostname)
+  cause `build()` to throw `SSHConfigQuoteError.controlCharacter`
+  rather than emit attacker-controlled directives.
 - **`RemoteHost` / `RemoteHostCreateInput` / `RemoteHostUpdateInput`
   Codable round-trips** — `jumpHostServerId` non-nil and nil
   encode/decode; old-payload decode (key absent) decodes to nil.
