@@ -130,12 +130,22 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		let gated = GatedPreflight()
 		let store = makeStore(preflight: gated)
 		let id = store.openTab(host: makeHost())
-		// openTab fires startConnection → token=1 (Task A, stale)
-		store.startConnection(tabId: id)  // token=2 — cancels Task A, still parks (Task B, stale)
-		store.startConnection(tabId: id)  // token=3 — cancels Task B, supersedes (Task C, current)
-
-		// Wait until all three probes are parked (openTab's + both explicit calls).
+		// openTab fires startConnection → token=1 (Task A, stale).
+		// Wait for openTab's probe to be parked before queueing the next one
+		// so array indices correspond to token order deterministically.
 		let deadline = Date().addingTimeInterval(2)
+		while gated.count() < 1, Date() < deadline {
+			await Task.yield()
+		}
+		XCTAssertEqual(gated.count(), 1, "openTab probe should be parked")
+
+		store.startConnection(tabId: id)  // token=2 — cancels Task A, parks Task B (stale)
+		while gated.count() < 2, Date() < deadline {
+			await Task.yield()
+		}
+		XCTAssertEqual(gated.count(), 2, "second probe should be parked")
+
+		store.startConnection(tabId: id)  // token=3 — cancels Task B, parks Task C (current)
 		while gated.count() < 3, Date() < deadline {
 			await Task.yield()
 		}

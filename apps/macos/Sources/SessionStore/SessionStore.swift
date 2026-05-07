@@ -344,10 +344,15 @@ public final class SessionStore: ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard let self else { return }
+            // Bump surfaceGeneration synchronously here so SwiftUI tears down
+            // the dead libghostty surface immediately, even on unhealthy
+            // networks where the probe in startConnection will fail. The
+            // success-path bump inside runConnection is harmless — the id
+            // changes either way.
+            self.update(tabId) { $0.surfaceGeneration += 1 }
             // Route through startConnection so the reconnect attempt also gets
             // TCP preflight + typed networkUnreachable failure if the network
-            // is still down. surfaceGeneration is bumped inside startConnection
-            // when probe succeeds.
+            // is still down.
             self.startConnection(tabId: tabId)
         }
     }
