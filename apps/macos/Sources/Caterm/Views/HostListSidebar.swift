@@ -114,6 +114,13 @@ struct HostListSidebar: View {
 				}
 				.environmentObject(store)
 			}
+			.onReceive(NotificationCenter.default.publisher(for: .catermEditHostRequested)) { note in
+				guard let hostId = note.userInfo?[CatermEditHostRequestedKeys.hostId] as? UUID,
+				      let host = store.hosts.first(where: { $0.id == hostId }) else {
+					return
+				}
+				editingHost = host
+			}
 			.sheet(item: $pendingCredentialHost) { host in
 				CredentialSetupView(host: host) { cred, secret in
 					try store.setHostCredentialMaterial(
