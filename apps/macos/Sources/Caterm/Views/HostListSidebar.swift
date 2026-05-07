@@ -24,6 +24,14 @@ struct HostListSidebar: View {
 	@State var editingHost: SSHHost?
 	@State var errorMessage: String?
 	@State var pendingCredentialHost: SSHHost?
+	@State private var pendingFanoutDelete: PendingFanoutDelete?
+
+	private struct PendingFanoutDelete: Identifiable {
+		let host: SSHHost
+		let serverId: String
+		let dependents: [SSHHost]
+		var id: UUID { host.id }
+	}
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -36,8 +44,7 @@ struct HostListSidebar: View {
 							Button("Edit") { editingHost = host }
 							Divider()
 							Button("Delete", role: .destructive) {
-								do { try store.deleteHost(id: host.id) }
-								catch { errorMessage = error.localizedDescription }
+								deleteHost(host)
 							}
 						}
 				}
@@ -152,6 +159,22 @@ struct HostListSidebar: View {
 			} message: { msg in
 				Text(msg)
 			}
+			.alert(
+				"Delete \(pendingFanoutDelete?.host.name ?? "")?",
+				isPresented: Binding(
+					get: { pendingFanoutDelete != nil },
+					set: { if !$0 { pendingFanoutDelete = nil } }
+				),
+				presenting: pendingFanoutDelete
+			) { pending in
+				Button("Delete anyway", role: .destructive) {
+					do { try store.deleteHost(id: pending.host.id) }
+					catch { errorMessage = error.localizedDescription }
+				}
+				Button("Cancel", role: .cancel) { }
+			} message: { pending in
+				Text("\(pending.host.name) is used by \(pending.dependents.count) host(s) as their jump host. Deleting will leave their chain references dangling.")
+			}
 			.onReceive(NotificationCenter.default.publisher(for: .catermAddHost)) { _ in
 				showingAddSheet = true
 			}
@@ -196,6 +219,19 @@ struct HostListSidebar: View {
 			let tabId = store.openTab(host: host)
 			onOpenTab(tabId)
 		}
+	}
+
+	private func deleteHost(_ host: SSHHost) {
+		let dependents = store.hosts.filter {
+			$0.id != host.id && $0.jumpHostServerId == host.serverId
+		}
+		if !dependents.isEmpty, let serverId = host.serverId {
+			pendingFanoutDelete = PendingFanoutDelete(
+				host: host, serverId: serverId, dependents: dependents)
+			return
+		}
+		do { try store.deleteHost(id: host.id) }
+		catch { errorMessage = error.localizedDescription }
 	}
 }
 
@@ -340,6 +376,13 @@ struct HostRow: View {
 				)
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
+			if host.jumpHostServerId != nil {
+				Image(systemName: "arrow.triangle.branch")
+					.font(.caption2)
+					.foregroundStyle(.secondary)
+					.help(chainTooltip(for: host))
+					.layoutPriority(1)
+			}
 			if store.needsCredentialSetup(host) {
 				Image(systemName: "lock")
 					.foregroundColor(.orange)
@@ -362,5 +405,23 @@ struct HostRow: View {
 		case .keyFile: return "lock.shield.fill"
 		case .agent: return "key.icloud.fill"
 		}
+	}
+
+	private func chainTooltip(for host: SSHHost) -> String {
+		var names: [String] = []
+		var cursor: String? = host.jumpHostServerId
+		var visited: Set<String> = []
+		while let nextSid = cursor {
+			if visited.contains(nextSid) { names.append("(cycle)"); break }
+			visited.insert(nextSid)
+			if let h = store.hosts.first(where: { $0.serverId == nextSid }) {
+				names.append(h.name)
+				cursor = h.jumpHostServerId
+			} else {
+				names.append("(deleted)")
+				break
+			}
+		}
+		return "via \(names.joined(separator: " → "))"
 	}
 }
