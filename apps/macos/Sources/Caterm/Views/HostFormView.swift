@@ -48,9 +48,9 @@ struct HostFormView: View {
 					LabeledContent("Via host") {
 						Picker("Via host", selection: $jumpHostServerId) {
 							Text("(none)").tag(String?.none)
-							ForEach(eligibleJumpHosts, id: \.id) { other in
-								Text("\(other.name) (\(other.username)@\(other.hostname))")
-									.tag(String?.some(other.serverId!))
+							ForEach(eligibleJumpHosts, id: \.host.id) { entry in
+								Text("\(entry.host.name) (\(entry.host.username)@\(entry.host.hostname))")
+									.tag(String?.some(entry.serverId))
 							}
 						}
 						.pickerStyle(.menu)
@@ -141,30 +141,41 @@ struct HostFormView: View {
 		return true
 	}
 
+	private enum ChainPreviewState {
+		case none
+		case ok(names: [String])
+		case missing(names: [String])     // "(deleted)" or "(cycle)" reached
+		case cycle(names: [String])
+	}
+
 	/// Hosts eligible for use as the jump host for this form's target.
 	/// In `.add` mode the new host has no id yet, so only `serverId` presence
 	/// is required (no cycle risk from a host that doesn't exist yet).
-	private var eligibleJumpHosts: [SSHHost] {
-		guard case let .edit(currentHost) = mode else {
-			return sessionStore.hosts.filter { $0.serverId != nil }
+	private var eligibleJumpHosts: [(host: SSHHost, serverId: String)] {
+		let hosts: [SSHHost]
+		if case let .edit(currentHost) = mode {
+			hosts = HostFormCycleFilter.eligibleJumpHosts(
+				editingHost: currentHost,
+				allHosts: sessionStore.hosts
+			)
+		} else {
+			hosts = sessionStore.hosts.filter { $0.serverId != nil }
 		}
-		return HostFormCycleFilter.eligibleJumpHosts(
-			editingHost: currentHost,
-			allHosts: sessionStore.hosts
-		)
+		return hosts.compactMap { h in
+			guard let sid = h.serverId else { return nil }
+			return (h, sid)
+		}
 	}
 
-	/// Human-readable chain preview, e.g. "Will connect via bastion → target".
-	/// Returns an empty string when no jump host is selected.
-	private var chainPreviewText: String {
-		guard let sid = jumpHostServerId else { return "" }
+	private var chainPreview: ChainPreviewState {
+		guard let sid = jumpHostServerId else { return .none }
 		var names: [String] = []
 		var cursor: String? = sid
 		var visited: Set<String> = []
 		while let nextSid = cursor {
 			if visited.contains(nextSid) {
 				names.append("(cycle)")
-				break
+				return .cycle(names: names)
 			}
 			visited.insert(nextSid)
 			if let h = sessionStore.hosts.first(where: { $0.serverId == nextSid }) {
@@ -172,14 +183,27 @@ struct HostFormView: View {
 				cursor = h.jumpHostServerId
 			} else {
 				names.append("(deleted)")
-				break
+				return .missing(names: names)
 			}
 		}
-		return "Will connect via \(names.joined(separator: " → "))"
+		return .ok(names: names)
+	}
+
+	/// Human-readable chain preview, e.g. "Will connect via bastion → target".
+	/// Returns an empty string when no jump host is selected.
+	private var chainPreviewText: String {
+		switch chainPreview {
+		case .none: return ""
+		case .ok(let n), .missing(let n), .cycle(let n):
+			return "Will connect via \(n.joined(separator: " → "))"
+		}
 	}
 
 	private var chainHasMissingHost: Bool {
-		chainPreviewText.contains("(deleted)") || chainPreviewText.contains("(cycle)")
+		switch chainPreview {
+		case .missing, .cycle: return true
+		case .none, .ok: return false
+		}
 	}
 
 	/// Falls back to `username@hostname` when the user leaves the label
