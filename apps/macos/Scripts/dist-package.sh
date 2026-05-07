@@ -21,6 +21,16 @@ set -euo pipefail
 #   CATERM_APP_ID             — bundle id (default: com.caterm.app)
 #   CATERM_DIST_VERSION       — CFBundleShortVersionString (default: 1.0.0)
 #   CATERM_DIST_BUILD         — CFBundleVersion (default: 1)
+#   CATERM_NOTARY_PROFILE     — keychain profile for `notarytool`. When set,
+#                               this script ditto-zips the .app, submits to
+#                               Apple notary service (synchronous --wait),
+#                               then staples the ticket back into the .app.
+#                               Create with:
+#                                 xcrun notarytool store-credentials <profile> \
+#                                     --apple-id <email> --team-id <TEAMID> \
+#                                     --password <app-specific-password>
+#                               Leave unset to skip — the bundle is still
+#                               valid for local install.
 #
 # Pre-conditions:
 #   `swift build -c release` completed, and dev-codesign.sh --profile
@@ -183,12 +193,48 @@ if echo "$helper_ents" | grep -Eq \
 fi
 
 echo "==> Verification OK"
+
+# ---------------------------------------------------------------------------
+# Optional: notarize + staple.
+#
+# `notarytool submit` accepts .zip / .pkg / .dmg, NOT a raw .app bundle, so
+# we ditto-zip first (ditto preserves resource forks + xattrs better than
+# `zip`, which Apple's docs explicitly recommend). After Apple issues a
+# ticket, `stapler staple` writes it into the .app's Contents/CodeResources
+# so Gatekeeper can validate offline.
+# ---------------------------------------------------------------------------
+if [[ -n "${CATERM_NOTARY_PROFILE:-}" ]]; then
+    NOTARY_ZIP="$BIN_DIR/Caterm.notarize.zip"
+    rm -f "$NOTARY_ZIP"
+
+    echo "==> Zipping for notary submission"
+    /usr/bin/ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
+
+    echo "==> Submitting to Apple notary service (this can take a few minutes)"
+    xcrun notarytool submit "$NOTARY_ZIP" \
+        --keychain-profile "$CATERM_NOTARY_PROFILE" \
+        --wait
+
+    rm -f "$NOTARY_ZIP"
+
+    echo "==> Stapling ticket"
+    xcrun stapler staple "$APP"
+    xcrun stapler validate "$APP"
+    echo "==> Notarization OK"
+fi
+
 echo
 echo "Bundle: $APP"
 echo
-echo "Next steps:"
-echo "  1. Notarize (if shipping outside the App Store):"
-echo "       xcrun notarytool submit --keychain-profile <profile> $APP"
-echo "  2. Staple after notarization succeeds:"
-echo "       xcrun stapler staple $APP"
-echo "  3. Run two-Mac smoke per Manual/pre-ship-two-mac-smoke.md"
+if [[ -z "${CATERM_NOTARY_PROFILE:-}" ]]; then
+    echo "Next steps:"
+    echo "  1. Notarize (set CATERM_NOTARY_PROFILE and re-run, or run manually):"
+    echo "       xcrun notarytool submit --keychain-profile <profile> $APP"
+    echo "  2. Staple after notarization succeeds:"
+    echo "       xcrun stapler staple $APP"
+    echo "  3. Run two-Mac smoke per Manual/pre-ship-two-mac-smoke.md"
+else
+    echo "Next steps:"
+    echo "  1. Optionally wrap in a DMG: Scripts/build-dmg.sh"
+    echo "  2. Run two-Mac smoke per Manual/pre-ship-two-mac-smoke.md"
+fi
