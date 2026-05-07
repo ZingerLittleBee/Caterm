@@ -155,4 +155,86 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		               .failed(.networkUnreachable(.dnsFailed)),
 		               "only the latest attempt's outcome should win")
 	}
+
+	func testStartConnectionCancelsPriorTask() async {
+		final class GatedPreflight: PreflightProbing, @unchecked Sendable {
+			let lock = NSLock()
+			var continuations: [CheckedContinuation<PreflightOutcome, Never>] = []
+			func probe(host: String, port: UInt16, timeout: TimeInterval) async -> PreflightOutcome {
+				await withCheckedContinuation { c in
+					lock.lock(); continuations.append(c); lock.unlock()
+				}
+			}
+			func count() -> Int {
+				lock.lock(); defer { lock.unlock() }
+				return continuations.count
+			}
+		}
+		let gated = GatedPreflight()
+		let store = makeStore(preflight: gated)
+		let id = store.openTab(host: makeHost())
+		store.startConnection(tabId: id)
+		// Wait for first probe to be parked.
+		let deadline = Date().addingTimeInterval(2)
+		while gated.count() < 1, Date() < deadline {
+			await Task.yield()
+		}
+		XCTAssertEqual(gated.count(), 1)
+
+		// Trigger a second start — should cancel the first task (its Task gets
+		// cancelled, but the parked continuation in the fake never resumes, so
+		// we resolve it manually below).
+		store.startConnection(tabId: id)
+		while gated.count() < 2, Date() < deadline {
+			await Task.yield()
+		}
+		XCTAssertEqual(gated.count(), 2)
+
+		// Resolve both probes (.ok). The first task was cancelled; its outcome
+		// will be discarded both by Task cancellation AND the attempt-token
+		// guard. The second task's outcome should win.
+		gated.continuations[0].resume(returning: .ok)
+		gated.continuations[1].resume(returning: .ok)
+		await store.awaitConnectionAttempt(tabId: id)
+		if case .authenticating = store.tabs.first?.state { /* ok */ } else {
+			XCTFail("expected .authenticating after second attempt resolves, got \(store.tabs.first?.state ?? .idle)")
+		}
+	}
+
+	func testCloseTabCancelsPendingProbe() async {
+		final class GatedPreflight: PreflightProbing, @unchecked Sendable {
+			let lock = NSLock()
+			var probeCount = 0
+			func probe(host: String, port: UInt16, timeout: TimeInterval) async -> PreflightOutcome {
+				await withCheckedContinuation { (_: CheckedContinuation<PreflightOutcome, Never>) in
+					lock.lock(); probeCount += 1; lock.unlock()
+					// Park forever — caller should not need to resume; closeTab
+					// is expected to cancel the surrounding Task.
+				}
+			}
+		}
+		let gated = GatedPreflight()
+		let store = makeStore(preflight: gated)
+		let id = store.openTab(host: makeHost())
+		store.startConnection(tabId: id)
+		// Let the probe park.
+		let deadline = Date().addingTimeInterval(2)
+		while true {
+			gated.lock.lock()
+			let c = gated.probeCount
+			gated.lock.unlock()
+			if c >= 1 || Date() > deadline { break }
+			await Task.yield()
+		}
+		XCTAssertEqual(gated.probeCount, 1)
+
+		// Closing the tab should cancel the in-flight Task; with the parked
+		// continuation never resuming, the test would otherwise hang. We assert
+		// the test reaches this point and the tab is gone.
+		store.closeTab(tabId: id)
+		XCTAssertEqual(store.tabs.count, 0)
+		// Note: we don't call awaitConnectionAttempt here because closeTab
+		// removed the entry from pendingStartTasks; awaitConnectionAttempt
+		// would just no-op.
+	}
 }

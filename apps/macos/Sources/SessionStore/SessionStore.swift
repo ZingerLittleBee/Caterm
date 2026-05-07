@@ -180,6 +180,10 @@ public final class SessionStore: ObservableObject {
     /// full SSH handshake cost again.
     public func closeTab(tabId: UUID) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+        // Cancel any in-flight startConnection probe for this tab so we don't
+        // leak the underlying NWConnection while the user moves on.
+        pendingStartTasks.removeValue(forKey: tabId)?.cancel()
+        connectionAttempts.removeValue(forKey: tabId)
         let hostId = tabs[idx].host.id
         tabs.remove(at: idx)
         let stillReferenced = tabs.contains { $0.host.id == hostId }
@@ -232,6 +236,11 @@ public final class SessionStore: ObservableObject {
 	/// callers (`openTab`, `retryTab`, reconnect timer) can all invoke; the
 	/// attempt token guards stale results.
 	public func startConnection(tabId: UUID) {
+		// Cancel any in-flight probe for this tab — its outcome would be
+		// discarded by the attempt-token guard anyway, but cancellation
+		// releases the underlying NWConnection and stops a pending Preflight.probe
+		// from holding a socket open for the full 5s timeout.
+		pendingStartTasks[tabId]?.cancel()
 		let task = Task { @MainActor [weak self] in
 			guard let self else { return }
 			await self.runConnection(tabId: tabId)
@@ -247,6 +256,9 @@ public final class SessionStore: ObservableObject {
 		guard (1...65535).contains(host.port) else {
 			applyIfCurrent(tabId: tabId, token: token) { tab in
 				tab.state = .failed(.networkUnreachable(.invalidPort(host.port)))
+			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
 			}
 			return
 		}
@@ -269,6 +281,13 @@ public final class SessionStore: ObservableObject {
 			case .failed(let reason):
 				tab.state = .failed(.networkUnreachable(reason))
 			}
+		}
+
+		// Clear our pending-task entry only if we are still the current attempt.
+		// If a newer startConnection() ran, it has already replaced the entry,
+		// and we must not stomp on it.
+		if connectionAttempts[tabId] == token {
+			pendingStartTasks.removeValue(forKey: tabId)
 		}
 	}
 
