@@ -19,7 +19,7 @@ set -euo pipefail
 #
 # Optional env:
 #   CATERM_APP_ID             — bundle id (default: com.caterm.app)
-#   CATERM_DIST_VERSION       — CFBundleShortVersionString (default: 0.1.0)
+#   CATERM_DIST_VERSION       — CFBundleShortVersionString (default: 1.0.0)
 #   CATERM_DIST_BUILD         — CFBundleVersion (default: 1)
 #
 # Pre-conditions:
@@ -34,7 +34,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/.build/release"
 APP="$BIN_DIR/Caterm.app"
 APP_BUNDLE_ID="${CATERM_APP_ID:-com.caterm.app}"
-APP_VERSION="${CATERM_DIST_VERSION:-0.1.0}"
+APP_VERSION="${CATERM_DIST_VERSION:-1.0.0}"
 APP_BUILD="${CATERM_DIST_BUILD:-1}"
 
 MAIN_ENT="$BIN_DIR/Caterm.distribution.entitlements"
