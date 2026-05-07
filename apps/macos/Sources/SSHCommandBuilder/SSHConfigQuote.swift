@@ -1,9 +1,10 @@
 import Foundation
 
 public enum SSHConfigQuoteError: Error, Equatable {
-	/// Value contains a newline (\n), carriage return (\r), or NUL.
-	/// ssh_config is line-oriented; embedded line terminators would
-	/// inject new directives. We reject rather than escape.
+	/// Value contains a C0 control byte (0x00–0x1F) other than tab.
+	/// ssh_config is byte-oriented and has no escape syntax for these;
+	/// rejection prevents directive injection (newline/carriage return)
+	/// and smuggling of invisible bytes (form-feed, vertical-tab, etc.).
 	case controlCharacter
 }
 
@@ -15,7 +16,11 @@ public enum SSHConfigQuote {
 		// Reject control characters that would break the line-oriented
 		// parser or could be smuggled in via UI fields.
 		for scalar in value.unicodeScalars {
-			if scalar == "\n" || scalar == "\r" || scalar == "\u{0}" {
+			// Reject all C0 control bytes (0x00–0x1F) except tab.
+			// ssh_config has no escape syntax for them; embedding any
+			// would either inject a directive (\n, \r) or smuggle an
+			// invisible byte through the parser into DNS / libc.
+			if scalar.value < 0x20 && scalar != "\t" {
 				throw SSHConfigQuoteError.controlCharacter
 			}
 		}
