@@ -11,6 +11,108 @@ public enum SSHCommandBuilder {
 		}
 	}
 
+	// MARK: - Per-host options helper (T9 — consumed by T10)
+
+	/// All per-host SSH options, ready for T10 to emit into either a
+	/// direct-path command or a ProxyJump/ProxyCommand chain leg.
+	internal struct PerHostOptions {
+		/// Raw hostname — quoting applied by the emitter (SSHConfigQuote or ShellQuote).
+		let hostName: String
+		let port: Int
+		/// Raw username — quoting applied by the emitter.
+		let user: String
+		/// Raw key-file path; nil for password / agent credentials.
+		let identityFile: String?
+		/// Each entry is "<key> <value>" with the value already encoded via
+		/// SSHConfigQuote.encode, ready for insertion into an ssh_config block.
+		let optionLines: [String]
+		/// Per-host environment variables (SSH_ASKPASS, CATERM_HOST_ID, …).
+		/// Only populated for the target host; jump hosts do not need askpass.
+		let env: [(String, String)]
+	}
+
+	/// Produce the per-host SSH options for one hop in a connection chain.
+	///
+	/// - Parameters:
+	///   - host: The SSH host whose options to build.
+	///   - isTarget: `true` for the final target; `false` for jump hosts.
+	///               Only the target host gets `SSH_ASKPASS` / credential env vars.
+	///   - askpassPath: Absolute path to the caterm-askpass helper binary.
+	///   - knownHostsCaterm: Absolute path to Caterm's own known_hosts file.
+	///   - knownHostsUser: Absolute path to the user's known_hosts file.
+	///   - accessGroup: Keychain access group (set by SessionStore, not here).
+	///
+	/// This function is **dead code** until T10 wires it. `build()` is unchanged.
+	internal static func perHostOptions(
+		for host: SSHHost,
+		isTarget: Bool,
+		askpassPath: String,
+		knownHostsCaterm: String,
+		knownHostsUser: String,
+		accessGroup: String?
+	) throws -> PerHostOptions {
+		var lines: [String] = []
+		var env: [(String, String)] = []
+
+		// Always-present connection options.
+		lines.append("StrictHostKeyChecking accept-new")
+		let knownHostsValue = "\(knownHostsCaterm) \(knownHostsUser)"
+		lines.append("UserKnownHostsFile \(try SSHConfigQuote.encode(knownHostsValue))")
+		lines.append("ControlMaster auto")
+		lines.append("ControlPersist 10m")
+		let controlPath = "~/Library/Caches/Caterm/cm/\(host.id.uuidString).sock"
+		lines.append("ControlPath \(try SSHConfigQuote.encode(controlPath))")
+
+		// Per-credential options.
+		var identityFile: String?
+		switch host.credential {
+		case .password:
+			lines.append("PreferredAuthentications password,keyboard-interactive")
+			lines.append("PubkeyAuthentication no")
+			lines.append("NumberOfPasswordPrompts 1")
+			if isTarget {
+				env = [
+					("SSH_ASKPASS", askpassPath),
+					("SSH_ASKPASS_REQUIRE", "force"),
+					("CATERM_HOST_ID", host.id.uuidString),
+					("CATERM_ASKPASS_KIND", "password"),
+				]
+			}
+
+		case let .keyFile(keyPath, hasPassphrase):
+			lines.append("IdentitiesOnly yes")
+			lines.append("PreferredAuthentications publickey")
+			lines.append("PasswordAuthentication no")
+			lines.append("KbdInteractiveAuthentication no")
+			lines.append("IdentityFile \(try SSHConfigQuote.encode(keyPath))")
+			identityFile = keyPath
+			if hasPassphrase, isTarget {
+				env = [
+					("SSH_ASKPASS", askpassPath),
+					("SSH_ASKPASS_REQUIRE", "force"),
+					("CATERM_HOST_ID", host.id.uuidString),
+					("CATERM_ASKPASS_KIND", "keyPassphrase"),
+				]
+			}
+
+		case .agent:
+			lines.append("BatchMode yes")
+		}
+
+		_ = accessGroup  // CATERM_ACCESS_GROUP is set by SessionStore, not here.
+
+		return PerHostOptions(
+			hostName: host.hostname,
+			port: host.port,
+			user: host.username,
+			identityFile: identityFile,
+			optionLines: lines,
+			env: env
+		)
+	}
+
+	// MARK: - Command argument model
+
 	/// One argument piece; either emitted raw (for ssh's own flags / constant
 	/// paths / numeric values) or single-quoted (for everything user-derived).
 	private enum Arg {
