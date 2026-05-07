@@ -21,7 +21,11 @@ struct ReconnectOverlay: View {
 				if !chain.isEmpty {
 					Text("via \(chain.map { "\($0.username)@\($0.hostname)" }.joined(separator: " → "))")
 						.font(.caption)
-						.foregroundStyle(.secondary)
+						.foregroundColor(.white.opacity(0.6))
+						.lineLimit(2)
+						.truncationMode(.middle)
+						.multilineTextAlignment(.center)
+						.frame(maxWidth: 360)
 				}
 				let remaining = max(0, nextRetryAt.timeIntervalSince(now))
 				if remaining > 0 {

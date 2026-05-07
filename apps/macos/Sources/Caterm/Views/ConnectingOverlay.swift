@@ -43,7 +43,11 @@ struct ConnectingOverlay: View {
 				if !chain.isEmpty {
 					Text("via \(chain.map { "\($0.username)@\($0.hostname)" }.joined(separator: " → "))")
 						.font(.caption)
-						.foregroundStyle(.secondary)
+						.foregroundColor(.white.opacity(0.6))
+						.lineLimit(2)
+						.truncationMode(.middle)
+						.multilineTextAlignment(.center)
+						.frame(maxWidth: 360)
 				}
 				if elapsed >= 2 {
 					Text(String(format: "elapsed %.0fs", elapsed))
