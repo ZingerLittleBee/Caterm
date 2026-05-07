@@ -158,6 +158,14 @@ dist: build-release ## Distribution build: release config + dist signing + bundl
 	bash Scripts/dev-codesign.sh --profile distribution
 	bash Scripts/dist-package.sh
 
+.PHONY: dmg
+dmg: ## wrap .build/release/Caterm.app in a UDZO dmg (run after `make dist`)
+	# Optional env (mirrors build-dmg.sh):
+	#   CATERM_DIST_VERSION    name suffix; default 1.0.0
+	#   CATERM_DIST_IDENTITY   if set, sign the dmg with the same Developer ID
+	#   CATERM_NOTARY_PROFILE  if set, notarize + staple the dmg
+	bash Scripts/build-dmg.sh
+
 .PHONY: bootstrap-askpass
 bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)
 	@CATERM_ASKPASS_STUFF=1 "$(ASKPASS_BIN)" || true
