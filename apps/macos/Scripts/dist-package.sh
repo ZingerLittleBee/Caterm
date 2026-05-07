@@ -78,8 +78,12 @@ mkdir -p "$APP/Contents/Resources"
 cp "$BIN_DIR/caterm" "$APP/Contents/MacOS/caterm"
 cp "$BIN_DIR/caterm-askpass" "$APP/Contents/MacOS/caterm-askpass"
 
+# Strip xattrs after copy: icon generators (Image2Icon, etc.) routinely leave
+# com.apple.FinderInfo / ResourceFork / quarantine, which codesign rejects with
+# "resource fork, Finder information, or similar detritus not allowed".
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+    xattr -c "$APP/Contents/Resources/AppIcon.icns"
 fi
 
 cat > "$APP/Contents/Info.plist" <<EOF
