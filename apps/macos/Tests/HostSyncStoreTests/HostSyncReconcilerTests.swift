@@ -117,6 +117,69 @@ final class HostSyncReconcilerTests: XCTestCase {
         XCTAssertTrue(ops.contains(.createLocal(remote: fresh)))
     }
 
+    // MARK: - Forwards divergence (Task 17)
+
+    func test_reconciler_forwardsDifferenceCausesUpdateLocal() {
+        // Equal updatedAt but forwards diverge — reconciler must still emit
+        // .updateLocal so the local copy converges to the remote forwards.
+        let t = Date(timeIntervalSince1970: 1000)
+        var local = SSHHost(name: "h", hostname: "h.example", port: 22,
+                            username: "u", credential: .password,
+                            createdAt: t, updatedAt: t, forwards: [])
+        local.serverId = "remote-1"
+        let remote = RemoteHost(id: "remote-1", name: "h", hostname: "h.example",
+                                port: 22, username: "u", authType: "key",
+                                createdAt: t, updatedAt: t,
+                                forwards: [
+                                    PortForward(kind: .local, bindPort: 5432,
+                                                remoteHost: "db", remotePort: 5432),
+                                ])
+        let ops = HostSyncReconciler.reconcileFullSnapshot(local: [local], remote: [remote])
+        XCTAssertTrue(ops.contains(where: {
+            if case .updateLocal(let id, _) = $0, id == local.id { return true }
+            return false
+        }))
+    }
+
+    func test_reconciler_delta_forwardsDifferenceCausesUpdateLocal() {
+        let t = Date(timeIntervalSince1970: 1000)
+        var local = SSHHost(name: "h", hostname: "h.example", port: 22,
+                            username: "u", credential: .password,
+                            createdAt: t, updatedAt: t, forwards: [])
+        local.serverId = "remote-1"
+        let remote = RemoteHost(id: "remote-1", name: "h", hostname: "h.example",
+                                port: 22, username: "u", authType: "key",
+                                createdAt: t, updatedAt: t,
+                                forwards: [
+                                    PortForward(kind: .remote, bindPort: 8080,
+                                                remoteHost: "localhost", remotePort: 80),
+                                ])
+        let ops = HostSyncReconciler.reconcileDelta(
+            local: [local], changedHosts: [remote], deletedHostIDs: []
+        )
+        XCTAssertTrue(ops.contains(where: {
+            if case .updateLocal(let id, _) = $0, id == local.id { return true }
+            return false
+        }))
+    }
+
+    func test_reconciler_equalForwardsAndUpdatedAtIsNoOp() {
+        // Sanity: equal updatedAt AND equal forwards → no op.
+        let t = Date(timeIntervalSince1970: 1000)
+        let fwd = [PortForward(kind: .local, bindPort: 9000,
+                                remoteHost: "svc", remotePort: 9000)]
+        var local = SSHHost(name: "h", hostname: "h.example", port: 22,
+                            username: "u", credential: .password,
+                            createdAt: t, updatedAt: t, forwards: fwd)
+        local.serverId = "remote-1"
+        let remote = RemoteHost(id: "remote-1", name: "h", hostname: "h.example",
+                                port: 22, username: "u", authType: "key",
+                                createdAt: t, updatedAt: t,
+                                forwards: fwd)
+        let ops = HostSyncReconciler.reconcileFullSnapshot(local: [local], remote: [remote])
+        XCTAssertTrue(ops.isEmpty)
+    }
+
     func test_reconciler_neverEmitsUpdateRemoteCredentials() {
         // Mix of local-only, remote-only, and mismatched updatedAt entries.
         let local = [
