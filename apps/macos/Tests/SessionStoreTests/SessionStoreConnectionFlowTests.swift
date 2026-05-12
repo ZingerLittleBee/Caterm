@@ -17,6 +17,9 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 			lastPort = port
 			return nextOutcome
 		}
+		func probeLocalBind(address _: String, port _: UInt16) async -> PortBindOutcome {
+			.available
+		}
 	}
 
 	private func makeStore(preflight: PreflightProbing = FakePreflight()) -> SessionStore {
@@ -122,6 +125,9 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 					lock.lock(); continuations.append(c); lock.unlock()
 				}
 			}
+			func probeLocalBind(address _: String, port _: UInt16) async -> PortBindOutcome {
+				.available
+			}
 			func count() -> Int {
 				lock.lock(); defer { lock.unlock() }
 				return continuations.count
@@ -177,6 +183,9 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 					lock.lock(); continuations.append(c); lock.unlock()
 				}
 			}
+			func probeLocalBind(address _: String, port _: UInt16) async -> PortBindOutcome {
+				.available
+			}
 			func count() -> Int {
 				lock.lock(); defer { lock.unlock() }
 				return continuations.count
@@ -223,6 +232,9 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 					// Park forever — caller should not need to resume; closeTab
 					// is expected to cancel the surrounding Task.
 				}
+			}
+			func probeLocalBind(address _: String, port _: UInt16) async -> PortBindOutcome {
+				.available
 			}
 		}
 		let gated = GatedPreflight()
