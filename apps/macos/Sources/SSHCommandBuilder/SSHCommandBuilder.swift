@@ -110,6 +110,22 @@ public enum SSHCommandBuilder {
 
 		_ = accessGroup  // CATERM_ACCESS_GROUP is set by SessionStore, not here.
 
+		// Forwards: target only. OpenSSH's ExitOnForwardFailure is a global
+		// option; we enable it solely when every forward is required so
+		// optional forwards don't take down the connection on bind failure.
+		// (See spec §"Known Limitations" for the mixed-required-and-optional
+		// remote-bind silent-failure caveat.)
+		if isTarget, !host.forwards.isEmpty {
+			var anyOptional = false
+			for fwd in host.forwards {
+				lines.append(try fwd.sshConfigLine())
+				if !fwd.required { anyOptional = true }
+			}
+			if !anyOptional {
+				lines.append("ExitOnForwardFailure yes")
+			}
+		}
+
 		return PerHostOptions(
 			hostName: host.hostname,
 			port: host.port,
