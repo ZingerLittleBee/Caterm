@@ -30,6 +30,30 @@ public struct RemoteHost: Codable, Equatable, Identifiable {
         self.jumpHostServerId = jumpHostServerId
         self.forwards = forwards
     }
+
+    // Explicit decoder so legacy server payloads (no `forwards` column —
+    // e.g. self-hosted servers that haven't migrated yet) decode successfully.
+    // Synthesized init(from:) would treat `forwards` as required and crash
+    // every pull from a current production server (spec §7.1.x forward-compat).
+    private enum CodingKeys: String, CodingKey {
+        case id, name, hostname, port, username, authType
+        case createdAt, updatedAt, jumpHostServerId, forwards
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        hostname = try c.decode(String.self, forKey: .hostname)
+        port = try c.decode(Int.self, forKey: .port)
+        username = try c.decode(String.self, forKey: .username)
+        authType = try c.decode(String.self, forKey: .authType)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
+        forwards = try c.decodeIfPresent([PortForward].self, forKey: .forwards) ?? []
+    }
+    // Synthesized encode(to:) is fine — it writes all keys.
 }
 
 /// Payload for `sshHost.create`. Per spec §7.1.2, Swift v1.1 always sends
