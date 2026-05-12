@@ -88,4 +88,26 @@ public struct PortForward: Codable, Hashable, Identifiable {
 			}
 		}
 	}
+
+	/// Serializes this forward to one `ssh_config` line. Caller is responsible
+	/// for prepending any indentation. Values that contain whitespace or
+	/// control characters are encoded via `SSHConfigQuote.encode`.
+	public func sshConfigLine() throws -> String {
+		let bindPart: String
+		if let addr = bindAddress, !addr.isEmpty {
+			bindPart = "\(addr):\(bindPort)"
+		} else {
+			bindPart = String(bindPort)
+		}
+		switch kind {
+		case .local:
+			let target = "\(remoteHost ?? ""):\(remotePort ?? 0)"
+			return "LocalForward \(try SSHConfigQuote.encode(bindPart)) \(try SSHConfigQuote.encode(target))"
+		case .remote:
+			let target = "\(remoteHost ?? ""):\(remotePort ?? 0)"
+			return "RemoteForward \(try SSHConfigQuote.encode(bindPart)) \(try SSHConfigQuote.encode(target))"
+		case .dynamic:
+			return "DynamicForward \(try SSHConfigQuote.encode(bindPart))"
+		}
+	}
 }
