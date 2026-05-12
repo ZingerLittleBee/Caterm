@@ -231,19 +231,41 @@ for forward in host.forwards where forward.kind != .remote {
             failConnection(.portForwardBindFailed(forward: forward, reason: reason))
             return
         } else {
-            // Optional: continue connection, record a soft notice.
-            bannerState.appendSkippedForwardNotice(forward: forward, reason: reason)
+            // Optional: continue connection, append a soft notice to
+            // SessionStore's own @Published state. The view layer
+            // observes it; SessionStore must NOT reach into the UI
+            // target.
+            skippedForwardNotices.append(.init(hostId: host.id, forward: forward, reason: reason))
         }
     }
 }
 ```
+
+### Crossing the module boundary
+
+`SettingsBannerState` lives in the `Caterm` UI target; `SessionStore` is a separate Swift package and must not depend on it. New `@Published` state on `SessionStore` carries notices upward instead:
+
+```swift
+// In SessionStore.swift, alongside other @Published fields:
+public struct SkippedForwardNotice: Identifiable, Equatable {
+    public let id: UUID = UUID()
+    public let hostId: UUID
+    public let forward: PortForward
+    public let reason: PortForward.BindFailureReason
+    public let timestamp: Date = Date()
+}
+@Published public var skippedForwardNotices: [SkippedForwardNotice] = []
+public func clearSkippedForwardNotices(forHost: UUID? = nil) { /* ... */ }
+```
+
+`MainWindow` observes `store.skippedForwardNotices` via the existing `@EnvironmentObject var store: SessionStore` and renders the yellow `Banner` from a derived value (similar to how `bannerState.diagnosticMessages` drives `DiagnosticBanner`). Notices for a host are cleared by `clearSkippedForwardNotices(forHost:)` when the user reconnects that host (in `startConnection`'s entry path).
 
 `.remote` forwards bind on the remote side and **cannot be locally probed**. Required remote-forward failures are only surfaced when `ExitOnForwardFailure=yes` is set (all-required case) — see §"Known Limitations".
 
 ### Failure surface
 
 - `required && local bind fails` → connection aborts; user sees `FailureOverlay` (existing component) with the new copy.
-- `!required && local bind fails` → connection proceeds; a yellow info `Banner` (reuses the existing settings-style banner component in `MainWindow.swift`, not the red `DiagnosticBanner`) lists which optional forwards were skipped. Backed by a new `skippedForwardNotices: [String]` field on `SettingsBannerState`.
+- `!required && local bind fails` → connection proceeds; a yellow info `Banner` (reuses the existing settings-style banner component in `MainWindow.swift`, not the red `DiagnosticBanner`) lists which optional forwards were skipped. Backed by `@Published var skippedForwardNotices` **on `SessionStore`** (see §"Crossing the module boundary" above) — not on the UI-target `SettingsBannerState`.
 
 ---
 
@@ -350,7 +372,8 @@ Adding `forwards` to `Host` is **not** sufficient. Hosts flow through several DT
 | Server DTO | `ServerSyncClient/RemoteHost.swift` — `RemoteHost` struct | Add `forwards: [PortForward]` (encoded inline as JSON-compatible array; or as a String if the server stores it opaquely — decided by the server schema, but the **Swift type is `[PortForward]`** with a custom Codable bridge if needed) |
 | Server create payload | `ServerSyncClient/RemoteHost.swift` — `RemoteHostCreateInput` | Add `forwards` field |
 | Server update payload | `ServerSyncClient/RemoteHost.swift` — `RemoteHostUpdateInput` | Add `forwards` field (optional, same as other update fields) |
-| CloudKit mapping | `CloudKitSyncClient/CKRecordHostMapping.swift` | Both directions: push writes `record["forwards"] = jsonString`; pull decodes `record["forwards"] as? String` → JSON decode → `[PortForward]`; absent → `[]`; corrupt JSON → `[]` + diagnostic log (never fail the whole sync) |
+| CloudKit mapping | `CloudKitSyncClient/CKRecordHostMapping.swift` | Both directions: push writes `record["forwards"] = jsonString`; pull decodes `record["forwards"] as? String` → JSON decode → `[PortForward]`; absent → `[]`; corrupt JSON → `[]` + diagnostic log (never fail the whole sync). **Push must also bump `record[Field.metadataUpdatedAt] = host.updatedAt`** — already done at line 67 of the existing update path, but the precondition is that `host.updatedAt` itself is bumped on every forwards mutation (see next row) |
+| `updatedAt` bump on forwards edit | `SessionStore.swift` — `updateHost(_:)` / any new `setForwards(...)` call site | Every code path that mutates `Host.forwards` MUST bump `host.updatedAt` before persisting / scheduling push. Without this, `metadataUpdatedAt` on the CKRecord stays stale; remote LWW (which prefers `metadataUpdatedAt`, then `modificationDate`, then `creationDate` per `CKRecordHostMapping.swift:111-113`) ignores the push, and pulls on other devices skip `updateLocal`. Add a unit test that mutates `forwards` via the production API and asserts `updatedAt > previousUpdatedAt` |
 | Reconciler diff input | `HostSyncStore/HostSyncReconciler.swift` — `diff(local:remote:)` | If `local.forwards != remote.forwards`, classify as a host-level update (no separate operation type) |
 | SessionStore apply (update path) | `SessionStore/SessionStore.swift:529` — `applyRemoteMetadata(localHostId:remote:)` | Add `hosts[idx].forwards = remote.forwards` to the field-copy block |
 | SessionStore apply (insert path) | `SessionStore/SessionStore.swift:543` — `addRemoteHost(_:)` | Add `forwards: remote.forwards` to the `SSHHost(...)` constructor call |
@@ -391,47 +414,46 @@ Forwards ride with the host as a single LWW unit. The whole `forwards` array is 
 
 ### Problem
 
-`SSHCommandBuilder.perHostOptions` emits `ControlMaster auto` + `ControlPersist 10m` for every host. The first ssh invocation becomes the master and is the process that physically holds the `LocalForward` listeners. When the user closes the terminal tab:
+`SSHCommandBuilder.perHostOptions` emits `ControlMaster auto` + `ControlPersist 10m` for every host. The first ssh invocation becomes the master and physically holds the `LocalForward` listeners. When the user closes the last terminal tab for a host, `SessionStore.closeTab(tabId:)` (line 251) already calls `scheduleTeardown(hostId:)` (line 269), which waits `teardownGraceSeconds` (default **30 s**, not 10 min) before issuing `tearDown(hostId:)`. The 30 s grace exists so quick "close + reconnect" still benefits from a warm master.
 
-1. The user-facing ssh client exits → tab disappears.
-2. With `ControlPersist=10m`, the **master daemonizes and keeps running** for 10 minutes (so subsequent ssh / SFTP attaches are fast).
-3. The forward listeners on the master process **persist with it** — for up to 10 minutes after the user closed the tab.
+For hosts with forwards, even 30 s is wrong: a closed terminal that still has port 5432 bound on the user's Mac is surprising. We collapse the grace to 0 for these.
 
-This violates the spec's "forwards live and die with the session" promise.
+### Fix: skip the teardown grace when the host has forwards
 
-### Fix: explicit teardown on tab close for hosts with forwards
+`SessionStore` already holds an injected `controlMasterManager: ControlMasterTearDowning?` (line 102) — the protocol exposed at line 21 has `tearDown(hostId:) async` and is the **only** call site `SessionStore` must use. Direct reference to `ControlMasterManager.shared` would re-introduce the package-dependency cycle the protocol was created to avoid.
 
-`ControlMasterManager.tearDown(hostId:)` already exists (`apps/macos/Sources/FileTransferStore/ControlMasterManager.swift:64`) and issues `ssh -S <socket> -O exit <dest>`, which kills the master process and its listeners atomically.
-
-`SessionStore.closeTab(tabId:)` gains a post-step:
+`SessionStore.closeTab(tabId:)` changes:
 
 ```swift
 public func closeTab(tabId: UUID) {
-    guard let tab = tabs.first(where: { $0.id == tabId }) else { return }
-    // ...existing teardown of tab + surface...
+    // ...existing: remove from tabs, mark surface for teardown, etc.
+    let hostHadForwards = !tab.host.forwards.isEmpty
+    let isLastTabForHost = !tabs.contains(where: { $0.host.id == tab.host.id })
 
-    // NEW: if this host had any forwards bound to its master, kill the
-    // master immediately so forwards don't outlive the session. Hosts
-    // without forwards keep the existing 10-minute ControlPersist
-    // behavior — SFTP browsing and quick reconnect benefit from it.
-    if !tab.host.forwards.isEmpty {
-        Task { await ControlMasterManager.shared.tearDown(hostId: tab.host.id) }
+    if isLastTabForHost {
+        if hostHadForwards {
+            // Forwards outliving the session is observable to the user
+            // (listening sockets stay bound). Skip the 30 s grace.
+            Task { await controlMasterManager?.tearDown(hostId: tab.host.id) }
+        } else {
+            scheduleTeardown(hostId: tab.host.id)  // existing 30 s grace
+        }
     }
 }
 ```
 
 ### Differentiated behavior
 
-| Host has forwards? | Tab close behavior | Reason |
-|---|---|---|
-| No | ControlMaster persists 10m (existing) | Speeds up SFTP file drawer + quick reconnect; no listener exposure risk |
-| Yes | Master torn down immediately | Forwards die with session; honors spec promise |
+| Host has forwards? | Tab close behavior |
+|---|---|
+| No | Existing path: `scheduleTeardown` with 30 s grace → `tearDown` |
+| Yes | Immediate `controlMasterManager?.tearDown(hostId:)`, no grace |
 
 ### Edge cases
 
-- **Multiple tabs on the same host**: `SessionStore.tabs` tracks all tabs. The teardown only fires when the **last** tab for that host closes. (Implementation note: check `tabs.contains(where: { $0.host.id == tab.host.id })` after removal; only call `tearDown` if empty.)
-- **SFTP file drawer open against the same host**: The SFTP subprocess piggybacks on the master via `controlPath`. Tearing down kills SFTP too. This is the correct behavior — closing the terminal closes the session entirely. If a future feature ("keep SFTP open after terminal close") is added, this rule revisits.
-- **Crash / force-quit**: master persists with the user's forwards bound. `ControlMasterManager.tearDownAll()` is already called at appropriate lifecycle points; no change needed.
+- **Multiple tabs on the same host**: SessionStore already checks "last tab for this host" before scheduling teardown (existing behavior). Same gate applies in the new branch — `tearDown` only fires when no other tab references the host.
+- **SFTP file drawer open against the same host**: The SFTP subprocess piggybacks on the master via `controlPath`. Tearing down kills SFTP too. This is correct: closing the terminal closes the session entirely.
+- **Crash / force-quit**: master may persist with the user's forwards bound. `ControlMasterManager.tearDownAll()` is already called at appropriate lifecycle points; no change needed.
 
 ## Known Limitations (v1)
 
@@ -450,7 +472,8 @@ public func closeTab(tabId: UUID) {
 | `PortForwardValidationTests` (new) | Each validation rule (1–6 above) — happy + failing cases |
 | `HostSyncStoreTests` | Legacy hosts.json without `forwards` decodes to `[]`; new hosts.json roundtrips; multi-host file with mixed legacy + new entries; reconciler treats `local.forwards != remote.forwards` as a host update |
 | `CloudKitSyncClientTests` | `CKRecordHostMapping` push writes `forwards` JSON string; pull decodes round-trips; missing CloudKit field → `[]`; corrupt JSON → `[]` + diagnostic; `[]` encodes to `"[]"` not omitted |
-| `SessionStoreTests` (extended) | Preflight: occupied port + required → `.portForwardBindFailed` thrown; occupied port + optional → connection proceeds + warning emitted; remote forward skipped by preflight; `applyRemoteMetadata` copies `forwards`; `addRemoteHost` carries `forwards`; `closeTab` of host **with** forwards calls `tearDown`; `closeTab` of host **without** forwards does **not** call `tearDown`; multi-tab same host → only last close tears down |
+| `SessionStoreTests` (extended) | Preflight: occupied port + required → `.portForwardBindFailed` thrown; occupied port + optional → connection proceeds + `skippedForwardNotices` populated on SessionStore; remote forward skipped by preflight; `applyRemoteMetadata` copies `forwards`; `addRemoteHost` carries `forwards`; mutating `forwards` via the public update API bumps `host.updatedAt` strictly upward; `closeTab` of host **with** forwards calls `controlMasterManager.tearDown` **immediately** (no grace, via injected `ControlMasterTearDowning` fake); `closeTab` of host **without** forwards goes through `scheduleTeardown` (existing 30 s grace); multi-tab same host → only last close triggers either teardown path |
+| `CKRecordHostMappingTests` (extended) | Push writes `forwards` AND advances `metadataUpdatedAt` to `host.updatedAt`; pull with absent `forwards` → `[]`; pull with corrupt JSON `forwards` → `[]` + diagnostic |
 | `PreflightTests` (extended) | New `PreflightProbing.probeLocalBind` fake honors injected outcomes; `Preflight` implementation: bound port → `.unavailable(.alreadyInUse)`; free port → `.available` |
 
 ### Manual smoke (added to `apps/macos/Manual/`)
