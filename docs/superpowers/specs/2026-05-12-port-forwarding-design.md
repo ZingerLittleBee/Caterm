@@ -31,7 +31,7 @@ Add per-host SSH port forwarding (Local `-L`, Remote `-R`, Dynamic SOCKS `-D`) t
 |---|---|---|
 | 1 | per-host attached forwards (not standalone tunnels) | Reuses session lifecycle and ControlMaster; ships smallest viable feature |
 | 2 | Forwards only emitted in the **target** host's `ssh_config` block | Matches OpenSSH semantics; user mental model "forward is a property of the host I'm connecting to" |
-| 3 | `required` per-forward flag → triggers `ExitOnForwardFailure=yes` when any required forward exists | Strict by default (visible failure), opt-in soft mode for optional forwards |
+| 3 | `required` per-forward flag → triggers `ExitOnForwardFailure=yes` only when **all** forwards are required (OpenSSH option is global; partial application is impossible) | Strict by default; mixed sets fall back to preflight-only enforcement for local-bind, soft fail for remote-bind |
 | 4 | UI surface: new Section inside existing `HostFormView` | Consistent with "forwards are a host sub-property"; minimal surface area |
 | 5 | Data model: `Host.forwards: [PortForward]`; CloudKit field is a JSON string on the existing Host record | No new record type; reuses host LWW conflict resolution |
 | 6 | Intermediate jump hops do **not** apply their `forwards` when not the target | Matches `~/.ssh/config` semantics; avoids silent port collisions |
@@ -59,7 +59,7 @@ SessionStore.connect(hostId)
             └─> ssh -F <session-config>  caterm-h-<target-uuid>
                   └─ target Host block contains:
                        LocalForward / RemoteForward / DynamicForward lines
-                       ExitOnForwardFailure yes  (if any required forward)
+                       ExitOnForwardFailure yes  (only if every forward is required)
 ```
 
 Forwards live and die with the ssh subprocess. ControlMaster reuse is unaffected (forward options on `ssh -O` would only matter if we did runtime attach, which we don't).
@@ -90,7 +90,7 @@ public struct PortForward: Codable, Hashable, Identifiable {
         case remote   // -R: remote bind on ssh server → local target
         case dynamic  // -D: local SOCKS5 proxy
     }
-    public enum BindFailureReason: String, Codable {
+    public enum BindFailureReason: String, Codable, Error {
         case alreadyInUse
         case permissionDenied
         case unknown
@@ -158,7 +158,7 @@ private func sshConfigLine(for forward: PortForward) throws -> String {
 
 Equivalent CLI emission for the direct-path (`_build`) case:
 - `-o LocalForward=<bind> <target>` → quoted as a single `-o` value
-- `-o ExitOnForwardFailure=yes` when any required forward exists
+- `-o ExitOnForwardFailure=yes` only when the host has at least one forward and **every** forward is required
 
 ### `perHostOptions` extension
 
@@ -166,12 +166,19 @@ In the existing `for line in opts.optionLines { ... }` block (used by `buildChai
 
 ```swift
 if isTarget {
-    var anyRequired = false
+    var anyOptional = false
     for fwd in host.forwards {
         lines.append(try sshConfigLine(for: fwd))
-        if fwd.required { anyRequired = true }
+        if !fwd.required { anyOptional = true }
     }
-    if anyRequired {
+    // OpenSSH's ExitOnForwardFailure is global: setting it to `yes` aborts
+    // the connection if ANY forward (required or optional) fails to bind.
+    // We therefore only enable it when every forward is required. In mixed
+    // sets, required forwards still benefit from local preflight (catches
+    // L/D local bind conflicts before ssh starts); only remote-side `-R`
+    // bind failures of required forwards in mixed sets fail silently — a
+    // limitation documented in §"Known Limitations".
+    if !host.forwards.isEmpty && !anyOptional {
         lines.append("ExitOnForwardFailure yes")
     }
 }
@@ -189,33 +196,54 @@ Mirror the same logic with `-o` flags so behavior is identical whether or not a 
 
 ## Preflight
 
-`SessionStore/Preflight.swift` gains a new probe step that runs **after** existing identity-file / known-hosts checks and **before** the ssh subprocess spawn.
+### `PreflightProbing` protocol extension
+
+`SessionStore` injects `PreflightProbing`, currently only `probe(host:port:timeout:)`. We extend the **protocol** (not just the concrete `Preflight` struct) so SessionStore can call through, and tests can fake bind outcomes:
 
 ```swift
-func probeForwardBindPorts(_ forwards: [PortForward]) async throws {
-    for forward in forwards where forward.kind != .remote {
-        let bindAddr = forward.bindAddress ?? "127.0.0.1"
-        let port = forward.bindPort
-        do {
-            try await tryBindAndRelease(host: bindAddr, port: port)
-        } catch let reason as BindFailureReason {
-            if forward.required {
-                throw FailureKind.portForwardBindFailed(forward: forward, reason: reason)
-            } else {
-                // Surface a non-fatal info-level notice via SettingsBannerState
-                // (yellow `Banner`, not red `DiagnosticBanner`); continue connection.
-                emitForwardSkipNotice(forward: forward, reason: reason)
-            }
+public enum PortBindOutcome: Equatable {
+    case available
+    case unavailable(PortForward.BindFailureReason)
+}
+
+public protocol PreflightProbing: Sendable {
+    func probe(host: String, port: UInt16, timeout: TimeInterval) async -> PreflightOutcome
+    // NEW
+    func probeLocalBind(address: String, port: UInt16) async -> PortBindOutcome
+}
+```
+
+`Preflight` implementation: `NWListener` create → start → on `.ready` cancel and return `.available`; on `.failed(NWError.posix(.EADDRINUSE))` return `.unavailable(.alreadyInUse)`; on `.failed(NWError.posix(.EACCES))` (privileged ports) return `.unavailable(.permissionDenied)`; otherwise `.unavailable(.unknown)`. Test fakes return canned `PortBindOutcome`.
+
+### Probe step in connection flow
+
+Runs **after** existing identity-file / known-hosts checks and **before** the ssh subprocess spawn.
+
+```swift
+// In SessionStore.startConnection, after existing preflight TCP probe:
+for forward in host.forwards where forward.kind != .remote {
+    let bindAddr = forward.bindAddress ?? "127.0.0.1"
+    guard let nwPort = UInt16(exactly: forward.bindPort) else { continue }
+    let outcome = await preflight.probeLocalBind(address: bindAddr, port: nwPort)
+    if case .unavailable(let reason) = outcome {
+        if forward.required {
+            // Surface as a FailureKind, abort the connection.
+            failConnection(.portForwardBindFailed(forward: forward, reason: reason))
+            return
+        } else {
+            // Optional: continue connection, record a soft notice.
+            bannerState.appendSkippedForwardNotice(forward: forward, reason: reason)
         }
     }
 }
 ```
 
-Implementation uses `NWListener` (Network framework): create, bind, immediately cancel. `.remote` forwards bind on the remote side and cannot be locally probed; we accept that this will only be caught at session start via stderr parsing.
+`.remote` forwards bind on the remote side and **cannot be locally probed**. Required remote-forward failures are only surfaced when `ExitOnForwardFailure=yes` is set (all-required case) — see §"Known Limitations".
 
-Failure surface:
-- `required && bind fails` → connection aborts; user sees `FailureOverlay` (existing component) with the new copy.
-- `!required && bind fails` → connection proceeds; a yellow info `Banner` (reuses the existing settings-style banner component in `MainWindow.swift`, not the red `DiagnosticBanner`) lists which optional forwards were skipped. Backed by a new `skippedForwardNotices: [String]` field on `SettingsBannerState`.
+### Failure surface
+
+- `required && local bind fails` → connection aborts; user sees `FailureOverlay` (existing component) with the new copy.
+- `!required && local bind fails` → connection proceeds; a yellow info `Banner` (reuses the existing settings-style banner component in `MainWindow.swift`, not the red `DiagnosticBanner`) lists which optional forwards were skipped. Backed by a new `skippedForwardNotices: [String]` field on `SettingsBannerState`.
 
 ---
 
@@ -277,21 +305,30 @@ Caterm could not bind LocalForward 5432 → db.internal:5432 for
 case portForwardBindFailed(forward: PortForward, reason: PortForward.BindFailureReason)
 ```
 
-### stderr parsing
+### Exhaustive-switch sites — all three must be updated
 
-When `ExitOnForwardFailure=yes` is set and a remote-side bind fails (the only failure mode the preflight can't catch), ssh exits with a stderr line like:
+The codebase has three exhaustive switches over `FailureKind`. Adding a new case is a breaking compile change; each call site gets a concrete branch:
 
-```
-Warning: remote port forwarding failed for listen port 9090
-```
+| File:line | Function | New branch |
+|---|---|---|
+| `apps/macos/Sources/Caterm/Views/TerminalContainerView.swift:81-82` | `shouldShowFailureOverlay(_:)` | `case .portForwardBindFailed: return true` — show the red overlay |
+| `apps/macos/Sources/SessionStore/ReconnectScheduler.swift:19-20` | `shouldReconnect(_:)` | `case .portForwardBindFailed: return false` — initial-setup failure, do not auto-reconnect |
+| `apps/macos/Sources/Caterm/Views/FailurePresentation.swift:44-48` | `text(for:)` (overlay copy) | `case .portForwardBindFailed(let fwd, let reason):` — render copy per §UI |
 
-We parse this in the existing ssh stderr handler. If we can match a port number to a known `host.forwards` entry, surface `portForwardBindFailed(forward: matched, reason: .unknown)`. If we cannot match, fall back to the existing generic ssh-failure presentation.
+### No ssh stderr capture in v1
 
-Local-side bind failure post-spawn (e.g., race window between preflight and ssh) follows the same stderr-parsing path.
+Caterm currently has **no ssh stderr channel** — libghostty surfaces report only an exit code via `GhosttySurface.onChildExit(_:)`, then `SessionStore.markChildExited(exitCode:)` classifies via `FailureKind.classify(exitCode:hadConnected:)`. We are not adding a stderr pipe in this design.
+
+Consequences:
+
+1. **Required forwards in all-required hosts** → `ExitOnForwardFailure=yes` is set, so any bind failure (local race after preflight, or remote `-R`) makes ssh exit pre-Connected. `FailureKind.classify` routes that to `.authOrSetupFail` (existing generic copy). User sees the standard "auth or setup failed" overlay — **not** the new specific `portForwardBindFailed`. We accept the lost specificity here; precise mapping requires stderr capture which is out of scope.
+2. **Required forwards in mixed sets** (some required + some optional) → `ExitOnForwardFailure` is **not** set. Local-bind failures are caught by preflight. Remote-side `-R` failures are silent — ssh prints a warning to stderr and the session continues without that forward. User sees a connected terminal with the forward not working. Documented in §"Known Limitations".
+
+The new `portForwardBindFailed` `FailureKind` is therefore **only thrown by preflight** (where we positively identify the offending forward by examining `host.forwards` in code). It is never synthesized from ssh process exit.
 
 ### Optional-forward soft failure banner
 
-When `required == false` and bind fails, the session connects but a yellow info `Banner` (the existing settings-style banner in `MainWindow.swift`) appears above the terminal:
+When `required == false` and preflight detects bind failure, the session connects but a yellow info `Banner` (the existing settings-style banner in `MainWindow.swift`) appears above the terminal:
 
 ```
 Port forward 1080 (SOCKS) skipped: already in use.
@@ -302,6 +339,23 @@ Dismissible. Cleared when the user reconnects.
 ---
 
 ## Sync
+
+### Pipeline touch points — full enumeration
+
+Adding `forwards` to `Host` is **not** sufficient. Hosts flow through several DTO / mapping layers and every one must carry the field, or pulled hosts arrive with empty forwards. Every site below must be updated:
+
+| Site | File | Change |
+|---|---|---|
+| Local model | `SSHCommandBuilder/Host.swift` | `var forwards: [PortForward]` + `decodeIfPresent ?? []` + CodingKey |
+| Server DTO | `ServerSyncClient/RemoteHost.swift` — `RemoteHost` struct | Add `forwards: [PortForward]` (encoded inline as JSON-compatible array; or as a String if the server stores it opaquely — decided by the server schema, but the **Swift type is `[PortForward]`** with a custom Codable bridge if needed) |
+| Server create payload | `ServerSyncClient/RemoteHost.swift` — `RemoteHostCreateInput` | Add `forwards` field |
+| Server update payload | `ServerSyncClient/RemoteHost.swift` — `RemoteHostUpdateInput` | Add `forwards` field (optional, same as other update fields) |
+| CloudKit mapping | `CloudKitSyncClient/CKRecordHostMapping.swift` | Both directions: push writes `record["forwards"] = jsonString`; pull decodes `record["forwards"] as? String` → JSON decode → `[PortForward]`; absent → `[]`; corrupt JSON → `[]` + diagnostic log (never fail the whole sync) |
+| Reconciler diff input | `HostSyncStore/HostSyncReconciler.swift` — `diff(local:remote:)` | If `local.forwards != remote.forwards`, classify as a host-level update (no separate operation type) |
+| SessionStore apply (update path) | `SessionStore/SessionStore.swift:529` — `applyRemoteMetadata(localHostId:remote:)` | Add `hosts[idx].forwards = remote.forwards` to the field-copy block |
+| SessionStore apply (insert path) | `SessionStore/SessionStore.swift:543` — `addRemoteHost(_:)` | Add `forwards: remote.forwards` to the `SSHHost(...)` constructor call |
+
+Missing any of these silently drops forwards on pull.
 
 ### Local persistence
 
@@ -333,17 +387,71 @@ Forwards ride with the host as a single LWW unit. The whole `forwards` array is 
 
 ---
 
+## ControlMaster Teardown
+
+### Problem
+
+`SSHCommandBuilder.perHostOptions` emits `ControlMaster auto` + `ControlPersist 10m` for every host. The first ssh invocation becomes the master and is the process that physically holds the `LocalForward` listeners. When the user closes the terminal tab:
+
+1. The user-facing ssh client exits → tab disappears.
+2. With `ControlPersist=10m`, the **master daemonizes and keeps running** for 10 minutes (so subsequent ssh / SFTP attaches are fast).
+3. The forward listeners on the master process **persist with it** — for up to 10 minutes after the user closed the tab.
+
+This violates the spec's "forwards live and die with the session" promise.
+
+### Fix: explicit teardown on tab close for hosts with forwards
+
+`ControlMasterManager.tearDown(hostId:)` already exists (`apps/macos/Sources/FileTransferStore/ControlMasterManager.swift:64`) and issues `ssh -S <socket> -O exit <dest>`, which kills the master process and its listeners atomically.
+
+`SessionStore.closeTab(tabId:)` gains a post-step:
+
+```swift
+public func closeTab(tabId: UUID) {
+    guard let tab = tabs.first(where: { $0.id == tabId }) else { return }
+    // ...existing teardown of tab + surface...
+
+    // NEW: if this host had any forwards bound to its master, kill the
+    // master immediately so forwards don't outlive the session. Hosts
+    // without forwards keep the existing 10-minute ControlPersist
+    // behavior — SFTP browsing and quick reconnect benefit from it.
+    if !tab.host.forwards.isEmpty {
+        Task { await ControlMasterManager.shared.tearDown(hostId: tab.host.id) }
+    }
+}
+```
+
+### Differentiated behavior
+
+| Host has forwards? | Tab close behavior | Reason |
+|---|---|---|
+| No | ControlMaster persists 10m (existing) | Speeds up SFTP file drawer + quick reconnect; no listener exposure risk |
+| Yes | Master torn down immediately | Forwards die with session; honors spec promise |
+
+### Edge cases
+
+- **Multiple tabs on the same host**: `SessionStore.tabs` tracks all tabs. The teardown only fires when the **last** tab for that host closes. (Implementation note: check `tabs.contains(where: { $0.host.id == tab.host.id })` after removal; only call `tearDown` if empty.)
+- **SFTP file drawer open against the same host**: The SFTP subprocess piggybacks on the master via `controlPath`. Tearing down kills SFTP too. This is the correct behavior — closing the terminal closes the session entirely. If a future feature ("keep SFTP open after terminal close") is added, this rule revisits.
+- **Crash / force-quit**: master persists with the user's forwards bound. `ControlMasterManager.tearDownAll()` is already called at appropriate lifecycle points; no change needed.
+
+## Known Limitations (v1)
+
+1. **Mixed required + optional forwards on the same host**: required `-R` (remote-bind) forwards in such hosts fail silently if the remote port is taken. Workaround: mark every forward on the host as required (enables `ExitOnForwardFailure=yes`) or accept the silent-fail. Future fix: ssh stderr capture (out of scope).
+2. **`portForwardBindFailed` `FailureKind` is preflight-only**: when ssh itself aborts post-spawn from `ExitOnForwardFailure=yes`, the user sees the generic `authOrSetupFail` overlay, not the specific forward overlay. Mapping requires stderr capture (out of scope).
+3. **Bind address UI**: only loopback (default) is exposable through the form. Wildcard (`"*"`) and explicit IPs require editing `hosts.json` by hand. Defer until users ask.
+4. **GatewayPorts**: not exposed. Required for `-R` listener on the remote to be reachable from outside the remote machine.
+
 ## Testing
 
 ### Unit tests
 
 | Test file | What it covers |
 |---|---|
-| `SSHCommandBuilderTests` | ssh_config snapshot for each `Kind`; `bindAddress` nil vs `"*"`; `ExitOnForwardFailure` emitted iff any required forward; chain mode: only target's forwards emitted, intermediate hops have none; direct-path `_build` emits matching `-o` flags |
+| `SSHCommandBuilderTests` | ssh_config snapshot for each `Kind`; `bindAddress` nil vs `"*"`; `ExitOnForwardFailure` emitted iff **all** forwards are required (not "any"); empty `forwards` → no `ExitOnForwardFailure`; chain mode: only target's forwards emitted, intermediate hops have none; direct-path `_build` emits matching `-o` flags |
 | `PortForwardValidationTests` (new) | Each validation rule (1–6 above) — happy + failing cases |
-| `HostSyncStoreTests` | Legacy hosts.json without `forwards` decodes to `[]`; new hosts.json roundtrips; multi-host file with mixed legacy + new entries |
-| `CloudKitSyncClientTests` | Encode → decode roundtrip; missing CloudKit field → `[]`; corrupt JSON → `[]` + diagnostic; `[]` encodes to `"[]"` not omitted |
-| `SessionStoreTests` (extended) | Preflight: occupied port + required → `bindFailed` thrown; occupied port + optional → connection proceeds + warning emitted; remote forward skipped by preflight |
+| `HostSyncStoreTests` | Legacy hosts.json without `forwards` decodes to `[]`; new hosts.json roundtrips; multi-host file with mixed legacy + new entries; reconciler treats `local.forwards != remote.forwards` as a host update |
+| `CloudKitSyncClientTests` | `CKRecordHostMapping` push writes `forwards` JSON string; pull decodes round-trips; missing CloudKit field → `[]`; corrupt JSON → `[]` + diagnostic; `[]` encodes to `"[]"` not omitted |
+| `SessionStoreTests` (extended) | Preflight: occupied port + required → `.portForwardBindFailed` thrown; occupied port + optional → connection proceeds + warning emitted; remote forward skipped by preflight; `applyRemoteMetadata` copies `forwards`; `addRemoteHost` carries `forwards`; `closeTab` of host **with** forwards calls `tearDown`; `closeTab` of host **without** forwards does **not** call `tearDown`; multi-tab same host → only last close tears down |
+| `PreflightTests` (extended) | New `PreflightProbing.probeLocalBind` fake honors injected outcomes; `Preflight` implementation: bound port → `.unavailable(.alreadyInUse)`; free port → `.available` |
 
 ### Manual smoke (added to `apps/macos/Manual/`)
 
@@ -361,19 +469,19 @@ Create `apps/macos/Manual/port-forwarding-smoke.md`:
 
 ## Open Questions (Deferred)
 
-- **Wildcard / explicit-IP bind address UI**: currently nil-only (loopback). Add to UI later if requested.
 - **IPv6 bind syntax**: OpenSSH wants brackets for IPv6 literals in some contexts; defer until first user need.
-- **GatewayPorts**: required for non-loopback `-R` to be externally reachable. Defer; mention in docs if a user reports.
-- **Per-host `ExitOnForwardFailure` override**: currently derived from any-required logic. If users want all-or-nothing they can mark every forward required.
+- **ssh stderr capture for precise post-spawn failure mapping**: would let us turn the generic `authOrSetupFail` into specific `portForwardBindFailed` after ssh exits. Significant work (libghostty surface integration); defer.
 
 ---
 
 ## Rollout
 
-1. Land `SSHCommandBuilder` + tests (no UI yet, no UI tests).
-2. Land `SessionStore` Preflight + FailureKind + stderr parsing.
-3. Land `HostSyncStore` / persistence + sync encoder.
-4. Land `HostFormView` UI Section.
-5. Manual smoke pass on a real two-Mac setup before merging to main.
+1. Model + builder: `PortForward` type, `Host.forwards`, `SSHCommandBuilder` emission (direct + chain), validation, unit tests. **No UI, no sync — `forwards` always `[]`.**
+2. Failure model: `FailureKind.portForwardBindFailed` + branches in the three exhaustive switches; `FailurePresentation` copy.
+3. Preflight: `PreflightProbing.probeLocalBind`, `Preflight` impl, SessionStore wiring, banner state for optional skips.
+4. ControlMaster teardown: `SessionStore.closeTab` differentiated path + tests.
+5. Persistence + sync (all 8 touch points in §"Pipeline touch points").
+6. `HostFormView` UI Section.
+7. Manual smoke pass on a real two-Mac setup before merging to main.
 
-Steps 1–3 can ship behind feature visibility — `forwards` always serialized but UI hidden — if we need to stage; default plan is single PR.
+All steps land in a single PR by default. Steps 1–5 produce no user-visible change (UI hidden, forwards default `[]`), so they are safe to merge incrementally if the PR grows too large.
