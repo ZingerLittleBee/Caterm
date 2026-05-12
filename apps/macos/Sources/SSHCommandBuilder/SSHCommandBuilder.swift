@@ -65,8 +65,9 @@ public enum SSHCommandBuilder {
 
 		// Always-present connection options.
 		lines.append("StrictHostKeyChecking accept-new")
-		let knownHostsValue = "\(knownHostsCaterm) \(knownHostsUser)"
-		lines.append("UserKnownHostsFile \(try SSHConfigQuote.encode(knownHostsValue))")
+		lines.append(
+			"UserKnownHostsFile \(try sshConfigFileList([knownHostsCaterm, knownHostsUser]))"
+		)
 		lines.append("ControlMaster auto")
 		lines.append("ControlPersist 10m")
 		let controlPath = "~/Library/Caches/Caterm/cm/\(host.id.uuidString).sock"
@@ -134,6 +135,10 @@ public enum SSHCommandBuilder {
 			optionLines: lines,
 			env: env
 		)
+	}
+
+	private static func sshConfigFileList(_ paths: [String]) throws -> String {
+		try paths.map { try SSHConfigQuote.encode($0) }.joined(separator: " ")
 	}
 
 	// MARK: - Command argument model
@@ -441,6 +446,7 @@ public enum SSHCommandBuilder {
 		let chainData = try JSONSerialization.data(withJSONObject: chainEntries, options: [.sortedKeys])
 		let chainJSON = String(data: chainData, encoding: .utf8) ?? "[]"
 		env.append(("CATERM_CHAIN", chainJSON))
+		env.append(("CATERM_CHAIN_STATE_PATH", configURL.path + ".askpass-state"))
 
 		// Assemble the final command: ssh -F <configPath> caterm-h-<target-uuid>
 		let targetAlias = "caterm-h-\(target.id.uuidString)"

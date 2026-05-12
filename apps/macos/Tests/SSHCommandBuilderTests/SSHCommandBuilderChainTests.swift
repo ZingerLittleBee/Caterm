@@ -61,6 +61,29 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 		              "expected command to contain '\(expectedFlag)', got: \(out.command)")
 	}
 
+	func testKnownHostsFilesAreSeparateTokensInGeneratedConfig() throws {
+		let bastion = host("bastion", "rh-bastion")
+		let target = host("target", "rh-target", jump: "rh-bastion")
+		let sink = InMemorySSHConfigSink()
+		_ = try SSHCommandBuilder.build(
+			host: target, ancestors: [bastion],
+			configSink: sink,
+			askpassPath: "/usr/local/bin/caterm-askpass",
+			knownHostsCaterm: "/Users/a/Library/Application Support/Caterm/known_hosts",
+			knownHostsUser: "/Users/a/.ssh/known_hosts",
+			installTerminfo: false, sshPath: "/usr/bin/ssh",
+			terminfoDump: nil
+		)
+		let config = sink.writes[0].1
+
+		XCTAssertTrue(config.contains(
+			"UserKnownHostsFile \"/Users/a/Library/Application Support/Caterm/known_hosts\" /Users/a/.ssh/known_hosts"
+		), "known-host files must be emitted as two ssh_config arguments, got:\n\(config)")
+		XCTAssertFalse(config.contains(
+			"UserKnownHostsFile \"/Users/a/Library/Application Support/Caterm/known_hosts /Users/a/.ssh/known_hosts\""
+		), "quoting both paths as one value makes OpenSSH use an invalid filename")
+	}
+
 	func testMultiHopConfigHasProxyJumpExceptOnDeepest() throws {
 		let deep = host("deep", "rh-deep")
 		let mid = host("mid", "rh-mid", jump: "rh-deep")
@@ -116,6 +139,26 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 			XCTAssertTrue(config.contains("Host \(alias)"),
 			              "alias \(alias) missing from ssh_config")
 		}
+	}
+
+	func testCATERMChainStatePathTracksConfigFilePath() throws {
+		let bastion = host("bastion", "rh-bastion")
+		let target = host("target", "rh-target", jump: "rh-bastion")
+		let sink = InMemorySSHConfigSink()
+		let out = try SSHCommandBuilder.build(
+			host: target, ancestors: [bastion],
+			configSink: sink,
+			askpassPath: "/usr/local/bin/caterm-askpass",
+			knownHostsCaterm: "/k1", knownHostsUser: "/k2",
+			installTerminfo: false, sshPath: "/usr/bin/ssh",
+			terminfoDump: nil
+		)
+
+		let env = Dictionary(uniqueKeysWithValues: out.env)
+		XCTAssertEqual(
+			env["CATERM_CHAIN_STATE_PATH"],
+			out.configURL?.path.appending(".askpass-state")
+		)
 	}
 
 	func testNewlineInHostnameThrowsControlCharacter() {

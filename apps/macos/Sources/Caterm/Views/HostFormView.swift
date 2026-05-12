@@ -27,7 +27,7 @@ struct HostFormView: View {
 	@State private var keyPath = ""
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
-	@State private var jumpHostServerId: String? = nil
+	@State private var jumpHostId: UUID? = nil
 	@State private var forwards: [PortForward] = []
 
 	var body: some View {
@@ -47,11 +47,11 @@ struct HostFormView: View {
 						TextField("", text: $username)
 					}
 					LabeledContent("Via host") {
-						Picker("Via host", selection: $jumpHostServerId) {
-							Text("(none)").tag(String?.none)
-							ForEach(eligibleJumpHosts, id: \.host.id) { entry in
-								Text("\(entry.host.name) (\(entry.host.username)@\(entry.host.hostname))")
-									.tag(String?.some(entry.serverId))
+						Picker("Via host", selection: $jumpHostId) {
+							Text("(none)").tag(UUID?.none)
+							ForEach(eligibleJumpHosts, id: \.id) { host in
+								Text("\(host.name) (\(host.username)@\(host.hostname))")
+									.tag(UUID?.some(host.id))
 							}
 						}
 						.pickerStyle(.menu)
@@ -151,7 +151,8 @@ struct HostFormView: View {
 			username: username,
 			credential: cred
 		)
-		draft.jumpHostServerId = jumpHostServerId
+		draft.jumpHostId = jumpHostId
+		draft.jumpHostServerId = jumpHost.flatMap(\.serverId)
 		do {
 			_ = try draft.resolvedChain(in: sessionStore.hosts)
 		} catch {
@@ -169,44 +170,54 @@ struct HostFormView: View {
 	}
 
 	/// Hosts eligible for use as the jump host for this form's target.
-	/// In `.add` mode the new host has no id yet, so only `serverId` presence
-	/// is required (no cycle risk from a host that doesn't exist yet).
-	private var eligibleJumpHosts: [(host: SSHHost, serverId: String)] {
-		let hosts: [SSHHost]
+	/// In `.add` mode every existing host is eligible because the new host
+	/// does not exist in the graph yet and therefore cannot participate in a cycle.
+	private var eligibleJumpHosts: [SSHHost] {
 		if case let .edit(currentHost) = mode {
-			hosts = HostFormCycleFilter.eligibleJumpHosts(
+			return HostFormCycleFilter.eligibleJumpHosts(
 				editingHost: currentHost,
 				allHosts: sessionStore.hosts
 			)
-		} else {
-			hosts = sessionStore.hosts.filter { $0.serverId != nil }
 		}
-		return hosts.compactMap { h in
-			guard let sid = h.serverId else { return nil }
-			return (h, sid)
-		}
+		return sessionStore.hosts
 	}
 
 	private var chainPreview: ChainPreviewState {
-		guard let sid = jumpHostServerId else { return .none }
+		guard let jumpHost else { return .none }
 		var names: [String] = []
-		var cursor: String? = sid
-		var visited: Set<String> = []
-		while let nextSid = cursor {
-			if visited.contains(nextSid) {
+		var cursor: SSHHost? = jumpHost
+		var visited: Set<UUID> = []
+		while let nextHost = cursor {
+			if visited.contains(nextHost.id) {
 				names.append("(cycle)")
 				return .cycle(names: names)
 			}
-			visited.insert(nextSid)
-			if let h = sessionStore.hosts.first(where: { $0.serverId == nextSid }) {
-				names.append(h.name)
-				cursor = h.jumpHostServerId
-			} else {
-				names.append("(deleted)")
-				return .missing(names: names)
+			visited.insert(nextHost.id)
+			names.append(nextHost.name)
+			if let nextId = nextHost.jumpHostId {
+				cursor = sessionStore.hosts.first(where: { $0.id == nextId })
+				if cursor == nil {
+					names.append("(deleted)")
+					return .missing(names: names)
+				}
+				continue
 			}
+			if let nextSid = nextHost.jumpHostServerId {
+				cursor = sessionStore.hosts.first(where: { $0.serverId == nextSid })
+				if cursor == nil {
+					names.append("(deleted)")
+					return .missing(names: names)
+				}
+				continue
+			}
+			cursor = nil
 		}
 		return .ok(names: names)
+	}
+
+	private var jumpHost: SSHHost? {
+		guard let jumpHostId else { return nil }
+		return sessionStore.hosts.first(where: { $0.id == jumpHostId })
 	}
 
 	/// Human-readable chain preview, e.g. "Will connect via bastion → target".
@@ -272,7 +283,7 @@ struct HostFormView: View {
 		case .agent:
 			credKind = .agent
 		}
-		jumpHostServerId = host.jumpHostServerId
+		jumpHostId = Self.jumpHostIdForForm(host: host, allHosts: sessionStore.hosts)
 		forwards = host.forwards
 	}
 
@@ -306,7 +317,8 @@ struct HostFormView: View {
 			username: username,
 			credential: cred
 		)
-		host.jumpHostServerId = jumpHostServerId
+		host.jumpHostId = jumpHostId
+		host.jumpHostServerId = jumpHost.flatMap(\.serverId)
 		host.forwards = forwards
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
@@ -353,6 +365,14 @@ struct HostFormView: View {
 			username: username,
 			credential: credential
 		)
+	}
+
+	static func jumpHostIdForForm(host: SSHHost, allHosts: [SSHHost]) -> UUID? {
+		if let jumpHostId = host.jumpHostId {
+			return jumpHostId
+		}
+		guard let jumpHostServerId = host.jumpHostServerId else { return nil }
+		return allHosts.first(where: { $0.serverId == jumpHostServerId })?.id
 	}
 }
 

@@ -60,7 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 				win.tabbingMode = .preferred
 			}
 		}
-		NSApp.registerForRemoteNotifications()
+		if !CloudSyncRuntimeOptions.cloudSyncDisabled() {
+			NSApp.registerForRemoteNotifications()
+		}
 		Self.logResolvedSigningEnvironment()
 	}
 
@@ -104,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 	func application(_: NSApplication,
 	                 didReceiveRemoteNotification userInfo: [String: Any]) {
+		guard !CloudSyncRuntimeOptions.cloudSyncDisabled() else { return }
 		guard let note = CKNotification(fromRemoteNotificationDictionary: userInfo) else { return }
 		switch note.subscriptionID {
 		case CloudKitPushNames.hostSubscriptionID:

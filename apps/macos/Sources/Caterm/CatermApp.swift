@@ -46,8 +46,11 @@ struct CatermApp: App {
 	private let managedKeyStore: ManagedKeyStore
 	private let credentialSyncCoordinator: CredentialSyncCoordinator
 	private let credentialSyncAccountReset: CredentialSyncAccountResetCoordinator
+	private let cloudSyncDisabled: Bool
 
 	init() {
+		let cloudSyncDisabled = CloudSyncRuntimeOptions.cloudSyncDisabled()
+		self.cloudSyncDisabled = cloudSyncDisabled
 		try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
 		let session = makeStore()
 		let surfaceRegistry = SurfaceRegistry()
@@ -104,13 +107,17 @@ struct CatermApp: App {
 		// (called from .task in body) handles the case where refresh hasn't completed
 		// yet — it sees isSignedIn=false and skips; the .CKAccountChanged observer
 		// re-triggers sync once the status flips.
-		Task { @MainActor in
-			await icloudSession.refresh()
-			NotificationCenter.default.post(
-				name: .catermICloudAccountChanged, object: nil
-			)
+		if !cloudSyncDisabled {
+			Task { @MainActor in
+				await icloudSession.refresh()
+				NotificationCenter.default.post(
+					name: .catermICloudAccountChanged, object: nil
+				)
+			}
 		}
-		icloudSession.startObservingAccountChanges()
+		if !cloudSyncDisabled {
+			icloudSession.startObservingAccountChanges()
+		}
 		// Per-app FileTransferStore. Closures capture plain value types
 		// (URLs / paths) rather than `ControlMasterManager` itself so the
 		// closure body remains nonisolated-callable. Liveness goes through
@@ -202,9 +209,11 @@ struct CatermApp: App {
 			tokenStore: tokenStore,
 			currentTokenProvider: { FileManager.default.ubiquityIdentityToken as? (NSObject & NSCoding & NSCopying) }
 		)
-		self.settingsSync.installLifecycleObservers()
-		Task { @MainActor [settingsSync = self.settingsSync] in
-			await settingsSync.startSync()
+		if !cloudSyncDisabled {
+			self.settingsSync.installLifecycleObservers()
+			Task { @MainActor [settingsSync = self.settingsSync] in
+				await settingsSync.startSync()
+			}
 		}
 	}
 
@@ -242,28 +251,43 @@ struct CatermApp: App {
 			// HostSyncStore.inFlight (NOT by this .task modifier). View
 			// disappearance does not cancel the sync — that's intentional;
 			// cancellation lives in the chain (spec §3.5).
-			.task { syncStore.syncIfSignedIn() }
 			.task {
-				try? await cloudKitClient.ensureHostSubscription()
+				if !cloudSyncDisabled {
+					syncStore.syncIfSignedIn()
+				}
 			}
 			.task {
-				let mode = await cloudKitClient.preferredSnippetSyncMode()
-				snippetSync.scheduleSyncPass(mode: mode)
-				snippetSync.startForceFullTimer()
+				if !cloudSyncDisabled {
+					try? await cloudKitClient.ensureHostSubscription()
+				}
 			}
 			.task {
-				try? await cloudKitClient.ensureSnippetSubscription()
+				if !cloudSyncDisabled {
+					let mode = await cloudKitClient.preferredSnippetSyncMode()
+					snippetSync.scheduleSyncPass(mode: mode)
+					snippetSync.startForceFullTimer()
+				}
+			}
+			.task {
+				if !cloudSyncDisabled {
+					try? await cloudKitClient.ensureSnippetSubscription()
+				}
 			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermCloudKitSnippetChanged)) { _ in
-				snippetSync.scheduleSyncPass(mode: .incremental)
+				if !cloudSyncDisabled {
+					snippetSync.scheduleSyncPass(mode: .incremental)
+				}
 			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermICloudAccountChanged)) { _ in
-				syncStore.syncIfSignedIn()
+				if !cloudSyncDisabled {
+					syncStore.syncIfSignedIn()
+				}
 			}
 			.onReceive(NotificationCenter.default
 				.publisher(for: .catermICloudAccountChanged)) { _ in
+				guard !cloudSyncDisabled else { return }
 				Task {
 					let outcome = await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
 					if outcome == .identityChanged {

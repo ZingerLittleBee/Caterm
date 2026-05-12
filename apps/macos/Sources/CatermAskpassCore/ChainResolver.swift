@@ -44,10 +44,15 @@ private let passphraseRegex: NSRegularExpression = {
 
 public func resolveAskpassPrompt(
 	_ prompt: String,
-	chain: [AskpassChainEntry]
+	chain: [AskpassChainEntry],
+	consumedPasswordHostIDs: [String] = []
 ) -> AskpassResolution {
 	if let m = matchPasswordPrompt(prompt) {
-		return resolvePassword(matched: m, chain: chain)
+		return resolvePassword(
+			matched: m,
+			chain: chain,
+			consumedPasswordHostIDs: consumedPasswordHostIDs
+		)
 	}
 	if let m = matchPassphrasePrompt(prompt) {
 		return resolvePassphrase(matched: m, chain: chain)
@@ -84,8 +89,11 @@ private func matchPassphrasePrompt(_ prompt: String) -> String? {
 	return String(prompt[pathRange])
 }
 
-private func resolvePassword(matched: PasswordMatch,
-                             chain: [AskpassChainEntry]) -> AskpassResolution {
+private func resolvePassword(
+	matched: PasswordMatch,
+	chain: [AskpassChainEntry],
+	consumedPasswordHostIDs: [String]
+) -> AskpassResolution {
 	// Candidates: same user AND (alias OR hostname) match.
 	let candidates = chain.filter { entry in
 		entry.user == matched.user
@@ -101,6 +109,10 @@ private func resolvePassword(matched: PasswordMatch,
 	}
 	// Portless prompt: must be exactly one candidate.
 	if candidates.count == 1, let chosen = candidates.first {
+		return .found(.password(hostId: chosen.hostId))
+	}
+	let remaining = candidates.filter { !consumedPasswordHostIDs.contains($0.hostId) }
+	if let chosen = remaining.first {
 		return .found(.password(hostId: chosen.hostId))
 	}
 	return .ambiguous

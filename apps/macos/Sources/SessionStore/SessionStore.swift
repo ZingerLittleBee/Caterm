@@ -636,6 +636,7 @@ public final class SessionStore: ObservableObject {
         guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
         hosts[idx].serverId = serverId
         hosts[idx].updatedAt = Date()
+        backfillDependentJumpHostServerIds(parentId: hostId, serverId: serverId, in: &hosts)
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -648,6 +649,7 @@ public final class SessionStore: ObservableObject {
         hosts[idx].port = remote.port
         hosts[idx].username = remote.username
         hosts[idx].updatedAt = remote.updatedAt
+        hosts[idx].jumpHostId = hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id
         hosts[idx].jumpHostServerId = remote.jumpHostServerId
         hosts[idx].forwards = remote.forwards
         try HostPersistence.save(hosts, to: hostsURL)
@@ -664,11 +666,33 @@ public final class SessionStore: ObservableObject {
             port: remote.port, username: remote.username,
             credential: .password,
             createdAt: remote.createdAt, updatedAt: remote.updatedAt,
+            jumpHostId: hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id,
             jumpHostServerId: remote.jumpHostServerId,
             forwards: remote.forwards
         )
         hosts.append(h)
+        backfillJumpHostIds(serverId: remote.id, in: &hosts)
         try HostPersistence.save(hosts, to: hostsURL)
+    }
+
+    private func backfillDependentJumpHostServerIds(
+        parentId: UUID,
+        serverId: String,
+        in hosts: inout [SSHHost]
+    ) {
+        for idx in hosts.indices {
+            guard hosts[idx].id != parentId, hosts[idx].jumpHostId == parentId else { continue }
+            guard hosts[idx].jumpHostServerId != serverId else { continue }
+            hosts[idx].jumpHostServerId = serverId
+            hosts[idx].updatedAt = Date()
+        }
+    }
+
+    private func backfillJumpHostIds(serverId: String, in hosts: inout [SSHHost]) {
+        guard let parentId = hosts.first(where: { $0.serverId == serverId })?.id else { return }
+        for idx in hosts.indices where hosts[idx].jumpHostServerId == serverId {
+            hosts[idx].jumpHostId = parentId
+        }
     }
 
     /// Replace the credential overlay for an existing host. Does NOT bump

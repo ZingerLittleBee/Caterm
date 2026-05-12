@@ -53,6 +53,8 @@ public final class CatermSSHConfigSink: SSHConfigSink {
 		} catch {
 			log.error("ssh-config cleanup failed: \(error.localizedDescription)")
 		}
+		let askpassStateURL = URL(fileURLWithPath: url.path + ".askpass-state")
+		try? FileManager.default.removeItem(at: askpassStateURL)
 	}
 
 	// MARK: - Private

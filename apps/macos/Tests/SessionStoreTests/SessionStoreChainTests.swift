@@ -14,6 +14,15 @@ final class SessionStoreChainTests: XCTestCase {
 		return h
 	}
 
+	private func localHost(_ name: String,
+	                       jumpId: UUID? = nil,
+	                       cred: CredentialSource = .password) -> SSHHost {
+		var h = SSHHost(name: name, hostname: "\(name).example.com",
+		                port: 22, username: "u", credential: cred)
+		h.jumpHostId = jumpId
+		return h
+	}
+
 	func testOpenTabFailsFastOnBrokenChain() throws {
 		let target = host("target", "rh-target", jump: "rh-ghost")
 		let store = SessionStore.makeForTest(hosts: [target])
@@ -40,6 +49,32 @@ final class SessionStoreChainTests: XCTestCase {
 		XCTAssertTrue(msg.contains("bastion") &&
 		              msg.contains("needs credentials configured first"),
 		              "got: \(msg)")
+	}
+
+	func testOpenTabUsesUnsyncedAncestorReferencedByLocalId() throws {
+		let bastion = localHost("bastion")
+		var target = localHost("target")
+		target.jumpHostId = bastion.id
+		let store = SessionStore.makeForTest(
+			hosts: [bastion, target],
+			credentialsAvailableFor: [bastion.id, target.id]
+		)
+
+		let tabId = store.openTab(host: target)
+		let tab = store.tabs.first(where: { $0.id == tabId })!
+		XCTAssertEqual(tab.resolvedChain.map(\.id), [bastion.id])
+	}
+
+	func testSetServerIdBackfillsDependentJumpHostServerIds() throws {
+		let bastion = localHost("bastion")
+		var target = localHost("target")
+		target.jumpHostId = bastion.id
+		let store = SessionStore.makeForTest(hosts: [bastion, target])
+
+		try store.setServerId("rh-bastion", for: bastion.id)
+
+		let refreshedTarget = try XCTUnwrap(store.hosts.first(where: { $0.id == target.id }))
+		XCTAssertEqual(refreshedTarget.jumpHostServerId, "rh-bastion")
 	}
 
 	func testOpenTabPopulatesResolvedChainOnSuccess() throws {

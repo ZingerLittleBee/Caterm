@@ -42,14 +42,50 @@ final class ChainResolverTests: XCTestCase {
 		XCTAssertEqual(r, .found(.password(hostId: "id-1")))
 	}
 
-	func testPasswordPromptAmbiguousByUserHostnameWithoutPort() {
+	func testPasswordPromptAmbiguousByUserHostnameWithoutPortPicksFirstUnconsumed() {
 		let chain = [
 			entry(host: "h.example.com", port: 22, hostId: "id-22"),
 			entry(host: "h.example.com", port: 2222, hostId: "id-2222"),
 		]
 		let r = resolveAskpassPrompt("u@h.example.com's password: ",
 		                             chain: chain)
-		XCTAssertEqual(r, .ambiguous)
+		XCTAssertEqual(r, .found(.password(hostId: "id-22")))
+	}
+
+	func testPasswordPromptAmbiguousCanAdvanceUsingConsumedHostIds() {
+		let chain = [
+			entry(host: "h.example.com", port: 22, hostId: "id-22"),
+			entry(host: "h.example.com", port: 2222, hostId: "id-2222"),
+		]
+
+		let first = resolveAskpassPrompt(
+			"u@h.example.com's password: ",
+			chain: chain,
+			consumedPasswordHostIDs: []
+		)
+		let second = resolveAskpassPrompt(
+			"u@h.example.com's password: ",
+			chain: chain,
+			consumedPasswordHostIDs: ["id-22"]
+		)
+
+		XCTAssertEqual(first, .found(.password(hostId: "id-22")))
+		XCTAssertEqual(second, .found(.password(hostId: "id-2222")))
+	}
+
+	func testPasswordPromptAmbiguousStaysAmbiguousWhenAllCandidatesWereConsumed() {
+		let chain = [
+			entry(host: "h.example.com", port: 22, hostId: "id-22"),
+			entry(host: "h.example.com", port: 2222, hostId: "id-2222"),
+		]
+
+		let result = resolveAskpassPrompt(
+			"u@h.example.com's password: ",
+			chain: chain,
+			consumedPasswordHostIDs: ["id-22", "id-2222"]
+		)
+
+		XCTAssertEqual(result, .ambiguous)
 	}
 
 	func testPasswordPromptNoMatchingUserReturnsNoMatch() {
