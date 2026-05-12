@@ -24,13 +24,18 @@ public struct Host: Codable, Identifiable, Hashable {
 	/// as the jump host. Stored as `serverId` (not the local `id`) because
 	/// local UUIDs are regenerated on each device's pull. Nil = no chain.
 	public var jumpHostServerId: String?
+	/// Per-host port forwards. Empty for hosts that don't tunnel anything.
+	/// Encoded as a regular array; legacy hosts.json files predating this
+	/// field decode to `[]`.
+	public var forwards: [PortForward]
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
 	            username: String, credential: CredentialSource,
 	            createdAt: Date = Date(), updatedAt: Date = Date(),
 	            credentialMaterialDirty: Bool = false,
-	            jumpHostServerId: String? = nil) {
+	            jumpHostServerId: String? = nil,
+	            forwards: [PortForward] = []) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -42,6 +47,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		self.updatedAt = updatedAt
 		self.credentialMaterialDirty = credentialMaterialDirty
 		self.jumpHostServerId = jumpHostServerId
+		self.forwards = forwards
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
@@ -52,6 +58,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		case id, serverId, name, hostname, port, username, credential
 		case createdAt, updatedAt, credentialMaterialDirty
 		case jumpHostServerId
+		case forwards
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -67,6 +74,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		updatedAt = try c.decode(Date.self, forKey: .updatedAt)
 		credentialMaterialDirty = try c.decodeIfPresent(Bool.self, forKey: .credentialMaterialDirty) ?? false
 		jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
+		forwards = try c.decodeIfPresent([PortForward].self, forKey: .forwards) ?? []
 	}
 	// Synthesized encode(to:) is fine — it writes all keys.
 }
