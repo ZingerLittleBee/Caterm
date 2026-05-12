@@ -28,6 +28,7 @@ struct HostFormView: View {
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
 	@State private var jumpHostServerId: String? = nil
+	@State private var forwards: [PortForward] = []
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -80,6 +81,24 @@ struct HostFormView: View {
 						onBrowse: browseKey
 					)
 					.frame(minHeight: 96, alignment: .top)
+				}
+
+				Section("Port Forwarding") {
+					if forwards.isEmpty {
+						HStack {
+							Text("No port forwards")
+								.foregroundStyle(.secondary)
+							Spacer()
+							Button("+ Add") { addForward() }
+								.buttonStyle(.borderless)
+						}
+					} else {
+						ForwardListEditor(
+							forwards: $forwards,
+							onAdd: addForward,
+							onDelete: deleteForward
+						)
+					}
 				}
 
 				// Theme override only makes sense for an existing host —
@@ -138,6 +157,7 @@ struct HostFormView: View {
 		} catch {
 			return false
 		}
+		guard (try? PortForward.validateCollection(forwards)) != nil else { return false }
 		return true
 	}
 
@@ -214,6 +234,23 @@ struct HostFormView: View {
 		return "\(username)@\(hostname)"
 	}
 
+	private func addForward() {
+		let nextBind = lowestUnusedBindPort(start: 8080)
+		forwards.append(PortForward(kind: .local, bindPort: nextBind,
+		                            remoteHost: "localhost", remotePort: 8080))
+	}
+
+	private func deleteForward(_ id: UUID) {
+		forwards.removeAll { $0.id == id }
+	}
+
+	private func lowestUnusedBindPort(start: Int) -> Int {
+		let used = Set(forwards.map { $0.bindPort })
+		var p = start
+		while used.contains(p) { p += 1 }
+		return p
+	}
+
 	private func populate() {
 		guard case let .edit(host) = mode else { return }
 		// Only carry the existing name into the editable field when it
@@ -236,6 +273,7 @@ struct HostFormView: View {
 			credKind = .agent
 		}
 		jumpHostServerId = host.jumpHostServerId
+		forwards = host.forwards
 	}
 
 	private func browseKey() {
@@ -269,6 +307,7 @@ struct HostFormView: View {
 			credential: cred
 		)
 		host.jumpHostServerId = jumpHostServerId
+		host.forwards = forwards
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {
@@ -314,5 +353,100 @@ struct HostFormView: View {
 			username: username,
 			credential: credential
 		)
+	}
+}
+
+private struct ForwardListEditor: View {
+	@Binding var forwards: [PortForward]
+	let onAdd: () -> Void
+	let onDelete: (UUID) -> Void
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 4) {
+			ScrollView {
+				LazyVStack(spacing: 4) {
+					ForEach($forwards) { $forward in
+						ForwardRow(forward: $forward, onDelete: { onDelete(forward.id) })
+					}
+				}
+			}
+			.frame(maxHeight: forwards.count > 5 ? 180 : nil)
+
+			Button("+ Add port forward", action: onAdd)
+				.buttonStyle(.borderless)
+		}
+	}
+}
+
+private struct ForwardRow: View {
+	@Binding var forward: PortForward
+	let onDelete: () -> Void
+
+	var body: some View {
+		HStack(spacing: 8) {
+			Picker("", selection: $forward.kind) {
+				Text("L").tag(PortForward.Kind.local)
+				Text("R").tag(PortForward.Kind.remote)
+				Text("D").tag(PortForward.Kind.dynamic)
+			}
+			.pickerStyle(.menu)
+			.frame(width: 60)
+			.labelsHidden()
+			.onChange(of: forward.kind) { _, newKind in
+				if newKind == .dynamic {
+					forward.remoteHost = nil
+					forward.remotePort = nil
+				} else if forward.remoteHost == nil {
+					forward.remoteHost = "localhost"
+					forward.remotePort = forward.bindPort
+				}
+			}
+
+			TextField("Bind port", value: $forward.bindPort, format: .number)
+				.frame(width: 80)
+
+			if forward.kind == .dynamic {
+				Text("(dynamic)")
+					.foregroundStyle(.secondary)
+					.frame(maxWidth: .infinity, alignment: .leading)
+			} else {
+				HStack(spacing: 2) {
+					TextField("host", text: Binding(
+						get: { forward.remoteHost ?? "" },
+						set: { forward.remoteHost = $0.isEmpty ? nil : $0 }
+					))
+					.frame(maxWidth: 140)
+					Text(":")
+					TextField("port", value: Binding(
+						get: { forward.remotePort ?? 0 },
+						set: { forward.remotePort = $0 }
+					), format: .number)
+					.frame(width: 70)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+			}
+
+			Toggle("", isOn: $forward.required)
+				.labelsHidden()
+				.help("If enabled, a bind failure will abort the connection (only when ALL forwards on this host are required).")
+
+			Button {
+				onDelete()
+			} label: {
+				Image(systemName: "xmark")
+			}
+			.buttonStyle(.borderless)
+			.help("Delete this forward")
+		}
+		.padding(.vertical, 2)
+		.overlay(alignment: .leading) {
+			let isValid = (try? forward.validate()) != nil
+			if !isValid {
+				RoundedRectangle(cornerRadius: 4)
+					.stroke(.red, lineWidth: 1)
+					.padding(-2)
+					.help("This forward has invalid settings.")
+			}
+		}
 	}
 }
