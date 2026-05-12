@@ -79,6 +79,34 @@ public final class SessionStore: ObservableObject {
     /// won't trigger persistence.
     @Published public private(set) var hosts: [SSHHost] = []
 
+	public struct SkippedForwardNotice: Identifiable, Equatable, Sendable {
+		public let id: UUID
+		public let hostId: UUID
+		public let forward: PortForward
+		public let reason: PortForward.BindFailureReason
+		public let timestamp: Date
+
+		public init(hostId: UUID, forward: PortForward,
+		            reason: PortForward.BindFailureReason,
+		            id: UUID = UUID(), timestamp: Date = Date()) {
+			self.id = id
+			self.hostId = hostId
+			self.forward = forward
+			self.reason = reason
+			self.timestamp = timestamp
+		}
+	}
+
+	@Published public private(set) var skippedForwardNotices: [SkippedForwardNotice] = []
+
+	public func clearSkippedForwardNotices(forHost: UUID? = nil) {
+		if let target = forHost {
+			skippedForwardNotices.removeAll { $0.hostId == target }
+		} else {
+			skippedForwardNotices.removeAll()
+		}
+	}
+
     /// Combine signal for "user-driven local hosts mutation just persisted".
     /// `HostSyncStore` debounces this to drive auto-sync. Only `addHost`,
     /// `updateHost`, and `deleteHost` emit — credential-only changes and
