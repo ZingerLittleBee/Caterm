@@ -79,7 +79,7 @@ struct TerminalContainerView: View {
 	private func shouldShowFailureOverlay(_ kind: FailureKind) -> Bool {
 		switch kind {
 		case .cleanExit, .connectionDropped: return false
-		case .authOrSetupFail, .networkUnreachable: return true
+		case .authOrSetupFail, .networkUnreachable, .portForwardBindFailed: return true
 		}
 	}
 }
