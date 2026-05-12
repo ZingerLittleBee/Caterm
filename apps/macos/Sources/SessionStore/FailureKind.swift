@@ -1,4 +1,5 @@
 import Foundation
+import SSHCommandBuilder
 
 public enum FailureKind: Equatable {
 	/// auth fail or host key mismatch or DNS — short-lived, never reached Connected.
@@ -15,6 +16,11 @@ public enum FailureKind: Equatable {
 	/// typed reason for user-facing copy. Does NOT auto-reconnect — initial
 	/// network-unreachable means user-visible error with manual Retry.
 	case networkUnreachable(NetworkErrorReason)
+
+	/// A required port forward could not bind locally during preflight.
+	/// Carries the offending forward + the typed reason for UI copy.
+	/// Only thrown by `Preflight`; never synthesized from ssh process exit.
+	case portForwardBindFailed(forward: PortForward, reason: PortForward.BindFailureReason)
 
 	/// Classify exit_code + connected-history into one of three exit-driven
 	/// failures. `.networkUnreachable` is constructed directly by
