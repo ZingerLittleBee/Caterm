@@ -287,10 +287,33 @@ public final class SessionStore: ObservableObject {
             configSink.cleanup(configURL)
         }
         let hostId = tabs[idx].host.id
+        // Capture the closed tab's host snapshot before removal so we can
+        // inspect its `forwards` to decide between immediate teardown and
+        // the grace-window path. The user's saved `hosts` array may not
+        // contain this host (e.g. ad-hoc tabs in tests), so we trust the
+        // tab's own copy.
+        let closedHost = tabs[idx].host
         tabs.remove(at: idx)
         let stillReferenced = tabs.contains { $0.host.id == hostId }
         if !stillReferenced {
-            scheduleTeardown(hostId: hostId)
+            // Differentiated teardown: hosts with port forwards leave
+            // listening local sockets bound while the master is alive,
+            // which is observable to the user (next bind attempt would
+            // collide). Skip the grace and tear down immediately. Hosts
+            // without forwards keep the grace so a quick reconnect can
+            // reuse the warm master.
+            let hostHadForwards = !closedHost.forwards.isEmpty
+            if hostHadForwards, let manager = controlMasterManager {
+                // Cancel any prior pending teardown for the same host so
+                // the immediate path is authoritative.
+                teardownWorkItems[hostId]?.cancel()
+                teardownWorkItems.removeValue(forKey: hostId)
+                Task { @MainActor in
+                    await manager.tearDown(hostId: hostId)
+                }
+            } else {
+                scheduleTeardown(hostId: hostId)
+            }
         }
     }
 
