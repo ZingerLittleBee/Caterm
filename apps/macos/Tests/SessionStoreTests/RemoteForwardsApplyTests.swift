@@ -82,4 +82,15 @@ final class RemoteForwardsApplyTests: XCTestCase {
 		XCTAssertEqual(saved?.forwards.first?.kind, .dynamic)
 		XCTAssertEqual(saved?.forwards.first?.bindPort, 1080)
 	}
+
+	func test_updateHost_changingForwards_advancesUpdatedAt() async throws {
+		let initial = try addLocalHost(forwards: [])
+		let before = store.hosts.first(where: { $0.id == initial.id })!.updatedAt
+		try await Task.sleep(nanoseconds: 10_000_000)  // ensure clock advance
+		var edited = initial
+		edited.forwards = [PortForward(kind: .dynamic, bindPort: 1080)]
+		try store.updateHost(edited)
+		let after = store.hosts.first(where: { $0.id == initial.id })!.updatedAt
+		XCTAssertGreaterThan(after, before)
+	}
 }
