@@ -397,35 +397,64 @@ public final class SessionStore: ObservableObject {
 			timeout: 5
 		)
 
-		applyIfCurrent(tabId: tabId, token: token) { t in
-			switch outcome {
-			case .ok:
-				// Capture the full chain Output from SSHCommandBuilder before
-				// transitioning to .authenticating so surfaceConfig callers see it.
-				if !chain.isEmpty {
-					do {
-						let output = try SSHCommandBuilder.build(
-							host: host,
-							ancestors: chain,
-							configSink: self.configSink,
-							askpassPath: self.askpassPath,
-							knownHostsCaterm: self.knownHostsCaterm,
-							knownHostsUser: self.knownHostsUser,
-							installTerminfo: t.installTerminfo
-						)
-						t.chainOutput = output
-						t.sshConfigURL = output.configURL
-					} catch {
-						let msg = "Failed to build chain SSH config: \(error)"
-						t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
-						return
-					}
-				}
-				t.surfaceGeneration += 1
-				t.state = .authenticating(startedAt: Date())
-			case .failed(let reason):
+		// Handle TCP-preflight failure synchronously; bail out before probing
+		// local binds. Success path falls through to forward preflight below.
+		if case .failed(let reason) = outcome {
+			applyIfCurrent(tabId: tabId, token: token) { t in
 				t.state = .failed(.networkUnreachable(reason))
 			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		// TCP preflight succeeded — now run the forward preflight before
+		// spawning the ssh subprocess. Stale-attempt guard: a newer
+		// startConnection may have run while we were awaiting probe; in that
+		// case we must not clear or mutate @Published notice state on behalf
+		// of a superseded attempt.
+		guard connectionAttempts[tabId] == token else {
+			pendingStartTasks.removeValue(forKey: tabId)
+			return
+		}
+		// Clear any stale notices from a prior attempt before re-populating.
+		clearSkippedForwardNotices(forHost: host.id)
+		if let failure = await probeForwards(host.forwards, host: host,
+		                                     tabId: tabId, token: token) {
+			applyIfCurrent(tabId: tabId, token: token) { t in
+				t.state = .failed(failure)
+			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		applyIfCurrent(tabId: tabId, token: token) { t in
+			// Capture the full chain Output from SSHCommandBuilder before
+			// transitioning to .authenticating so surfaceConfig callers see it.
+			if !chain.isEmpty {
+				do {
+					let output = try SSHCommandBuilder.build(
+						host: host,
+						ancestors: chain,
+						configSink: self.configSink,
+						askpassPath: self.askpassPath,
+						knownHostsCaterm: self.knownHostsCaterm,
+						knownHostsUser: self.knownHostsUser,
+						installTerminfo: t.installTerminfo
+					)
+					t.chainOutput = output
+					t.sshConfigURL = output.configURL
+				} catch {
+					let msg = "Failed to build chain SSH config: \(error)"
+					t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
+					return
+				}
+			}
+			t.surfaceGeneration += 1
+			t.state = .authenticating(startedAt: Date())
 		}
 
 		// Clear our pending-task entry only if we are still the current attempt.
@@ -440,6 +469,41 @@ public final class SessionStore: ObservableObject {
 	                            _ mutate: (inout Tab) -> Void) {
 		guard connectionAttempts[tabId] == token else { return }
 		update(tabId, mutate)
+	}
+
+	/// Returns `nil` on success. Returns a `FailureKind` to abort the
+	/// connection with on the first **required** forward whose local bind
+	/// fails. Optional forwards that fail are appended to
+	/// `skippedForwardNotices` and do not abort. Remote forwards
+	/// (`.remote`) are skipped — they bind on the server, not locally.
+	///
+	/// `tabId`/`token` are used to guard against stale-attempt mutation of
+	/// `@Published` state. Each `await probeLocalBind` is a suspension point
+	/// after which a newer `startConnection` may have bumped the attempt
+	/// token; in that case we return `nil` without mutating notices or
+	/// reporting a failure for a superseded attempt.
+	private func probeForwards(_ forwards: [PortForward],
+	                           host: SSHHost,
+	                           tabId: UUID,
+	                           token: UInt64) async -> FailureKind? {
+		for forward in forwards where forward.kind != .remote {
+			let addr = forward.bindAddress ?? "127.0.0.1"
+			guard let nwPort = UInt16(exactly: forward.bindPort) else { continue }
+			let outcome = await preflight.probeLocalBind(address: addr, port: nwPort)
+			guard case .unavailable(let reason) = outcome else { continue }
+			// Stale-attempt guard: don't mutate published state (notices) or
+			// report a failure for a superseded run.
+			guard connectionAttempts[tabId] == token else { return nil }
+			if forward.required {
+				return .portForwardBindFailed(forward: forward, reason: reason)
+			} else {
+				skippedForwardNotices.append(
+					SkippedForwardNotice(hostId: host.id,
+					                     forward: forward, reason: reason)
+				)
+			}
+		}
+		return nil
 	}
 
 	public func retryTab(tabId: UUID) {
