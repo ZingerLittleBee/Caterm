@@ -1,4 +1,5 @@
 import Foundation
+import SSHCommandBuilder
 
 /// One row of `sshHost.list`. Mirrors `packages/api/src/routers/ssh-host.ts`
 /// (the metadata-only projection — no password/privateKey/keyPassphrase columns).
@@ -12,10 +13,12 @@ public struct RemoteHost: Codable, Equatable, Identifiable {
     public let createdAt: Date
     public let updatedAt: Date
     public let jumpHostServerId: String?
+    public let forwards: [PortForward]
 
     public init(id: String, name: String, hostname: String, port: Int,
                 username: String, authType: String, createdAt: Date, updatedAt: Date,
-                jumpHostServerId: String? = nil) {
+                jumpHostServerId: String? = nil,
+                forwards: [PortForward] = []) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -25,6 +28,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.jumpHostServerId = jumpHostServerId
+        self.forwards = forwards
     }
 }
 
@@ -38,15 +42,18 @@ public struct RemoteHostCreateInput: Codable {
     public let username: String
     public let authType: String
     public let jumpHostServerId: String?
+    public let forwards: [PortForward]
 
     public init(name: String, hostname: String, port: Int, username: String,
-                jumpHostServerId: String? = nil) {
+                jumpHostServerId: String? = nil,
+                forwards: [PortForward] = []) {
         self.name = name
         self.hostname = hostname
         self.port = port
         self.username = username
         self.authType = "key"
         self.jumpHostServerId = jumpHostServerId
+        self.forwards = forwards
     }
 }
 
@@ -60,10 +67,12 @@ public struct RemoteHostUpdateInput: Codable {
     public let username: String?
     public let authType: String?
     public let jumpHostServerId: String?
+    public let forwards: [PortForward]?
 
     public init(id: String, name: String? = nil, hostname: String? = nil,
                 port: Int? = nil, username: String? = nil,
-                jumpHostServerId: String? = nil) {
+                jumpHostServerId: String? = nil,
+                forwards: [PortForward]? = nil) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -73,6 +82,7 @@ public struct RemoteHostUpdateInput: Codable {
         // server row consistent with how we created it.
         self.authType = "key"
         self.jumpHostServerId = jumpHostServerId
+        self.forwards = forwards
     }
 }
 
