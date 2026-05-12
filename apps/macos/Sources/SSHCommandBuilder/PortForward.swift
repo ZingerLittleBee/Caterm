@@ -1,6 +1,6 @@
 import Foundation
 
-public struct PortForward: Codable, Hashable, Identifiable {
+public struct PortForward: Codable, Hashable, Identifiable, Sendable {
 	public enum Kind: String, Codable, CaseIterable, Sendable {
 		case local
 		case remote
