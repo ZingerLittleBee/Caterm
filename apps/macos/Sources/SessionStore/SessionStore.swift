@@ -649,6 +649,7 @@ public final class SessionStore: ObservableObject {
         hosts[idx].username = remote.username
         hosts[idx].updatedAt = remote.updatedAt
         hosts[idx].jumpHostServerId = remote.jumpHostServerId
+        hosts[idx].forwards = remote.forwards
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -663,7 +664,8 @@ public final class SessionStore: ObservableObject {
             port: remote.port, username: remote.username,
             credential: .password,
             createdAt: remote.createdAt, updatedAt: remote.updatedAt,
-            jumpHostServerId: remote.jumpHostServerId
+            jumpHostServerId: remote.jumpHostServerId,
+            forwards: remote.forwards
         )
         hosts.append(h)
         try HostPersistence.save(hosts, to: hostsURL)
