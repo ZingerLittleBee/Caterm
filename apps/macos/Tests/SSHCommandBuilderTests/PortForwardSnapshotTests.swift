@@ -101,3 +101,44 @@ extension PortForwardSnapshotTests {
 		XCTAssertFalse(cfg.contains("LocalForward"))
 	}
 }
+
+extension PortForwardSnapshotTests {
+
+	func test_directPath_local_emittedAsDashOFlag() throws {
+		let h = makeHost(forwards: [
+			PortForward(kind: .local, bindPort: 5432,
+						remoteHost: "db", remotePort: 5432, required: true),
+		])
+		let out = SSHCommandBuilder.build(
+			host: h, askpassPath: "/tmp/a",
+			knownHostsCaterm: "/tmp/k1", knownHostsUser: "/tmp/k2"
+		)
+		XCTAssertTrue(out.command.contains("-o 'LocalForward=5432 db:5432'"))
+		XCTAssertTrue(out.command.contains("-o ExitOnForwardFailure=yes"))
+	}
+
+	func test_directPath_mixedRequiredOptional_noExitFlag() throws {
+		let h = makeHost(forwards: [
+			PortForward(kind: .local, bindPort: 5432,
+						remoteHost: "db", remotePort: 5432, required: true),
+			PortForward(kind: .dynamic, bindPort: 1080, required: false),
+		])
+		let out = SSHCommandBuilder.build(
+			host: h, askpassPath: "/tmp/a",
+			knownHostsCaterm: "/tmp/k1", knownHostsUser: "/tmp/k2"
+		)
+		XCTAssertTrue(out.command.contains("LocalForward=5432 db:5432"))
+		XCTAssertTrue(out.command.contains("DynamicForward=1080"))
+		XCTAssertFalse(out.command.contains("ExitOnForwardFailure"))
+	}
+
+	func test_directPath_emptyForwards_unchanged() throws {
+		let h = makeHost()
+		let out = SSHCommandBuilder.build(
+			host: h, askpassPath: "/tmp/a",
+			knownHostsCaterm: "/tmp/k1", knownHostsUser: "/tmp/k2"
+		)
+		XCTAssertFalse(out.command.contains("LocalForward"))
+		XCTAssertFalse(out.command.contains("ExitOnForwardFailure"))
+	}
+}

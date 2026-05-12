@@ -232,6 +232,34 @@ public enum SSHCommandBuilder {
 			args += [.raw("-o"), .quoted("BatchMode=yes")]
 		}
 
+		// Forwards (direct path). Mirrors `perHostOptions` for the chain
+		// path. ExitOnForwardFailure only fires when every forward is required.
+		if !host.forwards.isEmpty {
+			var anyOptional = false
+			for fwd in host.forwards {
+				let bindPart: String
+				if let addr = fwd.bindAddress, !addr.isEmpty {
+					bindPart = "\(addr):\(fwd.bindPort)"
+				} else {
+					bindPart = String(fwd.bindPort)
+				}
+				let value: String
+				switch fwd.kind {
+				case .local:
+					value = "LocalForward=\(bindPart) \(fwd.remoteHost ?? ""):\(fwd.remotePort ?? 0)"
+				case .remote:
+					value = "RemoteForward=\(bindPart) \(fwd.remoteHost ?? ""):\(fwd.remotePort ?? 0)"
+				case .dynamic:
+					value = "DynamicForward=\(bindPart)"
+				}
+				args += [.raw("-o"), .quoted(value)]
+				if !fwd.required { anyOptional = true }
+			}
+			if !anyOptional {
+				args += [.raw("-o"), .raw("ExitOnForwardFailure=yes")]
+			}
+		}
+
 		args += [.raw("-p"), .raw(String(host.port))]
 
 		// Decide whether to install terminfo. When the toggle is on but the
