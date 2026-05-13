@@ -19,13 +19,13 @@ final class HostFormCycleFilterTests: XCTestCase {
 		XCTAssertEqual(filtered.map(\.name), ["b"])
 	}
 
-	func testFilterExcludesHostsWithoutServerId() {
+	func testFilterIncludesUnsyncedHostsWhenTheyDoNotCreateCycles() {
 		let a = host("a", "rh-a")
 		let b = host("b", nil)            // not synced yet
 		let c = host("c", "rh-c")
 		let filtered = HostFormCycleFilter.eligibleJumpHosts(
 			editingHost: a, allHosts: [a, b, c])
-		XCTAssertEqual(filtered.map(\.name), ["c"])
+		XCTAssertEqual(Set(filtered.map(\.name)), Set(["b", "c"]))
 	}
 
 	func testFilterExcludesHostsWhoseChainPassesThroughEditingHost() {

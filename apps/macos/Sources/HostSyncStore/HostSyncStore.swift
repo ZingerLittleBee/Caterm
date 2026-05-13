@@ -624,7 +624,8 @@ public final class HostSyncStore: ObservableObject {
             let input = RemoteHostCreateInput(
                 name: host.name, hostname: host.hostname,
                 port: host.port, username: host.username,
-                jumpHostServerId: host.jumpHostServerId
+                jumpHostServerId: host.jumpHostServerId,
+                forwards: host.forwards
             )
             let out = try await client.createHost(input)
             try sessionStore.setServerId(out.id, for: localHostId)
@@ -647,7 +648,8 @@ public final class HostSyncStore: ObservableObject {
             let input = RemoteHostUpdateInput(
                 id: serverId, name: host.name, hostname: host.hostname,
                 port: host.port, username: host.username,
-                jumpHostServerId: host.jumpHostServerId
+                jumpHostServerId: host.jumpHostServerId,
+                forwards: host.forwards
             )
             try await client.updateHost(input)
 

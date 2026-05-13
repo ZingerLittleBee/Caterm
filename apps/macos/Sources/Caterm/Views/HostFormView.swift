@@ -27,7 +27,8 @@ struct HostFormView: View {
 	@State private var keyPath = ""
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
-	@State private var jumpHostServerId: String? = nil
+	@State private var jumpHostId: UUID? = nil
+	@State private var forwards: [PortForward] = []
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -46,11 +47,11 @@ struct HostFormView: View {
 						TextField("", text: $username)
 					}
 					LabeledContent("Via host") {
-						Picker("Via host", selection: $jumpHostServerId) {
-							Text("(none)").tag(String?.none)
-							ForEach(eligibleJumpHosts, id: \.host.id) { entry in
-								Text("\(entry.host.name) (\(entry.host.username)@\(entry.host.hostname))")
-									.tag(String?.some(entry.serverId))
+						Picker("Via host", selection: $jumpHostId) {
+							Text("(none)").tag(UUID?.none)
+							ForEach(eligibleJumpHosts, id: \.id) { host in
+								Text("\(host.name) (\(host.username)@\(host.hostname))")
+									.tag(UUID?.some(host.id))
 							}
 						}
 						.pickerStyle(.menu)
@@ -80,6 +81,24 @@ struct HostFormView: View {
 						onBrowse: browseKey
 					)
 					.frame(minHeight: 96, alignment: .top)
+				}
+
+				Section("Port Forwarding") {
+					if forwards.isEmpty {
+						HStack {
+							Text("No port forwards")
+								.foregroundStyle(.secondary)
+							Spacer()
+							Button("+ Add") { addForward() }
+								.buttonStyle(.borderless)
+						}
+					} else {
+						ForwardListEditor(
+							forwards: $forwards,
+							onAdd: addForward,
+							onDelete: deleteForward
+						)
+					}
 				}
 
 				// Theme override only makes sense for an existing host —
@@ -132,12 +151,14 @@ struct HostFormView: View {
 			username: username,
 			credential: cred
 		)
-		draft.jumpHostServerId = jumpHostServerId
+		draft.jumpHostId = jumpHostId
+		draft.jumpHostServerId = jumpHost.flatMap(\.serverId)
 		do {
 			_ = try draft.resolvedChain(in: sessionStore.hosts)
 		} catch {
 			return false
 		}
+		guard (try? PortForward.validateCollection(forwards)) != nil else { return false }
 		return true
 	}
 
@@ -149,44 +170,54 @@ struct HostFormView: View {
 	}
 
 	/// Hosts eligible for use as the jump host for this form's target.
-	/// In `.add` mode the new host has no id yet, so only `serverId` presence
-	/// is required (no cycle risk from a host that doesn't exist yet).
-	private var eligibleJumpHosts: [(host: SSHHost, serverId: String)] {
-		let hosts: [SSHHost]
+	/// In `.add` mode every existing host is eligible because the new host
+	/// does not exist in the graph yet and therefore cannot participate in a cycle.
+	private var eligibleJumpHosts: [SSHHost] {
 		if case let .edit(currentHost) = mode {
-			hosts = HostFormCycleFilter.eligibleJumpHosts(
+			return HostFormCycleFilter.eligibleJumpHosts(
 				editingHost: currentHost,
 				allHosts: sessionStore.hosts
 			)
-		} else {
-			hosts = sessionStore.hosts.filter { $0.serverId != nil }
 		}
-		return hosts.compactMap { h in
-			guard let sid = h.serverId else { return nil }
-			return (h, sid)
-		}
+		return sessionStore.hosts
 	}
 
 	private var chainPreview: ChainPreviewState {
-		guard let sid = jumpHostServerId else { return .none }
+		guard let jumpHost else { return .none }
 		var names: [String] = []
-		var cursor: String? = sid
-		var visited: Set<String> = []
-		while let nextSid = cursor {
-			if visited.contains(nextSid) {
+		var cursor: SSHHost? = jumpHost
+		var visited: Set<UUID> = []
+		while let nextHost = cursor {
+			if visited.contains(nextHost.id) {
 				names.append("(cycle)")
 				return .cycle(names: names)
 			}
-			visited.insert(nextSid)
-			if let h = sessionStore.hosts.first(where: { $0.serverId == nextSid }) {
-				names.append(h.name)
-				cursor = h.jumpHostServerId
-			} else {
-				names.append("(deleted)")
-				return .missing(names: names)
+			visited.insert(nextHost.id)
+			names.append(nextHost.name)
+			if let nextId = nextHost.jumpHostId {
+				cursor = sessionStore.hosts.first(where: { $0.id == nextId })
+				if cursor == nil {
+					names.append("(deleted)")
+					return .missing(names: names)
+				}
+				continue
 			}
+			if let nextSid = nextHost.jumpHostServerId {
+				cursor = sessionStore.hosts.first(where: { $0.serverId == nextSid })
+				if cursor == nil {
+					names.append("(deleted)")
+					return .missing(names: names)
+				}
+				continue
+			}
+			cursor = nil
 		}
 		return .ok(names: names)
+	}
+
+	private var jumpHost: SSHHost? {
+		guard let jumpHostId else { return nil }
+		return sessionStore.hosts.first(where: { $0.id == jumpHostId })
 	}
 
 	/// Human-readable chain preview, e.g. "Will connect via bastion → target".
@@ -214,6 +245,23 @@ struct HostFormView: View {
 		return "\(username)@\(hostname)"
 	}
 
+	private func addForward() {
+		let nextBind = lowestUnusedBindPort(start: 8080)
+		forwards.append(PortForward(kind: .local, bindPort: nextBind,
+		                            remoteHost: "localhost", remotePort: 8080))
+	}
+
+	private func deleteForward(_ id: UUID) {
+		forwards.removeAll { $0.id == id }
+	}
+
+	private func lowestUnusedBindPort(start: Int) -> Int {
+		let used = Set(forwards.map { $0.bindPort })
+		var p = start
+		while used.contains(p) { p += 1 }
+		return p
+	}
+
 	private func populate() {
 		guard case let .edit(host) = mode else { return }
 		// Only carry the existing name into the editable field when it
@@ -235,7 +283,8 @@ struct HostFormView: View {
 		case .agent:
 			credKind = .agent
 		}
-		jumpHostServerId = host.jumpHostServerId
+		jumpHostId = Self.jumpHostIdForForm(host: host, allHosts: sessionStore.hosts)
+		forwards = host.forwards
 	}
 
 	private func browseKey() {
@@ -268,7 +317,9 @@ struct HostFormView: View {
 			username: username,
 			credential: cred
 		)
-		host.jumpHostServerId = jumpHostServerId
+		host.jumpHostId = jumpHostId
+		host.jumpHostServerId = jumpHost.flatMap(\.serverId)
+		host.forwards = forwards
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {
@@ -314,5 +365,108 @@ struct HostFormView: View {
 			username: username,
 			credential: credential
 		)
+	}
+
+	static func jumpHostIdForForm(host: SSHHost, allHosts: [SSHHost]) -> UUID? {
+		if let jumpHostId = host.jumpHostId {
+			return jumpHostId
+		}
+		guard let jumpHostServerId = host.jumpHostServerId else { return nil }
+		return allHosts.first(where: { $0.serverId == jumpHostServerId })?.id
+	}
+}
+
+private struct ForwardListEditor: View {
+	@Binding var forwards: [PortForward]
+	let onAdd: () -> Void
+	let onDelete: (UUID) -> Void
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 4) {
+			ScrollView {
+				LazyVStack(spacing: 4) {
+					ForEach($forwards) { $forward in
+						ForwardRow(forward: $forward, onDelete: { onDelete(forward.id) })
+					}
+				}
+			}
+			.frame(maxHeight: forwards.count > 5 ? 180 : nil)
+
+			Button("+ Add port forward", action: onAdd)
+				.buttonStyle(.borderless)
+		}
+	}
+}
+
+private struct ForwardRow: View {
+	@Binding var forward: PortForward
+	let onDelete: () -> Void
+
+	var body: some View {
+		HStack(spacing: 8) {
+			Picker("", selection: $forward.kind) {
+				Text("L").tag(PortForward.Kind.local)
+				Text("R").tag(PortForward.Kind.remote)
+				Text("D").tag(PortForward.Kind.dynamic)
+			}
+			.pickerStyle(.menu)
+			.frame(width: 60)
+			.labelsHidden()
+			.onChange(of: forward.kind) { _, newKind in
+				if newKind == .dynamic {
+					forward.remoteHost = nil
+					forward.remotePort = nil
+				} else if forward.remoteHost == nil {
+					forward.remoteHost = "localhost"
+					forward.remotePort = forward.bindPort
+				}
+			}
+
+			TextField("Bind port", value: $forward.bindPort, format: .number)
+				.frame(width: 80)
+
+			if forward.kind == .dynamic {
+				Text("(dynamic)")
+					.foregroundStyle(.secondary)
+					.frame(maxWidth: .infinity, alignment: .leading)
+			} else {
+				HStack(spacing: 2) {
+					TextField("host", text: Binding(
+						get: { forward.remoteHost ?? "" },
+						set: { forward.remoteHost = $0.isEmpty ? nil : $0 }
+					))
+					.frame(maxWidth: 140)
+					Text(":")
+					TextField("port", value: Binding(
+						get: { forward.remotePort ?? 0 },
+						set: { forward.remotePort = $0 }
+					), format: .number)
+					.frame(width: 70)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+			}
+
+			Toggle("", isOn: $forward.required)
+				.labelsHidden()
+				.help("If enabled, a bind failure will abort the connection (only when ALL forwards on this host are required).")
+
+			Button {
+				onDelete()
+			} label: {
+				Image(systemName: "xmark")
+			}
+			.buttonStyle(.borderless)
+			.help("Delete this forward")
+		}
+		.padding(.vertical, 2)
+		.overlay(alignment: .leading) {
+			let isValid = (try? forward.validate()) != nil
+			if !isValid {
+				RoundedRectangle(cornerRadius: 4)
+					.stroke(.red, lineWidth: 1)
+					.padding(-2)
+					.help("This forward has invalid settings.")
+			}
+		}
 	}
 }

@@ -11,6 +11,13 @@ final class ChainTests: XCTestCase {
 		return h
 	}
 
+	private func localHost(_ name: String, jumpId: UUID? = nil) -> SSHHost {
+		var h = SSHHost(name: name, hostname: "\(name).example.com",
+		                port: 22, username: "u", credential: .password)
+		h.jumpHostId = jumpId
+		return h
+	}
+
 	func testNoChainReturnsEmpty() throws {
 		let target = host("target", "rh-target")
 		XCTAssertEqual(try target.resolvedChain(in: [target]), [])
@@ -19,6 +26,15 @@ final class ChainTests: XCTestCase {
 	func testSingleHopReturnsAncestor() throws {
 		let bastion = host("bastion", "rh-bastion")
 		let target = host("target", "rh-target", jump: "rh-bastion")
+		let chain = try target.resolvedChain(in: [bastion, target])
+		XCTAssertEqual(chain.map(\.name), ["bastion"])
+	}
+
+	func testSingleHopResolvesUnsyncedAncestorByLocalId() throws {
+		let bastion = localHost("bastion")
+		var target = localHost("target")
+		target.jumpHostId = bastion.id
+
 		let chain = try target.resolvedChain(in: [bastion, target])
 		XCTAssertEqual(chain.map(\.name), ["bastion"])
 	}
@@ -73,6 +89,16 @@ final class ChainTests: XCTestCase {
 		let target = host("target", "rh-target", jump: "rh-mid")
 		let addr = target.firstHopAddress(in: [deep, mid, target])
 		XCTAssertEqual(addr?.hostname, "deep.example.com")
+	}
+
+	func testFirstHopAddressUsesUnsyncedLocalAncestor() {
+		let bastion = localHost("bastion")
+		var target = localHost("target")
+		target.jumpHostId = bastion.id
+
+		let addr = target.firstHopAddress(in: [bastion, target])
+		XCTAssertEqual(addr?.hostname, "bastion.example.com")
+		XCTAssertEqual(addr?.port, 22)
 	}
 
 	func testFirstHopAddressOnBrokenChainReturnsNil() {

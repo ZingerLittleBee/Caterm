@@ -70,6 +70,9 @@ final class EndToEndSSHTests: XCTestCase {
         func probe(host _: String, port _: UInt16, timeout _: TimeInterval) async -> PreflightOutcome {
             .ok
         }
+        func probeLocalBind(address _: String, port _: UInt16) async -> PortBindOutcome {
+            .available
+        }
     }
 
 	// MARK: - Chain integration cases

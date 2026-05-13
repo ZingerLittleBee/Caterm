@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import SSHCommandBuilder
 
 /// TCP preflight probe. Uses NWConnection to determine reachability and
 /// classify failure type before the libghostty ssh subprocess is launched.
@@ -59,6 +60,74 @@ public struct Preflight: PreflightProbing {
 					continuation.resume(returning: .failed(.timedOut))
 				}
 			}
+		}
+	}
+
+	public func probeLocalBind(address: String, port: UInt16) async -> PortBindOutcome {
+		guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+			return .unavailable(.unknown)
+		}
+		let parameters: NWParameters = .tcp
+		// Bind to the specific address: pass via `requiredLocalEndpoint`. The
+		// endpoint carries the port, so we must NOT also pass `on:` to
+		// `NWListener.init(using:on:)` — Network framework rejects the dual
+		// specification with EINVAL even when the ports match.
+		let bindToSpecificAddress = !address.isEmpty && address != "*"
+		if bindToSpecificAddress {
+			parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+				host: NWEndpoint.Host(address), port: nwPort
+			)
+		}
+		do {
+			let listener: NWListener
+			if bindToSpecificAddress {
+				listener = try NWListener(using: parameters)
+			} else {
+				listener = try NWListener(using: parameters, on: nwPort)
+			}
+			// Network framework requires a newConnectionHandler before start —
+			// otherwise the listener immediately transitions to .failed(EINVAL).
+			// We don't actually accept incoming connections; cancel them.
+			listener.newConnectionHandler = { conn in conn.cancel() }
+			return await withCheckedContinuation { continuation in
+				let resumed = ResumedFlag()
+				listener.stateUpdateHandler = { state in
+					switch state {
+					case .ready:
+						if resumed.markIfFirst() {
+							listener.cancel()
+							continuation.resume(returning: .available)
+						}
+					case .failed(let error):
+						if resumed.markIfFirst() {
+							listener.cancel()
+							continuation.resume(returning:
+								.unavailable(Self.mapBindError(error)))
+						}
+					case .cancelled, .setup, .waiting:
+						break
+					@unknown default:
+						break
+					}
+				}
+				listener.start(queue: .global(qos: .userInitiated))
+			}
+		} catch {
+			return .unavailable(Self.mapBindError(error))
+		}
+	}
+
+	static func mapBindError(_ error: Error) -> PortForward.BindFailureReason {
+		guard let nw = error as? NWError else { return .unknown }
+		switch nw {
+		case .posix(let code):
+			switch code {
+			case .EADDRINUSE: return .alreadyInUse
+			case .EACCES:     return .permissionDenied
+			default:          return .unknown
+			}
+		default:
+			return .unknown
 		}
 	}
 

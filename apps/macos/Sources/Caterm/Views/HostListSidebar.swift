@@ -222,14 +222,9 @@ struct HostListSidebar: View {
 	}
 
 	private func deleteHost(_ host: SSHHost) {
-		// Never-synced hosts have no serverId, so no other host can chain through them.
-		guard let serverId = host.serverId else {
-			do { try store.deleteHost(id: host.id) }
-			catch { errorMessage = error.localizedDescription }
-			return
-		}
 		let dependents = store.hosts.filter {
-			$0.id != host.id && $0.jumpHostServerId == serverId
+			$0.id != host.id &&
+			($0.jumpHostId == host.id || (host.serverId != nil && $0.jumpHostServerId == host.serverId))
 		}
 		if dependents.isEmpty {
 			do { try store.deleteHost(id: host.id) }
@@ -242,7 +237,7 @@ struct HostListSidebar: View {
 
 /// SwiftUI's `List(selection:)` swallows row double-tap gestures on macOS.
 /// Install the native AppKit double-action on the backing table instead.
-private struct HostListDoubleClickConnector: NSViewRepresentable {
+struct HostListDoubleClickConnector: NSViewRepresentable {
 	let hosts: [SSHHost]
 	let onDoubleClick: (SSHHost) -> Void
 
@@ -274,6 +269,8 @@ private struct HostListDoubleClickConnector: NSViewRepresentable {
 
 	@MainActor
 	final class Coordinator: NSObject {
+		static let installedDoubleAction = #selector(openClickedRow(_:))
+
 		private var hosts: [SSHHost] = []
 		private var onDoubleClick: ((SSHHost) -> Void)?
 		private weak var tableView: NSTableView?
@@ -301,24 +298,28 @@ private struct HostListDoubleClickConnector: NSViewRepresentable {
 			previousDoubleAction = nil
 		}
 
-		@objc private func openClickedRow(_ sender: NSTableView) {
+		@objc func openClickedRow(_ sender: NSTableView) {
 			let row = sender.clickedRow
 			guard hosts.indices.contains(row) else { return }
 			onDoubleClick?(hosts[row])
 		}
 
+		func install(on tableView: NSTableView) {
+			if tableView !== self.tableView {
+				restorePreviousDoubleAction()
+				previousTarget = tableView.target as AnyObject?
+				previousDoubleAction = tableView.doubleAction
+				self.tableView = tableView
+			}
+			tableView.target = self
+			tableView.doubleAction = Self.installedDoubleAction
+		}
+
 		private func install(from view: NSView) {
 			guard !hosts.isEmpty,
-			      let tableView = findHostTableView(from: view),
-			      tableView !== self.tableView
+			      let tableView = findHostTableView(from: view)
 			else { return }
-
-			restorePreviousDoubleAction()
-			previousTarget = tableView.target as AnyObject?
-			previousDoubleAction = tableView.doubleAction
-			tableView.target = self
-			tableView.doubleAction = #selector(openClickedRow(_:))
-			self.tableView = tableView
+			install(on: tableView)
 		}
 
 		private func findHostTableView(from view: NSView) -> NSTableView? {
@@ -381,7 +382,7 @@ struct HostRow: View {
 				)
 			}
 			.frame(maxWidth: .infinity, alignment: .leading)
-			if host.jumpHostServerId != nil {
+			if host.jumpHostId != nil || host.jumpHostServerId != nil {
 				Image(systemName: "arrow.triangle.branch")
 					.font(.caption2)
 					.foregroundStyle(.secondary)
@@ -414,18 +415,30 @@ struct HostRow: View {
 
 	private func chainTooltip(for host: SSHHost) -> String {
 		var names: [String] = []
-		var cursor: String? = host.jumpHostServerId
-		var visited: Set<String> = []
-		while let nextSid = cursor {
-			if visited.contains(nextSid) { names.append("(cycle)"); break }
-			visited.insert(nextSid)
-			if let h = store.hosts.first(where: { $0.serverId == nextSid }) {
-				names.append(h.name)
-				cursor = h.jumpHostServerId
-			} else {
-				names.append("(deleted)")
-				break
+		var cursor: SSHHost? = host
+		var visited: Set<UUID> = []
+		while let current = cursor {
+			if let nextId = current.jumpHostId {
+				if visited.contains(nextId) { names.append("(cycle)"); break }
+				visited.insert(nextId)
+				guard let parent = store.hosts.first(where: { $0.id == nextId }) else {
+					names.append("(deleted)")
+					break
+				}
+				names.append(parent.name)
+				cursor = parent
+				continue
 			}
+			if let nextSid = current.jumpHostServerId {
+				guard let parent = store.hosts.first(where: { $0.serverId == nextSid }) else {
+					names.append("(deleted)")
+					break
+				}
+				names.append(parent.name)
+				cursor = parent
+				continue
+			}
+			break
 		}
 		return "via \(names.joined(separator: " → "))"
 	}

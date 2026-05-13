@@ -113,6 +113,12 @@ final class FakeServerSyncClient: IncrementalHostSyncClient, @unchecked Sendable
     var updateCallCount = 0
     var deleteCallCount = 0
 
+    /// Captured inputs for assertions about what got pushed to the
+    /// self-hosted server path (notably `forwards`, which the CloudKit
+    /// path covers separately).
+    var createHostInputs: [RemoteHostCreateInput] = []
+    var updateHostInputs: [RemoteHostUpdateInput] = []
+
     /// If > 0, listHosts() sleeps this many seconds before returning.
     /// Tests use this to keep a sync "in flight" while exercising
     /// chain serialization and manual-vs-auto coordination.
@@ -160,11 +166,13 @@ final class FakeServerSyncClient: IncrementalHostSyncClient, @unchecked Sendable
     }
     func createHost(_ input: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
         createCallCount += 1
+        createHostInputs.append(input)
         if let err = createHostError { throw err }
         return createResult
     }
     func updateHost(_ input: RemoteHostUpdateInput) async throws {
         updateCallCount += 1
+        updateHostInputs.append(input)
         if let err = updateHostError { throw err }
     }
     func deleteHost(id: String) async throws {

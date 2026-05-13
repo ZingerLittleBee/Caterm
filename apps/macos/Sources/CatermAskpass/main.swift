@@ -43,6 +43,29 @@ func logLine(_ message: String) {
     }
 }
 
+struct ChainAskpassState: Codable {
+    var consumedPasswordHostIDs: [String] = []
+}
+
+func loadChainAskpassState(from path: String?) -> ChainAskpassState {
+    guard let path, !path.isEmpty,
+          let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+          let state = try? JSONDecoder().decode(ChainAskpassState.self, from: data)
+    else { return ChainAskpassState() }
+    return state
+}
+
+func saveChainAskpassState(_ state: ChainAskpassState, to path: String?) {
+    guard let path, !path.isEmpty,
+          let data = try? JSONEncoder().encode(state) else { return }
+    let url = URL(fileURLWithPath: path)
+    try? FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try? data.write(to: url, options: .atomic)
+}
+
 // Dev-only stuff mode — used by Task 1.4 EndToEndSSHTests to seed a Keychain
 // item from the same signed binary that will later read it (so the partition
 // list automatically grants access without an "Always Allow" dialog). Gated
@@ -92,7 +115,13 @@ if let chainJSON = env["CATERM_CHAIN"], !chainJSON.isEmpty {
     }
 
     let prompt = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
-    let resolution = resolveAskpassPrompt(prompt, chain: chain)
+    let statePath = env["CATERM_CHAIN_STATE_PATH"]
+    var chainState = loadChainAskpassState(from: statePath)
+    let resolution = resolveAskpassPrompt(
+        prompt,
+        chain: chain,
+        consumedPasswordHostIDs: chainState.consumedPasswordHostIDs
+    )
 
     let hostId: String
     let kind: String
@@ -124,6 +153,11 @@ if let chainJSON = env["CATERM_CHAIN"], !chainJSON.isEmpty {
         let secret = try store.get(account: account)
         let out = secret + "\n"
         FileHandle.standardOutput.write(Data(out.utf8))
+        if kind == "password",
+           !chainState.consumedPasswordHostIDs.contains(hostId) {
+            chainState.consumedPasswordHostIDs.append(hostId)
+            saveChainAskpassState(chainState, to: statePath)
+        }
         logLine("OK exit=0 mode=chain account=\(account) " +
                 "group=\(groupTag) secretLen=\(secret.count)")
         exit(0)

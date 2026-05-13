@@ -20,17 +20,27 @@ public struct Host: Codable, Identifiable, Hashable {
 	/// `.updateRemoteCredentials` push has not yet succeeded; cleared by
 	/// HostSyncStore on push success. Persisted in hosts.json.
 	public var credentialMaterialDirty: Bool
+	/// Device-local reference to another saved host that should be used as
+	/// the jump host. This lets local-only hosts chain before they have a
+	/// remote `serverId`.
+	public var jumpHostId: UUID?
 	/// CloudKit-stable reference to another saved host that should be used
 	/// as the jump host. Stored as `serverId` (not the local `id`) because
 	/// local UUIDs are regenerated on each device's pull. Nil = no chain.
 	public var jumpHostServerId: String?
+	/// Per-host port forwards. Empty for hosts that don't tunnel anything.
+	/// Encoded as a regular array; legacy hosts.json files predating this
+	/// field decode to `[]`.
+	public var forwards: [PortForward]
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
 	            username: String, credential: CredentialSource,
 	            createdAt: Date = Date(), updatedAt: Date = Date(),
 	            credentialMaterialDirty: Bool = false,
-	            jumpHostServerId: String? = nil) {
+	            jumpHostId: UUID? = nil,
+	            jumpHostServerId: String? = nil,
+	            forwards: [PortForward] = []) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -41,7 +51,9 @@ public struct Host: Codable, Identifiable, Hashable {
 		self.createdAt = createdAt
 		self.updatedAt = updatedAt
 		self.credentialMaterialDirty = credentialMaterialDirty
+		self.jumpHostId = jumpHostId
 		self.jumpHostServerId = jumpHostServerId
+		self.forwards = forwards
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
@@ -51,7 +63,8 @@ public struct Host: Codable, Identifiable, Hashable {
 	private enum CodingKeys: String, CodingKey {
 		case id, serverId, name, hostname, port, username, credential
 		case createdAt, updatedAt, credentialMaterialDirty
-		case jumpHostServerId
+		case jumpHostId, jumpHostServerId
+		case forwards
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -66,7 +79,9 @@ public struct Host: Codable, Identifiable, Hashable {
 		createdAt = try c.decode(Date.self, forKey: .createdAt)
 		updatedAt = try c.decode(Date.self, forKey: .updatedAt)
 		credentialMaterialDirty = try c.decodeIfPresent(Bool.self, forKey: .credentialMaterialDirty) ?? false
+		jumpHostId = try c.decodeIfPresent(UUID.self, forKey: .jumpHostId)
 		jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
+		forwards = try c.decodeIfPresent([PortForward].self, forKey: .forwards) ?? []
 	}
 	// Synthesized encode(to:) is fine — it writes all keys.
 }

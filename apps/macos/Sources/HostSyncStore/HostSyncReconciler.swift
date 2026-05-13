@@ -22,8 +22,13 @@ public enum HostSyncReconciler {
                     } else if localHost.updatedAt > r.updatedAt {
                         ops.append(.updateRemote(localHostId: localHost.id,
                                                   serverId: serverId))
+                    } else if localHost.forwards != r.forwards {
+                        // Equal updatedAt but forwards diverge — defensive
+                        // catch for callers that mutated forwards without
+                        // bumping updatedAt. Prefer the remote copy.
+                        ops.append(.updateLocal(localHostId: localHost.id, remote: r))
                     }
-                    // equal updatedAt → no-op
+                    // otherwise equal updatedAt → no-op
                 } else {
                     // Local thinks it's synced but server doesn't have it.
                     // Per spec: other device deleted it → delete locally.
@@ -61,6 +66,11 @@ public enum HostSyncReconciler {
                     ops.append(.updateLocal(localHostId: existing.id, remote: r))
                 } else if existing.updatedAt > r.updatedAt {
                     ops.append(.updateRemote(localHostId: existing.id, serverId: r.id))
+                } else if existing.forwards != r.forwards {
+                    // Equal updatedAt but forwards diverge — defensive
+                    // catch for callers that mutated forwards without
+                    // bumping updatedAt. Prefer the remote copy.
+                    ops.append(.updateLocal(localHostId: existing.id, remote: r))
                 }
             } else {
                 ops.append(.createLocal(remote: r))

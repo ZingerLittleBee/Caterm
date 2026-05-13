@@ -11,17 +11,25 @@ public enum HostFormCycleFilter {
 		allHosts.filter { candidate in
 			// Rule 1: cannot pick self.
 			guard candidate.id != editingHost.id else { return false }
-			// Rule 2: must be synced (have a serverId).
-			guard candidate.serverId != nil else { return false }
-			// Rule 3: candidate's transitive chain must not pass through
-			// editingHost. Walk up via jumpHostServerId, lookup by serverId.
-			var visited: Set<String> = []
+			// Rule 2: candidate's transitive chain must not pass through
+			// editingHost. Walk up via local jumpHostId when available,
+			// otherwise fall back to jumpHostServerId.
+			var visited: Set<UUID> = []
 			var cursor: SSHHost? = candidate
-			while let cur = cursor, let nextSid = cur.jumpHostServerId {
-				if nextSid == editingHost.serverId { return false }
-				if visited.contains(nextSid) { return false }
-				visited.insert(nextSid)
-				cursor = allHosts.first { $0.serverId == nextSid }
+			while let cur = cursor {
+				if let nextId = cur.jumpHostId {
+					if nextId == editingHost.id { return false }
+					if visited.contains(nextId) { return false }
+					visited.insert(nextId)
+					cursor = allHosts.first { $0.id == nextId }
+					continue
+				}
+				if let nextSid = cur.jumpHostServerId {
+					if nextSid == editingHost.serverId { return false }
+					cursor = allHosts.first { $0.serverId == nextSid }
+					continue
+				}
+				cursor = nil
 			}
 			return true
 		}

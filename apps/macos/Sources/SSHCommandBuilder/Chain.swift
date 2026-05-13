@@ -15,24 +15,21 @@ public extension SSHHost {
 	/// Returns the chain ancestors in connect order — index 0 is the
 	/// host ssh dials *first* (deepest ancestor); the last entry is
 	/// `self`'s direct parent. Returns an empty array when
-	/// `jumpHostServerId` is nil. Throws when the chain cycles or
+	/// no jump-host reference is set. Throws when the chain cycles or
 	/// references a host not present in `hosts`.
 	func resolvedChain(in hosts: [SSHHost]) throws -> [SSHHost] {
 		var ancestors: [SSHHost] = []
 		var visited: Set<String> = []
 		var cursor = self
-		while let nextServerId = cursor.jumpHostServerId {
-			// Self-loop check: if the next reference points to self.
-			if let selfSid = self.serverId, nextServerId == selfSid {
-				throw ChainResolutionError.cycle(involvingServerId: selfSid)
+		while let nextReference = try cursor.nextJumpReference(in: hosts) {
+			if nextReference.parent.id == self.id {
+				throw ChainResolutionError.cycle(involvingServerId: nextReference.reference)
 			}
-			if visited.contains(nextServerId) {
-				throw ChainResolutionError.cycle(involvingServerId: nextServerId)
+			if visited.contains(nextReference.reference) {
+				throw ChainResolutionError.cycle(involvingServerId: nextReference.reference)
 			}
-			guard let parent = hosts.first(where: { $0.serverId == nextServerId }) else {
-				throw ChainResolutionError.missingHost(serverId: nextServerId)
-			}
-			visited.insert(nextServerId)
+			visited.insert(nextReference.reference)
+			let parent = nextReference.parent
 			ancestors.append(parent)
 			cursor = parent
 		}
@@ -54,5 +51,22 @@ public extension SSHHost {
 		} catch {
 			return nil
 		}
+	}
+
+	private func nextJumpReference(in hosts: [SSHHost]) throws -> (reference: String, parent: SSHHost)? {
+		if let jumpHostId {
+			let localReference = jumpHostId.uuidString
+			if let parent = hosts.first(where: { $0.id == jumpHostId }) {
+				return (localReference, parent)
+			}
+			if jumpHostServerId == nil {
+				throw ChainResolutionError.missingHost(serverId: localReference)
+			}
+		}
+		guard let jumpHostServerId else { return nil }
+		guard let parent = hosts.first(where: { $0.serverId == jumpHostServerId }) else {
+			throw ChainResolutionError.missingHost(serverId: jumpHostServerId)
+		}
+		return (jumpHostServerId, parent)
 	}
 }

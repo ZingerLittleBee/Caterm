@@ -76,6 +76,23 @@ struct MainWindow: View {
 		store.tabs.first(where: { $0.id == tabId })?.host
 	}
 
+	private var skippedForwardBannerText: String {
+		let scoped = store.skippedForwardNotices.filter {
+			$0.hostId == activeHost?.id
+		}
+		guard !scoped.isEmpty else { return "" }
+		let descs = scoped.map { n -> String in
+			let bind: String
+			if let addr = n.forward.bindAddress, !addr.isEmpty {
+				bind = "\(addr):\(n.forward.bindPort)"
+			} else {
+				bind = String(n.forward.bindPort)
+			}
+			return "\(n.forward.kind.rawValue) \(bind) (\(n.reason.rawValue))"
+		}
+		return "Skipped optional port forward(s): " + descs.joined(separator: ", ")
+	}
+
 	/// Recomputes a `RemoteFileSystem` actor for the active host on each
 	/// render. The actor itself is cheap (no I/O at init); the underlying
 	/// SFTP subprocess is only spawned when `list()` runs. Re-creating per
@@ -112,6 +129,12 @@ struct MainWindow: View {
 			// the common case the layout is identical to the pre-banner
 			// version. They sit above the split view so users see them
 			// regardless of which sidebar/drawer is open.
+			if !skippedForwardBannerText.isEmpty {
+				Banner(
+					text: skippedForwardBannerText,
+					onDismiss: { store.clearSkippedForwardNotices(forHost: activeHost?.id) }
+				)
+			}
 			if !bannerState.diagnosticMessages.isEmpty {
 				DiagnosticBanner(
 					messages: bannerState.diagnosticMessages,

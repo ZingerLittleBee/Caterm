@@ -79,6 +79,34 @@ public final class SessionStore: ObservableObject {
     /// won't trigger persistence.
     @Published public private(set) var hosts: [SSHHost] = []
 
+	public struct SkippedForwardNotice: Identifiable, Equatable, Sendable {
+		public let id: UUID
+		public let hostId: UUID
+		public let forward: PortForward
+		public let reason: PortForward.BindFailureReason
+		public let timestamp: Date
+
+		public init(hostId: UUID, forward: PortForward,
+		            reason: PortForward.BindFailureReason,
+		            id: UUID = UUID(), timestamp: Date = Date()) {
+			self.id = id
+			self.hostId = hostId
+			self.forward = forward
+			self.reason = reason
+			self.timestamp = timestamp
+		}
+	}
+
+	@Published public private(set) var skippedForwardNotices: [SkippedForwardNotice] = []
+
+	public func clearSkippedForwardNotices(forHost: UUID? = nil) {
+		if let target = forHost {
+			skippedForwardNotices.removeAll { $0.hostId == target }
+		} else {
+			skippedForwardNotices.removeAll()
+		}
+	}
+
     /// Combine signal for "user-driven local hosts mutation just persisted".
     /// `HostSyncStore` debounces this to drive auto-sync. Only `addHost`,
     /// `updateHost`, and `deleteHost` emit — credential-only changes and
@@ -259,10 +287,33 @@ public final class SessionStore: ObservableObject {
             configSink.cleanup(configURL)
         }
         let hostId = tabs[idx].host.id
+        // Capture the closed tab's host snapshot before removal so we can
+        // inspect its `forwards` to decide between immediate teardown and
+        // the grace-window path. The user's saved `hosts` array may not
+        // contain this host (e.g. ad-hoc tabs in tests), so we trust the
+        // tab's own copy.
+        let closedHost = tabs[idx].host
         tabs.remove(at: idx)
         let stillReferenced = tabs.contains { $0.host.id == hostId }
         if !stillReferenced {
-            scheduleTeardown(hostId: hostId)
+            // Differentiated teardown: hosts with port forwards leave
+            // listening local sockets bound while the master is alive,
+            // which is observable to the user (next bind attempt would
+            // collide). Skip the grace and tear down immediately. Hosts
+            // without forwards keep the grace so a quick reconnect can
+            // reuse the warm master.
+            let hostHadForwards = !closedHost.forwards.isEmpty
+            if hostHadForwards, let manager = controlMasterManager {
+                // Cancel any prior pending teardown for the same host so
+                // the immediate path is authoritative.
+                teardownWorkItems[hostId]?.cancel()
+                teardownWorkItems.removeValue(forKey: hostId)
+                Task { @MainActor in
+                    await manager.tearDown(hostId: hostId)
+                }
+            } else {
+                scheduleTeardown(hostId: hostId)
+            }
         }
     }
 
@@ -369,35 +420,64 @@ public final class SessionStore: ObservableObject {
 			timeout: 5
 		)
 
-		applyIfCurrent(tabId: tabId, token: token) { t in
-			switch outcome {
-			case .ok:
-				// Capture the full chain Output from SSHCommandBuilder before
-				// transitioning to .authenticating so surfaceConfig callers see it.
-				if !chain.isEmpty {
-					do {
-						let output = try SSHCommandBuilder.build(
-							host: host,
-							ancestors: chain,
-							configSink: self.configSink,
-							askpassPath: self.askpassPath,
-							knownHostsCaterm: self.knownHostsCaterm,
-							knownHostsUser: self.knownHostsUser,
-							installTerminfo: t.installTerminfo
-						)
-						t.chainOutput = output
-						t.sshConfigURL = output.configURL
-					} catch {
-						let msg = "Failed to build chain SSH config: \(error)"
-						t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
-						return
-					}
-				}
-				t.surfaceGeneration += 1
-				t.state = .authenticating(startedAt: Date())
-			case .failed(let reason):
+		// Handle TCP-preflight failure synchronously; bail out before probing
+		// local binds. Success path falls through to forward preflight below.
+		if case .failed(let reason) = outcome {
+			applyIfCurrent(tabId: tabId, token: token) { t in
 				t.state = .failed(.networkUnreachable(reason))
 			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		// TCP preflight succeeded — now run the forward preflight before
+		// spawning the ssh subprocess. Stale-attempt guard: a newer
+		// startConnection may have run while we were awaiting probe; in that
+		// case we must not clear or mutate @Published notice state on behalf
+		// of a superseded attempt.
+		guard connectionAttempts[tabId] == token else {
+			pendingStartTasks.removeValue(forKey: tabId)
+			return
+		}
+		// Clear any stale notices from a prior attempt before re-populating.
+		clearSkippedForwardNotices(forHost: host.id)
+		if let failure = await probeForwards(host.forwards, host: host,
+		                                     tabId: tabId, token: token) {
+			applyIfCurrent(tabId: tabId, token: token) { t in
+				t.state = .failed(failure)
+			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		applyIfCurrent(tabId: tabId, token: token) { t in
+			// Capture the full chain Output from SSHCommandBuilder before
+			// transitioning to .authenticating so surfaceConfig callers see it.
+			if !chain.isEmpty {
+				do {
+					let output = try SSHCommandBuilder.build(
+						host: host,
+						ancestors: chain,
+						configSink: self.configSink,
+						askpassPath: self.askpassPath,
+						knownHostsCaterm: self.knownHostsCaterm,
+						knownHostsUser: self.knownHostsUser,
+						installTerminfo: t.installTerminfo
+					)
+					t.chainOutput = output
+					t.sshConfigURL = output.configURL
+				} catch {
+					let msg = "Failed to build chain SSH config: \(error)"
+					t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
+					return
+				}
+			}
+			t.surfaceGeneration += 1
+			t.state = .authenticating(startedAt: Date())
 		}
 
 		// Clear our pending-task entry only if we are still the current attempt.
@@ -412,6 +492,41 @@ public final class SessionStore: ObservableObject {
 	                            _ mutate: (inout Tab) -> Void) {
 		guard connectionAttempts[tabId] == token else { return }
 		update(tabId, mutate)
+	}
+
+	/// Returns `nil` on success. Returns a `FailureKind` to abort the
+	/// connection with on the first **required** forward whose local bind
+	/// fails. Optional forwards that fail are appended to
+	/// `skippedForwardNotices` and do not abort. Remote forwards
+	/// (`.remote`) are skipped — they bind on the server, not locally.
+	///
+	/// `tabId`/`token` are used to guard against stale-attempt mutation of
+	/// `@Published` state. Each `await probeLocalBind` is a suspension point
+	/// after which a newer `startConnection` may have bumped the attempt
+	/// token; in that case we return `nil` without mutating notices or
+	/// reporting a failure for a superseded attempt.
+	private func probeForwards(_ forwards: [PortForward],
+	                           host: SSHHost,
+	                           tabId: UUID,
+	                           token: UInt64) async -> FailureKind? {
+		for forward in forwards where forward.kind != .remote {
+			let addr = forward.bindAddress ?? "127.0.0.1"
+			guard let nwPort = UInt16(exactly: forward.bindPort) else { continue }
+			let outcome = await preflight.probeLocalBind(address: addr, port: nwPort)
+			guard case .unavailable(let reason) = outcome else { continue }
+			// Stale-attempt guard: don't mutate published state (notices) or
+			// report a failure for a superseded run.
+			guard connectionAttempts[tabId] == token else { return nil }
+			if forward.required {
+				return .portForwardBindFailed(forward: forward, reason: reason)
+			} else {
+				skippedForwardNotices.append(
+					SkippedForwardNotice(hostId: host.id,
+					                     forward: forward, reason: reason)
+				)
+			}
+		}
+		return nil
 	}
 
 	public func retryTab(tabId: UUID) {
@@ -521,6 +636,7 @@ public final class SessionStore: ObservableObject {
         guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
         hosts[idx].serverId = serverId
         hosts[idx].updatedAt = Date()
+        backfillDependentJumpHostServerIds(parentId: hostId, serverId: serverId, in: &hosts)
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -533,7 +649,9 @@ public final class SessionStore: ObservableObject {
         hosts[idx].port = remote.port
         hosts[idx].username = remote.username
         hosts[idx].updatedAt = remote.updatedAt
+        hosts[idx].jumpHostId = hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id
         hosts[idx].jumpHostServerId = remote.jumpHostServerId
+        hosts[idx].forwards = remote.forwards
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -548,10 +666,33 @@ public final class SessionStore: ObservableObject {
             port: remote.port, username: remote.username,
             credential: .password,
             createdAt: remote.createdAt, updatedAt: remote.updatedAt,
-            jumpHostServerId: remote.jumpHostServerId
+            jumpHostId: hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id,
+            jumpHostServerId: remote.jumpHostServerId,
+            forwards: remote.forwards
         )
         hosts.append(h)
+        backfillJumpHostIds(serverId: remote.id, in: &hosts)
         try HostPersistence.save(hosts, to: hostsURL)
+    }
+
+    private func backfillDependentJumpHostServerIds(
+        parentId: UUID,
+        serverId: String,
+        in hosts: inout [SSHHost]
+    ) {
+        for idx in hosts.indices {
+            guard hosts[idx].id != parentId, hosts[idx].jumpHostId == parentId else { continue }
+            guard hosts[idx].jumpHostServerId != serverId else { continue }
+            hosts[idx].jumpHostServerId = serverId
+            hosts[idx].updatedAt = Date()
+        }
+    }
+
+    private func backfillJumpHostIds(serverId: String, in hosts: inout [SSHHost]) {
+        guard let parentId = hosts.first(where: { $0.serverId == serverId })?.id else { return }
+        for idx in hosts.indices where hosts[idx].jumpHostServerId == serverId {
+            hosts[idx].jumpHostId = parentId
+        }
     }
 
     /// Replace the credential overlay for an existing host. Does NOT bump

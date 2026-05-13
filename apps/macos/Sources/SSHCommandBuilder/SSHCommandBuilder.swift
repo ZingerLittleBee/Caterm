@@ -65,8 +65,9 @@ public enum SSHCommandBuilder {
 
 		// Always-present connection options.
 		lines.append("StrictHostKeyChecking accept-new")
-		let knownHostsValue = "\(knownHostsCaterm) \(knownHostsUser)"
-		lines.append("UserKnownHostsFile \(try SSHConfigQuote.encode(knownHostsValue))")
+		lines.append(
+			"UserKnownHostsFile \(try sshConfigFileList([knownHostsCaterm, knownHostsUser]))"
+		)
 		lines.append("ControlMaster auto")
 		lines.append("ControlPersist 10m")
 		let controlPath = "~/Library/Caches/Caterm/cm/\(host.id.uuidString).sock"
@@ -110,6 +111,22 @@ public enum SSHCommandBuilder {
 
 		_ = accessGroup  // CATERM_ACCESS_GROUP is set by SessionStore, not here.
 
+		// Forwards: target only. OpenSSH's ExitOnForwardFailure is a global
+		// option; we enable it solely when every forward is required so
+		// optional forwards don't take down the connection on bind failure.
+		// (See spec §"Known Limitations" for the mixed-required-and-optional
+		// remote-bind silent-failure caveat.)
+		if isTarget, !host.forwards.isEmpty {
+			var anyOptional = false
+			for fwd in host.forwards {
+				lines.append(try fwd.sshConfigLine())
+				if !fwd.required { anyOptional = true }
+			}
+			if !anyOptional {
+				lines.append("ExitOnForwardFailure yes")
+			}
+		}
+
 		return PerHostOptions(
 			hostName: host.hostname,
 			port: host.port,
@@ -118,6 +135,10 @@ public enum SSHCommandBuilder {
 			optionLines: lines,
 			env: env
 		)
+	}
+
+	private static func sshConfigFileList(_ paths: [String]) throws -> String {
+		try paths.map { try SSHConfigQuote.encode($0) }.joined(separator: " ")
 	}
 
 	// MARK: - Command argument model
@@ -214,6 +235,34 @@ public enum SSHCommandBuilder {
 
 		case .agent:
 			args += [.raw("-o"), .quoted("BatchMode=yes")]
+		}
+
+		// Forwards (direct path). Mirrors `perHostOptions` for the chain
+		// path. ExitOnForwardFailure only fires when every forward is required.
+		if !host.forwards.isEmpty {
+			var anyOptional = false
+			for fwd in host.forwards {
+				let bindPart: String
+				if let addr = fwd.bindAddress, !addr.isEmpty {
+					bindPart = "\(addr):\(fwd.bindPort)"
+				} else {
+					bindPart = String(fwd.bindPort)
+				}
+				let value: String
+				switch fwd.kind {
+				case .local:
+					value = "LocalForward=\(bindPart) \(fwd.remoteHost ?? ""):\(fwd.remotePort ?? 0)"
+				case .remote:
+					value = "RemoteForward=\(bindPart) \(fwd.remoteHost ?? ""):\(fwd.remotePort ?? 0)"
+				case .dynamic:
+					value = "DynamicForward=\(bindPart)"
+				}
+				args += [.raw("-o"), .quoted(value)]
+				if !fwd.required { anyOptional = true }
+			}
+			if !anyOptional {
+				args += [.raw("-o"), .raw("ExitOnForwardFailure=yes")]
+			}
 		}
 
 		args += [.raw("-p"), .raw(String(host.port))]
@@ -397,6 +446,7 @@ public enum SSHCommandBuilder {
 		let chainData = try JSONSerialization.data(withJSONObject: chainEntries, options: [.sortedKeys])
 		let chainJSON = String(data: chainData, encoding: .utf8) ?? "[]"
 		env.append(("CATERM_CHAIN", chainJSON))
+		env.append(("CATERM_CHAIN_STATE_PATH", configURL.path + ".askpass-state"))
 
 		// Assemble the final command: ssh -F <configPath> caterm-h-<target-uuid>
 		let targetAlias = "caterm-h-\(target.id.uuidString)"

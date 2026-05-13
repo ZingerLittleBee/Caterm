@@ -45,6 +45,22 @@ public struct FailurePresentation: Equatable {
 			return .init(icon: .red,
 			             title: "Authentication failed",
 			             detail: "Permission denied — check credentials")
+		case let .portForwardBindFailed(forward, reason):
+			let portDesc: String
+			if let addr = forward.bindAddress, !addr.isEmpty {
+				portDesc = "\(addr):\(forward.bindPort)"
+			} else {
+				portDesc = String(forward.bindPort)
+			}
+			let reasonText: String
+			switch reason {
+			case .alreadyInUse:     reasonText = "is already in use on your Mac"
+			case .permissionDenied: reasonText = "requires elevated privileges to bind"
+			case .unknown:          reasonText = "could not be bound"
+			}
+			return .init(icon: .red,
+			             title: "Port forward failed",
+			             detail: "Port \(portDesc) \(reasonText). Edit the host to change the forward or pick a free port.")
 		case .cleanExit, .connectionDropped:
 			// Caller filters these out before presenting; keep a defensive
 			// empty value to avoid a crash if the filter is bypassed.
