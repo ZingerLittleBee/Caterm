@@ -88,5 +88,22 @@
       "snippets": "Snippet palette",
       "askpass": "Custom askpass"
     }
+  },
+  "openSource": {
+    "eyebrow": "Open Source",
+    "title": "Made in the open.",
+    "body": "Caterm is open source under the MIT license. The whole macOS app, including the libghostty integration and CloudKit sync layer, is in one Swift Package. Fork it, build it, ship it.",
+    "cta": "View on GitHub",
+    "stack": {
+      "label": "What's inside",
+      "items": [
+        "Swift 5.10",
+        "libghostty",
+        "CloudKit",
+        "Keychain Services",
+        "russh-style ssh",
+        "Swift Package Manager"
+      ]
+    }
   }
 }

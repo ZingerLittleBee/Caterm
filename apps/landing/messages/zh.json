@@ -88,5 +88,22 @@
       "snippets": "命令片段调色板",
       "askpass": "自定义 askpass"
     }
+  },
+  "openSource": {
+    "eyebrow": "开源",
+    "title": "完全开放，由你掌控。",
+    "body": "Caterm 以 MIT 协议开源。整个 macOS 应用——包括 libghostty 集成与 CloudKit 同步层——都在一个 Swift Package 里。Fork、构建、发布，都由你决定。",
+    "cta": "在 GitHub 查看",
+    "stack": {
+      "label": "技术栈一览",
+      "items": [
+        "Swift 5.10",
+        "libghostty",
+        "CloudKit",
+        "Keychain Services",
+        "russh 风格 SSH",
+        "Swift Package Manager"
+      ]
+    }
   }
 }
