@@ -1,0 +1,120 @@
+{
+  "hero": {
+    "tagline": "The SSH terminal that feels like home on macOS.",
+    "sub": "Native Swift. Ghostty-powered. iCloud-synced. Open source.",
+    "ctaPrimary": "Star on GitHub",
+    "ctaSecondary": "Download for macOS",
+    "requirements": "macOS 14 Sonoma or later · Apple Silicon & Intel"
+  },
+  "nav": {
+    "features": "Features",
+    "sync": "Sync",
+    "openSource": "Open Source",
+    "github": "GitHub",
+    "githubStarsAria": "Star Caterm on GitHub",
+    "languageAria": "Switch language",
+    "english": "English",
+    "chinese": "中文"
+  },
+  "terminal": {
+    "title": "caterm — ssh deploy@prod",
+    "tabProd": "prod",
+    "tabStaging": "staging",
+    "commentConnect": "# Connect to your prod server",
+    "statusConnected": "✓ Connected via Ghostty engine",
+    "toastSync": "iCloud sync · just now"
+  },
+  "features": {
+    "sectionTitle": "Built for macOS power users",
+    "sectionSub": "Every detail tuned to the platform. No Electron, no compromises.",
+    "items": {
+      "swift": {
+        "title": "Native Swift",
+        "body": "AppKit, Metal, Core Text. Launch instantly, scroll at 120 Hz."
+      },
+      "ghostty": {
+        "title": "Powered by Ghostty",
+        "body": "The fastest terminal renderer on macOS, embedded as libghostty."
+      },
+      "icloud": {
+        "title": "iCloud sync",
+        "body": "Hosts, credentials, settings, and snippets sync via CloudKit. Zero config."
+      },
+      "sftp": {
+        "title": "SFTP transfers",
+        "body": "Drag, drop, push, pull. A real file drawer next to your shell."
+      },
+      "bookmarks": {
+        "title": "Remote bookmarks",
+        "body": "Pin remote directories. One click to jump back where you left off."
+      },
+      "snippets": {
+        "title": "Command snippets",
+        "body": "A palette of your reusable commands. Synced. Searchable. Yours."
+      }
+    }
+  },
+  "sync": {
+    "eyebrow": "iCloud Sync",
+    "title": "Your terminal, on every Mac you own.",
+    "body": "Caterm uses CloudKit to sync hosts, credentials, settings, snippets, and themes between your Macs. Encrypted by Apple, scoped to your iCloud account. Nothing to set up, no account to create.",
+    "bullets": [
+      "Hosts and credentials, end-to-end via Keychain + iCloud",
+      "Per-host themes and terminal settings",
+      "Command snippets palette, instantly available everywhere"
+    ]
+  },
+  "sftp": {
+    "eyebrow": "SFTP & Bookmarks",
+    "title": "Files where your shell already is.",
+    "body": "Pop the file drawer beside any session to browse, upload, and download. Pin the remote paths you keep returning to — they live in the bookmark popover, one keystroke away.",
+    "fileList": [
+      "release.tar.gz",
+      "Caddyfile",
+      "logs",
+      "deploy.sh",
+      "env.production"
+    ],
+    "bookmarks": ["prod / etc", "staging / var/log", "bastion / home"]
+  },
+  "capabilities": {
+    "title": "And more, where it matters.",
+    "items": {
+      "portForward": "Port forwarding",
+      "jumpHost": "Jump hosts",
+      "keychain": "Keychain-backed credentials",
+      "controlMaster": "ControlMaster reuse",
+      "themes": "Per-host themes",
+      "snippets": "Snippet palette",
+      "askpass": "Custom askpass"
+    }
+  },
+  "openSource": {
+    "eyebrow": "Open Source",
+    "title": "Made in the open.",
+    "body": "Caterm is open source under the MIT license. The whole macOS app, including the libghostty integration and CloudKit sync layer, is in one Swift Package. Fork it, build it, ship it.",
+    "cta": "View on GitHub",
+    "stack": {
+      "label": "What's inside",
+      "items": [
+        "Swift 5.10",
+        "libghostty",
+        "CloudKit",
+        "Keychain Services",
+        "russh-style ssh",
+        "Swift Package Manager"
+      ]
+    }
+  },
+  "footer": {
+    "tagline": "Native SSH for macOS.",
+    "linksTitle": "Project",
+    "links": {
+      "features": "Features",
+      "github": "GitHub",
+      "license": "License",
+      "privacy": "Privacy"
+    },
+    "rights": "© 2026 Caterm. MIT licensed."
+  }
+}
