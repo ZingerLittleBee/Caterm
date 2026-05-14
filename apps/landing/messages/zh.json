@@ -63,5 +63,18 @@
       "每个主机独立的主题与终端设置",
       "命令片段调色板，立即在所有设备可用"
     ]
+  },
+  "sftp": {
+    "eyebrow": "SFTP 与书签",
+    "title": "文件就在 Shell 旁边。",
+    "body": "在任意会话旁打开文件抽屉，浏览、上传、下载一气呵成。把你常用的远程路径固定在书签弹窗里，一个按键就能跳回去。",
+    "fileList": [
+      "release.tar.gz",
+      "Caddyfile",
+      "logs",
+      "deploy.sh",
+      "env.production"
+    ],
+    "bookmarks": ["prod / etc", "staging / var/log", "bastion / home"]
   }
 }

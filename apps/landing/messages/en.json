@@ -63,5 +63,18 @@
       "Per-host themes and terminal settings",
       "Command snippets palette, instantly available everywhere"
     ]
+  },
+  "sftp": {
+    "eyebrow": "SFTP & Bookmarks",
+    "title": "Files where your shell already is.",
+    "body": "Pop the file drawer beside any session to browse, upload, and download. Pin the remote paths you keep returning to — they live in the bookmark popover, one keystroke away.",
+    "fileList": [
+      "release.tar.gz",
+      "Caddyfile",
+      "logs",
+      "deploy.sh",
+      "env.production"
+    ],
+    "bookmarks": ["prod / etc", "staging / var/log", "bastion / home"]
   }
 }
