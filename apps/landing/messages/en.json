@@ -1,7 +1,10 @@
 {
   "hero": {
     "tagline": "The SSH terminal that feels like home on macOS.",
-    "sub": "Native Swift. Ghostty-powered. iCloud-synced. Open source."
+    "sub": "Native Swift. Ghostty-powered. iCloud-synced. Open source.",
+    "ctaPrimary": "Star on GitHub",
+    "ctaSecondary": "Download for macOS",
+    "requirements": "macOS 14 Sonoma or later · Apple Silicon & Intel"
   },
   "nav": {
     "features": "Features",

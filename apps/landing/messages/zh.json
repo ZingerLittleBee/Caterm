@@ -1,7 +1,10 @@
 {
   "hero": {
     "tagline": "属于 macOS 的原生 SSH 终端。",
-    "sub": "Swift 原生，Ghostty 驱动，iCloud 同步，开源自由。"
+    "sub": "Swift 原生，Ghostty 驱动，iCloud 同步，开源自由。",
+    "ctaPrimary": "在 GitHub 点 Star",
+    "ctaSecondary": "下载 macOS 版",
+    "requirements": "需要 macOS 14 Sonoma 或更高版本 · 支持 Apple Silicon 与 Intel"
   },
   "nav": {
     "features": "功能",
