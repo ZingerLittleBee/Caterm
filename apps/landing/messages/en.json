@@ -53,5 +53,15 @@
         "body": "A palette of your reusable commands. Synced. Searchable. Yours."
       }
     }
+  },
+  "sync": {
+    "eyebrow": "iCloud Sync",
+    "title": "Your terminal, on every Mac you own.",
+    "body": "Caterm uses CloudKit to sync hosts, credentials, settings, snippets, and themes between your Macs. Encrypted by Apple, scoped to your iCloud account. Nothing to set up, no account to create.",
+    "bullets": [
+      "Hosts and credentials, end-to-end via Keychain + iCloud",
+      "Per-host themes and terminal settings",
+      "Command snippets palette, instantly available everywhere"
+    ]
   }
 }
