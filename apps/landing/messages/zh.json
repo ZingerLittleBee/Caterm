@@ -15,5 +15,13 @@
     "languageAria": "切换语言",
     "english": "English",
     "chinese": "中文"
+  },
+  "terminal": {
+    "title": "caterm — ssh deploy@prod",
+    "tabProd": "prod",
+    "tabStaging": "staging",
+    "commentConnect": "# 连接到你的生产环境",
+    "statusConnected": "✓ 通过 Ghostty 引擎已连接",
+    "toastSync": "iCloud 已同步 · 刚刚"
   }
 }
