@@ -1,7 +1,7 @@
 import { useTranslations } from 'next-intl'
 import { LangSwitcher } from '@/components/nav/lang-switcher'
 
-const GITHUB_URL = 'https://github.com/ZingerLittleBee/caterm'
+const GITHUB_URL = 'https://github.com/ZingerLittleBee/Caterm'
 
 export function Footer() {
   const t = useTranslations('footer')
