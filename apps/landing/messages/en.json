@@ -105,5 +105,16 @@
         "Swift Package Manager"
       ]
     }
+  },
+  "footer": {
+    "tagline": "Native SSH for macOS.",
+    "linksTitle": "Project",
+    "links": {
+      "features": "Features",
+      "github": "GitHub",
+      "license": "License",
+      "privacy": "Privacy"
+    },
+    "rights": "© 2026 Caterm. MIT licensed."
   }
 }

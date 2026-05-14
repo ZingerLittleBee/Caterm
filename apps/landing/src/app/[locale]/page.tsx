@@ -1,5 +1,6 @@
 import { setRequestLocale } from 'next-intl/server'
 import { FeatureGrid } from '@/components/features/feature-grid'
+import { Footer } from '@/components/footer/footer'
 import { Hero } from '@/components/hero/hero'
 import { TopNav } from '@/components/nav/top-nav'
 import { CapabilityStrip } from '@/components/sections/capability-strip'
@@ -21,6 +22,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
       <SftpDeepDive />
       <CapabilityStrip />
       <OpenSource />
+      <Footer />
     </>
   )
 }

@@ -105,5 +105,16 @@
         "Swift Package Manager"
       ]
     }
+  },
+  "footer": {
+    "tagline": "macOS 原生 SSH 工具。",
+    "linksTitle": "项目",
+    "links": {
+      "features": "功能",
+      "github": "GitHub",
+      "license": "许可协议",
+      "privacy": "隐私"
+    },
+    "rights": "© 2026 Caterm. MIT 协议开源。"
   }
 }
