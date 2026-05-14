@@ -2,5 +2,15 @@
   "hero": {
     "tagline": "The SSH terminal that feels like home on macOS.",
     "sub": "Native Swift. Ghostty-powered. iCloud-synced. Open source."
+  },
+  "nav": {
+    "features": "Features",
+    "sync": "Sync",
+    "openSource": "Open Source",
+    "github": "GitHub",
+    "githubStarsAria": "Star Caterm on GitHub",
+    "languageAria": "Switch language",
+    "english": "English",
+    "chinese": "中文"
   }
 }

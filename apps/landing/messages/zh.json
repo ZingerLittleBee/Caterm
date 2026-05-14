@@ -2,5 +2,15 @@
   "hero": {
     "tagline": "属于 macOS 的原生 SSH 终端。",
     "sub": "Swift 原生，Ghostty 驱动，iCloud 同步，开源自由。"
+  },
+  "nav": {
+    "features": "功能",
+    "sync": "同步",
+    "openSource": "开源",
+    "github": "GitHub",
+    "githubStarsAria": "在 GitHub 给 Caterm 点 Star",
+    "languageAria": "切换语言",
+    "english": "English",
+    "chinese": "中文"
   }
 }
