@@ -23,5 +23,35 @@
     "commentConnect": "# 连接到你的生产环境",
     "statusConnected": "✓ 通过 Ghostty 引擎已连接",
     "toastSync": "iCloud 已同步 · 刚刚"
+  },
+  "features": {
+    "sectionTitle": "为 macOS 重度用户打造",
+    "sectionSub": "每个细节都为平台量身定制。不是 Electron，没有妥协。",
+    "items": {
+      "swift": {
+        "title": "Swift 原生",
+        "body": "AppKit、Metal、Core Text。秒开，120Hz 顺滑滚动。"
+      },
+      "ghostty": {
+        "title": "Ghostty 驱动",
+        "body": "macOS 上最快的终端渲染器，以 libghostty 形式集成。"
+      },
+      "icloud": {
+        "title": "iCloud 同步",
+        "body": "主机、凭据、设置、片段全部通过 CloudKit 同步。零配置。"
+      },
+      "sftp": {
+        "title": "SFTP 文件传输",
+        "body": "拖拽、上传、下载。Shell 旁边就是一个真正的文件抽屉。"
+      },
+      "bookmarks": {
+        "title": "远程书签",
+        "body": "固定远程目录。一键跳回上次离开的地方。"
+      },
+      "snippets": {
+        "title": "命令片段",
+        "body": "你的可复用命令调色板。已同步、可搜索、归你所有。"
+      }
+    }
   }
 }

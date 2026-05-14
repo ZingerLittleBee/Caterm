@@ -23,5 +23,35 @@
     "commentConnect": "# Connect to your prod server",
     "statusConnected": "✓ Connected via Ghostty engine",
     "toastSync": "iCloud sync · just now"
+  },
+  "features": {
+    "sectionTitle": "Built for macOS power users",
+    "sectionSub": "Every detail tuned to the platform. No Electron, no compromises.",
+    "items": {
+      "swift": {
+        "title": "Native Swift",
+        "body": "AppKit, Metal, Core Text. Launch instantly, scroll at 120 Hz."
+      },
+      "ghostty": {
+        "title": "Powered by Ghostty",
+        "body": "The fastest terminal renderer on macOS, embedded as libghostty."
+      },
+      "icloud": {
+        "title": "iCloud sync",
+        "body": "Hosts, credentials, settings, and snippets sync via CloudKit. Zero config."
+      },
+      "sftp": {
+        "title": "SFTP transfers",
+        "body": "Drag, drop, push, pull. A real file drawer next to your shell."
+      },
+      "bookmarks": {
+        "title": "Remote bookmarks",
+        "body": "Pin remote directories. One click to jump back where you left off."
+      },
+      "snippets": {
+        "title": "Command snippets",
+        "body": "A palette of your reusable commands. Synced. Searchable. Yours."
+      }
+    }
   }
 }
