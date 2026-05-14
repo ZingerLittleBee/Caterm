@@ -76,5 +76,17 @@
       "env.production"
     ],
     "bookmarks": ["prod / etc", "staging / var/log", "bastion / home"]
+  },
+  "capabilities": {
+    "title": "And more, where it matters.",
+    "items": {
+      "portForward": "Port forwarding",
+      "jumpHost": "Jump hosts",
+      "keychain": "Keychain-backed credentials",
+      "controlMaster": "ControlMaster reuse",
+      "themes": "Per-host themes",
+      "snippets": "Snippet palette",
+      "askpass": "Custom askpass"
+    }
   }
 }

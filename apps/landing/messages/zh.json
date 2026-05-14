@@ -76,5 +76,17 @@
       "env.production"
     ],
     "bookmarks": ["prod / etc", "staging / var/log", "bastion / home"]
+  },
+  "capabilities": {
+    "title": "其他重要细节，也已就绪。",
+    "items": {
+      "portForward": "端口转发",
+      "jumpHost": "跳板机链",
+      "keychain": "Keychain 凭据",
+      "controlMaster": "ControlMaster 复用",
+      "themes": "每主机独立主题",
+      "snippets": "命令片段调色板",
+      "askpass": "自定义 askpass"
+    }
   }
 }
