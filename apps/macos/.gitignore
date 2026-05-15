@@ -8,3 +8,5 @@ Frameworks/
 *.provisionprofile
 DerivedData/
 xcuserdata/
+
+sign
