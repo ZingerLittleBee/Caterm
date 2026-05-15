@@ -177,6 +177,16 @@ release: ## full release pipeline: build + sign + notarize + staple + dmg (pass 
 	#   make release ARGS=--skip-dmg       .app only, no disk image
 	bash Scripts/release.sh $(ARGS)
 
+.PHONY: publish
+publish: ## tag + GitHub release + upload notarized artifacts (run after `make release`)
+	# Gatekeeper-gated: refuses to publish unless the .app/.dmg are
+	# notarized + stapled. Notes come from CHANGELOG.md.
+	#
+	#   make publish                   public release for the latest CHANGELOG version
+	#   make publish ARGS=--draft      create as a draft
+	#   make publish ARGS=--dry-run    print actions, mutate nothing
+	bash Scripts/publish-release.sh $(ARGS)
+
 .PHONY: bootstrap-askpass
 bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)
 	@CATERM_ASKPASS_STUFF=1 "$(ASKPASS_BIN)" || true

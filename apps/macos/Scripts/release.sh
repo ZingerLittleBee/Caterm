@@ -21,6 +21,7 @@ set -euo pipefail
 #                             login keychain (errors if 0 or >1 match)
 #   CATERM_DIST_PROFILE_PATH  env / arg
 #                             else first existing of:
+#                               $ROOT/sign/Caterm_Developer_ID.provisionprofile
 #                               $ROOT/Caterm_Developer_ID.provisionprofile
 #                               ~/Downloads/Caterm_Developer_ID.provisionprofile
 #
@@ -99,6 +100,7 @@ export CATERM_DIST_IDENTITY
 # ---------------------------------------------------------------------------
 if [[ -z "${CATERM_DIST_PROFILE_PATH:-}" ]]; then
     for _cand in \
+        "$ROOT/sign/Caterm_Developer_ID.provisionprofile" \
         "$ROOT/Caterm_Developer_ID.provisionprofile" \
         "$HOME/Downloads/Caterm_Developer_ID.provisionprofile"; do
         if [[ -f "$_cand" ]]; then
