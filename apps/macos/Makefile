@@ -166,6 +166,17 @@ dmg: ## wrap .build/release/Caterm.app in a UDZO dmg (run after `make dist`)
 	#   CATERM_NOTARY_PROFILE  if set, notarize + staple the dmg
 	bash Scripts/build-dmg.sh
 
+.PHONY: release
+release: ## full release pipeline: build + sign + notarize + staple + dmg (pass flags via ARGS=)
+	# One command for the whole Distribution chain. Auto-resolves the
+	# Developer ID identity + provisioning profile + notary keychain
+	# profile; see Scripts/release.sh header for env overrides.
+	#
+	#   make release                       full notarized .app + .dmg
+	#   make release ARGS=--skip-notary    signed-only (two-Mac smoke)
+	#   make release ARGS=--skip-dmg       .app only, no disk image
+	bash Scripts/release.sh $(ARGS)
+
 .PHONY: bootstrap-askpass
 bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)
 	@CATERM_ASKPASS_STUFF=1 "$(ASKPASS_BIN)" || true

@@ -5,5 +5,6 @@ Frameworks/
 *.xcframework
 .spike.local.json
 .dev-identity
+*.provisionprofile
 DerivedData/
 xcuserdata/
