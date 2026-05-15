@@ -165,9 +165,12 @@ echo "==> Verifying signatures"
 MAIN="$APP/Contents/MacOS/caterm"
 HELPER="$APP/Contents/MacOS/caterm-askpass"
 
-bundle_ents=$(codesign -d --entitlements - "$APP" 2>&1)
-main_ents=$(codesign -d --entitlements - "$MAIN" 2>&1)
-helper_ents=$(codesign -d --entitlements - "$HELPER" 2>&1)
+# --xml is required: modern macOS `codesign -d --entitlements -` defaults to a
+# structured text dump ([Dict]/[Key]/[String]), not XML, so the
+# <string>production</string> greps below would false-negative without it.
+bundle_ents=$(codesign -d --entitlements - --xml "$APP" 2>&1)
+main_ents=$(codesign -d --entitlements - --xml "$MAIN" 2>&1)
+helper_ents=$(codesign -d --entitlements - --xml "$HELPER" 2>&1)
 
 # Bundle + main: production APS + Production CK env (positive checks).
 echo "$bundle_ents" | grep -q "<string>production</string>" \
