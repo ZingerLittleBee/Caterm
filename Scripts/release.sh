@@ -15,10 +15,18 @@ set -euo pipefail
 # Defaults are tuned for the Caterm release identity so the common case is
 # just `make release`. Everything is overridable via env.
 #
+# Local release environment:
+#   sign/env.sh                 optional gitignored environment file loaded
+#                               before resolving identities, profiles,
+#                               notarization, and version settings. Supports
+#                               POSIX `export NAME=value` and fish
+#                               `set -x NAME value` syntax.
+#
 # Identity / profile resolution (priority high → low):
 #   CATERM_DIST_IDENTITY      env / arg
-#                             else: the sole "Developer ID Application" in the
-#                             login keychain (errors if 0 or >1 match)
+#                             else: the local "Developer ID Application"
+#                             identity whose SHA-1 appears in the provisioning
+#                             profile
 #   CATERM_DIST_PROFILE_PATH  env / arg
 #                             else first existing of:
 #                               $ROOT/sign/Caterm_Developer_ID.provisionprofile
@@ -33,6 +41,9 @@ set -euo pipefail
 #                               xcrun notarytool store-credentials caterm \
 #                                   --apple-id <appleid-email> \
 #                                   --team-id <your-team-id>
+#   CATERM_NOTARY_APPLE_ID    Apple ID for direct notarytool auth. Falls back
+#   CATERM_NOTARY_PASSWORD    to APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+#   CATERM_NOTARY_TEAM_ID     when those are loaded from sign/env.sh.
 #   --skip-notary             produce a signed-but-unnotarized .app/.dmg
 #                             (valid for the two-Mac smoke on your own Macs;
 #                             NOT for public distribution — Gatekeeper on
@@ -47,6 +58,59 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS="$ROOT/Scripts"
+RELEASE_ENV="$ROOT/sign/env.sh"
+
+trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+unquote_env_value() {
+    local value
+    value="$(trim "$1")"
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+        value="${value:1:${#value}-2}"
+    fi
+    printf '%s' "$value"
+}
+
+load_release_env() {
+    local env_file="$1"
+    local line name value
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="$(trim "$line")"
+        [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
+
+        if [[ "$line" =~ ^set[[:space:]]+-e[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)$ ]]; then
+            unset "${BASH_REMATCH[1]}" || true
+            continue
+        elif [[ "$line" =~ ^set[[:space:]]+-(x|gx)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]+(.+)$ ]]; then
+            name="${BASH_REMATCH[2]}"
+            value="$(unquote_env_value "${BASH_REMATCH[3]}")"
+        elif [[ "$line" =~ ^export[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            name="${BASH_REMATCH[1]}"
+            value="$(unquote_env_value "${BASH_REMATCH[2]}")"
+        elif [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            name="${BASH_REMATCH[1]}"
+            value="$(unquote_env_value "${BASH_REMATCH[2]}")"
+        else
+            echo "Warning: skipping unsupported line in $env_file" >&2
+            continue
+        fi
+
+        export "$name=$value"
+    done < "$env_file"
+}
+
+if [[ -f "$RELEASE_ENV" ]]; then
+    echo "==> Loading release environment from $RELEASE_ENV"
+    load_release_env "$RELEASE_ENV"
+fi
 
 SKIP_NOTARY=0
 SKIP_DMG=0
@@ -65,35 +129,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-# ---------------------------------------------------------------------------
-# Resolve signing identity.
-# ---------------------------------------------------------------------------
-if [[ -z "${CATERM_DIST_IDENTITY:-}" ]]; then
-    # bash 3.2 (system bash) has no `mapfile`; fill the array by hand.
-    _ids=()
-    while IFS= read -r _line; do
-        [[ -n "$_line" ]] && _ids+=("$_line")
-    done < <(
-        security find-identity -v -p codesigning 2>/dev/null \
-            | grep "Developer ID Application" \
-            | sed -E 's/.*"(Developer ID Application: [^"]+)".*/\1/' \
-            | sort -u
-    )
-    if [[ ${#_ids[@]} -eq 0 ]]; then
-        echo "Error: no \"Developer ID Application\" identity in the login keychain." >&2
-        echo "Set CATERM_DIST_IDENTITY=... explicitly, or import the cert." >&2
-        exit 1
-    fi
-    if [[ ${#_ids[@]} -gt 1 ]]; then
-        echo "Error: multiple Developer ID Application identities found:" >&2
-        printf '  %s\n' "${_ids[@]}" >&2
-        echo "Disambiguate by setting CATERM_DIST_IDENTITY=... (CN or SHA-1)." >&2
-        exit 1
-    fi
-    CATERM_DIST_IDENTITY="${_ids[0]}"
-fi
-export CATERM_DIST_IDENTITY
 
 # ---------------------------------------------------------------------------
 # Resolve provisioning profile.
@@ -117,17 +152,60 @@ fi
 export CATERM_DIST_PROFILE_PATH
 
 # ---------------------------------------------------------------------------
+# Resolve / validate signing identity.
+#
+# AMFI requires the binary's signing certificate to be one of the profile's
+# DeveloperCertificates. Notarization can still succeed when these disagree,
+# but launchd rejects the app with POSIX 163 / "Security policy issue".
+# ---------------------------------------------------------------------------
+if [[ -z "${CATERM_DIST_IDENTITY:-}" ]]; then
+    CATERM_DIST_IDENTITY="$(bash "$SCRIPTS/profile-identity-preflight.sh" \
+        --profile "$CATERM_DIST_PROFILE_PATH")"
+else
+    bash "$SCRIPTS/profile-identity-preflight.sh" \
+        --profile "$CATERM_DIST_PROFILE_PATH" \
+        --identity "$CATERM_DIST_IDENTITY" \
+        >/dev/null
+fi
+export CATERM_DIST_IDENTITY
+
+# ---------------------------------------------------------------------------
 # Resolve / gate notary credentials.
 # ---------------------------------------------------------------------------
-NOTARY_PROFILE="${CATERM_NOTARY_PROFILE:-caterm}"
+if [[ -z "${CATERM_NOTARY_APPLE_ID:-}" && -n "${APPLE_ID:-}" ]]; then
+    CATERM_NOTARY_APPLE_ID="$APPLE_ID"
+fi
+if [[ -z "${CATERM_NOTARY_APPLE_ID:-}" && -n "${APPLE_EMAIL:-}" ]]; then
+    CATERM_NOTARY_APPLE_ID="$APPLE_EMAIL"
+fi
+if [[ -z "${CATERM_NOTARY_PASSWORD:-}" && -n "${APPLE_PASSWORD:-}" ]]; then
+    CATERM_NOTARY_PASSWORD="$APPLE_PASSWORD"
+fi
+if [[ -z "${CATERM_NOTARY_TEAM_ID:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+    CATERM_NOTARY_TEAM_ID="$APPLE_TEAM_ID"
+fi
+
+HAS_DIRECT_NOTARY=0
+if [[ -n "${CATERM_NOTARY_APPLE_ID:-}" \
+      && -n "${CATERM_NOTARY_PASSWORD:-}" \
+      && -n "${CATERM_NOTARY_TEAM_ID:-}" ]]; then
+    HAS_DIRECT_NOTARY=1
+fi
+
+NOTARY_PROFILE="${CATERM_NOTARY_PROFILE:-}"
+if [[ -z "$NOTARY_PROFILE" && "$HAS_DIRECT_NOTARY" -eq 0 ]]; then
+    NOTARY_PROFILE="caterm"
+fi
+
 if [[ "$SKIP_NOTARY" -eq 1 ]]; then
     unset CATERM_NOTARY_PROFILE || true
     echo "==> --skip-notary: building signed but UNNOTARIZED artifacts."
     echo "    Valid for the two-Mac smoke on your own Macs only."
 else
-    if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" \
-            >/dev/null 2>&1; then
-        cat >&2 <<EOF
+    if [[ -n "$NOTARY_PROFILE" ]]; then
+        if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" \
+                >/dev/null 2>&1; then
+            cat >&2 <<EOF
 Error: notarytool keychain profile "$NOTARY_PROFILE" not found.
 
 One-time bootstrap (the app-specific password is prompted securely; it is
@@ -140,12 +218,53 @@ NOT stored in this repo):
 Generate an app-specific password at https://account.apple.com → Sign-In
 and Security → App-Specific Passwords.
 
+Alternatively, put direct credentials in sign/env.sh:
+
+  set -x APPLE_ID <your-apple-id-email>
+  set -x APPLE_PASSWORD <app-specific-password>
+  set -x APPLE_TEAM_ID <your-team-id>
+
+Then re-run \`make release\`. To skip notarization (smoke build only):
+  make release ARGS=--skip-notary
+EOF
+            exit 1
+        fi
+        export CATERM_NOTARY_PROFILE="$NOTARY_PROFILE"
+        NOTARY_DISPLAY="yes ($NOTARY_PROFILE)"
+    elif [[ "$HAS_DIRECT_NOTARY" -eq 1 ]]; then
+        if ! xcrun notarytool history \
+                --apple-id "$CATERM_NOTARY_APPLE_ID" \
+                --password "$CATERM_NOTARY_PASSWORD" \
+                --team-id "$CATERM_NOTARY_TEAM_ID" \
+                >/dev/null 2>&1; then
+            echo "Error: direct notarytool credentials from sign/env.sh were rejected." >&2
+            echo "Check APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID." >&2
+            exit 1
+        fi
+        export CATERM_NOTARY_APPLE_ID
+        export CATERM_NOTARY_PASSWORD
+        export CATERM_NOTARY_TEAM_ID
+        unset CATERM_NOTARY_PROFILE || true
+        NOTARY_DISPLAY="yes (direct credentials)"
+    else
+        cat >&2 <<EOF
+Error: notarization credentials are incomplete.
+
+One-time bootstrap (the app-specific password is prompted securely; it is
+NOT stored in this repo):
+
+  xcrun notarytool store-credentials caterm \\
+      --apple-id <your-apple-id-email> \\
+      --team-id <your-team-id>
+
+Generate an app-specific password at https://account.apple.com → Sign-In
+and Security → App-Specific Passwords.
+
 Then re-run \`make release\`. To skip notarization (smoke build only):
   make release ARGS=--skip-notary
 EOF
         exit 1
     fi
-    export CATERM_NOTARY_PROFILE="$NOTARY_PROFILE"
 fi
 
 VERSION="${CATERM_DIST_VERSION:-1.0.0}"
@@ -157,7 +276,7 @@ echo " Caterm release pipeline"
 echo "   version   : $VERSION (build $CATERM_DIST_BUILD)"
 echo "   identity  : $CATERM_DIST_IDENTITY"
 echo "   profile   : $CATERM_DIST_PROFILE_PATH"
-echo "   notarize  : $([[ "$SKIP_NOTARY" -eq 1 ]] && echo 'NO (--skip-notary)' || echo "yes ($NOTARY_PROFILE)")"
+echo "   notarize  : $([[ "$SKIP_NOTARY" -eq 1 ]] && echo 'NO (--skip-notary)' || echo "$NOTARY_DISPLAY")"
 echo "   dmg       : $([[ "$SKIP_DMG" -eq 1 ]] && echo 'NO (--skip-dmg)' || echo 'yes')"
 echo "============================================================"
 

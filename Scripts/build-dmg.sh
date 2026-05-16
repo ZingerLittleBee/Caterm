@@ -20,6 +20,10 @@ set -euo pipefail
 #                          (you should staple both: the inner .app for users
 #                          who copy it out, and the dmg itself for the mount
 #                          trust prompt).
+#   CATERM_NOTARY_APPLE_ID /
+#   CATERM_NOTARY_PASSWORD /
+#   CATERM_NOTARY_TEAM_ID  direct notarytool credentials. Used when
+#                          CATERM_NOTARY_PROFILE is unset.
 #
 # Pre-conditions:
 #   .build/release/Caterm.app exists, signed by dist-package.sh.
@@ -33,6 +37,34 @@ if [[ ! -d "$APP" ]]; then
     echo "Error: $APP not found. Run \`make dist\` first." >&2
     exit 1
 fi
+
+has_direct_notary_credentials() {
+    [[ -n "${CATERM_NOTARY_APPLE_ID:-}" \
+        && -n "${CATERM_NOTARY_PASSWORD:-}" \
+        && -n "${CATERM_NOTARY_TEAM_ID:-}" ]]
+}
+
+has_notary_credentials() {
+    [[ -n "${CATERM_NOTARY_PROFILE:-}" ]] || has_direct_notary_credentials
+}
+
+submit_to_notary() {
+    local artifact="$1"
+    if [[ -n "${CATERM_NOTARY_PROFILE:-}" ]]; then
+        xcrun notarytool submit "$artifact" \
+            --keychain-profile "$CATERM_NOTARY_PROFILE" \
+            --wait
+    elif has_direct_notary_credentials; then
+        xcrun notarytool submit "$artifact" \
+            --apple-id "$CATERM_NOTARY_APPLE_ID" \
+            --password "$CATERM_NOTARY_PASSWORD" \
+            --team-id "$CATERM_NOTARY_TEAM_ID" \
+            --wait
+    else
+        echo "Error: notarization requested but credentials are missing." >&2
+        exit 1
+    fi
+}
 
 DMG_NAME="Caterm-${APP_VERSION}.dmg"
 DMG_PATH="$BIN_DIR/$DMG_NAME"
@@ -57,11 +89,9 @@ if [[ -n "${CATERM_DIST_IDENTITY:-}" ]]; then
     codesign --force --sign "$CATERM_DIST_IDENTITY" "$DMG_PATH"
 fi
 
-if [[ -n "${CATERM_NOTARY_PROFILE:-}" ]]; then
+if has_notary_credentials; then
     echo "==> Submitting dmg to notary"
-    xcrun notarytool submit "$DMG_PATH" \
-        --keychain-profile "$CATERM_NOTARY_PROFILE" \
-        --wait
+    submit_to_notary "$DMG_PATH"
 
     echo "==> Stapling dmg"
     xcrun stapler staple "$DMG_PATH"

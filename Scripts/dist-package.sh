@@ -31,6 +31,10 @@ set -euo pipefail
 #                                     --password <app-specific-password>
 #                               Leave unset to skip — the bundle is still
 #                               valid for local install.
+#   CATERM_NOTARY_APPLE_ID /
+#   CATERM_NOTARY_PASSWORD /
+#   CATERM_NOTARY_TEAM_ID     — direct notarytool credentials. Used when
+#                               CATERM_NOTARY_PROFILE is unset.
 #
 # Pre-conditions:
 #   `swift build -c release` completed, and dev-codesign.sh --profile
@@ -76,6 +80,39 @@ if [[ ! -f "$CATERM_DIST_PROFILE_PATH" ]]; then
     echo "Error: provisioning profile not found at $CATERM_DIST_PROFILE_PATH." >&2
     exit 1
 fi
+
+bash "$ROOT/Scripts/profile-identity-preflight.sh" \
+    --profile "$CATERM_DIST_PROFILE_PATH" \
+    --identity "$CATERM_DIST_IDENTITY" \
+    >/dev/null
+
+has_direct_notary_credentials() {
+    [[ -n "${CATERM_NOTARY_APPLE_ID:-}" \
+        && -n "${CATERM_NOTARY_PASSWORD:-}" \
+        && -n "${CATERM_NOTARY_TEAM_ID:-}" ]]
+}
+
+has_notary_credentials() {
+    [[ -n "${CATERM_NOTARY_PROFILE:-}" ]] || has_direct_notary_credentials
+}
+
+submit_to_notary() {
+    local artifact="$1"
+    if [[ -n "${CATERM_NOTARY_PROFILE:-}" ]]; then
+        xcrun notarytool submit "$artifact" \
+            --keychain-profile "$CATERM_NOTARY_PROFILE" \
+            --wait
+    elif has_direct_notary_credentials; then
+        xcrun notarytool submit "$artifact" \
+            --apple-id "$CATERM_NOTARY_APPLE_ID" \
+            --password "$CATERM_NOTARY_PASSWORD" \
+            --team-id "$CATERM_NOTARY_TEAM_ID" \
+            --wait
+    else
+        echo "Error: notarization requested but credentials are missing." >&2
+        exit 1
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Assemble the bundle.
@@ -206,7 +243,7 @@ echo "==> Verification OK"
 # ticket, `stapler staple` writes it into the .app's Contents/CodeResources
 # so Gatekeeper can validate offline.
 # ---------------------------------------------------------------------------
-if [[ -n "${CATERM_NOTARY_PROFILE:-}" ]]; then
+if has_notary_credentials; then
     NOTARY_ZIP="$BIN_DIR/Caterm.notarize.zip"
     rm -f "$NOTARY_ZIP"
 
@@ -214,9 +251,7 @@ if [[ -n "${CATERM_NOTARY_PROFILE:-}" ]]; then
     /usr/bin/ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
 
     echo "==> Submitting to Apple notary service (this can take a few minutes)"
-    xcrun notarytool submit "$NOTARY_ZIP" \
-        --keychain-profile "$CATERM_NOTARY_PROFILE" \
-        --wait
+    submit_to_notary "$NOTARY_ZIP"
 
     rm -f "$NOTARY_ZIP"
 
@@ -229,7 +264,7 @@ fi
 echo
 echo "Bundle: $APP"
 echo
-if [[ -z "${CATERM_NOTARY_PROFILE:-}" ]]; then
+if ! has_notary_credentials; then
     echo "Next steps:"
     echo "  1. Notarize (set CATERM_NOTARY_PROFILE and re-run, or run manually):"
     echo "       xcrun notarytool submit --keychain-profile <profile> $APP"
