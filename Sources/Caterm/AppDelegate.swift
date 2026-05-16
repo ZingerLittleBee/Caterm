@@ -12,26 +12,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	private static let pushLog = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
 	private static let signingDiagLog = Logger(subsystem: "com.caterm.app", category: "signing-diag")
 
+	private var isTerminating = false
+
 	/// On app quit, tear down all live ControlMaster sockets so the
 	/// shared `ssh -M` masters exit cleanly instead of being killed by
-	/// SIGTERM. We dispatch into a detached Task and block the calling
-	/// thread (the AppKit termination thread) on a semaphore with a
-	/// 1-second timeout so a stuck `ssh -O exit` cannot block app
-	/// termination indefinitely.
+	/// SIGTERM.
 	///
-	/// The earlier `Task { @MainActor in … } + DispatchGroup.wait()`
-	/// pattern deadlocked once sockets actually existed: this method is
-	/// invoked on the main thread, so the inner `Task { @MainActor }` is
-	/// scheduled to run on the same thread we're blocking via
-	/// `group.wait`. A `Task.detached` (with `await` hopping back onto
-	/// the main actor inside `tearDownAll`) avoids that inversion.
-	func applicationWillTerminate(_: Notification) {
-		let semaphore = DispatchSemaphore(value: 0)
-		Task.detached {
-			await ControlMasterManager.shared.tearDownAll()
-			semaphore.signal()
+	/// `ControlMasterManager.tearDownAll()` is `@MainActor`-isolated, so
+	/// it can only run when the main actor is free. The previous approach
+	/// (`applicationWillTerminate` blocking the calling main thread on a
+	/// `DispatchSemaphore` while a detached `Task` awaited the
+	/// `@MainActor` teardown) deadlocked: the teardown could never be
+	/// scheduled onto the blocked main thread, so it silently fell
+	/// through the 1 s timeout and `ssh -O exit` never ran.
+	///
+	/// The correct AppKit pattern is `.terminateLater`: we return control
+	/// to the run loop (keeping the main actor free), perform the
+	/// `@MainActor` teardown asynchronously with a hard time bound, then
+	/// call `reply(toApplicationShouldTerminate:)` exactly once.
+	func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
+		if isTerminating { return .terminateNow }
+		isTerminating = true
+		Task { @MainActor in
+			await Self.tearDownControlMasters(timeout: .seconds(2))
+			NSApp.reply(toApplicationShouldTerminate: true)
 		}
-		_ = semaphore.wait(timeout: .now() + 1.0)
+		return .terminateLater
+	}
+
+	/// Tear down all ControlMaster sockets, but never let a stuck
+	/// `ssh -O exit` block quit: whichever finishes first — the teardown
+	/// or the timeout — wins, then the loser is cancelled.
+	private static func tearDownControlMasters(timeout: Duration) async {
+		await withTaskGroup(of: Void.self) { group in
+			group.addTask { @MainActor in
+				await ControlMasterManager.shared.tearDownAll()
+			}
+			group.addTask {
+				try? await Task.sleep(for: timeout)
+			}
+			_ = await group.next()
+			group.cancelAll()
+		}
 	}
 
 	func applicationDidFinishLaunching(_: Notification) {
