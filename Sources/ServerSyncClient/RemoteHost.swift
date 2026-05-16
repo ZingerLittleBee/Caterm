@@ -14,11 +14,16 @@ public struct RemoteHost: Codable, Equatable, Identifiable {
     public let updatedAt: Date
     public let jumpHostServerId: String?
     public let forwards: [PortForward]
+    /// User-chosen SF Symbol name. Synced metadata (device-visible only;
+    /// nil = use the credential-derived default icon). Legacy payloads with
+    /// no `icon` key decode to nil.
+    public let icon: String?
 
     public init(id: String, name: String, hostname: String, port: Int,
                 username: String, authType: String, createdAt: Date, updatedAt: Date,
                 jumpHostServerId: String? = nil,
-                forwards: [PortForward] = []) {
+                forwards: [PortForward] = [],
+                icon: String? = nil) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -29,6 +34,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable {
         self.updatedAt = updatedAt
         self.jumpHostServerId = jumpHostServerId
         self.forwards = forwards
+        self.icon = icon
     }
 
     // Explicit decoder so legacy server payloads (no `forwards` column —
@@ -37,7 +43,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable {
     // every pull from a current production server (spec §7.1.x forward-compat).
     private enum CodingKeys: String, CodingKey {
         case id, name, hostname, port, username, authType
-        case createdAt, updatedAt, jumpHostServerId, forwards
+        case createdAt, updatedAt, jumpHostServerId, forwards, icon
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,6 +58,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable {
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
         jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
         forwards = try c.decodeIfPresent([PortForward].self, forKey: .forwards) ?? []
+        icon = try c.decodeIfPresent(String.self, forKey: .icon)
     }
     // Synthesized encode(to:) is fine — it writes all keys.
 }
@@ -67,10 +74,12 @@ public struct RemoteHostCreateInput: Codable {
     public let authType: String
     public let jumpHostServerId: String?
     public let forwards: [PortForward]
+    public let icon: String?
 
     public init(name: String, hostname: String, port: Int, username: String,
                 jumpHostServerId: String? = nil,
-                forwards: [PortForward] = []) {
+                forwards: [PortForward] = [],
+                icon: String? = nil) {
         self.name = name
         self.hostname = hostname
         self.port = port
@@ -78,6 +87,7 @@ public struct RemoteHostCreateInput: Codable {
         self.authType = "key"
         self.jumpHostServerId = jumpHostServerId
         self.forwards = forwards
+        self.icon = icon
     }
 }
 
@@ -92,11 +102,13 @@ public struct RemoteHostUpdateInput: Codable {
     public let authType: String?
     public let jumpHostServerId: String?
     public let forwards: [PortForward]?
+    public let icon: String?
 
     public init(id: String, name: String? = nil, hostname: String? = nil,
                 port: Int? = nil, username: String? = nil,
                 jumpHostServerId: String? = nil,
-                forwards: [PortForward]? = nil) {
+                forwards: [PortForward]? = nil,
+                icon: String? = nil) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -107,6 +119,7 @@ public struct RemoteHostUpdateInput: Codable {
         self.authType = "key"
         self.jumpHostServerId = jumpHostServerId
         self.forwards = forwards
+        self.icon = icon
     }
 }
 

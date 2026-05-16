@@ -652,6 +652,7 @@ public final class SessionStore: ObservableObject {
         hosts[idx].jumpHostId = hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id
         hosts[idx].jumpHostServerId = remote.jumpHostServerId
         hosts[idx].forwards = remote.forwards
+        hosts[idx].icon = remote.icon
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -668,7 +669,8 @@ public final class SessionStore: ObservableObject {
             createdAt: remote.createdAt, updatedAt: remote.updatedAt,
             jumpHostId: hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id,
             jumpHostServerId: remote.jumpHostServerId,
-            forwards: remote.forwards
+            forwards: remote.forwards,
+            icon: remote.icon
         )
         hosts.append(h)
         backfillJumpHostIds(serverId: remote.id, in: &hosts)

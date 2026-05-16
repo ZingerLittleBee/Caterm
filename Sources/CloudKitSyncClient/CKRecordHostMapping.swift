@@ -17,6 +17,7 @@ public enum CKRecordHostMapping {
 		static let metadataUpdatedAt = "metadataUpdatedAt"
 		static let jumpHostServerId = "jumpHostServerId"
 		static let forwards = "forwards"
+		static let icon = "icon"
 		// Credential blob
 		static let credentialBlobState = "credentialBlobState"
 		static let credentialBlobRevision = "credentialBlobRevision"
@@ -53,6 +54,9 @@ public enum CKRecordHostMapping {
 			rec[Field.jumpHostServerId] = jumpHostServerId as CKRecordValue
 		}
 		rec[Field.forwards] = (try? jsonEncoded(input.forwards)) ?? ("[]" as CKRecordValue)
+		if let icon = input.icon {
+			rec[Field.icon] = icon as CKRecordValue
+		}
 		rec[Field.credentialBlobState] = "none" as CKRecordValue
 		rec[Field.credentialBlobRevision] = Int64(0) as CKRecordValue
 		rec[Field.credentialCryptoVersion] = Int64(1) as CKRecordValue
@@ -73,6 +77,11 @@ public enum CKRecordHostMapping {
 			existing[Field.jumpHostServerId] = nil
 		}
 		existing[Field.forwards] = (try? jsonEncoded(host.forwards)) ?? ("[]" as CKRecordValue)
+		if let icon = host.icon {
+			existing[Field.icon] = icon as CKRecordValue
+		} else {
+			existing[Field.icon] = nil
+		}
 		// `metadataUpdatedAt` was already advanced above to host.updatedAt;
 		// callers (HostSyncStore) MUST bump host.updatedAt on any forwards
 		// mutation, otherwise this push will not be considered newer by
@@ -143,7 +152,8 @@ public enum CKRecordHostMapping {
 			createdAt: rec.creationDate ?? .distantPast,
 			updatedAt: updatedAt,
 			jumpHostServerId: rec[Field.jumpHostServerId] as? String,
-			forwards: decoded
+			forwards: decoded,
+			icon: rec[Field.icon] as? String
 		)
 
 		let blob: CredentialBlob?

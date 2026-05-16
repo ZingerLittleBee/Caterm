@@ -22,9 +22,9 @@ public enum HostSyncReconciler {
                     } else if localHost.updatedAt > r.updatedAt {
                         ops.append(.updateRemote(localHostId: localHost.id,
                                                   serverId: serverId))
-                    } else if localHost.forwards != r.forwards {
-                        // Equal updatedAt but forwards diverge — defensive
-                        // catch for callers that mutated forwards without
+                    } else if localHost.forwards != r.forwards || localHost.icon != r.icon {
+                        // Equal updatedAt but forwards/icon diverge — defensive
+                        // catch for callers that mutated metadata without
                         // bumping updatedAt. Prefer the remote copy.
                         ops.append(.updateLocal(localHostId: localHost.id, remote: r))
                     }
@@ -66,9 +66,9 @@ public enum HostSyncReconciler {
                     ops.append(.updateLocal(localHostId: existing.id, remote: r))
                 } else if existing.updatedAt > r.updatedAt {
                     ops.append(.updateRemote(localHostId: existing.id, serverId: r.id))
-                } else if existing.forwards != r.forwards {
-                    // Equal updatedAt but forwards diverge — defensive
-                    // catch for callers that mutated forwards without
+                } else if existing.forwards != r.forwards || existing.icon != r.icon {
+                    // Equal updatedAt but forwards/icon diverge — defensive
+                    // catch for callers that mutated metadata without
                     // bumping updatedAt. Prefer the remote copy.
                     ops.append(.updateLocal(localHostId: existing.id, remote: r))
                 }
