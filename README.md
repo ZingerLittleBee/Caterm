@@ -2,6 +2,15 @@
 
 A cloud-synced SSH terminal manager built with Tauri and the Better-T-Stack.
 
+[![Latest release](https://img.shields.io/github/v/release/ZingerLittleBee/Caterm)](https://github.com/ZingerLittleBee/Caterm/releases/latest)
+
+## Download
+
+**macOS** — [download the latest release](https://github.com/ZingerLittleBee/Caterm/releases/latest).
+The native SwiftUI app (`apps/macos`) is Developer ID signed, notarized, and
+stapled; it requires macOS 14.0 or later and syncs over iCloud with no
+self-hosted server. Grab `Caterm-<version>.dmg` and drag it to Applications.
+
 ## Features
 
 - **SSH Terminal** - Multi-tab terminal sessions powered by xterm.js and Rust SSH (russh)
