@@ -54,6 +54,62 @@ final class HostSyncReconcilerTests: XCTestCase {
         XCTAssertTrue(HostSyncReconciler.reconcileFullSnapshot(local: [h], remote: [r]).isEmpty)
     }
 
+    // MARK: - Icon sync (machine A icon → machine B no icon)
+
+    /// Machine B: local copy has no icon and is older than the remote (which
+    /// machine A pushed with an icon). B must pull the icon down.
+    func testMachineBPullsIconFromNewerRemote() {
+        let oldT = Date(timeIntervalSince1970: 1000)
+        let newT = Date(timeIntervalSince1970: 2000)
+        var b = makeLocalHost(name: "alpha", serverId: "srv-1", updatedAt: oldT)
+        b.icon = nil
+        var r = makeRemoteHost(id: "srv-1", name: "alpha", updatedAt: newT)
+        r = RemoteHost(id: "srv-1", name: "alpha", hostname: "h", port: 22,
+                       username: "u", authType: "key",
+                       createdAt: oldT, updatedAt: newT,
+                       icon: "server.rack")
+        let ops = HostSyncReconciler.reconcileFullSnapshot(local: [b], remote: [r])
+        XCTAssertEqual(ops, [.updateLocal(localHostId: b.id, remote: r)])
+    }
+
+    /// Machine A: just set an icon, so its local copy is newer → push up.
+    func testMachineAPushesIconWhenLocalNewer() {
+        let oldT = Date(timeIntervalSince1970: 1000)
+        let newT = Date(timeIntervalSince1970: 2000)
+        var a = makeLocalHost(name: "alpha", serverId: "srv-1", updatedAt: newT)
+        a.icon = "globe.americas.fill"
+        let r = makeRemoteHost(id: "srv-1", name: "alpha", updatedAt: oldT)
+        let ops = HostSyncReconciler.reconcileFullSnapshot(local: [a], remote: [r])
+        XCTAssertEqual(ops, [.updateRemote(localHostId: a.id, serverId: "srv-1")])
+    }
+
+    /// Equal updatedAt but icon diverges → defensive pull of the remote copy
+    /// (mirrors the existing forwards-divergence safety net).
+    func testEqualUpdatedAtIconDivergencePullsRemote() {
+        let t = Date(timeIntervalSince1970: 1000)
+        var local = makeLocalHost(name: "alpha", serverId: "srv-1", updatedAt: t)
+        local.icon = nil
+        let r = RemoteHost(id: "srv-1", name: "alpha", hostname: "h", port: 22,
+                           username: "u", authType: "key",
+                           createdAt: t, updatedAt: t, icon: "flag.fill")
+        let ops = HostSyncReconciler.reconcileFullSnapshot(local: [local], remote: [r])
+        XCTAssertEqual(ops, [.updateLocal(localHostId: local.id, remote: r)])
+    }
+
+    func testDeltaMachineBPullsIconFromNewerRemote() {
+        let oldT = Date(timeIntervalSince1970: 1000)
+        let newT = Date(timeIntervalSince1970: 2000)
+        var b = makeLocalHost(name: "alpha", serverId: "srv-1", updatedAt: oldT)
+        b.icon = nil
+        let r = RemoteHost(id: "srv-1", name: "alpha", hostname: "h", port: 22,
+                           username: "u", authType: "key",
+                           createdAt: oldT, updatedAt: newT, icon: "star.fill")
+        let ops = HostSyncReconciler.reconcileDelta(
+            local: [b], changedHosts: [r], deletedHostIDs: []
+        )
+        XCTAssertEqual(ops, [.updateLocal(localHostId: b.id, remote: r)])
+    }
+
     // MARK: - Conflict resolution: last-write-wins
 
     func testRemoteNewerOverwritesLocalMetadata() {

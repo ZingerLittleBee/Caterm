@@ -29,6 +29,16 @@ public final class GhosttySurface {
 	/// `$SHELL` (which doesn't exit on its own).
 	public var onChildExit: ((Int32) -> Void)?
 
+	/// Fired exactly once, when the remote session emits its first OSC title
+	/// or pwd sequence (`GHOSTTY_ACTION_SET_TITLE` / `GHOSTTY_ACTION_PWD`).
+	/// That only happens once an interactive remote shell is actually up — an
+	/// ssh auth/DNS failure exits before any shell starts and never emits it,
+	/// so this is a precise "the session is live" signal and is safe to use
+	/// to dismiss the connecting overlay immediately, without disturbing the
+	/// exit-code-based failure classification.
+	public var onSessionLive: (() -> Void)?
+	private var sessionLiveSignalled = false
+
 	/// Fired when libghostty asks the apprt to change the mouse cursor shape
 	/// (`GHOSTTY_ACTION_MOUSE_SHAPE`). The host view translates this into an
 	/// `NSCursor`.
@@ -296,6 +306,14 @@ public final class GhosttySurface {
 	func handleChildExited(exitCode: UInt32) {
 		processExited = true
 		onChildExit?(Int32(bitPattern: exitCode))
+	}
+
+	/// Latched: the remote shell emits many title/pwd updates over a session;
+	/// only the first one means "we just went live".
+	func handleSessionLive() {
+		guard !sessionLiveSignalled else { return }
+		sessionLiveSignalled = true
+		onSessionLive?()
 	}
 
 	func updateCellSize(width: Double, height: Double) {

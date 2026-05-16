@@ -62,7 +62,6 @@ struct CredentialSetupView: View {
 				}
 			}
 			.formStyle(.grouped)
-			.scrollDisabled(true)
 
 			Divider()
 
@@ -78,7 +77,7 @@ struct CredentialSetupView: View {
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
-		.frame(width: 480, height: 360)
+		.frame(width: 480, height: 420)
 	}
 
 	/// Save is enabled only when the inputs are usable. For .keyFile we
@@ -95,8 +94,6 @@ struct CredentialSetupView: View {
 		case .keyFile:
 			guard canonicalizedKeyPath() != nil else { return false }
 			if hasPassphrase { return !pendingSecret.isEmpty }
-			return true
-		case .agent:
 			return true
 		}
 	}
@@ -132,9 +129,6 @@ struct CredentialSetupView: View {
 			guard let path = canonicalizedKeyPath() else { return }
 			cred = .keyFile(keyPath: path, hasPassphrase: hasPassphrase)
 			secret = hasPassphrase ? pendingSecret : nil
-		case .agent:
-			cred = .agent
-			secret = nil
 		}
 
 		errorMessage = nil

@@ -143,6 +143,16 @@ struct SyncSettingsView: View {
                     triggerSync: { [weak syncStore] in syncStore?.syncIfSignedIn() }
                 )
             }
+            Section("SSH Keys") {
+                Toggle(
+                    "Auto-upload default keys after a successful connection",
+                    isOn: $preferences.autoUploadDefaultKeysEnabled
+                )
+                .help("Off by default. Keys found by scanning ~/.ssh are never uploaded unless you enable this — and even then, only a key that produced a successful connection is synced.")
+                Text("A key you explicitly pick for a host always syncs (when iCloud credential sync is on). Keys discovered automatically in ~/.ssh stay on this device unless this is enabled, and only after one of them successfully connects.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Terminal") {
                 Toggle(
                     "Install Ghostty terminfo on remote hosts",

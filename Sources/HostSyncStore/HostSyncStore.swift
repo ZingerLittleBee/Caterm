@@ -629,7 +629,8 @@ public final class HostSyncStore: ObservableObject {
                 name: host.name, hostname: host.hostname,
                 port: host.port, username: host.username,
                 jumpHostServerId: host.jumpHostServerId,
-                forwards: host.forwards
+                forwards: host.forwards,
+                icon: host.icon
             )
             let out = try await client.createHost(input)
             try sessionStore.setServerId(out.id, for: localHostId)
@@ -653,7 +654,8 @@ public final class HostSyncStore: ObservableObject {
                 id: serverId, name: host.name, hostname: host.hostname,
                 port: host.port, username: host.username,
                 jumpHostServerId: host.jumpHostServerId,
-                forwards: host.forwards
+                forwards: host.forwards,
+                icon: host.icon
             )
             try await client.updateHost(input)
 

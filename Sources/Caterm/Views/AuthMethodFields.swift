@@ -11,32 +11,53 @@ struct AuthMethodFields: View {
 	@Binding var pendingSecret: String
 	var onBrowse: () -> Void
 
+	@State private var discoveredKeys: [DefaultSSHKeyScanner.DiscoveredKey] = []
+
 	var body: some View {
 		VStack(alignment: .leading, spacing: 8) {
 			switch credKind {
 			case .password:
 				SecureField("Password", text: $pendingSecret)
 					.textContentType(.password)
-				footnote("Stored in Keychain.")
+					.help("Stored in your macOS Keychain. Synced to your other devices when iCloud credential sync is enabled.")
+				footnote("Stored in Keychain. Syncs with iCloud credential sync.")
 
 			case .keyFile:
 				HStack {
-					TextField("Private key path", text: $keyPath)
+					TextField("e.g. ~/.ssh/id_ed25519", text: $keyPath)
+						.help("Path to your SSH private key. A key you pick here is uploaded and synced to your other devices when iCloud credential sync is on.")
+					if !discoveredKeys.isEmpty {
+						Menu {
+							ForEach(discoveredKeys) { key in
+								Button(key.displayName) { keyPath = key.path }
+									.help(key.path)
+							}
+						} label: {
+							Image(systemName: "key.horizontal")
+						}
+						.menuStyle(.borderlessButton)
+						.fixedSize()
+						.help("Pick a key found in ~/.ssh. Choosing one here makes it this host's key (and syncs it when iCloud credential sync is on).")
+					}
 					Button("Browse…") { onBrowse() }
 				}
 				Toggle("Key has passphrase", isOn: $hasPassphrase)
+					.help("Enable if the private key is encrypted with a passphrase. The passphrase is stored in your Keychain.")
 				if hasPassphrase {
 					SecureField("Passphrase", text: $pendingSecret)
 						.textContentType(.password)
+						.help("Stored in your macOS Keychain, never written to disk in plaintext.")
 				}
 				footnote(
 					hasPassphrase
-						? "Path stored locally; passphrase stored in Keychain."
-						: "Path stored locally."
+						? "Path stored locally; passphrase stored in Keychain. The key itself syncs with iCloud credential sync."
+						: "The key you pick syncs with iCloud credential sync. Keys auto-discovered in ~/.ssh are never uploaded unless you opt in under Settings → Sync."
 				)
-
-			case .agent:
-				footnote("Caterm will use the running ssh-agent for authentication.")
+			}
+		}
+		.task {
+			if credKind == .keyFile, discoveredKeys.isEmpty {
+				discoveredKeys = DefaultSSHKeyScanner.scan()
 			}
 		}
 	}

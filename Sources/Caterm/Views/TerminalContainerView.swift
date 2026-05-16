@@ -144,6 +144,20 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		let capturedGeneration = store.tabs
 			.first(where: { $0.id == tabId })?.surfaceGeneration ?? 0
 		context.coordinator.probe = Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
+			// Promote the tab to `.connected` (dismissing the overlay) only
+			// if this representable still owns the tab's connection — i.e.
+			// the process is alive and the surface generation hasn't moved
+			// on under us. Safe to call more than once: `markConnected` is
+			// idempotent and the early signal usually wins the race with the
+			// grace timer below.
+			@MainActor func reportConnectedIfCurrent() {
+				guard let store, let surface = view?.surface,
+				      !surface.processExited else { return }
+				guard store.tabs.first(where: { $0.id == capturedTabId })?
+					.surfaceGeneration == capturedGeneration else { return }
+				store.markConnected(tabId: capturedTabId)
+			}
+
 			// `view.surface` is built lazily in `viewDidMoveToWindow`. Yield
 			// until it exists or give up after ~3s.
 			let deadline = Date().addingTimeInterval(3)
@@ -155,6 +169,15 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 							store?.markChildExited(tabId: capturedTabId, exitCode: code)
 						}
 					}
+					// Real "session is live" signal: the moment the remote
+					// shell emits its first OSC title/pwd we know we're
+					// genuinely connected — drop the overlay now instead of
+					// waiting out the grace timer. Auth/DNS failures exit
+					// before any shell starts and never fire this, so the
+					// failure path is unaffected.
+					surface.onSessionLive = {
+						MainActor.assumeIsolated { reportConnectedIfCurrent() }
+					}
 					surfaceRegistry?.register(surface, for: capturedTabId)
 					let hostId = store?.hostId(for: capturedTabId).map { HostId($0.uuidString) }
 					surface.applyConfig(hostId: hostId)
@@ -162,17 +185,14 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 				}
 				try? await Task.sleep(nanoseconds: 50_000_000)
 			}
-			// 3s grace period: if process still alive, mark Connected.
+			// Fallback grace period for sessions that never emit an OSC
+			// title/pwd (minimal `sh`, appliances): if the process is still
+			// alive after 3s, treat it as connected. This is also the sole
+			// path that lets a fast auth failure (process exits before the
+			// grace elapses) stay classified as `.authOrSetupFail`.
 			try? await Task.sleep(nanoseconds: 3_000_000_000)
 			if Task.isCancelled { return }
-			guard let store, let surface = view?.surface,
-			      !surface.processExited else { return }
-			// Drop the result if the tab moved to a newer surface
-			// generation while we slept — another representable now owns
-			// the connection state for this tab.
-			guard store.tabs.first(where: { $0.id == capturedTabId })?
-				.surfaceGeneration == capturedGeneration else { return }
-			store.markConnected(tabId: capturedTabId)
+			reportConnectedIfCurrent()
 		}
 		return view
 	}

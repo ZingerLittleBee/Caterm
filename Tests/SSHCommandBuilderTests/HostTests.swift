@@ -27,4 +27,29 @@ final class HostBackwardCompatTests: XCTestCase {
 		let decoded = try JSONDecoder().decode(Host.self, from: data)
 		XCTAssertEqual(decoded.serverId, "srv-abc")
 	}
+
+	func testDecodesLegacyJSONWithoutIconAsNil() throws {
+		let legacy = #"""
+		{
+		    "id": "22222222-2222-2222-2222-222222222222",
+		    "name": "old",
+		    "hostname": "1.2.3.4",
+		    "port": 22,
+		    "username": "root",
+		    "credential": {"password": {}},
+		    "createdAt": 770000000,
+		    "updatedAt": 770000000
+		}
+		"""#
+		let host = try JSONDecoder().decode(Host.self, from: Data(legacy.utf8))
+		XCTAssertNil(host.icon)
+	}
+
+	func testIconRoundTrips() throws {
+		var host = Host(name: "h", hostname: "x", username: "u", credential: .password)
+		host.icon = "globe.americas.fill"
+		let data = try JSONEncoder().encode(host)
+		let decoded = try JSONDecoder().decode(Host.self, from: data)
+		XCTAssertEqual(decoded.icon, "globe.americas.fill")
+	}
 }
