@@ -199,6 +199,7 @@ public struct MobileTerminalSessionView: View {
 			}
 		}
 		.navigationBarTitleDisplayMode(.inline)
+		.toolbar(.hidden, for: .tabBar)
 		.toolbar {
 			ToolbarItem(placement: .primaryAction) {
 				Button("Disconnect", role: .destructive) {
