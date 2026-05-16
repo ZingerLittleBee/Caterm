@@ -32,7 +32,7 @@ set -euo pipefail
 #                             never store secrets in this repo):
 #                               xcrun notarytool store-credentials caterm \
 #                                   --apple-id <appleid-email> \
-#                                   --team-id 9VM4RM39R3
+#                                   --team-id <your-team-id>
 #   --skip-notary             produce a signed-but-unnotarized .app/.dmg
 #                             (valid for the two-Mac smoke on your own Macs;
 #                             NOT for public distribution — Gatekeeper on
@@ -135,7 +135,7 @@ NOT stored in this repo):
 
   xcrun notarytool store-credentials $NOTARY_PROFILE \\
       --apple-id <your-apple-id-email> \\
-      --team-id 9VM4RM39R3
+      --team-id <your-team-id>
 
 Generate an app-specific password at https://account.apple.com → Sign-In
 and Security → App-Specific Passwords.
