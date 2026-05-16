@@ -132,7 +132,9 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		old?.onOutput = nil
 		session = nil
 		started = false
-		state = .idle
+		// Switch to the connecting UI synchronously so the tap has
+		// immediate, visible feedback instead of briefly looking dead.
+		state = .connecting
 		Task {
 			await old?.disconnect()
 			start()
@@ -186,6 +188,25 @@ public final class TerminalSessionsModel: ObservableObject {
 	}
 }
 
+/// The terminal viewport: the retained SwiftTerm view with the
+/// connection overlay stacked on top. Observes the model directly so a
+/// state change re-renders the hit-testing gate — when the session is
+/// not connected the terminal's UIScrollView stops swallowing touches,
+/// letting the overlay's Reconnect button receive taps.
+struct TerminalPane<Overlay: View>: View {
+	@ObservedObject var model: TerminalScreenModel
+	@ViewBuilder let overlay: () -> Overlay
+
+	var body: some View {
+		ZStack {
+			SwiftTermBridge(model: model)
+				.ignoresSafeArea(.container, edges: .bottom)
+				.allowsHitTesting(model.state == .connected)
+			overlay()
+		}
+	}
+}
+
 /// The whole terminal surface: tab strip + the Termius-style keyboard
 /// and tool toolbar. `+` opens another host as a live tab.
 public struct MobileTerminalSessionView: View {
@@ -229,11 +250,7 @@ public struct MobileTerminalSessionView: View {
 	}
 
 	@ViewBuilder private func terminalArea(_ model: TerminalScreenModel) -> some View {
-		ZStack {
-			SwiftTermBridge(model: model)
-				.ignoresSafeArea(.container, edges: .bottom)
-			connectionOverlay(model)
-		}
+		TerminalPane(model: model) { connectionOverlay(model) }
 		if sessions.keyboardMode == .custom {
 			TerminalKeyGridView(model: model)
 		} else {
@@ -314,74 +331,62 @@ public struct MobileTerminalSessionView: View {
 
 	@ViewBuilder private func connectionOverlay(_ model: TerminalScreenModel) -> some View {
 		switch model.state {
+		case .connected, .hostKeyPrompt:
+			EmptyView()
+		default:
+			overlayContent(model)
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(Color(.systemBackground))
+		}
+	}
+
+	@ViewBuilder private func overlayContent(_ model: TerminalScreenModel) -> some View {
+		switch model.state {
 		case .connecting, .idle:
-			VStack(spacing: 12) {
+			ContentUnavailableView {
+				Label("Connecting…", systemImage: "network")
+			} description: {
 				ProgressView()
 					.controlSize(.large)
-					.tint(.white)
-				Text("Connecting…")
-					.font(.headline)
-					.foregroundStyle(.white)
+					.padding(.top, 6)
 			}
-			.padding(28)
-			.background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 16))
 		case let .failed(reason):
-			statusCard(
-				icon: "xmark.octagon.fill", tint: .red,
-				title: "Connection Failed", message: reason, model: model)
+			failureView("Connection Failed", "xmark.octagon", reason, model)
 		case let .disconnected(reason):
-			statusCard(
-				icon: "bolt.horizontal.circle.fill", tint: .orange,
-				title: "Disconnected", message: reason, model: model)
+			failureView("Disconnected", "bolt.horizontal.circle", reason, model)
 		case let .authPrompt(missing):
-			statusCard(
-				icon: "key.fill", tint: .yellow,
-				title: "Credential Needed",
-				message: "Missing \(String(describing: missing)). Set it on the host, then reconnect.",
-				model: model)
-		case .hostKeyPrompt, .connected:
+			failureView(
+				"Credential Needed", "key",
+				"Missing \(String(describing: missing)). Set it on the host, then reconnect.",
+				model)
+		case .connected, .hostKeyPrompt:
 			EmptyView()
 		}
 	}
 
-	private func statusCard(
-		icon: String, tint: SwiftUI.Color, title: String,
-		message: String, model: TerminalScreenModel
+	private func failureView(
+		_ title: String, _ icon: String, _ message: String,
+		_ model: TerminalScreenModel
 	) -> some View {
-		VStack(spacing: 14) {
-			Image(systemName: icon)
-				.font(.system(size: 42))
-				.foregroundStyle(tint)
-			Text(title)
-				.font(.title3.weight(.semibold))
-				.foregroundStyle(.white)
-			ScrollView {
-				Text(message)
-					.font(.system(.footnote, design: .monospaced))
-					.foregroundStyle(SwiftUI.Color.white.opacity(0.85))
-					.multilineTextAlignment(.center)
-					.textSelection(.enabled)
+		VStack(spacing: 20) {
+			ContentUnavailableView {
+				Label(title, systemImage: icon)
+			} description: {
+				Text(message).textSelection(.enabled)
 			}
-			.frame(maxHeight: 140)
+			.fixedSize(horizontal: false, vertical: true)
+
 			Button {
 				model.reconnect()
 			} label: {
 				Label("Reconnect", systemImage: "arrow.clockwise")
-					.font(.callout.weight(.semibold))
-					.frame(maxWidth: .infinity)
-					.padding(.vertical, 10)
-					.background(tint.opacity(0.9), in: RoundedRectangle(cornerRadius: 10))
-					.foregroundStyle(.white)
+					.font(.body.weight(.semibold))
+					.padding(.horizontal, 24)
+					.padding(.vertical, 12)
 			}
-			.buttonStyle(.plain)
+			.buttonStyle(.borderedProminent)
 		}
-		.padding(24)
-		.frame(maxWidth: 340)
-		.background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 18))
-		.overlay(
-			RoundedRectangle(cornerRadius: 18)
-				.stroke(SwiftUI.Color.white.opacity(0.12), lineWidth: 1))
-		.padding(24)
+		.padding()
 	}
 
 	private var hostPicker: some View {
