@@ -200,10 +200,39 @@ test: ## swift test (set CATERM_E2E_DOCKER=1 to include the Docker E2E)
 test-e2e: ## include the Docker E2E SSH integration test
 	CATERM_E2E_DOCKER=1 swift test
 
+# --- iOS (mobile shell + SSH terminal) ---
+#
+# The iOS app is built by SwiftPM and hand-wrapped into a .app by
+# Scripts/build-ios-app.sh. We do NOT use Xcode's SwiftPM integration:
+# Xcode 26.5's explicitly-built-modules path fails to compile swift-nio's
+# C targets (swift-atomics _AtomicsShims, CNIOPosix) for the
+# iphonesimulator SDK ("module file ... .pcm not found" with explicit
+# modules, "no such module DequeModule/Atomics" without). SwiftPM's own
+# build system compiles the same graph cleanly, so we drive it directly
+# (mirrors the macOS hand-wrap in Scripts/dev-run-app.sh).
+IOS_BUNDLE_ID := app.caterm.mobile
+IOS_APP       := build/ios/Caterm.app
+IOS_SIM = $(shell xcrun simctl list devices booted 2>/dev/null | grep -oE '[0-9A-F-]{36}' | head -1)
+ifeq ($(IOS_SIM),)
+IOS_SIM := $(shell xcrun simctl list devices available 2>/dev/null | grep -E 'iPhone' | grep -oE '[0-9A-F-]{36}' | head -1)
+endif
+
+.PHONY: ios-build
+ios-build: ## build the iOS app via SwiftPM + assemble Caterm.app
+	bash Scripts/build-ios-app.sh
+
+.PHONY: run-ios
+run-ios: ios-build ## build + boot simulator + install + launch mobile app
+	@test -n "$(IOS_SIM)" || { echo "No iOS simulator available"; exit 1; }
+	xcrun simctl boot $(IOS_SIM) 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl install $(IOS_SIM) "$(IOS_APP)"
+	xcrun simctl launch $(IOS_SIM) $(IOS_BUNDLE_ID)
+
 .PHONY: clean
 clean: ## remove .build (forces full rebuild)
 	swift package clean
-	rm -rf .build/debug.yaml
+	rm -rf .build/debug.yaml build CatermMobile.xcodeproj
 
 .PHONY: distclean
 distclean: ## nuke .build entirely (incl. SwiftPM caches)

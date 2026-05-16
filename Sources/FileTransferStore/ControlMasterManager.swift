@@ -4,6 +4,15 @@ public protocol ProcessRunner: Sendable {
     func run(argv: [String], env: [String: String]) async -> Int32
 }
 
+/// Non-macOS ControlMaster runner. ControlMaster relies on shelling out to
+/// `/usr/bin/ssh` via `Process`, unavailable on iOS/iPadOS. Returns 127 so
+/// `isAlive` reports the master as down rather than crashing.
+public struct UnavailableProcessRunner: ProcessRunner {
+    public init() {}
+    public func run(argv: [String], env: [String: String]) async -> Int32 { 127 }
+}
+
+#if os(macOS)
 public struct SystemProcessRunner: ProcessRunner {
     public init() {}
     public func run(argv: [String], env: [String: String]) async -> Int32 {
@@ -21,6 +30,11 @@ public struct SystemProcessRunner: ProcessRunner {
         }
     }
 }
+
+public typealias DefaultProcessRunner = SystemProcessRunner
+#else
+public typealias DefaultProcessRunner = UnavailableProcessRunner
+#endif
 
 @MainActor
 public final class ControlMasterManager {
@@ -40,7 +54,7 @@ public final class ControlMasterManager {
         return ControlMasterManager(cacheDir: dir)
     }()
 
-    public init(cacheDir: URL, runner: ProcessRunner = SystemProcessRunner()) {
+    public init(cacheDir: URL, runner: ProcessRunner = DefaultProcessRunner()) {
         self.cacheDir = cacheDir
         self.runner = runner
     }

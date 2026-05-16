@@ -3,12 +3,18 @@ import PackageDescription
 
 let package = Package(
     name: "Caterm",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .executable(name: "caterm", targets: ["Caterm"]),
         .executable(name: "caterm-askpass", targets: ["CatermAskpass"]),
+        .library(name: "CatermMobile", targets: ["CatermMobile"]),
+        .library(name: "CatermMobileTerminal", targets: ["CatermMobileTerminal"]),
+        .executable(name: "CatermMobileApp", targets: ["CatermMobileApp"]),
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-nio-ssh.git", from: "0.9.0"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
+    ],
     targets: [
         .binaryTarget(
             name: "GhosttyKit",
@@ -112,8 +118,32 @@ let package = Package(
             name: "CatermAskpassCore",
             path: "Sources/CatermAskpassCore"
         ),
+        .target(
+            name: "CatermMobile",
+            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal"],
+            path: "Sources/CatermMobile"
+        ),
+        .target(
+            name: "CatermMobileTerminal",
+            dependencies: [
+                "SSHCommandBuilder",
+                "KeychainStore",
+                .product(name: "NIOSSH", package: "swift-nio-ssh"),
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ],
+            path: "Sources/CatermMobileTerminal"
+        ),
 
         // --- Executables ---
+        // iOS/iPadOS app. Built via SwiftPM (not Xcode's SwiftPM
+        // integration, which is broken for swift-nio's C targets on
+        // Xcode 26.5's iphonesimulator) and hand-wrapped into a .app by
+        // Scripts/build-ios-app.sh. Compiles on macOS too (unused there).
+        .executableTarget(
+            name: "CatermMobileApp",
+            dependencies: ["CatermMobile", "CatermMobileTerminal"],
+            path: "App/iOS"
+        ),
         .executableTarget(
             name: "Caterm",
             dependencies: [
@@ -194,6 +224,16 @@ let package = Package(
             name: "CatermTests",
             dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient"],
             path: "Tests/CatermTests"
+        ),
+        .testTarget(
+            name: "CatermMobileTests",
+            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore"],
+            path: "Tests/CatermMobileTests"
+        ),
+        .testTarget(
+            name: "CatermMobileTerminalTests",
+            dependencies: ["CatermMobileTerminal", "SSHCommandBuilder", "KeychainStore"],
+            path: "Tests/CatermMobileTerminalTests"
         ),
         .testTarget(
             name: "TerminalEngineTests",

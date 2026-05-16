@@ -17,7 +17,7 @@ public final class FileTransferStore: ObservableObject {
 
 	public init(controlPathFor: @escaping (UUID) -> URL,
 	            credentialsFor: @escaping (UUID) -> SFTPCredentials,
-	            runner: SFTPRunner = SystemSFTPRunner(),
+	            runner: SFTPRunner = DefaultSFTPRunner(),
 	            liveness: ControlMasterLiveness) {
 		self.controlPathFor = controlPathFor
 		self.credentialsFor = credentialsFor

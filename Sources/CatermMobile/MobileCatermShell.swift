@@ -1,0 +1,291 @@
+import CatermMobileTerminal
+import FileTransferStore
+import SnippetSyncClient
+import SSHCommandBuilder
+import SwiftUI
+
+/// Array-seeded mobile shell. Keeps an in-memory `@State` copy of every
+/// surface — used by previews and tests. The running iOS app uses
+/// `MobileRootView`, which is backed by real persisting stores.
+public struct MobileCatermShell: View {
+	@State private var hosts: [SSHHost]
+	@State private var snippets: [Snippet]
+	@State private var remoteEntries: [RemoteEntry]
+	@State private var transfers: [TransferTask]
+
+	public init(
+		hosts: [SSHHost] = [],
+		snippets: [Snippet] = [],
+		remoteEntries: [RemoteEntry] = [],
+		transfers: [TransferTask] = []
+	) {
+		_hosts = State(initialValue: hosts)
+		_snippets = State(initialValue: snippets)
+		_remoteEntries = State(initialValue: remoteEntries)
+		_transfers = State(initialValue: transfers)
+	}
+
+	public var body: some View {
+		MobileShellBody(
+			hosts: $hosts,
+			snippets: $snippets,
+			remoteEntries: $remoteEntries,
+			transfers: $transfers
+		)
+	}
+}
+
+/// The real iOS/iPadOS app entry. Owns persisting stores and feeds the
+/// shared shell body store-backed bindings, so host edits round-trip to
+/// the same on-disk JSON the macOS app and CloudKit sync use. AppKit and
+/// the desktop terminal surface stay isolated.
+public struct MobileRootView: View {
+	@StateObject private var hostStore: MobileHostStore
+	private let credentialWriter: MobileCredentialWriter
+	@State private var snippets: [Snippet]
+	@State private var remoteEntries: [RemoteEntry]
+	@State private var transfers: [TransferTask]
+
+	public init(
+		hostStore: MobileHostStore,
+		credentialWriter: MobileCredentialWriter,
+		snippets: [Snippet] = [],
+		remoteEntries: [RemoteEntry] = [],
+		transfers: [TransferTask] = []
+	) {
+		_hostStore = StateObject(wrappedValue: hostStore)
+		self.credentialWriter = credentialWriter
+		_snippets = State(initialValue: snippets)
+		_remoteEntries = State(initialValue: remoteEntries)
+		_transfers = State(initialValue: transfers)
+	}
+
+	public var body: some View {
+		MobileShellBody(
+			hosts: hostStore.binding,
+			snippets: $snippets,
+			remoteEntries: $remoteEntries,
+			transfers: $transfers
+		)
+		.environment(\.mobileHostSave, MobileHostSaveAction(
+			save: { payload in
+				try? hostStore.upsert(payload.host)
+				try? credentialWriter.apply(payload)
+			},
+			deleteCredentials: { id in
+				credentialWriter.clearAll(hostId: id)
+			}
+		))
+	}
+}
+
+struct MobileShellBody: View {
+	@Environment(\.horizontalSizeClass) private var horizontalSizeClass
+	@Environment(\.mobileHostSave) private var hostSave
+	@Binding var hosts: [SSHHost]
+	@Binding var snippets: [Snippet]
+	@Binding var remoteEntries: [RemoteEntry]
+	@Binding var transfers: [TransferTask]
+	@State private var selection: MobileShellSelection?
+	@State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
+	@State private var showingAddHost = false
+
+	var body: some View {
+		Group {
+			if horizontalSizeClass == .compact {
+				MobileCompactShell(
+					hosts: $hosts,
+					snippets: $snippets,
+					remoteEntries: $remoteEntries,
+					transfers: $transfers
+				)
+			} else {
+				NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+					MobileShellSidebar(
+						hosts: hosts,
+						selection: $selection,
+						showingAddHost: $showingAddHost
+					)
+				} detail: {
+					MobileShellDetail(
+						selection: $selection,
+						hosts: $hosts,
+						snippets: $snippets,
+						remoteEntries: $remoteEntries,
+						transfers: $transfers
+					)
+				}
+				.sheet(isPresented: $showingAddHost) {
+					NavigationStack {
+						MobileHostFormView(mode: .add, allHosts: hosts) { payload in
+							if let hostSave {
+								hostSave.save(payload)
+							} else {
+								hosts.append(payload.host)
+							}
+							selection = .host(payload.host.id)
+							showingAddHost = false
+						}
+					}
+				}
+			}
+		}
+		.onAppear {
+			if selection == nil { selection = hosts.first.map { .host($0.id) } }
+		}
+	}
+}
+
+private enum MobileShellSelection: Hashable {
+	case host(UUID)
+	case terminal(UUID)
+	case credential(UUID)
+	case snippets
+	case files
+	case settings
+}
+
+private struct MobileCompactShell: View {
+	@Binding var hosts: [SSHHost]
+	@Binding var snippets: [Snippet]
+	@Binding var remoteEntries: [RemoteEntry]
+	@Binding var transfers: [TransferTask]
+
+	var body: some View {
+		TabView {
+			NavigationStack {
+				MobileHostsView(hosts: $hosts)
+			}
+			.tabItem { Label("Hosts", systemImage: "server.rack") }
+
+			NavigationStack {
+				MobileSnippetsView(snippets: $snippets)
+			}
+			.tabItem { Label("Snippets", systemImage: "text.cursor") }
+
+			NavigationStack {
+				MobileFileBrowserView(entries: remoteEntries, transfers: transfers)
+			}
+			.tabItem { Label("Files", systemImage: "folder") }
+
+			NavigationStack {
+				MobileSettingsView()
+			}
+			.tabItem { Label("Settings", systemImage: "gearshape") }
+		}
+	}
+}
+
+private struct MobileShellSidebar: View {
+	let hosts: [SSHHost]
+	@Binding var selection: MobileShellSelection?
+	@Binding var showingAddHost: Bool
+
+	var body: some View {
+		List(selection: $selection) {
+			Section("Hosts") {
+				if hosts.isEmpty {
+					Label("No hosts", systemImage: "server.rack")
+						.foregroundStyle(.secondary)
+				} else {
+					ForEach(hosts) { host in
+						Label(host.name, systemImage: "server.rack")
+							.tag(MobileShellSelection.host(host.id))
+					}
+				}
+			}
+
+			Section("Tools") {
+				Label("Snippets", systemImage: "text.cursor")
+					.tag(MobileShellSelection.snippets)
+				Label("Files", systemImage: "folder")
+					.tag(MobileShellSelection.files)
+				Label("Settings", systemImage: "gearshape")
+					.tag(MobileShellSelection.settings)
+			}
+		}
+		.navigationTitle("Caterm")
+		.toolbar {
+			ToolbarItem(placement: .primaryAction) {
+				Button {
+					showingAddHost = true
+				} label: {
+					Image(systemName: "plus")
+				}
+				.accessibilityLabel("Add Host")
+			}
+		}
+	}
+}
+
+private struct MobileShellDetail: View {
+	@Environment(\.mobileHostSave) private var hostSave
+	@Binding var selection: MobileShellSelection?
+	@Binding var hosts: [SSHHost]
+	@Binding var snippets: [Snippet]
+	@Binding var remoteEntries: [RemoteEntry]
+	@Binding var transfers: [TransferTask]
+
+	var body: some View {
+		switch selection {
+		case .host(let id):
+			if let binding = binding(for: id) {
+				MobileHostDetailView(
+					host: binding.wrappedValue,
+					onConnect: { route in
+						switch route {
+						case .credentialSetup(let hostId):
+							selection = .credential(hostId)
+						case .terminalPlaceholder(let hostId):
+							selection = .terminal(hostId)
+						case .detail(let hostId), .edit(let hostId):
+							selection = .host(hostId)
+						}
+					},
+					onDelete: {
+						hosts.removeAll { $0.id == id }
+						hostSave?.deleteCredentials(id)
+					},
+					onUpdate: { updated in
+						if let index = hosts.firstIndex(where: { $0.id == updated.id }) {
+							hosts[index] = updated
+						}
+					}
+				)
+			} else {
+				ContentUnavailableView("Host Not Found", systemImage: "server.rack")
+			}
+		case .terminal(let id):
+			if let host = hosts.first(where: { $0.id == id }) {
+				#if canImport(UIKit)
+				MobileTerminalSessionView(
+					initialHost: host,
+					hosts: hosts,
+					snippets: snippets.map {
+						TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
+					}
+				) { MobileHostsView.liveSession(for: $0) }
+				#else
+				MobileTerminalPlaceholderView(host: host, snippet: nil)
+				#endif
+			} else {
+				ContentUnavailableView("Host Not Found", systemImage: "server.rack")
+			}
+		case .credential(let id):
+			MobileCredentialSetupPlaceholderView(host: hosts.first { $0.id == id })
+		case .snippets:
+			MobileSnippetsView(snippets: $snippets)
+		case .files:
+			MobileFileBrowserView(entries: remoteEntries, transfers: transfers)
+		case .settings:
+			MobileSettingsView()
+		case nil:
+			MobileHostsView(hosts: $hosts)
+		}
+	}
+
+	private func binding(for id: UUID) -> Binding<SSHHost>? {
+		guard let index = hosts.firstIndex(where: { $0.id == id }) else { return nil }
+		return $hosts[index]
+	}
+}
