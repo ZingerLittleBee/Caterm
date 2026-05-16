@@ -3,6 +3,10 @@ import SwiftTerm
 import SwiftUI
 import UIKit
 
+/// Displays a `TerminalScreenModel`'s **retained** `TerminalView`. The
+/// view (and therefore the SSH session + scrollback) is owned by the
+/// model, so switching tabs only re-parents it — it never tears the
+/// session down.
 public struct SwiftTermBridge: UIViewRepresentable {
 	@ObservedObject var model: TerminalScreenModel
 
@@ -10,43 +14,52 @@ public struct SwiftTermBridge: UIViewRepresentable {
 		self.model = model
 	}
 
-	public func makeUIView(context: Context) -> TerminalView {
-		let tv = TerminalView(frame: .zero)
-		tv.terminalDelegate = context.coordinator
-		tv.backgroundColor = .black
-		context.coordinator.attach(terminalView: tv)
-		model.bindTerminal(context.coordinator)
-		return tv
+	public func makeUIView(context: Context) -> TerminalHostView {
+		let host = TerminalHostView()
+		host.mount(model.terminalView)
+		return host
 	}
 
-	public func updateUIView(_ uiView: TerminalView, context: Context) {}
+	public func updateUIView(_ uiView: TerminalHostView, context: Context) {
+		uiView.mount(model.terminalView)
+	}
+}
 
-	public func makeCoordinator() -> TerminalCoordinator {
-		TerminalCoordinator(model: model)
+/// Plain container that re-parents whichever tab's terminal is visible.
+public final class TerminalHostView: UIView {
+	private weak var mounted: TerminalView?
+
+	func mount(_ tv: TerminalView) {
+		guard mounted !== tv else { return }
+		mounted?.removeFromSuperview()
+		tv.removeFromSuperview()
+		tv.translatesAutoresizingMaskIntoConstraints = false
+		addSubview(tv)
+		NSLayoutConstraint.activate([
+			tv.leadingAnchor.constraint(equalTo: leadingAnchor),
+			tv.trailingAnchor.constraint(equalTo: trailingAnchor),
+			tv.topAnchor.constraint(equalTo: topAnchor),
+			tv.bottomAnchor.constraint(equalTo: bottomAnchor),
+		])
+		mounted = tv
 	}
 }
 
 public final class TerminalCoordinator: NSObject, TerminalViewDelegate {
-	private let model: TerminalScreenModel
+	weak var model: TerminalScreenModel?
 	weak var terminalView: TerminalView?
 
-	init(model: TerminalScreenModel) {
-		self.model = model
-	}
-
-	func attach(terminalView: TerminalView) {
-		self.terminalView = terminalView
-	}
-
-	public func feed(_ bytes: [UInt8]) {
+	func feed(_ bytes: [UInt8]) {
 		terminalView?.feed(byteArray: bytes[...])
 	}
 
 	public func send(source: TerminalView, data: ArraySlice<UInt8>) {
+		guard let model else { return }
 		Task { await model.session?.send(Array(data)) }
 	}
 
 	public func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+		guard let model else { return }
 		Task { await model.session?.resize(.init(cols: newCols, rows: newRows)) }
 	}
 

@@ -151,7 +151,9 @@ public struct MobileHostsView: View {
 		case .terminalPlaceholder(let id):
 			if let host = hosts.first(where: { $0.id == id }) {
 				#if canImport(UIKit)
-				MobileTerminalSessionView(title: host.name) { Self.liveSession(for: host) }
+				MobileTerminalSessionView(initialHost: host, hosts: hosts) {
+					Self.liveSession(for: $0)
+				}
 				#else
 				MobileTerminalPlaceholderView(host: host, snippet: nil)
 				#endif
@@ -266,7 +268,9 @@ struct MobileHostDetailView: View {
 		case .terminalPlaceholder(let id):
 			if id == host.id {
 				#if canImport(UIKit)
-				MobileTerminalSessionView(title: host.name) { MobileHostsView.liveSession(for: host) }
+				MobileTerminalSessionView(initialHost: host, hosts: [host]) {
+					MobileHostsView.liveSession(for: $0)
+				}
 				#else
 				MobileTerminalPlaceholderView(host: host, snippet: nil)
 				#endif

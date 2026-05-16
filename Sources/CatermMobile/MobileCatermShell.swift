@@ -258,9 +258,13 @@ private struct MobileShellDetail: View {
 		case .terminal(let id):
 			if let host = hosts.first(where: { $0.id == id }) {
 				#if canImport(UIKit)
-				MobileTerminalSessionView(title: host.name) {
-					MobileHostsView.liveSession(for: host)
-				}
+				MobileTerminalSessionView(
+					initialHost: host,
+					hosts: hosts,
+					snippets: snippets.map {
+						TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
+					}
+				) { MobileHostsView.liveSession(for: $0) }
 				#else
 				MobileTerminalPlaceholderView(host: host, snippet: nil)
 				#endif
