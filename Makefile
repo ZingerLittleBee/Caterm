@@ -200,10 +200,44 @@ test: ## swift test (set CATERM_E2E_DOCKER=1 to include the Docker E2E)
 test-e2e: ## include the Docker E2E SSH integration test
 	CATERM_E2E_DOCKER=1 swift test
 
+# --- iOS (mobile shell) ---
+#
+# The iOS app is a thin SwiftUI @main shell over the CatermMobile SwiftPM
+# library, scaffolded via xcodegen (project.yml). The macOS app stays
+# SwiftPM-only; this is additive. Builds target the simulator with
+# `-target` (NOT `-scheme`): the root package's macOS-only executables
+# (caterm/caterm-askpass) make xcodebuild compute an empty scheme platform
+# intersection, but the CatermMobileApp target itself is iOS-clean.
+IOS_PROJECT   := CatermMobile.xcodeproj
+IOS_BUNDLE_ID := app.caterm.mobile
+IOS_APP       := build/Debug-iphonesimulator/Caterm.app
+IOS_SIM = $(shell xcrun simctl list devices booted 2>/dev/null | grep -oE '[0-9A-F-]{36}' | head -1)
+ifeq ($(IOS_SIM),)
+IOS_SIM := $(shell xcrun simctl list devices available 2>/dev/null | grep -E 'iPhone' | grep -oE '[0-9A-F-]{36}' | head -1)
+endif
+
+.PHONY: ios-project
+ios-project: ## (re)generate CatermMobile.xcodeproj from project.yml (xcodegen)
+	xcodegen generate
+
+.PHONY: ios-build
+ios-build: ios-project ## build the iOS mobile shell for the simulator SDK
+	xcodebuild -project $(IOS_PROJECT) -target CatermMobileApp \
+	  -sdk iphonesimulator -configuration Debug \
+	  CODE_SIGNING_ALLOWED=NO build
+
+.PHONY: run-ios
+run-ios: ios-build ## build + boot simulator + install + launch mobile shell
+	@test -n "$(IOS_SIM)" || { echo "No iOS simulator available"; exit 1; }
+	xcrun simctl boot $(IOS_SIM) 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl install $(IOS_SIM) "$(IOS_APP)"
+	xcrun simctl launch $(IOS_SIM) $(IOS_BUNDLE_ID)
+
 .PHONY: clean
 clean: ## remove .build (forces full rebuild)
 	swift package clean
-	rm -rf .build/debug.yaml
+	rm -rf .build/debug.yaml build $(IOS_PROJECT)
 
 .PHONY: distclean
 distclean: ## nuke .build entirely (incl. SwiftPM caches)

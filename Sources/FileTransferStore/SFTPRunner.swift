@@ -9,6 +9,24 @@ public protocol ControlMasterLiveness: Sendable {
 	func isAlive(hostId: UUID) async -> Bool
 }
 
+public enum SFTPRunnerUnavailable: Error, Equatable {
+	/// SFTP transfers shell out to `/usr/bin/sftp` via `Process`, which is
+	/// unavailable on iOS/iPadOS. Phase-1 mobile has no file transfer; this
+	/// is the explicit unsupported state rather than a hidden no-op.
+	case platformUnsupported
+}
+
+/// Non-macOS default runner. Construction is allowed so model-only mobile
+/// code can link `FileTransferStore`; invoking a transfer throws the
+/// explicit unsupported error instead of silently doing nothing.
+public struct UnavailableSFTPRunner: SFTPRunner {
+	public init() {}
+	public func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
+		throw SFTPRunnerUnavailable.platformUnsupported
+	}
+}
+
+#if os(macOS)
 public struct SystemSFTPRunner: SFTPRunner {
 	public init() {}
 	public func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
@@ -40,3 +58,8 @@ public struct SystemSFTPRunner: SFTPRunner {
 		}
 	}
 }
+
+public typealias DefaultSFTPRunner = SystemSFTPRunner
+#else
+public typealias DefaultSFTPRunner = UnavailableSFTPRunner
+#endif

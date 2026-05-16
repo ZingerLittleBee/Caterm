@@ -1,5 +1,6 @@
 # Swift / SwiftPM build outputs
 .build/
+build/
 .swiftpm/
 Package.resolved
 DerivedData/
@@ -8,6 +9,9 @@ xcuserdata/
 # Generated / vendored binaries
 Frameworks/
 *.xcframework
+
+# xcodegen-generated iOS app project (regenerate via `make ios-project`)
+*.xcodeproj
 
 # Signing & local credentials (never commit)
 sign

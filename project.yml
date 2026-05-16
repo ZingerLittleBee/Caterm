@@ -1,0 +1,31 @@
+name: CatermMobile
+options:
+  bundleIdPrefix: app.caterm
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  Caterm:
+    path: .
+
+targets:
+  CatermMobileApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: App/iOS
+    dependencies:
+      - package: Caterm
+        product: CatermMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.caterm.mobile
+        PRODUCT_NAME: Caterm
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: "NO"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: App/iOS/Info.plist

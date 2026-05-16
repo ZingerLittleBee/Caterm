@@ -10,7 +10,7 @@ public actor RemoteFileSystem {
 	private let liveness: ControlMasterLiveness
 
 	public init(host: SSHHost, controlPath: URL, credentials: SFTPCredentials,
-	            runner: SFTPRunner = SystemSFTPRunner(),
+	            runner: SFTPRunner = DefaultSFTPRunner(),
 	            liveness: ControlMasterLiveness) {
 		self.host = host
 		self.controlPath = controlPath
