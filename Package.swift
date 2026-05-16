@@ -8,8 +8,12 @@ let package = Package(
         .executable(name: "caterm", targets: ["Caterm"]),
         .executable(name: "caterm-askpass", targets: ["CatermAskpass"]),
         .library(name: "CatermMobile", targets: ["CatermMobile"]),
+        .library(name: "CatermMobileTerminal", targets: ["CatermMobileTerminal"]),
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-nio-ssh.git", from: "0.9.0"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
+    ],
     targets: [
         .binaryTarget(
             name: "GhosttyKit",
@@ -115,8 +119,18 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore"],
+            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal"],
             path: "Sources/CatermMobile"
+        ),
+        .target(
+            name: "CatermMobileTerminal",
+            dependencies: [
+                "SSHCommandBuilder",
+                "KeychainStore",
+                .product(name: "NIOSSH", package: "swift-nio-ssh"),
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ],
+            path: "Sources/CatermMobileTerminal"
         ),
 
         // --- Executables ---
@@ -205,6 +219,11 @@ let package = Package(
             name: "CatermMobileTests",
             dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore"],
             path: "Tests/CatermMobileTests"
+        ),
+        .testTarget(
+            name: "CatermMobileTerminalTests",
+            dependencies: ["CatermMobileTerminal", "SSHCommandBuilder", "KeychainStore"],
+            path: "Tests/CatermMobileTerminalTests"
         ),
         .testTarget(
             name: "TerminalEngineTests",
