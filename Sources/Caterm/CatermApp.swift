@@ -33,6 +33,7 @@ struct CatermApp: App {
 	@StateObject var surfaceRegistry: SurfaceRegistry
 	@StateObject private var snippetStore: SnippetStore
 	@StateObject private var snippetSync: SnippetSyncStore
+	@StateObject private var commandKeyMonitor = CommandKeyMonitor()
 
 	/// Holds the live-reload dispatcher and its NotificationCenter
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
@@ -234,6 +235,7 @@ struct CatermApp: App {
 			.environmentObject(surfaceRegistry)
 			.environmentObject(snippetStore)
 			.environmentObject(snippetSync)
+			.environmentObject(commandKeyMonitor)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -308,18 +310,26 @@ struct CatermApp: App {
 			}
 		}
 		.commands {
-			// ⌘N opens a fresh LandingView window (OpenTabBridge handles the
-			// notification by calling openWindow(value: UUID())).
-			// ⌘T adds a new host (the sidebar listens and opens its add-sheet).
+			// ⌘N opens a fresh LandingView window; ⌘T opens a fresh
+			// LandingView as a new *tab* (macOS auto-tabs new windows when
+			// `allowsAutomaticWindowTabbing` is on — AppDelegate). Both route
+			// through `.catermNewWindow` → `OpenTabBridge` →
+			// `openWindow(value: UUID())`, which renders LandingView (the
+			// host-selection sidebar). "New Host…" keeps the explicit
+			// add-host sheet but no longer owns ⌘T.
 			CommandGroup(replacing: .newItem) {
 				Button("New Window") {
 					NotificationCenter.default.post(name: .catermNewWindow, object: nil)
 				}
 				.keyboardShortcut("n", modifiers: .command)
+				Button("New Tab") {
+					NotificationCenter.default.post(name: .catermNewWindow, object: nil)
+				}
+				.keyboardShortcut("t", modifiers: .command)
 				Button("New Host…") {
 					NotificationCenter.default.post(name: .catermAddHost, object: nil)
 				}
-				.keyboardShortcut("t", modifiers: .command)
+				.keyboardShortcut("t", modifiers: [.command, .shift])
 			}
 			// ⌘, opens the unified Preferences window (Task 25).
 			// "Edit Advanced Config…" inside General still reveals the TOML
