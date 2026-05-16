@@ -117,13 +117,9 @@ struct HostIconPicker: View {
 		Button {
 			showingPopover = true
 		} label: {
-			HStack(spacing: 8) {
+			HStack(spacing: 6) {
 				Image(systemName: icon ?? fallbackSymbol)
 					.frame(width: 20)
-				Text(icon == nil ? "Default" : icon!)
-					.font(.caption)
-					.foregroundStyle(.secondary)
-					.lineLimit(1)
 				Image(systemName: "chevron.up.chevron.down")
 					.font(.caption2)
 					.foregroundStyle(.secondary)
