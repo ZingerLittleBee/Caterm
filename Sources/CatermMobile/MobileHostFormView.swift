@@ -21,7 +21,13 @@ struct MobileHostFormView: View {
 		case .add:
 			_draft = State(initialValue: MobileHostDraft())
 		case .edit(let host):
-			_draft = State(initialValue: MobileHostDraft(host: host))
+			var initial = MobileHostDraft(host: host)
+			// Agent auth is no longer offered on mobile; surface such a
+			// host as Password so the form stays consistent.
+			if initial.credential == .agent {
+				initial.credential = .password(secret: "")
+			}
+			_draft = State(initialValue: initial)
 		}
 	}
 
@@ -41,7 +47,6 @@ struct MobileHostFormView: View {
 				Picker("Method", selection: credentialKind) {
 					Text("Password").tag(MobileCredentialKind.password)
 					Text("Key File").tag(MobileCredentialKind.keyFile)
-					Text("Agent").tag(MobileCredentialKind.agent)
 				}
 
 				switch draft.credential {
@@ -56,8 +61,7 @@ struct MobileHostFormView: View {
 						SecureField("Passphrase", text: keySecret)
 					}
 				case .agent:
-					Label("Uses the SSH agent on this device.", systemImage: "key")
-						.foregroundStyle(.secondary)
+					EmptyView()
 				}
 			}
 		}
@@ -101,7 +105,7 @@ struct MobileHostFormView: View {
 			switch draft.credential {
 			case .password: .password
 			case .keyFile: .keyFile
-			case .agent: .agent
+			case .agent: .password
 			}
 		} set: { kind in
 			switch kind {
@@ -109,8 +113,6 @@ struct MobileHostFormView: View {
 				draft.credential = .password(secret: "")
 			case .keyFile:
 				draft.credential = .keyFile(path: "", hasPassphrase: false, secret: "")
-			case .agent:
-				draft.credential = .agent
 			}
 		}
 	}
@@ -184,7 +186,6 @@ struct MobileHostFormView: View {
 private enum MobileCredentialKind: Hashable {
 	case password
 	case keyFile
-	case agent
 }
 
 private extension View {
