@@ -147,7 +147,6 @@ struct HostFormView: View {
 		switch credKind {
 		case .password: cred = .password
 		case .keyFile:  cred = .keyFile(keyPath: keyPath, hasPassphrase: hasPassphrase)
-		case .agent:    cred = .agent
 		}
 		var draft = HostFormView.buildHost(
 			mode: mode,
@@ -296,10 +295,14 @@ struct HostFormView: View {
 			keyPath = p
 			hasPassphrase = hp
 		case .agent:
-			credKind = .agent
+			// Legacy `.agent` hosts (agent auth was removed in v1.7 — it
+			// never worked in a Finder-launched .app). Surface as Password
+			// so the user can reconfigure with a method that works.
+			credKind = .password
 		}
 		jumpHostId = Self.jumpHostIdForForm(host: host, allHosts: sessionStore.hosts)
 		forwards = host.forwards
+		icon = host.icon
 	}
 
 	private func browseKey() {
@@ -321,8 +324,6 @@ struct HostFormView: View {
 			cred = .password
 		case .keyFile:
 			cred = .keyFile(keyPath: keyPath, hasPassphrase: hasPassphrase)
-		case .agent:
-			cred = .agent
 		}
 		var host = HostFormView.buildHost(
 			mode: mode,

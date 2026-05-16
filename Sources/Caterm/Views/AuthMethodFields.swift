@@ -34,9 +34,6 @@ struct AuthMethodFields: View {
 						? "Path stored locally; passphrase stored in Keychain."
 						: "Path stored locally."
 				)
-
-			case .agent:
-				footnote("Caterm will use the running ssh-agent for authentication.")
 			}
 		}
 	}

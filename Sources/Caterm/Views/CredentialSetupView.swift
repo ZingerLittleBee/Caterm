@@ -95,8 +95,6 @@ struct CredentialSetupView: View {
 			guard canonicalizedKeyPath() != nil else { return false }
 			if hasPassphrase { return !pendingSecret.isEmpty }
 			return true
-		case .agent:
-			return true
 		}
 	}
 
@@ -131,9 +129,6 @@ struct CredentialSetupView: View {
 			guard let path = canonicalizedKeyPath() else { return }
 			cred = .keyFile(keyPath: path, hasPassphrase: hasPassphrase)
 			secret = hasPassphrase ? pendingSecret : nil
-		case .agent:
-			cred = .agent
-			secret = nil
 		}
 
 		errorMessage = nil
