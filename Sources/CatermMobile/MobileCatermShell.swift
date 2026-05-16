@@ -3,15 +3,14 @@ import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 
+/// Array-seeded mobile shell. Keeps an in-memory `@State` copy of every
+/// surface — used by previews and tests. The running iOS app uses
+/// `MobileRootView`, which is backed by real persisting stores.
 public struct MobileCatermShell: View {
-	@Environment(\.horizontalSizeClass) private var horizontalSizeClass
 	@State private var hosts: [SSHHost]
 	@State private var snippets: [Snippet]
 	@State private var remoteEntries: [RemoteEntry]
 	@State private var transfers: [TransferTask]
-	@State private var selection: MobileShellSelection?
-	@State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
-	@State private var showingAddHost = false
 
 	public init(
 		hosts: [SSHHost] = [],
@@ -23,10 +22,61 @@ public struct MobileCatermShell: View {
 		_snippets = State(initialValue: snippets)
 		_remoteEntries = State(initialValue: remoteEntries)
 		_transfers = State(initialValue: transfers)
-		_selection = State(initialValue: hosts.first.map { .host($0.id) })
 	}
 
 	public var body: some View {
+		MobileShellBody(
+			hosts: $hosts,
+			snippets: $snippets,
+			remoteEntries: $remoteEntries,
+			transfers: $transfers
+		)
+	}
+}
+
+/// The real iOS/iPadOS app entry. Owns persisting stores and feeds the
+/// shared shell body store-backed bindings, so host edits round-trip to
+/// the same on-disk JSON the macOS app and CloudKit sync use. AppKit and
+/// the desktop terminal surface stay isolated.
+public struct MobileRootView: View {
+	@StateObject private var hostStore: MobileHostStore
+	@State private var snippets: [Snippet]
+	@State private var remoteEntries: [RemoteEntry]
+	@State private var transfers: [TransferTask]
+
+	public init(
+		hostStore: MobileHostStore,
+		snippets: [Snippet] = [],
+		remoteEntries: [RemoteEntry] = [],
+		transfers: [TransferTask] = []
+	) {
+		_hostStore = StateObject(wrappedValue: hostStore)
+		_snippets = State(initialValue: snippets)
+		_remoteEntries = State(initialValue: remoteEntries)
+		_transfers = State(initialValue: transfers)
+	}
+
+	public var body: some View {
+		MobileShellBody(
+			hosts: hostStore.binding,
+			snippets: $snippets,
+			remoteEntries: $remoteEntries,
+			transfers: $transfers
+		)
+	}
+}
+
+struct MobileShellBody: View {
+	@Environment(\.horizontalSizeClass) private var horizontalSizeClass
+	@Binding var hosts: [SSHHost]
+	@Binding var snippets: [Snippet]
+	@Binding var remoteEntries: [RemoteEntry]
+	@Binding var transfers: [TransferTask]
+	@State private var selection: MobileShellSelection?
+	@State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
+	@State private var showingAddHost = false
+
+	var body: some View {
 		Group {
 			if horizontalSizeClass == .compact {
 				MobileCompactShell(
@@ -61,6 +111,9 @@ public struct MobileCatermShell: View {
 					}
 				}
 			}
+		}
+		.onAppear {
+			if selection == nil { selection = hosts.first.map { .host($0.id) } }
 		}
 	}
 }
