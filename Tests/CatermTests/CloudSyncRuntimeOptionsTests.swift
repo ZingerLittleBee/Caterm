@@ -23,4 +23,19 @@ final class CloudSyncRuntimeOptionsTests: XCTestCase {
 			environment: ["CATERM_DISABLE_CLOUD_SYNC": "false"]
 		))
 	}
+
+	@MainActor
+	func testDisabledCloudSyncBootstrapDoesNotCreateCloudKitContainer() {
+		var createdContainer = false
+
+		let dependencies = CloudSyncBootstrap.make(disabled: true) {
+			createdContainer = true
+			fatalError("disabled cloud sync must not construct CKContainer")
+		}
+
+		XCTAssertFalse(createdContainer)
+		XCTAssertFalse(dependencies.accountSession.isSignedIn)
+		XCTAssertNil(dependencies.cloudKitClient)
+		XCTAssertNil(dependencies.accountIdentityTracker)
+	}
 }

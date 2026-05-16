@@ -38,9 +38,9 @@ struct CatermApp: App {
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
 	let liveReload: LiveReloadCoordinator
 
-	let cloudKitClient: CloudKitSyncClient
-	let icloudSession: iCloudAccountSession
-	private let accountIdentityTracker: AccountIdentityTracker
+	let cloudKitClient: CloudKitSyncClient?
+	let icloudSession: any AuthSessionProtocol & AccountSessionProviding
+	private let accountIdentityTracker: AccountIdentityTracker?
 	private let settingsSync: SettingsSyncStore
 	private let masterKeyStore: KeychainSyncMasterKeyStore
 	private let managedKeyStore: ManagedKeyStore
@@ -55,22 +55,11 @@ struct CatermApp: App {
 		let session = makeStore()
 		let surfaceRegistry = SurfaceRegistry()
 		_surfaceRegistry = StateObject(wrappedValue: surfaceRegistry)
-		// CloudKit-backed sync (the URLSession + better-auth pair was removed
-		// in Plan E). `iCloudAccountSession` is the AuthSessionProtocol
-		// conformer threaded into HostSyncStore.
-		let cloudContainer = CKContainer(identifier: "iCloud.com.caterm.app")
-		let icloudSession = iCloudAccountSession(provider: cloudContainer)
+		let cloudSync = CloudSyncBootstrap.make(disabled: cloudSyncDisabled)
+		let icloudSession = cloudSync.accountSession
 		self.icloudSession = icloudSession
-		let client = CloudKitSyncClient(database: cloudContainer.privateCloudDatabase)
-		self.cloudKitClient = client
-		self.accountIdentityTracker = AccountIdentityTracker(
-			currentUserRecordID: { try? await cloudContainer.userRecordID() },
-			tokensExist: {
-				let hostTokens = await client.hasAnyHostSyncTokens()
-				let snippetTokens = await client.hasAnySnippetSyncTokens()
-				return hostTokens || snippetTokens
-			}
-		)
+		self.cloudKitClient = cloudSync.cloudKitClient
+		self.accountIdentityTracker = cloudSync.accountIdentityTracker
 		let prefs = SyncPreferences()
 		// Single instances shared across HostSyncStore + Coordinator + UI so
 		// toggle/reset state stays consistent.
@@ -95,7 +84,7 @@ struct CatermApp: App {
 		_store = StateObject(wrappedValue: session)
 		_preferences = StateObject(wrappedValue: prefs)
 		_syncStore = StateObject(wrappedValue: HostSyncStore(
-			client: client,
+			client: cloudSync.hostClient,
 			sessionStore: session,
 			authSession: icloudSession,
 			preferences: prefs,
@@ -116,7 +105,7 @@ struct CatermApp: App {
 			}
 		}
 		if !cloudSyncDisabled {
-			icloudSession.startObservingAccountChanges()
+			cloudSync.startObservingAccountChanges()
 		}
 		// Per-app FileTransferStore. Closures capture plain value types
 		// (URLs / paths) rather than `ControlMasterManager` itself so the
@@ -168,7 +157,7 @@ struct CatermApp: App {
 		let snippetStoreInstance = SnippetStore(directory: snippetsDir)
 		try? snippetStoreInstance.load()
 		_snippetStore = StateObject(wrappedValue: snippetStoreInstance)
-		let snippetSyncInstance = SnippetSyncStore(store: snippetStoreInstance, client: client)
+		let snippetSyncInstance = SnippetSyncStore(store: snippetStoreInstance, client: cloudSync.snippetClient)
 		_snippetSync = StateObject(wrappedValue: snippetSyncInstance)
 		_fileTransferStore = StateObject(wrappedValue: FileTransferStore(
 			controlPathFor: { hostId in
@@ -257,19 +246,19 @@ struct CatermApp: App {
 				}
 			}
 			.task {
-				if !cloudSyncDisabled {
+				if !cloudSyncDisabled, let cloudKitClient {
 					try? await cloudKitClient.ensureHostSubscription()
 				}
 			}
 			.task {
-				if !cloudSyncDisabled {
+				if !cloudSyncDisabled, let cloudKitClient {
 					let mode = await cloudKitClient.preferredSnippetSyncMode()
 					snippetSync.scheduleSyncPass(mode: mode)
 					snippetSync.startForceFullTimer()
 				}
 			}
 			.task {
-				if !cloudSyncDisabled {
+				if !cloudSyncDisabled, let cloudKitClient {
 					try? await cloudKitClient.ensureSnippetSubscription()
 				}
 			}
@@ -289,6 +278,7 @@ struct CatermApp: App {
 				.publisher(for: .catermICloudAccountChanged)) { _ in
 				guard !cloudSyncDisabled else { return }
 				Task {
+					guard let accountIdentityTracker, let cloudKitClient else { return }
 					let outcome = await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
 					if outcome == .identityChanged {
 						await credentialSyncAccountReset.resetForAccountChange()
