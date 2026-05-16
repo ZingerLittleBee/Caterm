@@ -54,6 +54,23 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.get(account: "\(hostId).keyPassphrase"))
     }
 
+    func testDeleteAllNoMatchesDoesNotThrow() throws {
+        // No items under this prefix → SecItemCopyMatching returns
+        // errSecItemNotFound, which is the desired end state, not a
+        // partial-delete failure.
+        XCTAssertNoThrow(try store.deleteAll(prefix: "absent-\(UUID().uuidString).") )
+    }
+
+    func testDeleteAllSucceedsWhenItemsAlreadyGone() throws {
+        let hostId = UUID().uuidString
+        try store.set(account: "\(hostId).password", secret: "p1")
+        // First sweep removes it; a second sweep finds the item already
+        // gone (per-item .notFound) and must still succeed rather than
+        // surfacing a spurious partial-delete failure.
+        try store.deleteAll(prefix: "\(hostId).")
+        XCTAssertNoThrow(try store.deleteAll(prefix: "\(hostId).") )
+    }
+
     func testUnicodeSecret() throws {
         try store.set(account: testAccount, secret: "密码 café 😀")
         let read = try store.get(account: testAccount)

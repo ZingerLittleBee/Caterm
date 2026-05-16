@@ -18,6 +18,7 @@ final class CredentialSyncPreferencesTests: XCTestCase {
         XCTAssertEqual(prefs.corruptCredentials, [])
         XCTAssertFalse(prefs.cloudCredentialsCleared)
         XCTAssertEqual(prefs.hostsWithCloudPayload, [])
+        XCTAssertEqual(prefs.decryptAttemptCounts, [:])
     }
 
     func test_save_thenLoad_roundTripsAllFields() {
@@ -31,6 +32,8 @@ final class CredentialSyncPreferencesTests: XCTestCase {
         prefs.corruptCredentials.insert(CorruptCredentialKey(hostId: id, revision: 5))
         prefs.cloudCredentialsCleared = true
         prefs.hostsWithCloudPayload = [id, id2]
+        prefs.decryptAttemptCounts[CorruptCredentialKey(hostId: id, revision: 5)] = 2
+        prefs.decryptAttemptCounts[CorruptCredentialKey(hostId: id2, revision: 1)] = 1
         prefs.save()
 
         let reloaded = CredentialSyncPreferences(defaults: defaults)
@@ -41,6 +44,29 @@ final class CredentialSyncPreferencesTests: XCTestCase {
         XCTAssertEqual(reloaded.corruptCredentials, [CorruptCredentialKey(hostId: id, revision: 5)])
         XCTAssertTrue(reloaded.cloudCredentialsCleared)
         XCTAssertEqual(reloaded.hostsWithCloudPayload, [id, id2])
+        XCTAssertEqual(reloaded.decryptAttemptCounts[CorruptCredentialKey(hostId: id, revision: 5)], 2)
+        XCTAssertEqual(reloaded.decryptAttemptCounts[CorruptCredentialKey(hostId: id2, revision: 1)], 1)
+    }
+
+    /// The 3-strike corrupt-credential bound must survive relaunch: the
+    /// counter is persisted, so a permanently-undecryptable blob reaches
+    /// the escape hatch instead of aborting the host-sync cycle on every
+    /// cold start forever.
+    func test_decryptAttemptCounter_survivesReload() {
+        let id = UUID()
+        let key = CorruptCredentialKey(hostId: id, revision: 9)
+        var prefs = CredentialSyncPreferences(defaults: defaults)
+        prefs.decryptAttemptCounts[key] = 1
+        prefs.save()
+
+        var reloaded = CredentialSyncPreferences(defaults: defaults)
+        XCTAssertEqual(reloaded.decryptAttemptCounts[key], 1,
+                       "counter must persist across a simulated relaunch")
+        reloaded.decryptAttemptCounts[key] = 2
+        reloaded.save()
+
+        let again = CredentialSyncPreferences(defaults: defaults)
+        XCTAssertEqual(again.decryptAttemptCounts[key], 2)
     }
 
     /// Backwards-compat: a UserDefaults blob written by the pre-cloudCleared
@@ -68,6 +94,8 @@ final class CredentialSyncPreferencesTests: XCTestCase {
                        "missing cloudCredentialsCleared must decode as false")
         XCTAssertEqual(reloaded.hostsWithCloudPayload, [],
                        "missing hostsWithCloudPayload must decode as empty set")
+        XCTAssertEqual(reloaded.decryptAttemptCounts, [:],
+                       "missing decryptAttemptCounts must decode as empty dict")
     }
 
     func test_pausedByRemote_keepsTombstoneRev() {

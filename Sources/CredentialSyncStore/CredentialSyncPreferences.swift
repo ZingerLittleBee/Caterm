@@ -51,6 +51,12 @@ public struct CorruptCredentialKey: Codable, Hashable, Sendable {
     }
 }
 
+/// `@unchecked Sendable`: the only non-`Sendable` stored property is the
+/// `private let defaults: UserDefaults` reference. `UserDefaults` is
+/// documented thread-safe, and it is immutable (`let`) here — every other
+/// stored property is a value type. The unchecked conformance is therefore
+/// sound; it cannot be `Sendable`-checked automatically only because
+/// `UserDefaults` lacks the formal annotation.
 public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable {
     public var state: CredentialSyncState
     public var lastAppliedRevision: [UUID: Int64]
@@ -71,6 +77,14 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
     /// the latter incorrectly counts hosts whose blob was tombstoned (the
     /// revision is bumped past 0 by the tombstone push too).
     public var hostsWithCloudPayload: Set<UUID>
+    /// Bounded-retry strike counter for `decryptAndApply`, keyed by
+    /// `(hostId, revision)`. MUST be durable: an in-memory-only counter
+    /// resets every launch, so a permanently-undecryptable blob (e.g. the
+    /// master key never arrived) would re-throw and abort the *entire*
+    /// host-sync cycle on every relaunch, indefinitely — the 3-strike
+    /// escape hatch (mark corrupt + advance revision) could never fire
+    /// across restarts. Persisting it lets the bound survive cold start.
+    public var decryptAttemptCounts: [CorruptCredentialKey: Int]
 
     private static let storageKey = "catermCredentialSyncPreferences"
     private let defaults: UserDefaults
@@ -86,6 +100,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.corruptCredentials = loaded.corruptCredentials
             self.cloudCredentialsCleared = loaded.cloudCredentialsCleared ?? false
             self.hostsWithCloudPayload = loaded.hostsWithCloudPayloadAsUUID ?? []
+            self.decryptAttemptCounts = loaded.decryptAttemptCountsAsDict ?? [:]
         } else {
             self.state = .disabled
             self.lastAppliedRevision = [:]
@@ -94,6 +109,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.corruptCredentials = []
             self.cloudCredentialsCleared = false
             self.hostsWithCloudPayload = []
+            self.decryptAttemptCounts = [:]
         }
     }
 
@@ -105,7 +121,8 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             deleteCredentialsFromCloudInProgress: deleteCredentialsFromCloudInProgress,
             corruptCredentials: corruptCredentials,
             cloudCredentialsCleared: cloudCredentialsCleared,
-            hostsWithCloudPayload: hostsWithCloudPayload
+            hostsWithCloudPayload: hostsWithCloudPayload,
+            decryptAttemptCounts: decryptAttemptCounts
         )
         if let data = try? JSONEncoder().encode(stored) {
             defaults.set(data, forKey: Self.storageKey)
@@ -116,12 +133,26 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
     // JSON roundtrip — Swift's JSONEncoder encodes non-String-keyed dictionaries
     // as alternating [key, value, ...] arrays, which JSONDecoder cannot decode
     // back into a dictionary.
+    // A `[CorruptCredentialKey: Int]` would JSON-encode as a flat
+    // alternating array (CorruptCredentialKey is not a String key), which
+    // doesn't round-trip reliably — store explicit entries instead, same
+    // strategy as `lastAppliedRevision`/`hostsWithCloudPayload`.
+    private struct StoredDecryptAttempt: Codable {
+        var hostId: String
+        var revision: Int64
+        var count: Int
+    }
+
     private struct StoredShape: Codable {
         var state: CredentialSyncState
         var lastAppliedRevision: [String: Int64]
         var credentialsNeedFullScan: Bool
         var deleteCredentialsFromCloudInProgress: DeletionProgress?
         var corruptCredentials: Set<CorruptCredentialKey>
+        // Optional so a blob written by an older app version (no key)
+        // still decodes; absent → empty (counter restarts, acceptable —
+        // worst case one extra retry round before the bound re-trips).
+        var decryptAttemptCounts: [StoredDecryptAttempt]?
         // Optional so a UserDefaults blob written by an older app version
         // (no `cloudCredentialsCleared` key) still decodes successfully on
         // upgrade. Treated as `false` when absent.
@@ -138,7 +169,8 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             deleteCredentialsFromCloudInProgress: DeletionProgress?,
             corruptCredentials: Set<CorruptCredentialKey>,
             cloudCredentialsCleared: Bool,
-            hostsWithCloudPayload: Set<UUID>
+            hostsWithCloudPayload: Set<UUID>,
+            decryptAttemptCounts: [CorruptCredentialKey: Int]
         ) {
             self.state = state
             self.lastAppliedRevision = Dictionary(
@@ -149,6 +181,13 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
             self.corruptCredentials = corruptCredentials
             self.cloudCredentialsCleared = cloudCredentialsCleared
             self.hostsWithCloudPayload = hostsWithCloudPayload.map(\.uuidString)
+            self.decryptAttemptCounts = decryptAttemptCounts.map {
+                StoredDecryptAttempt(
+                    hostId: $0.key.hostId.uuidString,
+                    revision: $0.key.revision,
+                    count: $0.value
+                )
+            }
         }
 
         var lastAppliedRevisionAsUUID: [UUID: Int64] {
@@ -162,6 +201,18 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         var hostsWithCloudPayloadAsUUID: Set<UUID>? {
             hostsWithCloudPayload.map { Set($0.compactMap(UUID.init(uuidString:))) }
         }
+
+        var decryptAttemptCountsAsDict: [CorruptCredentialKey: Int]? {
+            decryptAttemptCounts.map {
+                Dictionary(
+                    uniqueKeysWithValues: $0.compactMap { entry in
+                        UUID(uuidString: entry.hostId).map {
+                            (CorruptCredentialKey(hostId: $0, revision: entry.revision), entry.count)
+                        }
+                    }
+                )
+            }
+        }
     }
 
     // Codable conformance for the public type itself.
@@ -170,6 +221,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         case deleteCredentialsFromCloudInProgress, corruptCredentials
         case cloudCredentialsCleared
         case hostsWithCloudPayload
+        case decryptAttemptCounts
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -187,6 +239,14 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         self.cloudCredentialsCleared = try c.decodeIfPresent(Bool.self, forKey: .cloudCredentialsCleared) ?? false
         let payloadStrings = try c.decodeIfPresent([String].self, forKey: .hostsWithCloudPayload)
         self.hostsWithCloudPayload = Set((payloadStrings ?? []).compactMap(UUID.init(uuidString:)))
+        let attempts = try c.decodeIfPresent([StoredDecryptAttempt].self, forKey: .decryptAttemptCounts) ?? []
+        self.decryptAttemptCounts = Dictionary(
+            uniqueKeysWithValues: attempts.compactMap { entry in
+                UUID(uuidString: entry.hostId).map {
+                    (CorruptCredentialKey(hostId: $0, revision: entry.revision), entry.count)
+                }
+            }
+        )
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -200,6 +260,16 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         try c.encode(corruptCredentials, forKey: .corruptCredentials)
         try c.encode(cloudCredentialsCleared, forKey: .cloudCredentialsCleared)
         try c.encode(hostsWithCloudPayload.map(\.uuidString), forKey: .hostsWithCloudPayload)
+        try c.encode(
+            decryptAttemptCounts.map {
+                StoredDecryptAttempt(
+                    hostId: $0.key.hostId.uuidString,
+                    revision: $0.key.revision,
+                    count: $0.value
+                )
+            },
+            forKey: .decryptAttemptCounts
+        )
     }
 
     public static func == (lhs: CredentialSyncPreferences, rhs: CredentialSyncPreferences) -> Bool {
@@ -209,6 +279,7 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
         lhs.deleteCredentialsFromCloudInProgress == rhs.deleteCredentialsFromCloudInProgress &&
         lhs.corruptCredentials == rhs.corruptCredentials &&
         lhs.cloudCredentialsCleared == rhs.cloudCredentialsCleared &&
-        lhs.hostsWithCloudPayload == rhs.hostsWithCloudPayload
+        lhs.hostsWithCloudPayload == rhs.hostsWithCloudPayload &&
+        lhs.decryptAttemptCounts == rhs.decryptAttemptCounts
     }
 }

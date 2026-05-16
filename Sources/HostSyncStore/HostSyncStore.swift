@@ -6,6 +6,7 @@ import CryptoKit
 import Foundation
 import KeychainStore
 import ManagedKeyStore
+import os
 import ServerSyncClient
 import SSHCommandBuilder
 import SessionStore
@@ -91,6 +92,7 @@ public enum SyncMode: Sendable, Equatable {
 /// writing any of the bookkeeping state.
 @MainActor
 public final class HostSyncStore: ObservableObject {
+    private static let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
     private static let lastSyncedAtKey = "catermLastSyncedAt"
     private static let lastSyncAttemptedAtKey = "catermLastSyncAttemptedAt"
     // lastSyncErrorKind and failingSince are NOT persisted; cold start falls back
@@ -132,12 +134,6 @@ public final class HostSyncStore: ObservableObject {
     private let notificationCenter: NotificationDelivering
     private var pendingAutoAfterManual: Bool = false
     private var currentManualTask: Task<Void, Error>?
-    /// Plan C / Task 17 — bounded retry counter for `decryptAndApply`.
-    /// Keyed by `(localHostId, revision)` so a recovered key (or fresh
-    /// blob revision) starts the count over. After 3 strikes we mark the
-    /// blob corrupt AND advance `lastAppliedRevision[hostId] = revision`
-    /// so subsequent cycles skip past it.
-    private var decryptAttemptCount: [CorruptCredentialKey: Int] = [:]
     /// Generation token gating the single isSyncing-clear site in startSync().
     /// Each call to startSync() captures a snapshot; only the latest
     /// generation's defer is permitted to clear isSyncing — preserves the
@@ -238,7 +234,15 @@ public final class HostSyncStore: ObservableObject {
                 // immediately and skip the auto-sync trigger.
                 if self.credentialSync.prefs.deleteCredentialsFromCloudInProgress != nil,
                    let hostId = note.userInfo?[CatermHostCredentialMaterialChangedKeys.hostId] as? UUID {
-                    try? self.sessionStore.clearCredentialMaterialDirty(hostId)
+                    do {
+                        try self.sessionStore.clearCredentialMaterialDirty(hostId)
+                    } catch {
+                        // Non-fatal: the durable DeletionProgress list still
+                        // drives the tombstone push. But a persistently
+                        // failing clear means this host's payload could be
+                        // re-pushed after deletion — surface it.
+                        Self.log.error("destructive-deletion: clearCredentialMaterialDirty failed for \(hostId, privacy: .public): \(String(describing: error), privacy: .public)")
+                    }
                     return
                 }
                 self.scheduleAutoSync(mode: .auto)
@@ -826,8 +830,8 @@ public final class HostSyncStore: ObservableObject {
             // Step 5 — happy path: bump lastAppliedRevision; clear any prior
             // corrupt-attempt counter for this (hostId, revision) pair.
             let key = CorruptCredentialKey(hostId: localHostId, revision: blob.revision)
-            decryptAttemptCount[key] = nil
             credentialSync.mutate {
+                $0.decryptAttemptCounts[key] = nil
                 $0.lastAppliedRevision[localHostId] = blob.revision
                 // Cloud blob is a payload we just successfully decrypted —
                 // it belongs in the payload-tracking set.
@@ -844,20 +848,26 @@ public final class HostSyncStore: ObservableObject {
     /// Increment the attempt counter for `(localHostId, revision)`. On the
     /// 3rd strike, insert into `corruptCredentials` AND advance
     /// `lastAppliedRevision[localHostId]` so the next cycle moves past the
-    /// bad blob, then clear the in-memory counter.
+    /// bad blob, then clear the counter.
+    ///
+    /// The counter lives in the persisted `CredentialSyncPreferences` (not
+    /// in memory) so the 3-strike bound survives app relaunch — otherwise
+    /// a permanently-undecryptable blob would abort the whole host-sync
+    /// cycle on every cold start forever, never reaching the escape hatch.
     ///
     /// Does not throw — callers re-throw the original error after invoking
     /// this so the surrounding sync cycle aborts (hard invariant).
     private func recordCorruptAttempt(localHostId: UUID, revision: Int64) {
         let key = CorruptCredentialKey(hostId: localHostId, revision: revision)
-        let nextCount = (decryptAttemptCount[key] ?? 0) + 1
-        decryptAttemptCount[key] = nextCount
-        if nextCount >= 3 {
-            credentialSync.mutate {
+        let nextCount = (credentialSync.prefs.decryptAttemptCounts[key] ?? 0) + 1
+        credentialSync.mutate {
+            if nextCount >= 3 {
                 $0.corruptCredentials.insert(key)
                 $0.lastAppliedRevision[localHostId] = revision
+                $0.decryptAttemptCounts[key] = nil
+            } else {
+                $0.decryptAttemptCounts[key] = nextCount
             }
-            decryptAttemptCount[key] = nil
         }
     }
 
@@ -874,6 +884,22 @@ public final class HostSyncStore: ObservableObject {
     /// On push success: bumps `prefs.lastAppliedRevision[hostId]` and clears
     /// the host's `credentialMaterialDirty`. Push failure propagates to the
     /// sync cycle (commit is skipped, dirty stays).
+    /// Read an optional secret from the keychain. A genuinely absent item
+    /// (`KeychainError.notFound`) maps to `nil`; ANY other failure (e.g.
+    /// `errSecInteractionNotAllowed` when the keychain is locked) is
+    /// rethrown. Collapsing both into `nil` (the old `try?`) let a
+    /// transient locked-keychain read masquerade as "this host has no
+    /// password", sealing an empty payload over a good cloud blob and
+    /// clearing the dirty bit so it was never retried — silent credential
+    /// data loss. Rethrowing aborts the cycle with the dirty bit intact.
+    private func optionalKeychainSecret(account: String) throws -> Data? {
+        do {
+            return try sessionStore.keychain.get(account: account).data(using: .utf8)
+        } catch KeychainError.notFound {
+            return nil
+        }
+    }
+
     private func applyUpdateRemoteCredentials(localHostId: UUID) async throws {
         guard let host = sessionStore.hosts.first(where: { $0.id == localHostId }) else { return }
         guard let serverId = host.serverId else { return }
@@ -882,14 +908,16 @@ public final class HostSyncStore: ObservableObject {
         let masterKey = resolved.key
         let keyID = resolved.keyID
 
-        let pwSecret: Data? = (try? sessionStore.keychain.get(account: "\(localHostId.uuidString).password"))
-            .flatMap { $0.data(using: .utf8) }
-        let ppSecret: Data? = (try? sessionStore.keychain.get(account: "\(localHostId.uuidString).keyPassphrase"))
-            .flatMap { $0.data(using: .utf8) }
+        let pwSecret = try optionalKeychainSecret(account: "\(localHostId.uuidString).password")
+        let ppSecret = try optionalKeychainSecret(account: "\(localHostId.uuidString).keyPassphrase")
 
         let pkBytes: Data?
         if case let .keyFile(path, _) = host.credential {
-            if let managed = (try? managedKeyStore.read(hostId: localHostId)) ?? nil {
+            // `read` returning nil = no app-managed copy (legitimately fall
+            // back to the on-disk key file). A *thrown* error is a real
+            // read failure: propagate it so we never push an empty/partial
+            // privateKey payload over a good cloud blob.
+            if let managed = try managedKeyStore.read(hostId: localHostId) {
                 pkBytes = managed
             } else {
                 pkBytes = FileManager.default.contents(atPath: path)

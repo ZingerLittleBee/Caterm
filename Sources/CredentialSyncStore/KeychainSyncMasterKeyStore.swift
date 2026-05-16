@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 import Security
 
 public actor KeychainSyncMasterKeyStore {
@@ -7,6 +8,7 @@ public actor KeychainSyncMasterKeyStore {
         case keychainOSError(OSStatus)
     }
 
+    private static let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
     private let service: String
     private let synchronizable: Bool
 
@@ -29,6 +31,15 @@ public actor KeychainSyncMasterKeyStore {
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
+        // `errSecItemNotFound` is the legitimate "no key yet" case (iCloud
+        // Keychain hasn't delivered it) — callers correctly retry later.
+        // Any OTHER non-success status (e.g. `errSecInteractionNotAllowed`
+        // when the keychain is locked) is a transient READ FAILURE that
+        // also surfaces as nil here; log it so it's diagnosable rather
+        // than indistinguishable from "no key".
+        if status != errSecSuccess, status != errSecItemNotFound {
+            Self.log.error("loadAny: keychain read failed (not absent): OSStatus=\(status, privacy: .public)")
+        }
         guard status == errSecSuccess,
               let dict = result as? [String: Any],
               let data = dict[kSecValueData as String] as? Data,

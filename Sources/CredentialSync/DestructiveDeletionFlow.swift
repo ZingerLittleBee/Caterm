@@ -1,5 +1,6 @@
 import CredentialSyncStore
 import Foundation
+import os
 import SessionStore
 
 /// Plan C / Task 20 — durable resumable destructive deletion flow.
@@ -27,8 +28,16 @@ public enum DestructiveDeletionFlow {
         let pendingIds = sessionStore.hosts.compactMap { host -> UUID? in
             host.serverId == nil ? nil : host.id
         }
+        let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
         for host in sessionStore.hosts where host.credentialMaterialDirty {
-            try? sessionStore.clearCredentialMaterialDirty(host.id)
+            do {
+                try sessionStore.clearCredentialMaterialDirty(host.id)
+            } catch {
+                // Best-effort pre-clear; the durable DeletionProgress list is
+                // the authoritative driver. Log so a persistent failure is
+                // diagnosable rather than silently allowing a re-push.
+                log.error("destructive-deletion: pre-clear dirty bit failed for \(host.id, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
         }
         credentialSync.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(

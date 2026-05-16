@@ -5,6 +5,10 @@ public enum KeychainError: Error, Equatable {
     case notFound
     case osStatus(OSStatus)
     case decodeFailed
+    /// `deleteAll` could not delete one or more matched items. Carries the
+    /// failing accounts so the caller can surface that secret material may
+    /// still be on-device rather than silently reporting a clean reset.
+    case partialDeleteFailure(failedAccounts: [String])
 }
 
 public final class KeychainStore {
@@ -66,10 +70,23 @@ public final class KeychainStore {
         if status == errSecItemNotFound { return }
         if status != errSecSuccess { throw KeychainError.osStatus(status) }
         guard let items = result as? [[String: Any]] else { return }
+        var failed: [String] = []
         for item in items {
             guard let acct = item[kSecAttrAccount as String] as? String,
                   acct.hasPrefix(prefix) else { continue }
-            try? delete(account: acct)
+            do {
+                try delete(account: acct)
+            } catch KeychainError.notFound {
+                // Already gone — the desired end state, not a failure.
+            } catch {
+                // A real delete failure means secret material may still be
+                // on-device; collect it instead of silently swallowing so
+                // the caller doesn't report a clean reset.
+                failed.append(acct)
+            }
+        }
+        if !failed.isEmpty {
+            throw KeychainError.partialDeleteFailure(failedAccounts: failed)
         }
     }
 
