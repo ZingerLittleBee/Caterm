@@ -324,12 +324,21 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 
 		private func findHostTableView(from view: NSView) -> NSTableView? {
 			guard let contentView = view.window?.contentView else { return nil }
-			return contentView
-				.descendants(of: NSTableView.self)
-				.filter { $0.numberOfRows == hosts.count }
-				.min { lhs, rhs in
+			let tables = contentView.descendants(of: NSTableView.self)
+			let leftmost: ([NSTableView]) -> NSTableView? = { candidates in
+				candidates.min { lhs, rhs in
 					lhs.convert(lhs.bounds, to: nil).minX < rhs.convert(rhs.bounds, to: nil).minX
 				}
+			}
+			// Primary signal: the sidebar table has exactly `hosts.count`
+			// rows. If several tables tie (e.g. a same-length snippet
+			// list), the sidebar is the leftmost. If NONE match — e.g.
+			// during a List diff where the row count momentarily lags
+			// `hosts` — fall back to the leftmost table rather than
+			// missing the install entirely (a later updateNSView retries
+			// anyway, but this avoids a transient dead double-click).
+			let rowMatched = tables.filter { $0.numberOfRows == hosts.count }
+			return leftmost(rowMatched) ?? leftmost(tables)
 		}
 	}
 }
