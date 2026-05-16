@@ -30,8 +30,11 @@ struct MobileHostFormView: View {
 			Section("Host") {
 				TextField("Label", text: $draft.label)
 				TextField("Hostname", text: $draft.hostname)
+					.sshFieldStyle()
 				TextField("Port", text: $draft.port)
+					.sshFieldStyle(numeric: true)
 				TextField("Username", text: $draft.username)
+					.sshFieldStyle()
 			}
 
 			Section("Credentials") {
@@ -44,8 +47,10 @@ struct MobileHostFormView: View {
 				switch draft.credential {
 				case .password:
 					SecureField("Password", text: passwordSecret)
+						.sshFieldStyle()
 				case .keyFile:
 					TextField("Private key path", text: keyPath)
+						.sshFieldStyle()
 					Toggle("Has passphrase", isOn: keyHasPassphrase)
 					if keyHasPassphrase.wrappedValue {
 						SecureField("Passphrase", text: keySecret)
@@ -180,4 +185,20 @@ private enum MobileCredentialKind: Hashable {
 	case password
 	case keyFile
 	case agent
+}
+
+private extension View {
+	/// SSH connection fields are case-sensitive identifiers, not prose:
+	/// never autocapitalize or autocorrect them.
+	@ViewBuilder
+	func sshFieldStyle(numeric: Bool = false) -> some View {
+		#if os(iOS)
+		self
+			.textInputAutocapitalization(.never)
+			.autocorrectionDisabled()
+			.keyboardType(numeric ? .numberPad : .asciiCapable)
+		#else
+		self.autocorrectionDisabled()
+		#endif
+	}
 }
