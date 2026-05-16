@@ -24,8 +24,15 @@ just doesn't sync. No degraded mode, no nag screens.
 
 ## Screenshots
 
-<!-- TODO: add screenshots / a short demo GIF here -->
-_Screenshots coming soon._
+![Caterm terminal with tabs and host sidebar](docs/images/hero.png)
+
+| Host chaining | SFTP drawer | Themes |
+|---|---|---|
+| ![Host chaining](docs/images/host-chaining.png) | ![SFTP drawer](docs/images/sftp-drawer.png) | ![Theme picker](docs/images/theme-picker.png) |
+
+| Terminal settings | iCloud sync |
+|---|---|
+| ![Terminal settings](docs/images/settings.png) | ![iCloud sync settings](docs/images/sync.png) |
 
 ## Features
 
