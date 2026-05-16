@@ -374,7 +374,7 @@ struct HostRow: View {
 		// lineBreakMode = .byTruncatingTail, lowered horizontal compression
 		// resistance). This has worked reliably on macOS for 15+ years.
 		HStack(spacing: 8) {
-			Image(systemName: iconName)
+			Image(systemName: hostIconName(for: host))
 				.foregroundColor(.secondary)
 				.frame(width: 20)
 				.layoutPriority(1)
@@ -412,14 +412,6 @@ struct HostRow: View {
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.vertical, 2)
-	}
-
-	var iconName: String {
-		switch host.credential {
-		case .password: return "key.fill"
-		case .keyFile: return "lock.shield.fill"
-		case .agent: return "key.icloud.fill"
-		}
 	}
 
 	private func chainTooltip(for host: SSHHost) -> String {

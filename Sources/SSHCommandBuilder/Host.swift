@@ -32,6 +32,11 @@ public struct Host: Codable, Identifiable, Hashable {
 	/// Encoded as a regular array; legacy hosts.json files predating this
 	/// field decode to `[]`.
 	public var forwards: [PortForward]
+	/// Optional user-chosen SF Symbol name shown in the sidebar row. `nil`
+	/// falls back to a credential-derived default icon. Device-local (not
+	/// propagated to the server); legacy hosts.json predating this field
+	/// decode to `nil`.
+	public var icon: String?
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
@@ -40,7 +45,8 @@ public struct Host: Codable, Identifiable, Hashable {
 	            credentialMaterialDirty: Bool = false,
 	            jumpHostId: UUID? = nil,
 	            jumpHostServerId: String? = nil,
-	            forwards: [PortForward] = []) {
+	            forwards: [PortForward] = [],
+	            icon: String? = nil) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -54,6 +60,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		self.jumpHostId = jumpHostId
 		self.jumpHostServerId = jumpHostServerId
 		self.forwards = forwards
+		self.icon = icon
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
@@ -65,6 +72,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		case createdAt, updatedAt, credentialMaterialDirty
 		case jumpHostId, jumpHostServerId
 		case forwards
+		case icon
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -82,6 +90,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		jumpHostId = try c.decodeIfPresent(UUID.self, forKey: .jumpHostId)
 		jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
 		forwards = try c.decodeIfPresent([PortForward].self, forKey: .forwards) ?? []
+		icon = try c.decodeIfPresent(String.self, forKey: .icon)
 	}
 	// Synthesized encode(to:) is fine — it writes all keys.
 }

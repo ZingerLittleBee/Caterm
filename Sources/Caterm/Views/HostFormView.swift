@@ -29,6 +29,7 @@ struct HostFormView: View {
 	@State private var pendingSecret = ""
 	@State private var jumpHostId: UUID? = nil
 	@State private var forwards: [PortForward] = []
+	@State private var icon: String? = nil
 
 	var body: some View {
 		VStack(spacing: 0) {
@@ -36,6 +37,12 @@ struct HostFormView: View {
 				Section("Connection") {
 					LabeledContent("Label") {
 						TextField("", text: $label, prompt: Text("Optional"))
+					}
+					LabeledContent("Icon") {
+						HostIconPicker(
+							icon: $icon,
+							fallbackSymbol: credentialIconFallback
+						)
 					}
 					LabeledContent("Hostname") {
 						TextField("", text: $hostname)
@@ -236,6 +243,15 @@ struct HostFormView: View {
 		}
 	}
 
+	/// The credential-derived default icon for the currently selected auth
+	/// method, previewed by `HostIconPicker` when no override is chosen.
+	private var credentialIconFallback: String {
+		switch credKind {
+		case .password: return defaultHostIconName(for: .password)
+		case .keyFile:  return defaultHostIconName(for: .keyFile(keyPath: "", hasPassphrase: false))
+		}
+	}
+
 	/// Falls back to `username@hostname` when the user leaves the label
 	/// blank so the host always has something user-visible to render.
 	private var resolvedName: String {
@@ -319,6 +335,7 @@ struct HostFormView: View {
 		host.jumpHostId = jumpHostId
 		host.jumpHostServerId = jumpHost.flatMap(\.serverId)
 		host.forwards = forwards
+		host.icon = icon
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {
