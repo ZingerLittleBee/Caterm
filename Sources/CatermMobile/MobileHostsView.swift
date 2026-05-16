@@ -10,6 +10,7 @@ public struct MobileHostsView: View {
 	@State private var searchText = ""
 	@State private var showingAddHost = false
 	@State private var editingHost: SSHHost?
+	@State private var pendingDelete: SSHHost?
 	@State private var route: MobileHostRoute?
 
 	public init(hosts: Binding<[SSHHost]>) {
@@ -33,14 +34,14 @@ public struct MobileHostsView: View {
 							Label("Edit", systemImage: "pencil")
 						}
 						Button(role: .destructive) {
-							deleteHost(id: host.id)
+							pendingDelete = host
 						} label: {
 							Label("Delete", systemImage: "trash")
 						}
 					}
 					.swipeActions(edge: .trailing) {
 						Button(role: .destructive) {
-							deleteHost(id: host.id)
+							pendingDelete = host
 						} label: {
 							Label("Delete", systemImage: "trash")
 						}
@@ -83,6 +84,24 @@ public struct MobileHostsView: View {
 					saveHost(payload)
 					editingHost = nil
 				}
+			}
+		}
+		.confirmationDialog(
+			"Delete \(pendingDelete?.name ?? "")?",
+			isPresented: Binding(
+				get: { pendingDelete != nil },
+				set: { if !$0 { pendingDelete = nil } }
+			),
+			titleVisibility: .visible
+		) {
+			Button("Delete Host", role: .destructive) {
+				if let host = pendingDelete {
+					deleteHost(id: host.id)
+				}
+				pendingDelete = nil
+			}
+			Button("Cancel", role: .cancel) {
+				pendingDelete = nil
 			}
 		}
 	}
