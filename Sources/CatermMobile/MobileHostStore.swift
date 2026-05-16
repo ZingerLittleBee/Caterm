@@ -36,6 +36,17 @@ public final class MobileHostStore: ObservableObject {
 		try persist()
 	}
 
+	/// Insert or replace by id and persist. Used by the shell's add/edit
+	/// save callbacks, which can't know whether the form was add or edit.
+	public func upsert(_ host: SSHHost) throws {
+		if let index = hosts.firstIndex(where: { $0.id == host.id }) {
+			hosts[index] = host
+		} else {
+			hosts.append(host)
+		}
+		try persist()
+	}
+
 	public func delete(id: UUID) throws {
 		hosts.removeAll { $0.id == id }
 		try persist()

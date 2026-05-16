@@ -40,17 +40,20 @@ public struct MobileCatermShell: View {
 /// the desktop terminal surface stay isolated.
 public struct MobileRootView: View {
 	@StateObject private var hostStore: MobileHostStore
+	private let credentialWriter: MobileCredentialWriter
 	@State private var snippets: [Snippet]
 	@State private var remoteEntries: [RemoteEntry]
 	@State private var transfers: [TransferTask]
 
 	public init(
 		hostStore: MobileHostStore,
+		credentialWriter: MobileCredentialWriter,
 		snippets: [Snippet] = [],
 		remoteEntries: [RemoteEntry] = [],
 		transfers: [TransferTask] = []
 	) {
 		_hostStore = StateObject(wrappedValue: hostStore)
+		self.credentialWriter = credentialWriter
 		_snippets = State(initialValue: snippets)
 		_remoteEntries = State(initialValue: remoteEntries)
 		_transfers = State(initialValue: transfers)
@@ -63,11 +66,21 @@ public struct MobileRootView: View {
 			remoteEntries: $remoteEntries,
 			transfers: $transfers
 		)
+		.environment(\.mobileHostSave, MobileHostSaveAction(
+			save: { payload in
+				try? hostStore.upsert(payload.host)
+				try? credentialWriter.apply(payload)
+			},
+			deleteCredentials: { id in
+				credentialWriter.clearAll(hostId: id)
+			}
+		))
 	}
 }
 
 struct MobileShellBody: View {
 	@Environment(\.horizontalSizeClass) private var horizontalSizeClass
+	@Environment(\.mobileHostSave) private var hostSave
 	@Binding var hosts: [SSHHost]
 	@Binding var snippets: [Snippet]
 	@Binding var remoteEntries: [RemoteEntry]
@@ -104,7 +117,11 @@ struct MobileShellBody: View {
 				.sheet(isPresented: $showingAddHost) {
 					NavigationStack {
 						MobileHostFormView(mode: .add, allHosts: hosts) { payload in
-							hosts.append(payload.host)
+							if let hostSave {
+								hostSave.save(payload)
+							} else {
+								hosts.append(payload.host)
+							}
 							selection = .host(payload.host.id)
 							showingAddHost = false
 						}
@@ -201,6 +218,7 @@ private struct MobileShellSidebar: View {
 }
 
 private struct MobileShellDetail: View {
+	@Environment(\.mobileHostSave) private var hostSave
 	@Binding var selection: MobileShellSelection?
 	@Binding var hosts: [SSHHost]
 	@Binding var snippets: [Snippet]
@@ -225,6 +243,7 @@ private struct MobileShellDetail: View {
 					},
 					onDelete: {
 						hosts.removeAll { $0.id == id }
+						hostSave?.deleteCredentials(id)
 					},
 					onUpdate: { updated in
 						if let index = hosts.firstIndex(where: { $0.id == updated.id }) {

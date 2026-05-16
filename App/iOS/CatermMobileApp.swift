@@ -1,4 +1,5 @@
 import CatermMobile
+import KeychainStore
 import SwiftUI
 
 /// iOS/iPadOS entry point. A thin SwiftUI shell over `MobileRootView`
@@ -11,7 +12,15 @@ import SwiftUI
 struct CatermMobileApp: App {
 	var body: some Scene {
 		WindowGroup {
-			MobileRootView(hostStore: MobileHostStore(fileURL: Self.hostsURL))
+			MobileRootView(
+				hostStore: MobileHostStore(fileURL: Self.hostsURL),
+				credentialWriter: MobileCredentialWriter(
+					keychain: KeychainStore(
+						service: MobileCredentialWriter.defaultService,
+						accessGroup: nil
+					)
+				)
+			)
 		}
 	}
 

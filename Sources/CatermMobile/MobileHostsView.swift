@@ -3,6 +3,7 @@ import SwiftUI
 
 public struct MobileHostsView: View {
 	@Binding private var hosts: [SSHHost]
+	@Environment(\.mobileHostSave) private var hostSave
 	@State private var searchText = ""
 	@State private var showingAddHost = false
 	@State private var route: MobileHostRoute?
@@ -23,7 +24,7 @@ public struct MobileHostsView: View {
 					}
 					.swipeActions(edge: .trailing) {
 						Button(role: .destructive) {
-							hosts.removeAll { $0.id == host.id }
+							deleteHost(id: host.id)
 						} label: {
 							Label("Delete", systemImage: "trash")
 						}
@@ -49,11 +50,26 @@ public struct MobileHostsView: View {
 		.sheet(isPresented: $showingAddHost) {
 			NavigationStack {
 				MobileHostFormView(mode: .add, allHosts: hosts) { payload in
-					hosts.append(payload.host)
+					saveHost(payload)
 					showingAddHost = false
 				}
 			}
 		}
+	}
+
+	private func saveHost(_ payload: MobileHostDraftPayload) {
+		if let hostSave {
+			hostSave.save(payload)
+		} else if let index = hosts.firstIndex(where: { $0.id == payload.host.id }) {
+			hosts[index] = payload.host
+		} else {
+			hosts.append(payload.host)
+		}
+	}
+
+	private func deleteHost(id: UUID) {
+		hosts.removeAll { $0.id == id }
+		hostSave?.deleteCredentials(id)
 	}
 
 	private var filteredHosts: [SSHHost] {
@@ -75,7 +91,7 @@ public struct MobileHostsView: View {
 				MobileHostDetailView(
 					host: host,
 					onConnect: nil,
-					onDelete: { hosts.removeAll { $0.id == id } },
+					onDelete: { deleteHost(id: id) },
 					onUpdate: { updated in
 						if let index = hosts.firstIndex(where: { $0.id == updated.id }) {
 							hosts[index] = updated
@@ -88,9 +104,7 @@ public struct MobileHostsView: View {
 		case .edit(let id):
 			if let host = hosts.first(where: { $0.id == id }) {
 				MobileHostFormView(mode: .edit(host), allHosts: hosts) { payload in
-					if let index = hosts.firstIndex(where: { $0.id == id }) {
-						hosts[index] = payload.host
-					}
+					saveHost(payload)
 				}
 			} else {
 				ContentUnavailableView("Host Not Found", systemImage: "server.rack")
@@ -108,6 +122,7 @@ struct MobileHostDetailView: View {
 	let onConnect: ((MobileHostRoute) -> Void)?
 	let onDelete: () -> Void
 	let onUpdate: (SSHHost) -> Void
+	@Environment(\.mobileHostSave) private var hostSave
 	@State private var showingDeleteConfirmation = false
 	@State private var showingEdit = false
 	@State private var localRoute: MobileHostRoute?
@@ -169,7 +184,11 @@ struct MobileHostDetailView: View {
 		.sheet(isPresented: $showingEdit) {
 			NavigationStack {
 				MobileHostFormView(mode: .edit(host), allHosts: [host]) { payload in
-					onUpdate(payload.host)
+					if let hostSave {
+						hostSave.save(payload)
+					} else {
+						onUpdate(payload.host)
+					}
 					showingEdit = false
 				}
 			}

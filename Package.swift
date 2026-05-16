@@ -115,7 +115,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore"],
+            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore"],
             path: "Sources/CatermMobile"
         ),
 
@@ -203,7 +203,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermMobileTests",
-            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore"],
+            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore"],
             path: "Tests/CatermMobileTests"
         ),
         .testTarget(
