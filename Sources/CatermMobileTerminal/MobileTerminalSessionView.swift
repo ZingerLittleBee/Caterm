@@ -205,14 +205,7 @@ public struct MobileTerminalSessionView: View {
 		.navigationBarTitleDisplayMode(.inline)
 		.navigationBarBackButtonHidden(true)
 		.toolbar(.hidden, for: .tabBar)
-		.toolbar {
-			ToolbarItem(placement: .primaryAction) {
-				Button("Disconnect", role: .destructive) {
-					sessions.closeAll()
-					dismiss()
-				}
-			}
-		}
+		.toolbar(.hidden, for: .navigationBar)
 		.sheet(isPresented: $showingHostPicker) {
 			hostPicker
 		}
@@ -239,6 +232,7 @@ public struct MobileTerminalSessionView: View {
 	private var tabStrip: some View {
 		HStack(spacing: 8) {
 			Button {
+				sessions.closeAll()
 				dismiss()
 			} label: {
 				Image(systemName: "chevron.left")
