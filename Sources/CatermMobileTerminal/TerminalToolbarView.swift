@@ -1,13 +1,12 @@
 #if canImport(UIKit)
 import SwiftUI
 
-/// The tool strip below the keyboard: snippets, theme, history, help,
-/// plus the native/custom keyboard toggle (mirrors the Termius bottom
-/// toolbar).
+/// The tool strip below the keyboard: snippets, history, theme, help.
+/// (The native/custom keyboard toggle lives only in the top bar — see
+/// the `ABC` button — so it is not duplicated here.)
 struct TerminalToolbarView: View {
 	@ObservedObject var model: TerminalScreenModel
 	let snippets: [TerminalSnippet]
-	@Binding var keyboardMode: TerminalKeyboardMode
 
 	private enum Sheet: String, Identifiable {
 		case snippets, theme, history, help
@@ -18,17 +17,12 @@ struct TerminalToolbarView: View {
 	var body: some View {
 		HStack(spacing: 0) {
 			toolButton("square.grid.2x2", "Snippets") { sheet = .snippets }
-			toolButton("clock", "History") { sheet = .history }
-			toolButton("paintpalette", "Theme") { sheet = .theme }
-			toolButton("questionmark.circle", "Help") { sheet = .help }
 			Spacer()
-			toolButton(
-				keyboardMode == .custom ? "keyboard" : "command",
-				"Keyboard"
-			) {
-				keyboardMode = keyboardMode == .custom ? .native : .custom
-				model.setNativeKeyboard(keyboardMode == .native)
-			}
+			toolButton("clock", "History") { sheet = .history }
+			Spacer()
+			toolButton("paintpalette", "Theme") { sheet = .theme }
+			Spacer()
+			toolButton("questionmark.circle", "Help") { sheet = .help }
 		}
 		.padding(.horizontal, 14)
 		.padding(.vertical, 8)

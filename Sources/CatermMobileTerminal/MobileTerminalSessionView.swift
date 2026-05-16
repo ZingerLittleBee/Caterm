@@ -47,6 +47,10 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		self.make = makeSession
 		let tv = TerminalView(frame: .init(x: 0, y: 0, width: 400, height: 600))
 		tv.backgroundColor = .black
+		// SwiftTerm installs its own input-accessory key bar; suppress it
+		// so native-keyboard mode shows only our TerminalAccessoryRow
+		// (otherwise two near-identical esc/ctrl/tab/arrow rows stack).
+		tv.inputAccessoryView = nil
 		self.terminalView = tv
 		coordinator.model = self
 		coordinator.terminalView = tv
@@ -199,6 +203,7 @@ public struct MobileTerminalSessionView: View {
 			}
 		}
 		.navigationBarTitleDisplayMode(.inline)
+		.navigationBarBackButtonHidden(true)
 		.toolbar(.hidden, for: .tabBar)
 		.toolbar {
 			ToolbarItem(placement: .primaryAction) {
@@ -224,11 +229,7 @@ public struct MobileTerminalSessionView: View {
 		} else {
 			TerminalAccessoryRow(model: model)
 		}
-		TerminalToolbarView(
-			model: model,
-			snippets: snippets,
-			keyboardMode: $sessions.keyboardMode
-		)
+		TerminalToolbarView(model: model, snippets: snippets)
 	}
 
 	private var tabStrip: some View {
