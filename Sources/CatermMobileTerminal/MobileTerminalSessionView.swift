@@ -47,6 +47,8 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		self.make = makeSession
 		let tv = TerminalView(frame: .init(x: 0, y: 0, width: 400, height: 600))
 		tv.backgroundColor = .black
+		tv.font = UIFont.monospacedSystemFont(
+			ofSize: MobileTerminalSettings.fontSize, weight: .regular)
 		// SwiftTerm installs its own input-accessory key bar; suppress it
 		// so native-keyboard mode shows only our TerminalAccessoryRow
 		// (otherwise two near-identical esc/ctrl/tab/arrow rows stack).
@@ -55,7 +57,7 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		coordinator.model = self
 		coordinator.terminalView = tv
 		tv.terminalDelegate = coordinator
-		applyTheme(TerminalTheme.presets[0])
+		applyTheme(MobileTerminalSettings.defaultTheme)
 	}
 
 	public func start() {
@@ -154,6 +156,7 @@ public final class TerminalSessionsModel: ObservableObject {
 
 	public init(initialHost: SSHHost, makeSession: @escaping (SSHHost) -> SSHTerminalSession) {
 		self.makeSession = makeSession
+		self.keyboardMode = MobileTerminalSettings.defaultKeyboardMode
 		addTab(host: initialHost)
 	}
 
