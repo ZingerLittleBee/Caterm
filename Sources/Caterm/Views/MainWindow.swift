@@ -66,6 +66,7 @@ struct MainWindow: View {
 	@State private var presentingEditor = false
 	@State private var presentingManager = false
 	@State private var hostWindow: NSWindow?
+	@State private var remoteFsCache = RemoteFsCache()
 	let tabId: UUID
 
 	private static let drawerMinWidth: CGFloat = 240
@@ -93,28 +94,30 @@ struct MainWindow: View {
 		return "Skipped optional port forward(s): " + descs.joined(separator: ", ")
 	}
 
-	/// Recomputes a `RemoteFileSystem` actor for the active host on each
-	/// render. The actor itself is cheap (no I/O at init); the underlying
-	/// SFTP subprocess is only spawned when `list()` runs. Re-creating per
-	/// render keeps `MainWindow` stateless about transfer plumbing — an
-	/// optimization (caching by `host.id`) can come later if needed.
+	/// The `RemoteFileSystem` for the active host, created once per
+	/// `host.id` and reused across renders. The actor is cheap, but
+	/// re-creating it on every `body` evaluation handed `FileDrawerView` a
+	/// fresh actor identity on every unrelated `MainWindow` re-render
+	/// (drawer drag, banner toggle, palette state); in-flight
+	/// rename/delete/mkdir tasks then captured a now-orphaned instance.
+	/// `RemoteFsCache` keeps a stable instance keyed by `host.id`.
 	private var activeRemoteFs: RemoteFileSystem? {
 		guard let host = activeHost else { return nil }
-		let cm = ControlMasterManager.shared
-		let socket = cm.socketPath(for: host.id)
-		let creds = SFTPCredentials(
-			askpassPath: URL(fileURLWithPath: store.askpassPath),
-			identityFiles: [],
-			knownHostsCaterm: URL(fileURLWithPath: store.knownHostsCaterm),
-			knownHostsUser: URL(fileURLWithPath: store.knownHostsUser),
-			strictHostKeyChecking: .acceptNew
-		)
-		return RemoteFileSystem(
-			host: host,
-			controlPath: socket,
-			credentials: creds,
-			liveness: cm
-		)
+		return remoteFsCache.fileSystem(for: host) {
+			let cm = ControlMasterManager.shared
+			return RemoteFileSystem(
+				host: host,
+				controlPath: cm.socketPath(for: host.id),
+				credentials: SFTPCredentials(
+					askpassPath: URL(fileURLWithPath: store.askpassPath),
+					identityFiles: [],
+					knownHostsCaterm: URL(fileURLWithPath: store.knownHostsCaterm),
+					knownHostsUser: URL(fileURLWithPath: store.knownHostsUser),
+					strictHostKeyChecking: .acceptNew
+				),
+				liveness: cm
+			)
+		}
 	}
 
 	/// Returns the surface registered for this window's tab, used to dispatch
@@ -321,6 +324,22 @@ struct MainWindow: View {
 			onClose: { presentingPalette = false },
 			onCreate: { presentingPalette = false; presentingEditor = true }
 		)
+	}
+}
+
+/// Caches one `RemoteFileSystem` per `host.id` so a stable instance
+/// survives unrelated `MainWindow` re-renders. Reference type held via
+/// `@State`, so SwiftUI keeps the same cache across the view's lifetime.
+/// The cached instance is replaced only when the active host changes.
+@MainActor
+final class RemoteFsCache {
+	private var cached: (hostId: UUID, fs: RemoteFileSystem)?
+
+	func fileSystem(for host: SSHHost, make: () -> RemoteFileSystem) -> RemoteFileSystem {
+		if let cached, cached.hostId == host.id { return cached.fs }
+		let fs = make()
+		cached = (host.id, fs)
+		return fs
 	}
 }
 
