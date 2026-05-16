@@ -111,7 +111,6 @@ struct HostFormView: View {
 				}
 			}
 			.formStyle(.grouped)
-			.scrollDisabled(true)
 
 			Divider()
 
@@ -126,7 +125,7 @@ struct HostFormView: View {
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
-		.frame(width: 520, height: 460)
+		.frame(width: 520, height: 560)
 		.onAppear { populate() }
 	}
 

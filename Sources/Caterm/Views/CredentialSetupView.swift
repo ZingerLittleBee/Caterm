@@ -62,7 +62,6 @@ struct CredentialSetupView: View {
 				}
 			}
 			.formStyle(.grouped)
-			.scrollDisabled(true)
 
 			Divider()
 
@@ -78,7 +77,7 @@ struct CredentialSetupView: View {
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
-		.frame(width: 480, height: 360)
+		.frame(width: 480, height: 420)
 	}
 
 	/// Save is enabled only when the inputs are usable. For .keyFile we
