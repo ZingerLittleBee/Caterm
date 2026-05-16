@@ -121,6 +121,23 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	public func disconnect() {
 		Task { await session?.disconnect() }
 	}
+
+	/// Tears down the current session (if any) and dials again, reusing
+	/// the same retained terminal view/scrollback.
+	public func reconnect() {
+		let old = session
+		// Detach first: a disconnecting session emits a late .closed that
+		// would otherwise clobber the fresh session's .connected state.
+		old?.onStateChange = nil
+		old?.onOutput = nil
+		session = nil
+		started = false
+		state = .idle
+		Task {
+			await old?.disconnect()
+			start()
+		}
+	}
 }
 
 /// Holds every open terminal tab. Switching tabs only changes which
@@ -298,18 +315,73 @@ public struct MobileTerminalSessionView: View {
 	@ViewBuilder private func connectionOverlay(_ model: TerminalScreenModel) -> some View {
 		switch model.state {
 		case .connecting, .idle:
-			ProgressView("Connecting…")
-				.padding()
-				.background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+			VStack(spacing: 12) {
+				ProgressView()
+					.controlSize(.large)
+					.tint(.white)
+				Text("Connecting…")
+					.font(.headline)
+					.foregroundStyle(.white)
+			}
+			.padding(28)
+			.background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 16))
 		case let .failed(reason):
-			ContentUnavailableView("Connection Failed", systemImage: "xmark.octagon", description: Text(reason))
+			statusCard(
+				icon: "xmark.octagon.fill", tint: .red,
+				title: "Connection Failed", message: reason, model: model)
 		case let .disconnected(reason):
-			ContentUnavailableView("Disconnected", systemImage: "bolt.horizontal.circle", description: Text(reason))
+			statusCard(
+				icon: "bolt.horizontal.circle.fill", tint: .orange,
+				title: "Disconnected", message: reason, model: model)
 		case let .authPrompt(missing):
-			ContentUnavailableView("Credential Needed", systemImage: "key", description: Text("Missing \(String(describing: missing)); set it on the host and reconnect."))
+			statusCard(
+				icon: "key.fill", tint: .yellow,
+				title: "Credential Needed",
+				message: "Missing \(String(describing: missing)). Set it on the host, then reconnect.",
+				model: model)
 		case .hostKeyPrompt, .connected:
 			EmptyView()
 		}
+	}
+
+	private func statusCard(
+		icon: String, tint: SwiftUI.Color, title: String,
+		message: String, model: TerminalScreenModel
+	) -> some View {
+		VStack(spacing: 14) {
+			Image(systemName: icon)
+				.font(.system(size: 42))
+				.foregroundStyle(tint)
+			Text(title)
+				.font(.title3.weight(.semibold))
+				.foregroundStyle(.white)
+			ScrollView {
+				Text(message)
+					.font(.system(.footnote, design: .monospaced))
+					.foregroundStyle(SwiftUI.Color.white.opacity(0.85))
+					.multilineTextAlignment(.center)
+					.textSelection(.enabled)
+			}
+			.frame(maxHeight: 140)
+			Button {
+				model.reconnect()
+			} label: {
+				Label("Reconnect", systemImage: "arrow.clockwise")
+					.font(.callout.weight(.semibold))
+					.frame(maxWidth: .infinity)
+					.padding(.vertical, 10)
+					.background(tint.opacity(0.9), in: RoundedRectangle(cornerRadius: 10))
+					.foregroundStyle(.white)
+			}
+			.buttonStyle(.plain)
+		}
+		.padding(24)
+		.frame(maxWidth: 340)
+		.background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 18))
+		.overlay(
+			RoundedRectangle(cornerRadius: 18)
+				.stroke(SwiftUI.Color.white.opacity(0.12), lineWidth: 1))
+		.padding(24)
 	}
 
 	private var hostPicker: some View {
