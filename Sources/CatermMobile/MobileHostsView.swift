@@ -9,6 +9,7 @@ public struct MobileHostsView: View {
 	@Environment(\.mobileHostSave) private var hostSave
 	@State private var searchText = ""
 	@State private var showingAddHost = false
+	@State private var editingHost: SSHHost?
 	@State private var route: MobileHostRoute?
 
 	public init(hosts: Binding<[SSHHost]>) {
@@ -22,8 +23,20 @@ public struct MobileHostsView: View {
 					.listRowSeparator(.hidden)
 			} else {
 				ForEach(filteredHosts) { host in
-					NavigationLink(value: MobileHostRoute.detail(host.id)) {
+					NavigationLink(value: MobileHostRoute.terminalPlaceholder(host.id)) {
 						MobileHostRow(host: host)
+					}
+					.contextMenu {
+						Button {
+							editingHost = host
+						} label: {
+							Label("Edit", systemImage: "pencil")
+						}
+						Button(role: .destructive) {
+							deleteHost(id: host.id)
+						} label: {
+							Label("Delete", systemImage: "trash")
+						}
 					}
 					.swipeActions(edge: .trailing) {
 						Button(role: .destructive) {
@@ -31,6 +44,12 @@ public struct MobileHostsView: View {
 						} label: {
 							Label("Delete", systemImage: "trash")
 						}
+						Button {
+							editingHost = host
+						} label: {
+							Label("Edit", systemImage: "pencil")
+						}
+						.tint(.blue)
 					}
 				}
 			}
@@ -55,6 +74,14 @@ public struct MobileHostsView: View {
 				MobileHostFormView(mode: .add, allHosts: hosts) { payload in
 					saveHost(payload)
 					showingAddHost = false
+				}
+			}
+		}
+		.sheet(item: $editingHost) { host in
+			NavigationStack {
+				MobileHostFormView(mode: .edit(host), allHosts: hosts) { payload in
+					saveHost(payload)
+					editingHost = nil
 				}
 			}
 		}
