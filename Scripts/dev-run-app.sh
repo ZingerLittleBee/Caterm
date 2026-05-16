@@ -40,8 +40,15 @@ APP_BUNDLE_ID="${CATERM_DEV_BUNDLE_ID:-com.caterm.app}"
 
 # Optional Mac App Development provisioning profile. Required for AMFI to
 # accept restricted entitlements like `aps-environment` (Push Notifications)
-# and `keychain-access-groups`. Default points at the Plan B Phase 0 file.
-CATERM_DEV_PROFILE="${CATERM_DEV_PROFILE:-$HOME/Downloads/Caterm_Mac_Dev_Apple_Dev.provisionprofile}"
+# and `keychain-access-groups`. Prefer the gitignored sign/ dir (same place
+# the Distribution profile lives); fall back to the legacy ~/Downloads path.
+if [[ -z "${CATERM_DEV_PROFILE:-}" ]]; then
+    if [[ -f "$ROOT/sign/Caterm_Mac_Dev_Apple_Dev.provisionprofile" ]]; then
+        CATERM_DEV_PROFILE="$ROOT/sign/Caterm_Mac_Dev_Apple_Dev.provisionprofile"
+    else
+        CATERM_DEV_PROFILE="$HOME/Downloads/Caterm_Mac_Dev_Apple_Dev.provisionprofile"
+    fi
+fi
 ENTITLEMENTS="$BIN_DIR/Caterm.dev.entitlements"
 
 if [[ ! -x "$BIN_DIR/caterm" || ! -x "$BIN_DIR/caterm-askpass" ]]; then
