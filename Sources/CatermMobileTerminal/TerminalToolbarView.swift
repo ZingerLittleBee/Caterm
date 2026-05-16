@@ -1,15 +1,15 @@
 #if canImport(UIKit)
 import SwiftUI
 
-/// The tool strip below the keyboard: snippets, history, theme, help.
-/// (The native/custom keyboard toggle lives only in the top bar — see
-/// the `ABC` button — so it is not duplicated here.)
+/// The tool strip below the keyboard: snippets, history, theme, and the
+/// native/custom keyboard toggle (the only place the toggle lives now).
 struct TerminalToolbarView: View {
 	@ObservedObject var model: TerminalScreenModel
 	let snippets: [TerminalSnippet]
+	@Binding var keyboardMode: TerminalKeyboardMode
 
 	private enum Sheet: String, Identifiable {
-		case snippets, theme, history, help
+		case snippets, theme, history
 		var id: String { rawValue }
 	}
 	@State private var sheet: Sheet?
@@ -22,7 +22,14 @@ struct TerminalToolbarView: View {
 			Spacer()
 			toolButton("paintpalette", "Theme") { sheet = .theme }
 			Spacer()
-			toolButton("questionmark.circle", "Help") { sheet = .help }
+			toolButton(
+				keyboardMode == .custom ? "keyboard" : "keyboard.chevron.compact.down",
+				"Toggle Keyboard"
+			) {
+				let next: TerminalKeyboardMode = keyboardMode == .custom ? .native : .custom
+				keyboardMode = next
+				model.setNativeKeyboard(next == .native)
+			}
 		}
 		.padding(.horizontal, 14)
 		.padding(.vertical, 8)
@@ -34,7 +41,6 @@ struct TerminalToolbarView: View {
 				case .snippets: snippetList
 				case .history: historyList
 				case .theme: themeList
-				case .help: helpView
 				}
 			}
 			.presentationDetents([.medium, .large])
@@ -122,26 +128,6 @@ struct TerminalToolbarView: View {
 			.buttonStyle(.plain)
 		}
 		.navigationTitle("Theme")
-		.toolbar { closeButton }
-	}
-
-	private var helpView: some View {
-		List {
-			Section("Modifiers") {
-				Label("ctrl / alt are sticky — tap, then the next key", systemImage: "command")
-				Label("^C, ^Z … send that control code immediately", systemImage: "bolt")
-			}
-			Section("Toolbar") {
-				Label("Snippets — run a saved command", systemImage: "square.grid.2x2")
-				Label("History — re-run a recent command", systemImage: "clock")
-				Label("Theme — recolor this terminal", systemImage: "paintpalette")
-				Label("Keyboard — switch native ⇄ custom keys", systemImage: "keyboard")
-			}
-			Section("Tabs") {
-				Label("+ opens another host; tabs stay connected", systemImage: "plus")
-			}
-		}
-		.navigationTitle("Help")
 		.toolbar { closeButton }
 	}
 

@@ -229,7 +229,11 @@ public struct MobileTerminalSessionView: View {
 		} else {
 			TerminalAccessoryRow(model: model)
 		}
-		TerminalToolbarView(model: model, snippets: snippets)
+		TerminalToolbarView(
+			model: model,
+			snippets: snippets,
+			keyboardMode: $sessions.keyboardMode
+		)
 	}
 
 	private var tabStrip: some View {
@@ -255,16 +259,6 @@ public struct MobileTerminalSessionView: View {
 				Image(systemName: "plus")
 			}
 			.accessibilityLabel("New Connection")
-
-			Button {
-				let next: TerminalKeyboardMode = sessions.keyboardMode == .custom ? .native : .custom
-				sessions.keyboardMode = next
-				sessions.selected?.setNativeKeyboard(next == .native)
-			} label: {
-				Text(sessions.keyboardMode == .custom ? "ABC" : "⌨︎")
-					.font(.system(.callout, design: .rounded).weight(.semibold))
-			}
-			.accessibilityLabel("Toggle Keyboard")
 		}
 		.padding(.horizontal, 10)
 		.padding(.vertical, 6)
