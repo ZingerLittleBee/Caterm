@@ -1,5 +1,7 @@
 # Caterm
 
+**English** | [简体中文](README.zh-CN.md)
+
 A native macOS SSH terminal manager with iCloud sync and no self-hosted server.
 
 [![Latest release](https://img.shields.io/github/v/release/ZingerLittleBee/Caterm)](https://github.com/ZingerLittleBee/Caterm/releases/latest)
