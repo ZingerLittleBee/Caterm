@@ -3,10 +3,11 @@ import PackageDescription
 
 let package = Package(
     name: "Caterm",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .executable(name: "caterm", targets: ["Caterm"]),
         .executable(name: "caterm-askpass", targets: ["CatermAskpass"]),
+        .library(name: "CatermMobile", targets: ["CatermMobile"]),
     ],
     dependencies: [],
     targets: [
@@ -112,6 +113,11 @@ let package = Package(
             name: "CatermAskpassCore",
             path: "Sources/CatermAskpassCore"
         ),
+        .target(
+            name: "CatermMobile",
+            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore"],
+            path: "Sources/CatermMobile"
+        ),
 
         // --- Executables ---
         .executableTarget(
@@ -194,6 +200,11 @@ let package = Package(
             name: "CatermTests",
             dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient"],
             path: "Tests/CatermTests"
+        ),
+        .testTarget(
+            name: "CatermMobileTests",
+            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore"],
+            path: "Tests/CatermMobileTests"
         ),
         .testTarget(
             name: "TerminalEngineTests",
