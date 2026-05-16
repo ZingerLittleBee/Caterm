@@ -132,6 +132,17 @@ public final class GhosttyApp {
 			}
 			return true
 
+		case GHOSTTY_ACTION_SET_TITLE, GHOSTTY_ACTION_PWD:
+			// We don't consume these (no window-title / pwd UI yet) — return
+			// false so libghostty's default handling is unchanged. We only
+			// peek at them as a "the remote shell is interactive" heartbeat
+			// to dismiss the connecting overlay the instant the session is
+			// genuinely live instead of after a fixed grace timer.
+			MainActor.assumeIsolated {
+				wrapper.handleSessionLive()
+			}
+			return false
+
 		case GHOSTTY_ACTION_MOUSE_SHAPE:
 			let shape = action.action.mouse_shape
 			MainActor.assumeIsolated {
