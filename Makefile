@@ -200,34 +200,29 @@ test: ## swift test (set CATERM_E2E_DOCKER=1 to include the Docker E2E)
 test-e2e: ## include the Docker E2E SSH integration test
 	CATERM_E2E_DOCKER=1 swift test
 
-# --- iOS (mobile shell) ---
+# --- iOS (mobile shell + SSH terminal) ---
 #
-# The iOS app is a thin SwiftUI @main shell over the CatermMobile SwiftPM
-# library, scaffolded via xcodegen (project.yml). The macOS app stays
-# SwiftPM-only; this is additive. Builds target the simulator with
-# `-target` (NOT `-scheme`): the root package's macOS-only executables
-# (caterm/caterm-askpass) make xcodebuild compute an empty scheme platform
-# intersection, but the CatermMobileApp target itself is iOS-clean.
-IOS_PROJECT   := CatermMobile.xcodeproj
+# The iOS app is built by SwiftPM and hand-wrapped into a .app by
+# Scripts/build-ios-app.sh. We do NOT use Xcode's SwiftPM integration:
+# Xcode 26.5's explicitly-built-modules path fails to compile swift-nio's
+# C targets (swift-atomics _AtomicsShims, CNIOPosix) for the
+# iphonesimulator SDK ("module file ... .pcm not found" with explicit
+# modules, "no such module DequeModule/Atomics" without). SwiftPM's own
+# build system compiles the same graph cleanly, so we drive it directly
+# (mirrors the macOS hand-wrap in Scripts/dev-run-app.sh).
 IOS_BUNDLE_ID := app.caterm.mobile
-IOS_APP       := build/Debug-iphonesimulator/Caterm.app
+IOS_APP       := build/ios/Caterm.app
 IOS_SIM = $(shell xcrun simctl list devices booted 2>/dev/null | grep -oE '[0-9A-F-]{36}' | head -1)
 ifeq ($(IOS_SIM),)
 IOS_SIM := $(shell xcrun simctl list devices available 2>/dev/null | grep -E 'iPhone' | grep -oE '[0-9A-F-]{36}' | head -1)
 endif
 
-.PHONY: ios-project
-ios-project: ## (re)generate CatermMobile.xcodeproj from project.yml (xcodegen)
-	xcodegen generate
-
 .PHONY: ios-build
-ios-build: ios-project ## build the iOS mobile shell for the simulator SDK
-	xcodebuild -project $(IOS_PROJECT) -target CatermMobileApp \
-	  -sdk iphonesimulator -configuration Debug \
-	  CODE_SIGNING_ALLOWED=NO build
+ios-build: ## build the iOS app via SwiftPM + assemble Caterm.app
+	bash Scripts/build-ios-app.sh
 
 .PHONY: run-ios
-run-ios: ios-build ## build + boot simulator + install + launch mobile shell
+run-ios: ios-build ## build + boot simulator + install + launch mobile app
 	@test -n "$(IOS_SIM)" || { echo "No iOS simulator available"; exit 1; }
 	xcrun simctl boot $(IOS_SIM) 2>/dev/null || true
 	open -a Simulator
@@ -237,7 +232,7 @@ run-ios: ios-build ## build + boot simulator + install + launch mobile shell
 .PHONY: clean
 clean: ## remove .build (forces full rebuild)
 	swift package clean
-	rm -rf .build/debug.yaml build $(IOS_PROJECT)
+	rm -rf .build/debug.yaml build CatermMobile.xcodeproj
 
 .PHONY: distclean
 distclean: ## nuke .build entirely (incl. SwiftPM caches)

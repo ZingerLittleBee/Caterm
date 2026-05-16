@@ -9,6 +9,7 @@ let package = Package(
         .executable(name: "caterm-askpass", targets: ["CatermAskpass"]),
         .library(name: "CatermMobile", targets: ["CatermMobile"]),
         .library(name: "CatermMobileTerminal", targets: ["CatermMobileTerminal"]),
+        .executable(name: "CatermMobileApp", targets: ["CatermMobileApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio-ssh.git", from: "0.9.0"),
@@ -134,6 +135,15 @@ let package = Package(
         ),
 
         // --- Executables ---
+        // iOS/iPadOS app. Built via SwiftPM (not Xcode's SwiftPM
+        // integration, which is broken for swift-nio's C targets on
+        // Xcode 26.5's iphonesimulator) and hand-wrapped into a .app by
+        // Scripts/build-ios-app.sh. Compiles on macOS too (unused there).
+        .executableTarget(
+            name: "CatermMobileApp",
+            dependencies: ["CatermMobile", "CatermMobileTerminal"],
+            path: "App/iOS"
+        ),
         .executableTarget(
             name: "Caterm",
             dependencies: [
