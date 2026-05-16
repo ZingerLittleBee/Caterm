@@ -5,14 +5,20 @@ set -euo pipefail
 #
 # Two profiles are supported via `--profile dev|distribution` (default: dev).
 #
-#   dev          — debug build, dev identity, Caterm.entitlements, login-keychain
-#                  fallback (strips keychain-access-groups so AMFI doesn't kill
-#                  unprofiled binaries during dev).
+#   dev          — debug build, dev identity, Caterm.entitlements.
 #   distribution — release build, distribution identity, Caterm.distribution
 #                  .entitlements (production APS + Production CloudKit env).
-#                  Keychain access group is preserved; the distribution build
-#                  embeds a Distribution provisioning profile in dist-package.sh
-#                  so AMFI accepts the restricted entitlement.
+#
+# Both profiles strip `keychain-access-groups` from BOTH binaries and use the
+# login-keychain path. `caterm-askpass` is a bare Mach-O that /usr/bin/ssh
+# exec()s directly; a non-bundle executable cannot embed a provisioning
+# profile, so AMFI SIGKILLs the helper at exec (exit 137, before main()) if it
+# carries that restricted entitlement — even in a notarized Distribution build
+# where the .app bundle embeds a profile. The runtime never sets
+# kSecAttrAccessGroup (CATERM_TEAM_ID is unset, so SessionStore passes
+# accessGroup=nil), so the named shared group is unused at runtime regardless;
+# caterm and caterm-askpass share secrets via the login keychain default
+# group + partition list.
 #
 # Required env (depending on profile):
 #   dev:          CATERM_DEV_IDENTITY  — Apple Development cert (CN or SHA-1)
@@ -158,31 +164,32 @@ inject_app_identifier() {
 inject_app_identifier "$TMPDIR_ENT/Caterm.entitlements"
 inject_app_identifier "$TMPDIR_ENT/CatermAskpass.entitlements"
 
-if [[ "$PROFILE" == "dev" ]]; then
-    # Dev-only: when CATERM_DEV_LOGIN_KEYCHAIN=1 (default in this dev workflow),
-    # strip the `keychain-access-groups` entitlement before signing. AMFI on
-    # Apple Silicon macOS rejects that restricted entitlement without an
-    # embedded development provisioning profile (kills the process at exec
-    # with SIGKILL / exit 137). For dev we fall back to the login-keychain
-    # path which works with no provisioning profile. See
-    # Manual/end-to-end-smoke.md for the full rationale.
-    DEV_LOGIN_KEYCHAIN="${CATERM_DEV_LOGIN_KEYCHAIN:-1}"
-    if [[ "$DEV_LOGIN_KEYCHAIN" == "1" ]]; then
-        echo "Dev mode: stripping keychain-access-groups (login-keychain path)"
-        /usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" \
-            "$TMPDIR_ENT/Caterm.entitlements" 2>/dev/null || true
-        /usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" \
-            "$TMPDIR_ENT/CatermAskpass.entitlements" 2>/dev/null || true
-    fi
-fi
+# keychain-access-groups strip (BOTH dev and distribution).
+#
+# `keychain-access-groups` is a *restricted* entitlement that AMFI only
+# honours when an embedded provisioning profile authorises it. The main app
+# bundle embeds Contents/embedded.provisionprofile, but caterm-askpass is a
+# bare Mach-O that /usr/bin/ssh exec()s directly — a non-bundle executable
+# cannot embed a profile, so AMFI SIGKILLs the helper at exec (exit 137,
+# before main()) if it carries this entitlement. This is true even for a
+# notarized Distribution build. The runtime never sets kSecAttrAccessGroup
+# (CATERM_TEAM_ID is unset → SessionStore passes accessGroup=nil), so the
+# named shared group is unused at runtime; caterm and caterm-askpass share
+# secrets via the login keychain default group + partition list. Strip it
+# from BOTH binaries so distribution behaves exactly like the proven dev
+# path. See Manual/end-to-end-smoke.md for the full rationale.
+echo "Stripping keychain-access-groups (login-keychain path; AMFI-safe helper)"
+/usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" \
+    "$TMPDIR_ENT/Caterm.entitlements" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" \
+    "$TMPDIR_ENT/CatermAskpass.entitlements" 2>/dev/null || true
 
 # Askpass entitlement isolation (BOTH dev and distribution).
 #
 # /usr/bin/ssh exec's caterm-askpass as a plain nested binary. AMFI SIGKILLs
 # it before main() if it carries restricted app/team identity entitlements
-# (application-identifier, team-identifier, aps-environment, etc.). The
-# helper only needs `keychain-access-groups` (when in production / KAG path)
-# to share keychain items with the main app. Strip everything else.
+# (application-identifier, team-identifier, aps-environment, etc.). Strip
+# everything — the helper reaches the keychain via the login-keychain path.
 echo "Stripping app/team identity from askpass entitlements"
 /usr/libexec/PlistBuddy -c "Delete :com.apple.application-identifier" \
     "$TMPDIR_ENT/CatermAskpass.entitlements" 2>/dev/null || true
