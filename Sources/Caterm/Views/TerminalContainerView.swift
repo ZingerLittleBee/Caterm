@@ -105,7 +105,26 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	let tabId: UUID
 	let backgroundTransparencyEnabled: Bool
 
-	func makeNSView(context _: Context) -> GhosttySurfaceNSView {
+	/// Owns the unstructured connect-probe `Task` so it is tied to this
+	/// representable's lifetime. Without this the probe outlived a torn-down
+	/// surface: on a rapid reconnect (`surfaceGeneration` bump → new NSView,
+	/// old one dismantled) the stale probe would still fire
+	/// `markConnected` against the tab whose *new* connection was mid-
+	/// handshake, racing the new state machine.
+	@MainActor
+	final class Coordinator {
+		var probe: Task<Void, Never>?
+		deinit { probe?.cancel() }
+	}
+
+	func makeCoordinator() -> Coordinator { Coordinator() }
+
+	static func dismantleNSView(_: GhosttySurfaceNSView, coordinator: Coordinator) {
+		coordinator.probe?.cancel()
+		coordinator.probe = nil
+	}
+
+	func makeNSView(context: Context) -> GhosttySurfaceNSView {
 		guard let cfg = store.surfaceConfig(
 			for: tabId,
 			installTerminfo: preferences.installTerminfoEnabled
@@ -118,11 +137,18 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
 
 		let capturedTabId = tabId
-		Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
+		// The surface generation this representable was created for. If the
+		// tab reconnects (generation bumps) while this probe is still
+		// sleeping, the probe must NOT report this (now superseded)
+		// connection as connected.
+		let capturedGeneration = store.tabs
+			.first(where: { $0.id == tabId })?.surfaceGeneration ?? 0
+		context.coordinator.probe = Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
 			// `view.surface` is built lazily in `viewDidMoveToWindow`. Yield
 			// until it exists or give up after ~3s.
 			let deadline = Date().addingTimeInterval(3)
 			while Date() < deadline {
+				if Task.isCancelled { return }
 				if let surface = view?.surface {
 					surface.onChildExit = { [weak store] code in
 						Task { @MainActor in
@@ -138,8 +164,14 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 			}
 			// 3s grace period: if process still alive, mark Connected.
 			try? await Task.sleep(nanoseconds: 3_000_000_000)
+			if Task.isCancelled { return }
 			guard let store, let surface = view?.surface,
 			      !surface.processExited else { return }
+			// Drop the result if the tab moved to a newer surface
+			// generation while we slept — another representable now owns
+			// the connection state for this tab.
+			guard store.tabs.first(where: { $0.id == capturedTabId })?
+				.surfaceGeneration == capturedGeneration else { return }
 			store.markConnected(tabId: capturedTabId)
 		}
 		return view
