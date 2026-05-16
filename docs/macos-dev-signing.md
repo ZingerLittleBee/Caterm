@@ -245,7 +245,9 @@ The script does NOT call `open` — Distribution builds are for the test Macs, n
 
 `caterm-askpass` is `exec`'d as a plain nested binary by `/usr/bin/ssh`. AMFI **SIGKILLs** it before `main()` if it carries restricted app/team identity entitlements (`application-identifier`, `team-identifier`, `aps-environment`, `icloud-container-environment`, etc.).
 
-Both `dev-codesign.sh` and `dist-package.sh` strip those keys from the helper's entitlements; the helper keeps only `keychain-access-groups` (and only in distribution — dev mode uses the login-keychain fallback and strips even that). The verification step above asserts the helper has `keychain-access-groups` AND none of the restricted keys; failure aborts the pipeline.
+`keychain-access-groups` is restricted the same way: AMFI only honours it when an embedded provisioning profile authorises it, and a bare Mach-O helper (unlike the `.app` bundle) cannot embed one. A Distribution helper carrying `keychain-access-groups` is therefore SIGKILLed at `exec` exactly like the identity keys above — `ssh` then gets no password and the connection fails with `Permission denied (publickey,password)`.
+
+`dev-codesign.sh` strips `keychain-access-groups` (and all app/team identity keys) from **both** binaries in **both** profiles; the helper reaches the keychain via the login-keychain default group + partition list. The runtime never sets `kSecAttrAccessGroup` (`CATERM_TEAM_ID` is unset, so `SessionStore` passes `accessGroup=nil`), so the named shared group is unused regardless. `dist-package.sh` then asserts the helper has **none** of `keychain-access-groups`, `application-identifier`, `team-identifier`, `aps-environment`, or `icloud-container-environment`; failure aborts the pipeline.
 
 ### Single-string `icloud-container-environment` form
 

@@ -219,11 +219,19 @@ echo "$main_ents"   | grep -q "<string>production</string>" \
 echo "$main_ents"   | grep -q "<string>Production</string>" \
     || { echo "FAIL: main exe missing icloud-container-environment=Production" >&2; exit 1; }
 
-# Askpass: keychain-access-groups MUST be present.
-echo "$helper_ents" | grep -q "keychain-access-groups" \
-    || { echo "FAIL: askpass missing keychain-access-groups" >&2; exit 1; }
+# Askpass: keychain-access-groups MUST NOT be present. caterm-askpass is a
+# bare Mach-O that /usr/bin/ssh exec()s directly; it cannot embed a
+# provisioning profile, so AMFI SIGKILLs it at exec (exit 137) if it carries
+# this restricted entitlement — the root cause of the "Permission denied
+# (publickey,password)" failure in packaged builds. The helper reaches the
+# keychain via the login-keychain default group instead.
+if echo "$helper_ents" | grep -q "keychain-access-groups"; then
+    echo "FAIL: askpass has keychain-access-groups (AMFI will SIGKILL it at exec)" >&2
+    echo "$helper_ents" >&2
+    exit 1
+fi
 
-# Askpass: app/team identity entitlements MUST NOT leak in.
+# Askpass: app/team identity entitlements MUST NOT leak in either.
 # AMFI SIGKILLs the helper at exec if any of these appear.
 if echo "$helper_ents" | grep -Eq \
     "aps-environment|icloud-container-environment|application-identifier|com\.apple\.developer\.team-identifier"; then
