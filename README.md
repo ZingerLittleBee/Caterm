@@ -96,16 +96,64 @@ pitfalls and the full rationale.
 
 ## Release
 
+### One-time setup (maintainers)
+
+Building a distributable, notarized release requires your own Apple
+Developer account. All identity and credentials live outside git in the
+gitignored `apps/macos/sign/` directory — nothing personal is committed.
+
+1. A **Developer ID Application** certificate for your team in the login
+   keychain.
+2. A **Distribution provisioning profile** (Developer ID type) for your
+   App ID, configured with `aps-environment=production` and
+   `icloud-container-environment=Production`. Save it as
+   `apps/macos/sign/Caterm_Developer_ID.provisionprofile` — `release.sh`
+   auto-resolves it there.
+3. A **notarytool keychain profile** named `caterm` (the app-specific
+   password is prompted securely; never commit it):
+
+   ```bash
+   xcrun notarytool store-credentials caterm \
+       --apple-id <your-apple-id> --team-id <your-team-id>
+   ```
+
+4. The **CloudKit schema deployed to Production** once via the CloudKit
+   Console (Schema → Deploy to Production) for your iCloud container.
+
+`make doctor` prints the resolved signing diagnostics if anything is off.
+
+### Per release
+
 ```bash
+# 1. Add a new version section (with date) at the top of the CHANGELOG.
+$EDITOR apps/macos/CHANGELOG.md
+
 cd apps/macos
-make release          # build + sign + notarize + staple + dmg
-make publish          # tag + GitHub release + upload artifacts
+
+# 2. Build + Developer ID sign + notarize + staple + dmg.
+make release
+#    make release ARGS=--skip-notary   signed-only (smoke on your own Macs)
+#    make release ARGS=--skip-dmg      .app only, no disk image
+
+# 3. Tag + GitHub release + upload the .dmg and zipped .app.
+make publish
+#    make publish ARGS=--dry-run       print every action, mutate nothing
+#    make publish ARGS=--draft         create the release as a draft
 ```
 
-`make publish` is Gatekeeper-gated (it refuses to publish a build that is
-not notarized and stapled) and pulls release notes from the matching
-section of [`apps/macos/CHANGELOG.md`](apps/macos/CHANGELOG.md). The
-CHANGELOG version drives the tag.
+`make release` ([`Scripts/release.sh`](apps/macos/Scripts/release.sh))
+auto-resolves the Developer ID identity, provisioning profile, and notary
+profile, then runs build → distribution codesign (two-pass entitlement
+re-seal + askpass entitlement isolation) → bundle assembly → notarize →
+staple → dmg → Gatekeeper assessment.
+
+`make publish` ([`Scripts/publish-release.sh`](apps/macos/Scripts/publish-release.sh))
+is Gatekeeper-gated — it refuses to publish a build that is not notarized
+and stapled — pushes an annotated `v<version>` tag, and creates the
+GitHub release with notes pulled from the matching
+[`apps/macos/CHANGELOG.md`](apps/macos/CHANGELOG.md) section. The CHANGELOG
+version drives the tag, so it must point at the commit you intend to
+release (clean tree, pushed to `origin/main`).
 
 ## Architecture
 
