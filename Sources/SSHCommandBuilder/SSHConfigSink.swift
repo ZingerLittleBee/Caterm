@@ -12,14 +12,24 @@ public protocol SSHConfigSink: Sendable {
 
 /// Test fake. Captures the most recently written config in memory and
 /// hands back a `tmpfs://N` URL. Never touches the filesystem.
+///
+/// `@unchecked Sendable` is honest here: every access to the mutable
+/// `writes`/`cleanups` storage is serialized by `lock`, so the type is
+/// safe to share across the `SSHConfigSink: Sendable` boundary even when
+/// tests drive it from multiple tasks.
 public final class InMemorySSHConfigSink: SSHConfigSink, @unchecked Sendable {
-	public private(set) var writes: [(URL, String)] = []
-	public private(set) var cleanups: [URL] = []
+	private let lock = NSLock()
+	private var _writes: [(URL, String)] = []
+	private var _cleanups: [URL] = []
+	public var writes: [(URL, String)] { lock.withLock { _writes } }
+	public var cleanups: [URL] { lock.withLock { _cleanups } }
 	public init() {}
 	public func write(_ config: String) throws -> URL {
-		let url = URL(string: "tmpfs:///\(writes.count)")!
-		writes.append((url, config))
-		return url
+		lock.withLock {
+			let url = URL(string: "tmpfs:///\(_writes.count)")!
+			_writes.append((url, config))
+			return url
+		}
 	}
-	public func cleanup(_ url: URL) { cleanups.append(url) }
+	public func cleanup(_ url: URL) { lock.withLock { _cleanups.append(url) } }
 }
