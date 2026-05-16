@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "setup": "ln -sf AGENTS.md CLAUDE.md && ln -sf $CONDUCTOR_ROOT_PATH/apps/server/.env apps/server/.env && ln -sf $CONDUCTOR_ROOT_PATH/apps/macos/.dev-identity apps/macos/.dev-identity && mkdir -p apps/macos/Frameworks && rm -rf apps/macos/Frameworks/GhosttyKit.xcframework && ln -sfn $CONDUCTOR_ROOT_PATH/apps/macos/Frameworks/GhosttyKit.xcframework apps/macos/Frameworks/GhosttyKit.xcframework && bun i",
+    "setup": "ln -sf AGENTS.md CLAUDE.md && ln -sf $CONDUCTOR_ROOT_PATH/.dev-identity .dev-identity && ln -sfn $CONDUCTOR_ROOT_PATH/sign sign && mkdir -p Frameworks && rm -rf Frameworks/GhosttyKit.xcframework && ln -sfn $CONDUCTOR_ROOT_PATH/Frameworks/GhosttyKit.xcframework Frameworks/GhosttyKit.xcframework",
     "run": ""
   }
 }

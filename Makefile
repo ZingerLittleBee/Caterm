@@ -1,137 +1,223 @@
-LAST_CHOICE_FILE := .claude/.last-make-choice
+# Caterm macOS dev Makefile
+#
+# Quick start:
+#   make run-app     # build + codesign + wrap in Caterm.app bundle + launch
+#                    # (default dev loop — needed because AppDelegate registers
+#                    # for APS push on every launch, which requires a bundle
+#                    # identity. The bare binary will crash on launch.)
+#   make run         # build + codesign + launch the bare binary
+#                    # (only useful for quick build/sign sanity checks — does
+#                    # NOT survive into AppDelegate.applicationDidFinishLaunching
+#                    # because of the APS register call there.)
+#   make test        # swift test
+#   make clean       # nuke .build
+#
+# When to use which:
+#   - `make run-app` — default. Required for anything that exercises the running
+#                      app: UNUserNotificationCenter / APS, NSWorkspace bundle
+#                      APIs, LSCopyApplication*, NSUserActivity / Handoff, App
+#                      Groups, or anything that asserts a CFBundleIdentifier
+#                      exists. CloudKit push subscriptions count — AppDelegate
+#                      calls `NSApp.registerForRemoteNotifications()` on every
+#                      launch, so the bare binary path is unsafe by default.
+#   - `make run`     — fast build+sign smoke test only. Use when you just want
+#                      to confirm the binary builds and signs cleanly without
+#                      actually running the UI.
+#
+# Codesign identity resolution (priority high → low):
+#   1. CATERM_DEV_IDENTITY env var / make argument
+#   2. .dev-identity (gitignored, one line — Common Name or
+#      40-char SHA-1; Conductor worktrees symlink this to the main repo
+#      via conductor.json setup, so writing it once in the main repo
+#      propagates to all worktrees)
+#   3. Auto-detect from login keychain (`security find-identity` first match
+#      — unreliable when multiple "Apple Development" certs share a CN, which
+#      Apple's auto-renewal flow regularly produces)
+#
+# SHA-1 fingerprint is preferred over Common Name because it disambiguates
+# duplicate / renewed certs:
+#   echo 28A2AF9F761AB261B3144E4AF67373EC0F883ED1 > .dev-identity
+# or one-shot override:
+#   make run-app CATERM_DEV_IDENTITY=0123456789ABCDEF0123456789ABCDEF01234567
 
-.DEFAULT_GOAL := menu
-.PHONY: menu dev dev-server dev-op dev-server-op build check-types tauri tauri-dev tauri-build check fix install db-push db-generate db-studio db-migrate db-start db-stop env-sync macos
+SHELL := /usr/bin/env bash
+.SHELLFLAGS := -euo pipefail -c
 
-ITEMS := \
-	"dev           — Run Tauri desktop + server" \
-	"dev-server    — Run server only" \
-	"dev-op        — Run Tauri desktop + server (with 1Password)" \
-	"dev-server-op — Run server only (with 1Password)" \
-	"env-sync      — Sync .env to 1Password" \
-	"tauri-dev     — Run Tauri desktop dev" \
-	"build         — Build all packages" \
-	"tauri-build   — Build Tauri desktop" \
-	"check-types   — Type check all packages" \
-	"check         — Lint check" \
-	"fix           — Lint fix" \
-	"macos-run-app — Build + sign + wrap + launch Caterm.app (default dev loop)" \
-	"macos-run     — Build + sign bare binary (build smoke only — crashes on APS register)" \
-	"macos-run-bg  — Launch macOS app in background" \
-	"macos-build   — Build macOS app (debug)" \
-	"macos-ghostty-kit — Init Ghostty submodule + build GhosttyKit" \
-	"macos-test    — Run macOS Swift tests" \
-	"macos-kill    — Kill running macOS dev process" \
-	"macos-clean   — Clean macOS .build" \
-	"macos-doctor  — Show macOS toolchain diagnostics" \
-	"db-start      — Start PostgreSQL (Docker)" \
-	"db-stop       — Stop PostgreSQL (Docker)" \
-	"db-push       — Push schema to database" \
-	"db-generate   — Generate migrations" \
-	"db-migrate    — Run migrations" \
-	"db-studio     — Open Drizzle Studio" \
-	"install       — Install dependencies"
+ROOT := $(shell pwd)
+BIN_DIR := $(ROOT)/.build/debug
+CATERM_BIN := $(BIN_DIR)/caterm
+ASKPASS_BIN := $(BIN_DIR)/caterm-askpass
 
-menu:
-	@last=""; \
-	if [ -f $(LAST_CHOICE_FILE) ]; then \
-		last=$$(cat $(LAST_CHOICE_FILE)); \
-	fi; \
-	if [ -n "$$last" ]; then \
-		choice=$$(printf '%s\n' $(ITEMS) | awk -v last="$$last" '{ if ($$1 == last) { found=$$0 } else { rest = rest $$0 "\n" } } END { if (found) print found; printf "%s", rest }' | gum choose --header "Select a command:"); \
-	else \
-		choice=$$(gum choose --header "Select a command:" $(ITEMS)); \
-	fi; \
-	target=$$(echo "$$choice" | awk '{print $$1}'); \
-	if [ -n "$$target" ]; then \
-		mkdir -p $$(dirname $(LAST_CHOICE_FILE)); \
-		echo "$$target" > $(LAST_CHOICE_FILE); \
-		$(MAKE) $$target; \
+# Resolve codesign identity (see header comment for priority chain).
+# Only runs the lookup when CATERM_DEV_IDENTITY is not already set on the
+# command line / environment.
+# (awk -F'"' avoids nested parens that confuse make's $(shell ...) tokenizer.)
+ifeq ($(origin CATERM_DEV_IDENTITY), undefined)
+  ifneq ("$(wildcard $(ROOT)/.dev-identity)","")
+    CATERM_DEV_IDENTITY := $(shell tr -d '[:space:]' < $(ROOT)/.dev-identity)
+  else
+    CATERM_DEV_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $$2;exit}')
+  endif
+endif
+
+.DEFAULT_GOAL := help
+
+.PHONY: help
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo
+	@echo "Detected codesign identity: $(CATERM_DEV_IDENTITY)"
+
+.PHONY: build
+build: ## swift build (debug)
+	swift build
+
+.PHONY: build-release
+build-release: ## swift build (release)
+	swift build -c release
+
+.PHONY: ghostty-submodule
+ghostty-submodule: ## init/update Ghostty submodule
+	git -C "$(ROOT)" submodule update --init --recursive Vendor/ghostty
+
+.PHONY: ghostty-kit
+ghostty-kit: ghostty-submodule ## build Frameworks/GhosttyKit.xcframework
+	bash Scripts/build-libghostty.sh
+
+.PHONY: sign
+sign: build ## codesign caterm + caterm-askpass with dev identity
+	@if [ -z "$(CATERM_DEV_IDENTITY)" ]; then \
+	    echo "No codesign identity detected. Set CATERM_DEV_IDENTITY=..."; \
+	    exit 1; \
 	fi
+	CATERM_DEV_IDENTITY="$(CATERM_DEV_IDENTITY)" bash Scripts/dev-codesign.sh
 
-dev:
-	bun run --filter server dev & bun run --filter web desktop:dev
+.PHONY: run
+run: sign ## build + sign + launch bare binary (build smoke only — APS register in AppDelegate will crash without bundle id; use run-app for actual dev)
+	@echo "Launching $(CATERM_BIN)"
+	@"$(CATERM_BIN)"
 
-dev-server:
-	bun run --filter server dev
+.PHONY: run-app
+run-app: sign ## build + sign + wrap in Caterm.app + launch — use this for anything needing bundle identity
+	# Why a separate target?
+	#   `make run` launches the bare `caterm` binary, which has no Info.plist
+	#   and no CFBundleIdentifier. Several Apple frameworks (most notably
+	#   UserNotifications, NSWorkspace, App Groups) raise an uncatchable
+	#   Obj-C NSException ("bundleProxyForCurrentProcess is nil") when called
+	#   from a process with no bundle identity, killing the whole app.
+	#
+	#   This target wraps the already-signed binaries in a minimal Caterm.app
+	#   shell, writes an Info.plist with CFBundleIdentifier=app.caterm.dev,
+	#   re-seals the bundle, and launches it via `open` so Launch Services
+	#   treats it as a real app. See Scripts/dev-run-app.sh for details.
+	#
+	# Override the bundle id (e.g. to share Keychain state with another build):
+	#   make run-app CATERM_DEV_BUNDLE_ID=app.caterm.dev2
+	@if [ -z "$(CATERM_DEV_IDENTITY)" ]; then \
+	    echo "No codesign identity detected. Set CATERM_DEV_IDENTITY=..."; \
+	    exit 1; \
+	fi
+	CATERM_DEV_IDENTITY="$(CATERM_DEV_IDENTITY)" \
+	    CATERM_DEV_BUNDLE_ID="$(CATERM_DEV_BUNDLE_ID)" \
+	    bash Scripts/dev-run-app.sh
 
-build:
-	bun run --filter '*' build
+.PHONY: run-bg
+run-bg: sign ## build + sign + launch caterm in background (logs to /tmp/caterm.log)
+	@echo "Launching $(CATERM_BIN) (logs: /tmp/caterm.log)"
+	@nohup "$(CATERM_BIN)" >/tmp/caterm.log 2>&1 &
+	@sleep 0.5
+	@echo "Started (pid $$(pgrep -nf '$(CATERM_BIN)' || echo '?'))"
 
-check-types:
-	bun run --filter '*' check-types
+.PHONY: kill
+kill: ## kill any running caterm dev process
+	-pkill -f "$(CATERM_BIN)" || true
+	-pkill -f "Caterm.app/Contents/MacOS/caterm" || true
 
-tauri:
-	bun run --filter web tauri --
+.PHONY: dist
+dist: build-release ## Distribution build: release config + dist signing + bundle assembly
+	# Production-signed Caterm.app for two-Mac smoke / external distribution.
+	#
+	# Required env (these are NOT auto-detected):
+	#   CATERM_DIST_IDENTITY       Developer ID / Mac App Distribution identity
+	#                              (CN or SHA-1; same form as CATERM_DEV_IDENTITY).
+	#   CATERM_DIST_PROFILE_PATH   path to the Distribution .provisionprofile
+	#                              (App ID configured with aps-environment=
+	#                              production and icloud-container-environment=
+	#                              Production).
+	#
+	# This target intentionally does NOT launch the app — distribution builds
+	# are for the test Macs, not local dev. Output: .build/release/Caterm.app.
+	@if [ -z "$$CATERM_DIST_IDENTITY" ]; then \
+	    echo "Set CATERM_DIST_IDENTITY=... (Developer ID / Mac App Distribution cert)"; \
+	    exit 1; \
+	fi
+	@if [ -z "$$CATERM_DIST_PROFILE_PATH" ]; then \
+	    echo "Set CATERM_DIST_PROFILE_PATH=... (Distribution .provisionprofile)"; \
+	    exit 1; \
+	fi
+	bash Scripts/dev-codesign.sh --profile distribution
+	bash Scripts/dist-package.sh
 
-tauri-dev:
-	bun run --filter web desktop:dev
+.PHONY: dmg
+dmg: ## wrap .build/release/Caterm.app in a UDZO dmg (run after `make dist`)
+	# Optional env (mirrors build-dmg.sh):
+	#   CATERM_DIST_VERSION    name suffix; default 1.0.0
+	#   CATERM_DIST_IDENTITY   if set, sign the dmg with the same Developer ID
+	#   CATERM_NOTARY_PROFILE  if set, notarize + staple the dmg
+	bash Scripts/build-dmg.sh
 
-tauri-build:
-	bun run --filter web desktop:build
+.PHONY: release
+release: ## full release pipeline: build + sign + notarize + staple + dmg (pass flags via ARGS=)
+	# One command for the whole Distribution chain. Auto-resolves the
+	# Developer ID identity + provisioning profile + notary keychain
+	# profile; see Scripts/release.sh header for env overrides.
+	#
+	#   make release                       full notarized .app + .dmg
+	#   make release ARGS=--skip-notary    signed-only (two-Mac smoke)
+	#   make release ARGS=--skip-dmg       .app only, no disk image
+	bash Scripts/release.sh $(ARGS)
 
-check:
-	bun x ultracite check
+.PHONY: publish
+publish: ## tag + GitHub release + upload notarized artifacts (run after `make release`)
+	# Gatekeeper-gated: refuses to publish unless the .app/.dmg are
+	# notarized + stapled. Notes come from CHANGELOG.md.
+	#
+	#   make publish                   public release for the latest CHANGELOG version
+	#   make publish ARGS=--draft      create as a draft
+	#   make publish ARGS=--dry-run    print actions, mutate nothing
+	bash Scripts/publish-release.sh $(ARGS)
 
-fix:
-	bun x ultracite fix
+.PHONY: bootstrap-askpass
+bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)
+	@CATERM_ASKPASS_STUFF=1 "$(ASKPASS_BIN)" || true
+	@echo "askpass keychain bootstrap done."
 
-install:
-	bun install
+.PHONY: test
+test: ## swift test (set CATERM_E2E_DOCKER=1 to include the Docker E2E)
+	swift test
 
-db-push:
-	bun run --filter @Caterm/db db:push
+.PHONY: test-e2e
+test-e2e: ## include the Docker E2E SSH integration test
+	CATERM_E2E_DOCKER=1 swift test
 
-db-generate:
-	bun run --filter @Caterm/db db:generate
+.PHONY: clean
+clean: ## remove .build (forces full rebuild)
+	swift package clean
+	rm -rf .build/debug.yaml
 
-db-studio:
-	bun run --filter @Caterm/db db:studio
+.PHONY: distclean
+distclean: ## nuke .build entirely (incl. SwiftPM caches)
+	rm -rf .build
 
-db-migrate:
-	bun run --filter @Caterm/db db:migrate
-
-db-start:
-	bun run --filter @Caterm/db db:start
-
-db-stop:
-	bun run --filter @Caterm/db db:stop
-
-# Run with 1Password environment variables
-dev-op:
-	op run --env-file ./apps/server/.env.op -- bun run --filter server dev & \
-	op run --env-file ./apps/server/.env.op -- bun run --filter web desktop:dev
-
-dev-server-op:
-	op run --env-file ./apps/server/.env.op -- bun run --filter server dev
-
-# macOS app — delegates everything to apps/macos/Makefile.
-# Usage: `make macos-run`, `make macos-test`, `make macos-clean`, ...
-# `make macos` shows the macOS Makefile help.
-macos:
-	@$(MAKE) -C apps/macos help
-
-.PHONY: macos-theme-catalog
-macos-theme-catalog: macos-ghostty-submodule
-	bash apps/macos/Scripts/build-theme-catalog.sh
-
-.PHONY: macos-ghostty-kit
-macos-ghostty-kit: macos-theme-catalog
-	@$(MAKE) -C apps/macos ghostty-kit
-
-macos-%:
-	@$(MAKE) -C apps/macos $*
-
-# Sync local .env to 1Password Caterm item
-env-sync:
-	@echo "Syncing .env to 1Password (Caterm)..."
-	@op item delete "Caterm" --vault=Developer 2>/dev/null || true
-	@op item create --vault=Developer --category="Server" --title="Caterm" \
-		"DATABASE_URL[password]=$$(grep DATABASE_URL apps/server/.env | cut -d= -f2-)" \
-		"BETTER_AUTH_SECRET[password]=$$(grep BETTER_AUTH_SECRET apps/server/.env | cut -d= -f2-)" \
-		"BETTER_AUTH_URL[text]=$$(grep BETTER_AUTH_URL apps/server/.env | cut -d= -f2-)" \
-		"CORS_ORIGIN[text]=$$(grep CORS_ORIGIN apps/server/.env | cut -d= -f2-)" \
-		"ENCRYPTION_KEY[password]=$$(grep ENCRYPTION_KEY apps/server/.env | cut -d= -f2-)" \
-		"NODE_ENV[text]=$$(grep NODE_ENV apps/server/.env | cut -d= -f2-)" \
-		--tags="env,server,caterm"
-	@echo "Done! Updated 1Password Developer/Caterm"
+.PHONY: doctor
+doctor: ## show toolchain / signing diagnostics
+	@echo "swift: $$(swift --version | head -1)"
+	@echo "Xcode CLT: $$(xcode-select -p)"
+	@echo "codesign identities:"
+	@security find-identity -v -p codesigning | sed 's/^/  /'
+	@echo "Detected identity: $(CATERM_DEV_IDENTITY)"
+	@echo "Build dir: $(BIN_DIR)"
+	@if [ -x "$(CATERM_BIN)" ]; then \
+	    echo "caterm signature:"; \
+	    codesign -dvv "$(CATERM_BIN)" 2>&1 | grep -E "TeamIdentifier|Authority" | sed 's/^/  /'; \
+	fi

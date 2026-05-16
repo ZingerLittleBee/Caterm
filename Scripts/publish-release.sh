@@ -22,7 +22,7 @@ set -euo pipefail
 #   --dry-run      print every action, mutate nothing
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
+REPO_ROOT="$ROOT"
 BIN_DIR="$ROOT/.build/release"
 CHANGELOG="$ROOT/CHANGELOG.md"
 

@@ -70,9 +70,8 @@ git clone https://github.com/ZingerLittleBee/Caterm.git
 cd Caterm
 
 # Init the Ghostty submodule and build Frameworks/GhosttyKit.xcframework
-make macos-ghostty-kit
+make ghostty-kit
 
-cd apps/macos
 make run-app          # build + codesign + wrap in Caterm.app + launch
 ```
 
@@ -82,7 +81,6 @@ because the app registers for APS push, which requires a bundle identity.
 ## Development
 
 ```bash
-cd apps/macos
 make test             # swift test
 make build            # swift build (debug)
 make doctor           # toolchain / signing diagnostics
@@ -90,7 +88,7 @@ make help             # list all targets
 ```
 
 Codesigning for local development resolves an identity from
-`CATERM_DEV_IDENTITY`, `apps/macos/.dev-identity`, or the login keychain.
+`CATERM_DEV_IDENTITY`, `.dev-identity`, or the login keychain.
 See [`docs/macos-dev-signing.md`](docs/macos-dev-signing.md) for the signing
 pitfalls and the full rationale.
 
@@ -100,14 +98,14 @@ pitfalls and the full rationale.
 
 Building a distributable, notarized release requires your own Apple
 Developer account. All identity and credentials live outside git in the
-gitignored `apps/macos/sign/` directory — nothing personal is committed.
+gitignored `sign/` directory — nothing personal is committed.
 
 1. A **Developer ID Application** certificate for your team in the login
    keychain.
 2. A **Distribution provisioning profile** (Developer ID type) for your
    App ID, configured with `aps-environment=production` and
    `icloud-container-environment=Production`. Save it as
-   `apps/macos/sign/Caterm_Developer_ID.provisionprofile` — `release.sh`
+   `sign/Caterm_Developer_ID.provisionprofile` — `release.sh`
    auto-resolves it there.
 3. A **notarytool keychain profile** named `caterm` (the app-specific
    password is prompted securely; never commit it):
@@ -126,9 +124,7 @@ gitignored `apps/macos/sign/` directory — nothing personal is committed.
 
 ```bash
 # 1. Add a new version section (with date) at the top of the CHANGELOG.
-$EDITOR apps/macos/CHANGELOG.md
-
-cd apps/macos
+$EDITOR CHANGELOG.md
 
 # 2. Build + Developer ID sign + notarize + staple + dmg.
 make release
@@ -141,23 +137,23 @@ make publish
 #    make publish ARGS=--draft         create the release as a draft
 ```
 
-`make release` ([`Scripts/release.sh`](apps/macos/Scripts/release.sh))
+`make release` ([`Scripts/release.sh`](Scripts/release.sh))
 auto-resolves the Developer ID identity, provisioning profile, and notary
 profile, then runs build → distribution codesign (two-pass entitlement
 re-seal + askpass entitlement isolation) → bundle assembly → notarize →
 staple → dmg → Gatekeeper assessment.
 
-`make publish` ([`Scripts/publish-release.sh`](apps/macos/Scripts/publish-release.sh))
+`make publish` ([`Scripts/publish-release.sh`](Scripts/publish-release.sh))
 is Gatekeeper-gated — it refuses to publish a build that is not notarized
 and stapled — pushes an annotated `v<version>` tag, and creates the
 GitHub release with notes pulled from the matching
-[`apps/macos/CHANGELOG.md`](apps/macos/CHANGELOG.md) section. The CHANGELOG
+[`CHANGELOG.md`](CHANGELOG.md) section. The CHANGELOG
 version drives the tag, so it must point at the commit you intend to
 release (clean tree, pushed to `origin/main`).
 
 ## Architecture
 
-A Swift Package Manager project (`apps/macos/Package.swift`) split into
+A Swift Package Manager project (`Package.swift`) split into
 focused modules — terminal engine, SSH command builder, session store,
 CloudKit/credential/settings sync clients, SFTP, and the SwiftUI app
 target. There is no backend service: all sync flows through the user's

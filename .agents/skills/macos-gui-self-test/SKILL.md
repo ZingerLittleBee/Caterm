@@ -7,7 +7,7 @@ description: |
   user says "自己测试" / "你自己看" / "自主验证" / "verify it yourself", or
   when about to claim a UI fix is done.
 
-  Use BEFORE committing any apps/macos/Sources/Caterm/Views/** change as
+  Use BEFORE committing any Sources/Caterm/Views/** change as
   proof the fix actually renders correctly — never assume a SwiftUI layout
   edit works just because it compiles. Drives Caterm via cliclick + osascript,
   captures with screencapture, and reads the PNG via the Read tool to inspect
@@ -20,7 +20,7 @@ Drive a real running Caterm.app from the shell, capture screenshots, and inspect
 
 ## When this skill applies
 
-- Any edit under `apps/macos/Sources/Caterm/Views/**` whose intent is visible behavior
+- Any edit under `Sources/Caterm/Views/**` whose intent is visible behavior
 - After a `make macos-*` rebuild when the user is about to test
 - Any time the user has expressed frustration that previous "fixes" weren't actually verified
 
@@ -39,8 +39,8 @@ The Read tool inspects PNG content directly; this is what makes "looking at the 
 
 ```
 1. Edit code
-2. make -C apps/macos kill
-3. make -C apps/macos run-bg     # logs → /tmp/caterm.log, prints pid
+2. make kill
+3. make run-bg     # logs → /tmp/caterm.log, prints pid
 4. open -a caterm                 # bring to front
 5. osascript: get window frame
 6. osascript: set position {0, 50} and size {1500, 700}
@@ -165,8 +165,8 @@ Then call the Read tool on `/tmp/shot.png`. The model sees the actual rendering.
 # 1. Code edit happens (Edit tool)
 
 # 2. Rebuild + relaunch
-make -C apps/macos kill
-make -C apps/macos run-bg              # → "Started (pid 13708)"
+make kill
+make run-bg              # → "Started (pid 13708)"
 
 sleep 3
 open -a caterm
@@ -201,7 +201,7 @@ screencapture -x -R 0,50,1500,700 /tmp/v-final.png
 When done, kill the test instance so the user's normal Caterm session is unaffected:
 
 ```bash
-make -C apps/macos kill
+make kill
 pgrep -lx caterm                # should be empty
 # kill any stragglers found
 ```
