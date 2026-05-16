@@ -18,6 +18,15 @@ The app is Developer ID signed, notarized, and stapled. Grab
 
 Requires **macOS 14.0 or later**.
 
+Sync needs the Mac to be signed into iCloud — there is no separate account.
+Signed out, Caterm still works fully as a local-only terminal manager; it
+just doesn't sync. No degraded mode, no nag screens.
+
+## Screenshots
+
+<!-- TODO: add screenshots / a short demo GIF here -->
+_Screenshots coming soon._
+
 ## Features
 
 ### Terminal
@@ -54,6 +63,30 @@ Requires **macOS 14.0 or later**.
 - Settings sync via `NSUbiquitousKeyValueStore` with revision-based
   last-writer-wins and quarantine on corrupt/incompatible blobs.
 - Snippet store and sync.
+
+## Security
+
+Caterm syncs SSH credentials, so the encryption model is deliberate:
+
+- **Credentials are end-to-end encrypted.** Each credential field is sealed
+  with **AES-256-GCM** (authenticated with associated data binding it to its
+  host, field, and revision) before it ever leaves the device.
+- **The master key lives only in your iCloud Keychain.** It is a 256-bit
+  symmetric key stored as a *synchronizable* Keychain item, so it
+  propagates between your Macs through Apple's end-to-end-encrypted iCloud
+  Keychain — Apple cannot read it.
+- **Different data, different paths.** Sealed credential blobs ride on
+  CloudKit `Host` records; the master key rides iCloud Keychain. Apple sees
+  only ciphertext on the CloudKit side and never holds the key to it.
+- **Settings** sync via `NSUbiquitousKeyValueStore` and are not sensitive;
+  a corrupt or schema-incompatible blob is quarantined rather than applied.
+- **Losing a device** does not expose credentials: the blobs are useless
+  without the master key, which is gated by your Apple ID and the iCloud
+  Keychain security code. Revoke a lost Mac from Apple ID device management
+  as usual.
+
+There is no Caterm server and no Caterm account — nothing to breach on our
+side because there is no "our side".
 
 ## Build from source
 
@@ -186,3 +219,15 @@ focused modules — terminal engine, SSH command builder, session store,
 CloudKit/credential/settings sync clients, SFTP, and the SwiftUI app
 target. There is no backend service: all sync flows through the user's
 private CloudKit database and iCloud Keychain.
+
+## Acknowledgements
+
+Caterm's terminal is powered by [Ghostty](https://github.com/ghostty-org/ghostty)
+(libghostty), vendored as a submodule and built into `GhosttyKit.xcframework`.
+Ghostty is MIT-licensed; thanks to Mitchell Hashimoto and the Ghostty
+contributors.
+
+## License
+
+[MIT](LICENSE) © ZingerLittleBee. The bundled libghostty is MIT-licensed
+and remains under its own terms.
