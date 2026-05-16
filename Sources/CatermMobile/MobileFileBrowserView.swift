@@ -14,6 +14,21 @@ public struct MobileFileBrowserView: View {
 	public var body: some View {
 		List {
 			Section {
+				Label {
+					VStack(alignment: .leading, spacing: 4) {
+						Text("Remote browsing is not available in this phase.")
+							.font(.subheadline.weight(.semibold))
+						Text("On-device SFTP needs a platform-safe SSH transport, which lands with the mobile terminal. Navigation and actions below are previews only.")
+							.font(.caption)
+							.foregroundStyle(.secondary)
+					}
+				} icon: {
+					Image(systemName: "exclamationmark.triangle")
+						.foregroundStyle(.orange)
+				}
+			}
+
+			Section {
 				if model.path != "~", model.path != "/" {
 					Button {
 						model.goUp()

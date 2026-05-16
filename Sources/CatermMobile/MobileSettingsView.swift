@@ -5,13 +5,18 @@ public struct MobileSettingsView: View {
 
 	public var body: some View {
 		Form {
-			Section("Sync") {
-				Label("iCloud sync uses the existing Caterm stores.", systemImage: "icloud")
-				Label("Credential material remains device-local until the sync adapter is connected.", systemImage: "key")
+			Section("Storage") {
+				Label("Hosts persist to this device using the same on-disk format as the Mac app.", systemImage: "externaldrive")
+				Label("Host secrets are saved to the device keychain.", systemImage: "key")
 			}
 
-			Section("Terminal") {
+			Section("Sync") {
+				Label("iCloud/CloudKit sync across devices is not wired yet in this phase.", systemImage: "icloud")
+			}
+
+			Section("Terminal & Files") {
 				Label("Mobile terminal rendering is isolated for this phase.", systemImage: "terminal")
+				Label("Remote file browsing needs the platform-safe SSH transport that ships with the mobile terminal.", systemImage: "folder")
 			}
 		}
 		.navigationTitle("Settings")
