@@ -1,3 +1,4 @@
+import AppKit
 import SSHCommandBuilder
 import SwiftUI
 
@@ -11,31 +12,78 @@ enum HostIconCatalog {
 		let symbols: [String]
 	}
 
+	/// SF Symbols are versioned — a name added in a later SF Symbols release
+	/// renders blank on older macOS. Filter the catalog to symbols this OS
+	/// can actually draw so the grid never shows empty cells. Result is
+	/// cached (the system symbol set doesn't change at runtime).
+	private static var resolved: [Group]?
+
+	static func isAvailable(_ name: String) -> Bool {
+		NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil
+	}
+
+	/// Catalog with unavailable symbols (and now-empty groups) removed.
+	static var displayGroups: [Group] {
+		if let resolved { return resolved }
+		let filtered = groups.compactMap { g -> Group? in
+			let syms = g.symbols.filter { isAvailable($0) }
+			return syms.isEmpty ? nil : Group(title: g.title, symbols: syms)
+		}
+		resolved = filtered
+		return filtered
+	}
+
 	static let groups: [Group] = [
-		Group(title: "Servers", symbols: [
-			"server.rack", "externaldrive.connected.to.line.below",
-			"internaldrive", "externaldrive", "cylinder.split.1x2",
-			"network", "point.3.connected.trianglepath.dotted",
-			"cloud", "cpu", "memorychip",
+		Group(title: "Servers & Storage", symbols: [
+			"server.rack", "xserve", "externaldrive.connected.to.line.below",
+			"internaldrive", "internaldrive.fill", "externaldrive",
+			"externaldrive.fill", "opticaldiscdrive", "cylinder.split.1x2",
+			"cylinder", "cpu", "memorychip", "sdcard", "archivebox",
+			"tray.full", "rack",
+		]),
+		Group(title: "Network", symbols: [
+			"network", "globe", "wifi", "antenna.radiowaves.left.and.right",
+			"point.3.connected.trianglepath.dotted",
+			"point.topleft.down.curvedto.point.bottomright.up",
+			"dot.radiowaves.left.and.right", "cable.connector",
+			"app.connected.to.app.below.fill", "arrow.triangle.branch",
+			"cloud", "cloud.fill", "lock.icloud", "personalhotspot",
 		]),
 		Group(title: "Devices", symbols: [
-			"desktopcomputer", "macpro.gen3", "laptopcomputer",
-			"pc", "display", "terminal", "shippingbox", "cube",
+			"desktopcomputer", "macpro.gen3", "macpro.gen1", "macmini",
+			"laptopcomputer", "pc", "display", "display.2",
+			"terminal", "terminal.fill", "keyboard", "tv",
+			"shippingbox", "shippingbox.fill", "cube", "cube.fill",
 		]),
-		Group(title: "Platform", symbols: [
-			"apple.logo", "gearshape.2", "hammer", "wrench.and.screwdriver",
-			"shield.lefthalf.filled", "lock.shield", "key.fill",
-			"ladybug", "ant", "hare", "tortoise",
+		Group(title: "Platform & Tools", symbols: [
+			"apple.logo", "gearshape", "gearshape.2", "hammer",
+			"hammer.fill", "wrench.and.screwdriver", "wrench.adjustable",
+			"shield.lefthalf.filled", "lock.shield", "lock.fill",
+			"key.fill", "key.horizontal.fill", "checkmark.shield",
+			"ladybug", "ant", "ant.fill", "curlybraces",
+			"chevron.left.forwardslash.chevron.right", "command",
+			"bolt.horizontal.circle", "gauge.with.dots.needle.67percent",
 		]),
 		Group(title: "Region / Flags", symbols: [
-			"globe", "globe.americas.fill", "globe.europe.africa.fill",
-			"globe.asia.australia.fill", "flag.fill", "flag.checkered",
-			"mappin.and.ellipse", "building.2.fill", "house.fill",
+			"globe.americas.fill", "globe.europe.africa.fill",
+			"globe.asia.australia.fill", "globe.central.south.asia.fill",
+			"flag.fill", "flag.checkered", "flag.2.crossed.fill",
+			"mappin.and.ellipse", "map.fill", "location.fill",
+			"building.2.fill", "building.columns.fill", "house.fill",
+			"globe.badge.chevron.backward",
+		]),
+		Group(title: "Animals", symbols: [
+			"hare", "hare.fill", "tortoise", "tortoise.fill",
+			"bird", "bird.fill", "fish", "fish.fill",
+			"ladybug.fill", "lizard", "lizard.fill", "pawprint.fill",
 		]),
 		Group(title: "Accent", symbols: [
 			"star.fill", "bolt.fill", "flame.fill", "leaf.fill",
 			"sparkles", "circle.hexagongrid.fill", "diamond.fill",
-			"heart.fill",
+			"heart.fill", "crown.fill", "moon.fill", "sun.max.fill",
+			"snowflake", "drop.fill", "atom", "infinity",
+			"hexagon.fill", "seal.fill", "shield.fill", "circle.fill",
+			"square.fill", "triangle.fill", "rhombus.fill",
 		]),
 	]
 }
@@ -106,7 +154,7 @@ struct HostIconPicker: View {
 				}
 				.buttonStyle(.plain)
 
-				ForEach(HostIconCatalog.groups) { group in
+				ForEach(HostIconCatalog.displayGroups) { group in
 					VStack(alignment: .leading, spacing: 6) {
 						Text(group.title)
 							.font(.caption.weight(.semibold))
