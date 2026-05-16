@@ -29,6 +29,23 @@ struct ConnectingOverlay: View {
 		max(0, now.timeIntervalSince(startedAt))
 	}
 
+	/// Surfaced one-at-a-time on the loading screen so the wait doubles as
+	/// a hint about how Caterm handles keys / sync.
+	private static let tips: [String] = [
+		"Trying your saved key for this host…",
+		"Tip: pick a key from ~/.ssh in the host editor to reuse keys you already have.",
+		"Keys you explicitly choose sync across your devices with iCloud credential sync.",
+		"Keys auto-found in ~/.ssh are never uploaded unless you opt in under Settings → Sync.",
+		"If a key has a passphrase, Caterm asks for it and stores it in your Keychain.",
+		"Hold ⌘ anywhere to reveal keyboard shortcuts.",
+	]
+
+	private var currentTip: String {
+		guard stage == .authenticating, elapsed >= 1 else { return "" }
+		let idx = Int(elapsed / 4) % Self.tips.count
+		return Self.tips[idx]
+	}
+
 	var body: some View {
 		ZStack {
 			Color.black.opacity(0.78).ignoresSafeArea()
@@ -53,6 +70,16 @@ struct ConnectingOverlay: View {
 					Text(String(format: "elapsed %.0fs", elapsed))
 						.font(.system(size: 11))
 						.foregroundColor(.white.opacity(0.6))
+				}
+				if !currentTip.isEmpty {
+					Text(currentTip)
+						.font(.system(size: 11))
+						.foregroundColor(.white.opacity(0.55))
+						.multilineTextAlignment(.center)
+						.frame(maxWidth: 360)
+						.transition(.opacity)
+						.id(currentTip)
+						.animation(.easeInOut(duration: 0.3), value: currentTip)
 				}
 			}
 			.padding(.vertical, 20)

@@ -16,6 +16,7 @@ public final class SyncPreferences: ObservableObject {
     private static let periodicEnabledKey = "catermPeriodicSyncEnabled"
     public static let notifyOnFailureKey = "catermNotifyOnFailureEnabled"
     private static let installTerminfoEnabledKey = "catermInstallTerminfoEnabled"
+    private static let autoUploadDefaultKeysEnabledKey = "catermAutoUploadDefaultKeysEnabled"
     private let defaults: UserDefaults
 
     @Published public var periodicSyncEnabled: Bool {
@@ -40,6 +41,18 @@ public final class SyncPreferences: ObservableObject {
         }
     }
 
+    /// v1.7 — opt-in. When false (default), keys discovered by scanning the
+    /// user's `~/.ssh` directory are NEVER uploaded to iCloud, even if one of
+    /// them successfully authenticates. When true, a scanned default key that
+    /// produced a successful connection may be promoted to a synced managed
+    /// credential for that host. Keys that never produced a successful
+    /// connection are never synced regardless of this setting.
+    @Published public var autoUploadDefaultKeysEnabled: Bool {
+        didSet {
+            defaults.set(autoUploadDefaultKeysEnabled, forKey: Self.autoUploadDefaultKeysEnabledKey)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let stored = defaults.object(forKey: Self.periodicEnabledKey) as? Bool
@@ -49,5 +62,8 @@ public final class SyncPreferences: ObservableObject {
         // `bool(forKey:)` returns false when the key is absent — that IS the
         // default we want (opt-in), so no `?? false` fallback needed.
         self.installTerminfoEnabled = defaults.bool(forKey: Self.installTerminfoEnabledKey)
+        // Absent key → false (opt-in: never auto-upload default keys without
+        // explicit consent).
+        self.autoUploadDefaultKeysEnabled = defaults.bool(forKey: Self.autoUploadDefaultKeysEnabledKey)
     }
 }
