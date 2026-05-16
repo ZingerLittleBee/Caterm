@@ -62,8 +62,21 @@ public struct MobileHostsView: View {
 
 	static func liveSession(for host: SSHHost) -> SSHTerminalSession {
 		let kc = KeychainStore(service: MobileCredentialWriter.defaultService, accessGroup: nil)
-		let password = try? kc.get(account: MobileCredentialPlan.passwordAccount(host.id))
-		let passphrase = try? kc.get(account: MobileCredentialPlan.keyPassphraseAccount(host.id))
+		var password = try? kc.get(account: MobileCredentialPlan.passwordAccount(host.id))
+		var passphrase = try? kc.get(account: MobileCredentialPlan.keyPassphraseAccount(host.id))
+
+		#if targetEnvironment(simulator)
+		// The iOS Simulator refuses to launch an ad-hoc / SwiftPM-wrapped
+		// build that carries the keychain-access-groups entitlement, so the
+		// Keychain is simply unavailable on the simulator and the reads
+		// above return nil. To allow real-SSH end-to-end verification there,
+		// fall back to credentials injected via the launch environment.
+		// This is compiled out entirely on device, so device builds remain
+		// strictly Keychain-backed.
+		let env = ProcessInfo.processInfo.environment
+		if password == nil { password = env["CATERM_SIM_SSH_PASSWORD"] }
+		if passphrase == nil { passphrase = env["CATERM_SIM_SSH_PASSPHRASE"] }
+		#endif
 		let keyBlob: Data? = {
 			if case let .keyFile(path, _) = host.credential {
 				return try? Data(contentsOf: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
