@@ -399,15 +399,15 @@ private struct ForwardListEditor: View {
 	let onDelete: (UUID) -> Void
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 4) {
+		VStack(alignment: .leading, spacing: 6) {
 			ScrollView {
-				LazyVStack(spacing: 4) {
+				LazyVStack(spacing: 8) {
 					ForEach($forwards) { $forward in
 						ForwardRow(forward: $forward, onDelete: { onDelete(forward.id) })
 					}
 				}
 			}
-			.frame(maxHeight: forwards.count > 5 ? 180 : nil)
+			.frame(maxHeight: forwards.count > 4 ? 220 : nil)
 
 			Button("+ Add port forward", action: onAdd)
 				.buttonStyle(.borderless)
@@ -419,70 +419,125 @@ private struct ForwardRow: View {
 	@Binding var forward: PortForward
 	let onDelete: () -> Void
 
+	/// Plain-language name shown in the type menu instead of ssh's L/R/D.
+	private static func typeName(_ k: PortForward.Kind) -> String {
+		switch k {
+		case .local:   return "Local port"
+		case .remote:  return "Remote port"
+		case .dynamic: return "SOCKS proxy"
+		}
+	}
+
+	/// One-line, jargon-free description of what this rule does, kept in
+	/// sync with the entered values so the user sees the effect at a glance.
+	private var explanation: String {
+		let bind = forward.bindPort
+		let host = forward.remoteHost?.isEmpty == false ? forward.remoteHost! : "localhost"
+		let rport = forward.remotePort ?? bind
+		switch forward.kind {
+		case .local:
+			return "Opens port \(bind) on this Mac → reaches \(host):\(rport) through the server."
+		case .remote:
+			return "Opens port \(bind) on the server → tunnels back to \(host):\(rport) on this Mac."
+		case .dynamic:
+			return "Runs a SOCKS proxy on port \(bind) of this Mac (route apps through the server)."
+		}
+	}
+
+	private var typeHelp: String {
+		"""
+		Local port: open a port on your Mac that reaches a service the server can see.
+		Remote port: open a port on the server that tunnels back to your Mac.
+		SOCKS proxy: a dynamic proxy on your Mac that routes traffic via the server.
+		"""
+	}
+
 	var body: some View {
-		HStack(spacing: 8) {
-			Picker("", selection: $forward.kind) {
-				Text("L").tag(PortForward.Kind.local)
-				Text("R").tag(PortForward.Kind.remote)
-				Text("D").tag(PortForward.Kind.dynamic)
-			}
-			.pickerStyle(.menu)
-			.frame(width: 60)
-			.labelsHidden()
-			.onChange(of: forward.kind) { _, newKind in
-				if newKind == .dynamic {
-					forward.remoteHost = nil
-					forward.remotePort = nil
-				} else if forward.remoteHost == nil {
-					forward.remoteHost = "localhost"
-					forward.remotePort = forward.bindPort
+		VStack(alignment: .leading, spacing: 3) {
+			HStack(spacing: 8) {
+				Picker("", selection: $forward.kind) {
+					Text("Local port").tag(PortForward.Kind.local)
+					Text("Remote port").tag(PortForward.Kind.remote)
+					Text("SOCKS proxy").tag(PortForward.Kind.dynamic)
 				}
-			}
+				.pickerStyle(.menu)
+				.labelsHidden()
+				.frame(width: 116)
+				.help(typeHelp)
+				.onChange(of: forward.kind) { _, newKind in
+					if newKind == .dynamic {
+						forward.remoteHost = nil
+						forward.remotePort = nil
+					} else if forward.remoteHost == nil {
+						forward.remoteHost = "localhost"
+						forward.remotePort = forward.bindPort
+					}
+				}
 
-			TextField("Bind port", value: $forward.bindPort, format: .number)
-				.frame(width: 80)
+				TextField("", value: $forward.bindPort,
+				          format: .number.grouping(.never),
+				          prompt: Text("8080"))
+					.labelsHidden()
+					.multilineTextAlignment(.center)
+					.frame(width: 72)
+					.help("The port number to open.")
 
-			if forward.kind == .dynamic {
-				Text("(dynamic)")
-					.foregroundStyle(.secondary)
-					.frame(maxWidth: .infinity, alignment: .leading)
-			} else {
-				HStack(spacing: 2) {
-					TextField("host", text: Binding(
+				if forward.kind == .dynamic {
+					Spacer(minLength: 0)
+				} else {
+					Image(systemName: "arrow.right")
+						.font(.caption)
+						.foregroundStyle(.secondary)
+
+					TextField("", text: Binding(
 						get: { forward.remoteHost ?? "" },
 						set: { forward.remoteHost = $0.isEmpty ? nil : $0 }
-					))
-					.frame(maxWidth: 140)
-					Text(":")
-					TextField("port", value: Binding(
+					), prompt: Text("localhost"))
+					.labelsHidden()
+					.frame(minWidth: 90)
+					.help("The destination host, as seen from the other side.")
+
+					Text(":").foregroundStyle(.secondary)
+
+					TextField("", value: Binding(
 						get: { forward.remotePort ?? 0 },
 						set: { forward.remotePort = $0 }
-					), format: .number)
-					.frame(width: 70)
+					), format: .number.grouping(.never),
+					   prompt: Text("80"))
+					.labelsHidden()
+					.multilineTextAlignment(.center)
+					.frame(width: 64)
+					.help("The destination port.")
 				}
-				.frame(maxWidth: .infinity, alignment: .leading)
+
+				Toggle("", isOn: $forward.required)
+					.labelsHidden()
+					.toggleStyle(.checkbox)
+					.help("Required: if this port can't be opened, abort the whole connection (only when every forward on this host is required).")
+
+				Button {
+					onDelete()
+				} label: {
+					Image(systemName: "xmark.circle.fill")
+						.foregroundStyle(.secondary)
+				}
+				.buttonStyle(.borderless)
+				.help("Remove this rule")
 			}
 
-			Toggle("", isOn: $forward.required)
-				.labelsHidden()
-				.help("If enabled, a bind failure will abort the connection (only when ALL forwards on this host are required).")
-
-			Button {
-				onDelete()
-			} label: {
-				Image(systemName: "xmark")
-			}
-			.buttonStyle(.borderless)
-			.help("Delete this forward")
+			Text(explanation)
+				.font(.caption)
+				.foregroundStyle(.secondary)
+				.fixedSize(horizontal: false, vertical: true)
 		}
-		.padding(.vertical, 2)
+		.padding(.vertical, 4)
 		.overlay(alignment: .leading) {
 			let isValid = (try? forward.validate()) != nil
 			if !isValid {
 				RoundedRectangle(cornerRadius: 4)
 					.stroke(.red, lineWidth: 1)
 					.padding(-2)
-					.help("This forward has invalid settings.")
+					.help("This rule has invalid settings — check the port numbers and host.")
 			}
 		}
 	}
