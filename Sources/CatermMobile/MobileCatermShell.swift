@@ -1,3 +1,4 @@
+import CatermMobileTerminal
 import FileTransferStore
 import SnippetSyncClient
 import SSHCommandBuilder
@@ -255,7 +256,17 @@ private struct MobileShellDetail: View {
 				ContentUnavailableView("Host Not Found", systemImage: "server.rack")
 			}
 		case .terminal(let id):
-			MobileTerminalPlaceholderView(host: hosts.first { $0.id == id }, snippet: nil)
+			if let host = hosts.first(where: { $0.id == id }) {
+				#if canImport(UIKit)
+				MobileTerminalSessionView(title: host.name) {
+					MobileHostsView.liveSession(for: host)
+				}
+				#else
+				MobileTerminalPlaceholderView(host: host, snippet: nil)
+				#endif
+			} else {
+				ContentUnavailableView("Host Not Found", systemImage: "server.rack")
+			}
 		case .credential(let id):
 			MobileCredentialSetupPlaceholderView(host: hosts.first { $0.id == id })
 		case .snippets:

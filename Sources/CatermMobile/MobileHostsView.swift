@@ -1,3 +1,6 @@
+import CatermMobileTerminal
+import Foundation
+import KeychainStore
 import SSHCommandBuilder
 import SwiftUI
 
@@ -57,6 +60,27 @@ public struct MobileHostsView: View {
 		}
 	}
 
+	static func liveSession(for host: SSHHost) -> SSHTerminalSession {
+		let kc = KeychainStore(service: MobileCredentialWriter.defaultService, accessGroup: nil)
+		let password = try? kc.get(account: MobileCredentialPlan.passwordAccount(host.id))
+		let passphrase = try? kc.get(account: MobileCredentialPlan.keyPassphraseAccount(host.id))
+		let keyBlob: Data? = {
+			if case let .keyFile(path, _) = host.credential {
+				return try? Data(contentsOf: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
+			}
+			return nil
+		}()
+		let plan = SSHAuthPlan.make(
+			host: host, password: password, keyBlob: keyBlob, passphrase: passphrase)
+		let support = FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+			.appendingPathComponent("Caterm", isDirectory: true)
+		let knownHosts = MobileKnownHostsStore(
+			fileURL: support.appendingPathComponent("known_hosts.json"))
+		let transport = NIOSSHTransport(host: host, plan: plan, knownHosts: knownHosts)
+		return SSHTerminalSession(host: host, transport: transport)
+	}
+
 	private func saveHost(_ payload: MobileHostDraftPayload) {
 		if let hostSave {
 			hostSave.save(payload)
@@ -112,7 +136,15 @@ public struct MobileHostsView: View {
 		case .credentialSetup(let id):
 			MobileCredentialSetupPlaceholderView(host: hosts.first { $0.id == id })
 		case .terminalPlaceholder(let id):
-			MobileTerminalPlaceholderView(host: hosts.first { $0.id == id }, snippet: nil)
+			if let host = hosts.first(where: { $0.id == id }) {
+				#if canImport(UIKit)
+				MobileTerminalSessionView(title: host.name) { Self.liveSession(for: host) }
+				#else
+				MobileTerminalPlaceholderView(host: host, snippet: nil)
+				#endif
+			} else {
+				ContentUnavailableView("Host Not Found", systemImage: "server.rack")
+			}
 		}
 	}
 }
@@ -219,7 +251,15 @@ struct MobileHostDetailView: View {
 		case .credentialSetup(let id):
 			MobileCredentialSetupPlaceholderView(host: id == host.id ? host : nil)
 		case .terminalPlaceholder(let id):
-			MobileTerminalPlaceholderView(host: id == host.id ? host : nil, snippet: nil)
+			if id == host.id {
+				#if canImport(UIKit)
+				MobileTerminalSessionView(title: host.name) { MobileHostsView.liveSession(for: host) }
+				#else
+				MobileTerminalPlaceholderView(host: host, snippet: nil)
+				#endif
+			} else {
+				ContentUnavailableView("Host Not Found", systemImage: "server.rack")
+			}
 		case .detail, .edit:
 			EmptyView()
 		}
