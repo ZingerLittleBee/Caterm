@@ -3,6 +3,7 @@ import CredentialSyncStore
 import HostSyncStore
 import ServerSyncClient
 import SessionStore
+import SettingsSyncStore
 import SwiftUI
 import UserNotifications
 
@@ -52,6 +53,15 @@ struct SyncSettingsView: View {
     @State private var isSyncing = false
     @State private var lastSyncError: ServerSyncError?
     @State private var notifyToggleRequestID = 0
+    /// `AuthSessionProtocol` is a plain (non-`ObservableObject`) reference
+    /// type whose `isSignedIn` flips asynchronously (on launch `refresh()`
+    /// and on `.CKAccountChanged`). Reading it directly in `body` left the
+    /// Account section and `Sync Now` showing stale state until some other
+    /// `@ObservedObject` happened to publish. Mirror it into observed
+    /// `@State`, seeded on appear and refreshed when the account session
+    /// posts `.catermICloudAccountChanged` (posted *after* its
+    /// `refresh()`), so the account UI is always live.
+    @State private var isSignedIn = false
 
     init(
         authSession: AuthSessionProtocol,
@@ -70,7 +80,7 @@ struct SyncSettingsView: View {
     }
 
     var body: some View {
-        let derivedAccountState = accountState(isSignedIn: authSession.isSignedIn)
+        let derivedAccountState = accountState(isSignedIn: isSignedIn)
         Form {
             Section("Account") {
                 switch derivedAccountState {
@@ -96,7 +106,7 @@ struct SyncSettingsView: View {
                 Text("Syncs every 15 minutes and on wake from sleep.")
                     .font(.caption).foregroundColor(.secondary)
                 Button("Sync Now") { Task { await syncNow() } }
-                    .disabled(!authSession.isSignedIn || isSyncing)
+                    .disabled(!isSignedIn || isSyncing)
                 // TimelineView is load-bearing for failure visibility:
                 // formatLastSyncedAt resolves against Date() at body-eval
                 // time, so without the periodic re-render the phrase
@@ -145,6 +155,10 @@ struct SyncSettingsView: View {
         }
         .padding(24)
         .frame(width: 480)
+        .onAppear { isSignedIn = authSession.isSignedIn }
+        .onReceive(NotificationCenter.default.publisher(for: .catermICloudAccountChanged)) { _ in
+            isSignedIn = authSession.isSignedIn
+        }
     }
 
     @MainActor
