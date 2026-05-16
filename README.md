@@ -92,6 +92,34 @@ Codesigning for local development resolves an identity from
 See [`docs/macos-dev-signing.md`](docs/macos-dev-signing.md) for the signing
 pitfalls and the full rationale.
 
+### Debugging
+
+```bash
+make run-app          # build + codesign + wrap in Caterm.app + launch (foreground)
+make run-bg           # same, but background; stdout/stderr -> /tmp/caterm.log
+make kill             # kill the running dev process
+
+tail -f /tmp/caterm.log               # follow logs from `make run-bg`
+log stream --predicate 'subsystem == "com.caterm.app"' --level debug  # os_log
+```
+
+Always use `make run-app` / `make run-bg`, not the bare binary (`make run`):
+the app calls `NSApp.registerForRemoteNotifications()` on launch, which
+requires a bundle identity — the bare binary crashes there.
+
+To step through with a debugger, attach LLDB to the debug build:
+
+```bash
+make build
+lldb .build/debug/caterm           # (lldb) run
+# or attach to an already-running instance:
+lldb -p "$(pgrep -nf .build/debug/caterm)"
+```
+
+Runtime logging goes through `os_log` under subsystem `com.caterm.app`
+(filter by category in Console.app — e.g. `cloudkit-sync`,
+`snippet-sync`, `signing-diag`).
+
 ## Release
 
 ### One-time setup (maintainers)
