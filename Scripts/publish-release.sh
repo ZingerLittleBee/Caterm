@@ -12,9 +12,12 @@ set -euo pipefail
 #   2. Extracts the matching section from CHANGELOG.md as release notes.
 #   3. Requires a clean tree whose HEAD is already pushed to origin (the
 #      tag must point at a commit reviewers can see).
-#   4. Creates + pushes an annotated tag v<version>.
-#   5. ditto-zips the .app (preserving the stapled ticket).
-#   6. `gh release create` with the notes, uploading the .dmg and .app zip.
+#   4. ditto-zips the .app (preserving the stapled ticket).
+#   5. Generates + verifies the Sparkle appcast (EdDSA-signed).
+#   6. Creates + pushes an annotated tag v<version> — only after every
+#      artifact gate above has passed (no orphan tags on a failed gate).
+#   7. `gh release create` with the notes, uploading the .dmg, .app zip,
+#      appcast.xml, and notes HTML.
 #
 # Usage:
 #   Scripts/publish-release.sh [<version>]   (default: latest CHANGELOG entry)
@@ -98,7 +101,7 @@ echo "    OK — both artifacts notarized + stapled"
 # 2. CHANGELOG section.
 # ---------------------------------------------------------------------------
 NOTES_FILE="$(mktemp)"
-trap 'rm -f "$NOTES_FILE"' EXIT
+trap 'rm -f "$NOTES_FILE"; [[ -n "${STAGE_DIR:-}" ]] && rm -rf "$STAGE_DIR"' EXIT
 awk -v v="$VERSION" '
     $0 ~ "^## \\[" v "\\]" {f=1; next}
     f && /^## \[/ {exit}
@@ -140,21 +143,14 @@ if gh release view "$TAG" >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Tag + push.
-# ---------------------------------------------------------------------------
-echo "==> Tagging $TAG at $(git rev-parse --short HEAD)"
-run git tag -a "$TAG" -m "Caterm $VERSION"
-run git push origin "$TAG"
-
-# ---------------------------------------------------------------------------
-# 5. Zip the .app (ditto preserves the stapled notarization ticket).
+# 4. Zip the .app (ditto preserves the stapled notarization ticket).
 # ---------------------------------------------------------------------------
 echo "==> Zipping .app"
 run rm -f "$APP_ZIP"
 run /usr/bin/ditto -c -k --keepParent "$APP" "$APP_ZIP"
 
 # ---------------------------------------------------------------------------
-# 5b. Sparkle appcast.
+# 5. Sparkle appcast.
 #
 # generate_appcast takes an "update archives folder" — it must contain
 # ONLY the update zip (+ same-basename notes file), never $BIN_DIR which
@@ -182,7 +178,7 @@ else
     caterm_md_to_html "$NOTES_FILE" > "$NOTES_HTML"
 fi
 
-GEN_APPCAST="$(find_sparkle_tool "$ROOT" generate_appcast)"
+GEN_APPCAST="$(find_sparkle_tool "$ROOT" generate_appcast)" || exit 1
 echo "==> generate_appcast ($GEN_APPCAST)"
 run "$GEN_APPCAST" "$STAGE_DIR"
 
@@ -193,13 +189,21 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. GitHub release + assets.
+# 6. Tag + push.
+# ---------------------------------------------------------------------------
+echo "==> Tagging $TAG at $(git rev-parse --short HEAD)"
+run git tag -a "$TAG" -m "Caterm $VERSION"
+run git push origin "$TAG"
+
+# ---------------------------------------------------------------------------
+# 7. GitHub release + assets.
 # ---------------------------------------------------------------------------
 GH_ARGS=(release create "$TAG"
     --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)"
     --title "Caterm $VERSION"
     --notes-file "$NOTES_FILE"
     --target "$(git rev-parse HEAD)")
+# Unreachable: --draft is rejected at startup (Sparkle latest-release feed).
 [[ "$DRAFT" -eq 1 ]] && GH_ARGS+=(--draft)
 
 echo "==> Creating GitHub release"
