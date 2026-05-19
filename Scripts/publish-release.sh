@@ -21,7 +21,7 @@ set -euo pipefail
 #
 # Usage:
 #   Scripts/publish-release.sh [<version>]   (default: latest CHANGELOG entry)
-#   --draft        create the release as a draft (no public visibility yet)
+#   --draft        REJECTED — incompatible with the Sparkle latest-release feed
 #   --dry-run      print every action, mutate nothing
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

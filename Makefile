@@ -183,8 +183,8 @@ publish: ## tag + GitHub release + upload notarized artifacts (run after `make r
 	# notarized + stapled. Notes come from CHANGELOG.md.
 	#
 	#   make publish                   public release for the latest CHANGELOG version
-	#   make publish ARGS=--draft      create as a draft
 	#   make publish ARGS=--dry-run    print actions, mutate nothing
+	#   (--draft is unsupported: Sparkle's feed reads releases/latest, which skips drafts)
 	bash Scripts/publish-release.sh $(ARGS)
 
 .PHONY: bootstrap-askpass

@@ -204,7 +204,7 @@ make release
 # 3. Tag + GitHub release + upload the .dmg and zipped .app.
 make publish
 #    make publish ARGS=--dry-run       print every action, mutate nothing
-#    make publish ARGS=--draft         create the release as a draft
+#    (--draft is not supported: Sparkle's feed reads releases/latest, which skips drafts)
 ```
 
 `make release` ([`Scripts/release.sh`](Scripts/release.sh))
@@ -225,7 +225,7 @@ release (clean tree, pushed to `origin/main`).
 
 `make publish` also generates and uploads `appcast.xml` so that installed
 copies of Caterm self-update automatically. Users can also trigger a check
-manually via **Help → Check for Updates…**. The release version and build
+manually via the **Caterm app menu → Check for Updates…** (next to About Caterm). The release version and build
 number are read from the top `## [X.Y.Z]` entry in `CHANGELOG.md` — no
 manual version env var is needed.
 

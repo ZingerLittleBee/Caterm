@@ -235,6 +235,24 @@ fi
 codesign --verify --deep --strict --verbose=2 "$EMBEDDED_FW" 2>&1 | sed 's/^/    /'
 
 # ---------------------------------------------------------------------------
+# Add the Frameworks rpath to the main executable.
+#
+# `caterm` links Sparkle via @rpath but SwiftPM does not emit an
+# @executable_path/../Frameworks rpath. Without it dyld cannot find the
+# framework we just embedded under Contents/Frameworks and the app fails
+# to launch. Do this BEFORE the outer seal — the non-deep bundle seal
+# re-signs Contents/MacOS/caterm, so the modified Mach-O is re-sealed
+# with the correct entitlements. Idempotent: skip if already present.
+# ---------------------------------------------------------------------------
+MAIN_EXE="$APP/Contents/MacOS/caterm"
+if otool -l "$MAIN_EXE" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks'; then
+    echo "==> Frameworks rpath already present on caterm"
+else
+    echo "==> Adding @executable_path/../Frameworks rpath to caterm"
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$MAIN_EXE"
+fi
+
+# ---------------------------------------------------------------------------
 # Two-pass re-seal — see plan-e Task 3.0 Step 3.
 #
 # Pass 1: re-sign the helper with its own entitlements (askpass keeps only
