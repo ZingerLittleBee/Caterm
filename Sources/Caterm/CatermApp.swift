@@ -34,6 +34,7 @@ struct CatermApp: App {
 	@StateObject private var snippetStore: SnippetStore
 	@StateObject private var snippetSync: SnippetSyncStore
 	@StateObject private var commandKeyMonitor = CommandKeyMonitor()
+	private let updaterController = UpdaterController()
 
 	/// Holds the live-reload dispatcher and its NotificationCenter
 	/// observer for the app's lifetime. See `LiveReloadCoordinator`.
@@ -349,6 +350,14 @@ struct CatermApp: App {
 					preferencesWindow.showAndActivate()
 				}
 				.keyboardShortcut(",", modifiers: .command)
+			}
+			// Sparkle “Check for Updates…” under the app menu, just after
+			// “About”. Sparkle owns the in-flight UI and no-ops a concurrent
+			// check, so no reactive disabled state is needed.
+			CommandGroup(after: .appInfo) {
+				Button("Check for Updates…") {
+					updaterController.checkForUpdates()
+				}
 			}
 			// Edit menu pasteboard commands. Selectors are the standard
 			// `NSText.copy/paste/pasteAsPlainText`, which AppKit
