@@ -53,8 +53,9 @@ set -euo pipefail
 #   --skip-dmg                stop after the .app (no disk image)
 #
 # Versioning:
-#   CATERM_DIST_VERSION       CFBundleShortVersionString (default: 1.0.0)
-#   CATERM_DIST_BUILD         CFBundleVersion            (default: 1)
+#   CATERM_DIST_VERSION       CFBundleShortVersionString
+#                             (default: top `## [X.Y.Z]` entry in CHANGELOG.md)
+#   CATERM_DIST_BUILD         CFBundleVersion (default: derived from that version)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS="$ROOT/Scripts"

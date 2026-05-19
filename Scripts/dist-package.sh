@@ -19,8 +19,10 @@ set -euo pipefail
 #
 # Optional env:
 #   CATERM_APP_ID             — bundle id (default: com.caterm.app)
-#   CATERM_DIST_VERSION       — CFBundleShortVersionString (default: 1.0.0)
-#   CATERM_DIST_BUILD         — CFBundleVersion (default: 1)
+#   CATERM_DIST_VERSION       — CFBundleShortVersionString
+#                               (default: top `## [X.Y.Z]` entry in CHANGELOG.md)
+#   CATERM_DIST_BUILD         — CFBundleVersion
+#                               (default: derived from that version)
 #   CATERM_NOTARY_PROFILE     — keychain profile for `notarytool`. When set,
 #                               this script ditto-zips the .app, submits to
 #                               Apple notary service (synchronous --wait),
@@ -213,15 +215,23 @@ while IFS= read -r xpc; do
     [[ -n "$xpc" ]] && sign_one "$xpc"
 done < <(find "$EMBEDDED_FW" -name '*.xpc' -type d)
 # Autoupdate + the Updater.app (Sparkle 2 layout under Versions/Current).
-for nested in \
-    "$EMBEDDED_FW/Versions/Current/Autoupdate" \
-    "$EMBEDDED_FW/Versions/Current/Updater.app"; do
-    [[ -e "$nested" ]] && sign_one "$nested"
-done
+# Autoupdate is optional across Sparkle versions; Updater.app is mandatory.
+[[ -e "$EMBEDDED_FW/Versions/Current/Autoupdate" ]] \
+    && sign_one "$EMBEDDED_FW/Versions/Current/Autoupdate"
+if [[ ! -e "$EMBEDDED_FW/Versions/Current/Updater.app" ]]; then
+    echo "Error: Sparkle Updater.app missing in $EMBEDDED_FW — embed/layout broken." >&2
+    exit 1
+fi
+sign_one "$EMBEDDED_FW/Versions/Current/Updater.app"
 # Finally the framework itself.
 sign_one "$EMBEDDED_FW"
 
 echo "==> Verifying embedded Sparkle.framework signature"
+if ! codesign --verify --deep --strict "$EMBEDDED_FW" 2>/dev/null; then
+    echo "Error: embedded Sparkle.framework failed signature verification." >&2
+    codesign --verify --deep --strict --verbose=2 "$EMBEDDED_FW" 2>&1 | sed 's/^/    /' >&2
+    exit 1
+fi
 codesign --verify --deep --strict --verbose=2 "$EMBEDDED_FW" 2>&1 | sed 's/^/    /'
 
 # ---------------------------------------------------------------------------

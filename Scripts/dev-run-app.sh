@@ -82,6 +82,9 @@ if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     xattr -c "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# Dev builds tolerate a missing/empty public key (|| true): the updater
+# still launches; "Check for Updates" just can't verify until keys exist.
+# dist-package.sh enforces a non-empty key (hard error) for releases.
 SPARKLE_PUB_KEY="$(tr -d '[:space:]' < "$ROOT/Scripts/sparkle_public_key.txt" 2>/dev/null || true)"
 SPARKLE_FEED_URL="https://github.com/ZingerLittleBee/Caterm/releases/latest/download/appcast.xml"
 
