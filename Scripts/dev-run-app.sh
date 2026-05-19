@@ -82,6 +82,12 @@ if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     xattr -c "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# Dev builds tolerate a missing/empty public key (|| true): the updater
+# still launches; "Check for Updates" just can't verify until keys exist.
+# dist-package.sh enforces a non-empty key (hard error) for releases.
+SPARKLE_PUB_KEY="$(tr -d '[:space:]' < "$ROOT/Scripts/sparkle_public_key.txt" 2>/dev/null || true)"
+SPARKLE_FEED_URL="https://github.com/ZingerLittleBee/Caterm/releases/latest/download/appcast.xml"
+
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -107,6 +113,14 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>SUFeedURL</key>
+    <string>${SPARKLE_FEED_URL}</string>
+    <key>SUPublicEDKey</key>
+    <string>${SPARKLE_PUB_KEY}</string>
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>
 EOF
@@ -135,6 +149,47 @@ fi
 # entitlements, which then fails to register for remote notifications and
 # crashes inside CKContainer init.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Embed + sign Sparkle.framework, and add the Frameworks rpath.
+#
+# `caterm` links Sparkle via @rpath; the bundled app must carry the
+# framework at Contents/Frameworks and an @executable_path/../Frameworks
+# rpath or it won't launch. Sign the framework inside-out with the dev
+# identity BEFORE the non-deep outer seal (which re-signs only the main
+# executable). No --timestamp for dev (offline-friendly).
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC1091
+source "$ROOT/Scripts/lib-sparkle.sh"
+SPARKLE_FW="$(find_sparkle_framework "$ROOT")"
+echo "==> Embedding Sparkle.framework from $SPARKLE_FW"
+mkdir -p "$APP/Contents/Frameworks"
+/usr/bin/ditto "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"
+
+EMBEDDED_FW="$APP/Contents/Frameworks/Sparkle.framework"
+dev_sign_one() {
+    codesign --force --options runtime --sign "$CATERM_DEV_IDENTITY" "$1"
+}
+echo "==> Signing Sparkle nested components (inside-out, dev identity)"
+while IFS= read -r xpc; do
+    [[ -n "$xpc" ]] && dev_sign_one "$xpc"
+done < <(find "$EMBEDDED_FW" -name '*.xpc' -type d)
+[[ -e "$EMBEDDED_FW/Versions/Current/Autoupdate" ]] \
+    && dev_sign_one "$EMBEDDED_FW/Versions/Current/Autoupdate"
+if [[ ! -e "$EMBEDDED_FW/Versions/Current/Updater.app" ]]; then
+    echo "Error: Sparkle Updater.app missing in $EMBEDDED_FW — embed/layout broken." >&2
+    exit 1
+fi
+dev_sign_one "$EMBEDDED_FW/Versions/Current/Updater.app"
+dev_sign_one "$EMBEDDED_FW"
+
+MAIN_EXE="$APP/Contents/MacOS/caterm"
+if otool -l "$MAIN_EXE" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks'; then
+    echo "==> Frameworks rpath already present on caterm"
+else
+    echo "==> Adding @executable_path/../Frameworks rpath to caterm"
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$MAIN_EXE"
+fi
+
 echo "==> Signing $APP"
 ENT_ARGS=()
 if [[ -f "$ENTITLEMENTS" ]]; then

@@ -204,7 +204,7 @@ make release
 # 3. Tag + GitHub release + upload the .dmg and zipped .app.
 make publish
 #    make publish ARGS=--dry-run       print every action, mutate nothing
-#    make publish ARGS=--draft         create the release as a draft
+#    (--draft is not supported: Sparkle's feed reads releases/latest, which skips drafts)
 ```
 
 `make release` ([`Scripts/release.sh`](Scripts/release.sh))
@@ -220,6 +220,22 @@ GitHub release with notes pulled from the matching
 [`CHANGELOG.md`](CHANGELOG.md) section. The CHANGELOG
 version drives the tag, so it must point at the commit you intend to
 release (clean tree, pushed to `origin/main`).
+
+### Auto-update (Sparkle)
+
+`make publish` also generates and uploads `appcast.xml` so that installed
+copies of Caterm self-update automatically. Users can also trigger a check
+manually via the **Caterm app menu → Check for Updates…** (next to About Caterm). The release version and build
+number are read from the top `## [X.Y.Z]` entry in `CHANGELOG.md` — no
+manual version env var is needed.
+
+`--draft` releases are not compatible with the Sparkle feed: GitHub's
+`/releases/latest` redirect skips drafts, so the appcast would not be
+served. Use `--dry-run` for a rehearsal instead.
+
+The first Sparkle-enabled release must be distributed manually (older
+installed builds have no updater). Auto-update works from that version
+onward.
 
 ## Architecture
 

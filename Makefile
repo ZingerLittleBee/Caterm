@@ -183,8 +183,8 @@ publish: ## tag + GitHub release + upload notarized artifacts (run after `make r
 	# notarized + stapled. Notes come from CHANGELOG.md.
 	#
 	#   make publish                   public release for the latest CHANGELOG version
-	#   make publish ARGS=--draft      create as a draft
 	#   make publish ARGS=--dry-run    print actions, mutate nothing
+	#   (--draft is unsupported: Sparkle's feed reads releases/latest, which skips drafts)
 	bash Scripts/publish-release.sh $(ARGS)
 
 .PHONY: bootstrap-askpass
@@ -250,3 +250,11 @@ doctor: ## show toolchain / signing diagnostics
 	    echo "caterm signature:"; \
 	    codesign -dvv "$(CATERM_BIN)" 2>&1 | grep -E "TeamIdentifier|Authority" | sed 's/^/  /'; \
 	fi
+	@echo "Sparkle public key: $$(test -s Scripts/sparkle_public_key.txt && echo present || echo MISSING)"
+	@SP_APP="$(ROOT)/.build/release/Caterm.app/Contents/Frameworks/Sparkle.framework"; \
+	  if [ -d "$$SP_APP" ]; then \
+	    echo "Embedded Sparkle.framework: present"; \
+	    codesign --verify --deep --strict "$$SP_APP" 2>&1 | sed 's/^/  /' || echo "  (signature INVALID)"; \
+	  else \
+	    echo "Embedded Sparkle.framework: not built yet"; \
+	  fi

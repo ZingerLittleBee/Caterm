@@ -53,8 +53,9 @@ set -euo pipefail
 #   --skip-dmg                stop after the .app (no disk image)
 #
 # Versioning:
-#   CATERM_DIST_VERSION       CFBundleShortVersionString (default: 1.0.0)
-#   CATERM_DIST_BUILD         CFBundleVersion            (default: 1)
+#   CATERM_DIST_VERSION       CFBundleShortVersionString
+#                             (default: top `## [X.Y.Z]` entry in CHANGELOG.md)
+#   CATERM_DIST_BUILD         CFBundleVersion (default: derived from that version)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS="$ROOT/Scripts"
@@ -267,9 +268,14 @@ EOF
     fi
 fi
 
-VERSION="${CATERM_DIST_VERSION:-1.0.0}"
+# Version/build are derived from CHANGELOG.md (single source of truth).
+# Sparkle compares CFBundleVersion; a constant build number means
+# auto-update never detects a new release.
+# shellcheck disable=SC1091
+source "$SCRIPTS/lib-version.sh"
+VERSION="${CATERM_DIST_VERSION:-$(caterm_changelog_version "$ROOT/CHANGELOG.md")}"
 export CATERM_DIST_VERSION="$VERSION"
-export CATERM_DIST_BUILD="${CATERM_DIST_BUILD:-1}"
+export CATERM_DIST_BUILD="${CATERM_DIST_BUILD:-$(caterm_build_number "$VERSION")}"
 
 echo "============================================================"
 echo " Caterm release pipeline"

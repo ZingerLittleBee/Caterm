@@ -198,7 +198,7 @@ make release
 # 3. 打 tag + GitHub release + 上传 .dmg 和打包的 .app。
 make publish
 #    make publish ARGS=--dry-run       打印每一步操作，不做任何改动
-#    make publish ARGS=--draft         以草稿形式创建 release
+#    （--draft 不受支持：Sparkle feed 读取 releases/latest，会跳过草稿）
 ```
 
 `make release`（[`Scripts/release.sh`](Scripts/release.sh)）会自动解析
@@ -213,6 +213,19 @@ Gatekeeper 评估。
 [`CHANGELOG.md`](CHANGELOG.md) 中匹配的小节。CHANGELOG 的版本驱动
 tag，因此它必须指向你打算发布的提交（干净的工作树，且已推送到
 `origin/main`）。
+
+### 自动更新（Sparkle）
+
+`make publish` 还会生成并上传 `appcast.xml`，使已安装的 Caterm 可以
+自动更新。用户也可以通过 **Caterm 菜单 → 检查更新…**（紧邻「关于 Caterm」）手动触发检查。版本号
+和 build 号从 `CHANGELOG.md` 顶部的 `## [X.Y.Z]` 条目自动读取——无需
+手动设置版本环境变量。
+
+`--draft` 发布不兼容 Sparkle feed：GitHub 的 `/releases/latest` 重定向
+会跳过草稿，appcast 因此无法被访问。演练时请改用 `--dry-run`。
+
+首个启用 Sparkle 的版本必须手动分发（旧版本没有内置更新器），从该版本
+起后续版本可自动更新。
 
 ## 架构
 

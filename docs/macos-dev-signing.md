@@ -294,3 +294,44 @@ xcrun stapler staple .build/release/Caterm.app
 ```
 
 `make dist` does NOT run notarization — that requires interactive Apple credentials and is left to the human packaging the release.
+
+## Sparkle auto-update
+
+### One-time key setup
+
+`generate_keys` was run once to produce an EdDSA key pair for signing
+update packages. The **private key is stored in the login Keychain** and
+is never committed. The **public key is committed at
+`Scripts/sparkle_public_key.txt`**; `dist-package.sh` reads it and injects
+it into the app's `Info.plist` as `SUPublicEDKey` at build time.
+
+**Losing the private key permanently breaks future auto-updates** — users
+already running a Sparkle-enabled build will see a signature-verification
+failure and refuse to install any new release. Back it up: a gitignored
+export exists at `sign/sparkle_ed_private_key.txt`; copy that into a
+password manager as well.
+
+### First Sparkle-enabled release
+
+Builds installed before Sparkle existed have no updater baked in — they
+cannot receive the first Sparkle release automatically. Distribute that
+release manually (announce the `.dmg`). Auto-update works for all
+subsequent releases once users are running a Sparkle-enabled build.
+
+### Release flow
+
+`make publish` generates `appcast.xml` via `generate_appcast` from a
+staging directory and uploads it alongside the `.dmg` and `.app.zip` to
+the GitHub release. The feed URL baked into every build is:
+
+```
+https://github.com/ZingerLittleBee/Caterm/releases/latest/download/appcast.xml
+```
+
+The release version and `CFBundleVersion` are derived automatically from
+the top `## [X.Y.Z]` entry in `CHANGELOG.md` (skipping `## [Unreleased]`)
+by `Scripts/lib-version.sh` — no `CATERM_DIST_VERSION` env var is needed.
+
+`--draft` releases are not supported for the published feed: GitHub's
+`/releases/latest` redirect ignores drafts, so the appcast would never
+be served. Do not pass `ARGS=--draft` for a real Sparkle release.
