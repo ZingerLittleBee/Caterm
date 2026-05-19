@@ -250,3 +250,11 @@ doctor: ## show toolchain / signing diagnostics
 	    echo "caterm signature:"; \
 	    codesign -dvv "$(CATERM_BIN)" 2>&1 | grep -E "TeamIdentifier|Authority" | sed 's/^/  /'; \
 	fi
+	@echo "Sparkle public key: $$(test -s Scripts/sparkle_public_key.txt && echo present || echo MISSING)"
+	@SP_APP="$(ROOT)/.build/release/Caterm.app/Contents/Frameworks/Sparkle.framework"; \
+	  if [ -d "$$SP_APP" ]; then \
+	    echo "Embedded Sparkle.framework: present"; \
+	    codesign --verify --deep --strict "$$SP_APP" 2>&1 | sed 's/^/  /' || echo "  (signature INVALID)"; \
+	  else \
+	    echo "Embedded Sparkle.framework: not built yet"; \
+	  fi
