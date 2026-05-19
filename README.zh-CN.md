@@ -214,6 +214,19 @@ Gatekeeper 评估。
 tag，因此它必须指向你打算发布的提交（干净的工作树，且已推送到
 `origin/main`）。
 
+### 自动更新（Sparkle）
+
+`make publish` 还会生成并上传 `appcast.xml`，使已安装的 Caterm 可以
+自动更新。用户也可以通过 **帮助 → 检查更新…** 手动触发检查。版本号
+和 build 号从 `CHANGELOG.md` 顶部的 `## [X.Y.Z]` 条目自动读取——无需
+手动设置版本环境变量。
+
+`--draft` 发布不兼容 Sparkle feed：GitHub 的 `/releases/latest` 重定向
+会跳过草稿，appcast 因此无法被访问。演练时请改用 `--dry-run`。
+
+首个启用 Sparkle 的版本必须手动分发（旧版本没有内置更新器），从该版本
+起后续版本可自动更新。
+
 ## 架构
 
 一个 Swift Package Manager 项目（`Package.swift`），拆分为若干聚焦的

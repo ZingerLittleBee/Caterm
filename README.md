@@ -221,6 +221,22 @@ GitHub release with notes pulled from the matching
 version drives the tag, so it must point at the commit you intend to
 release (clean tree, pushed to `origin/main`).
 
+### Auto-update (Sparkle)
+
+`make publish` also generates and uploads `appcast.xml` so that installed
+copies of Caterm self-update automatically. Users can also trigger a check
+manually via **Help → Check for Updates…**. The release version and build
+number are read from the top `## [X.Y.Z]` entry in `CHANGELOG.md` — no
+manual version env var is needed.
+
+`--draft` releases are not compatible with the Sparkle feed: GitHub's
+`/releases/latest` redirect skips drafts, so the appcast would not be
+served. Use `--dry-run` for a rehearsal instead.
+
+The first Sparkle-enabled release must be distributed manually (older
+installed builds have no updater). Auto-update works from that version
+onward.
+
 ## Architecture
 
 A Swift Package Manager project (`Package.swift`) split into
