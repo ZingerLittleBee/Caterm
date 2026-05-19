@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 import Sparkle
 
@@ -8,7 +7,7 @@ import Sparkle
 /// (cadence governed by Info.plist `SUEnableAutomaticChecks` /
 /// `SUScheduledCheckInterval`). Tests inject a fake `UpdaterDriving`.
 @MainActor
-final class UpdaterController: ObservableObject {
+final class UpdaterController {
     private let updater: any UpdaterDriving
 
     /// Test/explicit-injection initializer.
