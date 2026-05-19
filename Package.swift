@@ -14,6 +14,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio-ssh.git", from: "0.9.0"),
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
     ],
     targets: [
         .binaryTarget(
@@ -162,6 +163,7 @@ let package = Package(
                 "SettingsSyncStore",
                 "SnippetStore",
                 "SnippetSyncClient",
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Caterm",
             resources: [.copy("../../Resources/Caterm.entitlements")],
