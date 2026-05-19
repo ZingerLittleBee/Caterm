@@ -14,17 +14,22 @@
 
 find_sparkle_framework() {
     local root="$1"
+    # Use the canonical xcframework artifact slice SPM downloads
+    # (universal, Sparkle-signed, config-independent). Build-output
+    # copies under .build/<triple>/<config>/ are intentionally excluded
+    # — they vary by arch/config and are not the artifact of record.
     local matches
-    matches="$(find "$root/.build" -name 'Sparkle.framework' -type d 2>/dev/null \
+    matches="$(find "$root/.build/artifacts" \
+        -path '*/Sparkle.xcframework/macos*/Sparkle.framework' -type d 2>/dev/null \
         | grep -v '/Sparkle.framework/.*Sparkle.framework' || true)"
     local count
     count="$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')"
     if [[ "$count" -eq 0 ]]; then
-        echo "lib-sparkle: Sparkle.framework not found under $root/.build (run 'swift build' first)" >&2
+        echo "lib-sparkle: Sparkle.xcframework macOS slice not found under $root/.build/artifacts (run 'swift build' first)" >&2
         return 1
     fi
     if [[ "$count" -ne 1 ]]; then
-        echo "lib-sparkle: expected exactly one Sparkle.framework, found $count:" >&2
+        echo "lib-sparkle: expected exactly one Sparkle.xcframework macOS slice, found $count:" >&2
         printf '%s\n' "$matches" >&2
         return 1
     fi
