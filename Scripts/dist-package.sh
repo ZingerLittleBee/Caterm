@@ -48,8 +48,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/.build/release"
 APP="$BIN_DIR/Caterm.app"
 APP_BUNDLE_ID="${CATERM_APP_ID:-com.caterm.app}"
-APP_VERSION="${CATERM_DIST_VERSION:-1.0.0}"
-APP_BUILD="${CATERM_DIST_BUILD:-1}"
+# shellcheck disable=SC1091
+source "$ROOT/Scripts/lib-version.sh"
+APP_VERSION="${CATERM_DIST_VERSION:-$(caterm_changelog_version "$ROOT/CHANGELOG.md")}"
+APP_BUILD="${CATERM_DIST_BUILD:-$(caterm_build_number "$APP_VERSION")}"
 
 MAIN_ENT="$BIN_DIR/Caterm.distribution.entitlements"
 HELPER_ENT="$BIN_DIR/CatermAskpass.distribution.entitlements"
@@ -133,6 +135,13 @@ if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     xattr -c "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+SPARKLE_PUB_KEY="$(tr -d '[:space:]' < "$ROOT/Scripts/sparkle_public_key.txt")"
+if [[ -z "$SPARKLE_PUB_KEY" ]]; then
+    echo "Error: Scripts/sparkle_public_key.txt is empty (run Task 7 / generate_keys)." >&2
+    exit 1
+fi
+SPARKLE_FEED_URL="https://github.com/ZingerLittleBee/Caterm/releases/latest/download/appcast.xml"
+
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -158,6 +167,14 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>SUFeedURL</key>
+    <string>${SPARKLE_FEED_URL}</string>
+    <key>SUPublicEDKey</key>
+    <string>${SPARKLE_PUB_KEY}</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>
 EOF
@@ -167,6 +184,45 @@ EOF
 # ---------------------------------------------------------------------------
 echo "==> Embedding profile from $CATERM_DIST_PROFILE_PATH"
 cp "$CATERM_DIST_PROFILE_PATH" "$APP/Contents/embedded.provisionprofile"
+
+# ---------------------------------------------------------------------------
+# Embed + deep-sign Sparkle.framework.
+#
+# SwiftPM external packaging does NOT auto-embed frameworks. Sparkle's
+# nested executables (Autoupdate, Updater.app, XPCServices/*.xpc, the
+# framework dylib) must each be Developer-ID signed inside-out with
+# hardened runtime + secure timestamp BEFORE the outer .app seal, or
+# notarization/Gatekeeper rejects the bundle.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC1091
+source "$ROOT/Scripts/lib-sparkle.sh"
+SPARKLE_FW="$(find_sparkle_framework "$ROOT")"
+echo "==> Embedding Sparkle.framework from $SPARKLE_FW"
+mkdir -p "$APP/Contents/Frameworks"
+/usr/bin/ditto "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"
+
+EMBEDDED_FW="$APP/Contents/Frameworks/Sparkle.framework"
+sign_one() {
+    codesign --force --options runtime --timestamp \
+        --sign "$CATERM_DIST_IDENTITY" "$1"
+}
+
+echo "==> Signing Sparkle nested components (inside-out)"
+# XPC services first (deepest).
+while IFS= read -r xpc; do
+    [[ -n "$xpc" ]] && sign_one "$xpc"
+done < <(find "$EMBEDDED_FW" -name '*.xpc' -type d)
+# Autoupdate + the Updater.app (Sparkle 2 layout under Versions/Current).
+for nested in \
+    "$EMBEDDED_FW/Versions/Current/Autoupdate" \
+    "$EMBEDDED_FW/Versions/Current/Updater.app"; do
+    [[ -e "$nested" ]] && sign_one "$nested"
+done
+# Finally the framework itself.
+sign_one "$EMBEDDED_FW"
+
+echo "==> Verifying embedded Sparkle.framework signature"
+codesign --verify --deep --strict --verbose=2 "$EMBEDDED_FW" 2>&1 | sed 's/^/    /'
 
 # ---------------------------------------------------------------------------
 # Two-pass re-seal — see plan-e Task 3.0 Step 3.

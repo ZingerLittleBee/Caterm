@@ -82,6 +82,9 @@ if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
     xattr -c "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+SPARKLE_PUB_KEY="$(tr -d '[:space:]' < "$ROOT/Scripts/sparkle_public_key.txt" 2>/dev/null || true)"
+SPARKLE_FEED_URL="https://github.com/ZingerLittleBee/Caterm/releases/latest/download/appcast.xml"
+
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -107,6 +110,14 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>SUFeedURL</key>
+    <string>${SPARKLE_FEED_URL}</string>
+    <key>SUPublicEDKey</key>
+    <string>${SPARKLE_PUB_KEY}</string>
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>
 EOF
