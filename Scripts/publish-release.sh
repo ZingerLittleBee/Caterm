@@ -167,6 +167,29 @@ SPARKLE_IN_APP="$APP/Contents/Frameworks/Sparkle.framework"
 codesign --verify --deep --strict "$SPARKLE_IN_APP" 2>/dev/null \
     || { echo "FAIL: embedded Sparkle.framework signature invalid" >&2; exit 1; }
 
+# Key-pair gate: the appcast is signed with the Keychain private key,
+# but clients verify with the public key baked into Info.plist
+# (Scripts/sparkle_public_key.txt). A mismatch publishes a release that
+# bricks auto-update for everyone with no rollback. Fail before the tag.
+GEN_KEYS="$(find_sparkle_tool "$ROOT" generate_keys)" || exit 1
+KEYCHAIN_PUB="$("$GEN_KEYS" -p 2>/dev/null | tr -d '[:space:]')"
+COMMITTED_PUB="$(tr -d '[:space:]' < "$ROOT/Scripts/sparkle_public_key.txt")"
+if [[ -z "$COMMITTED_PUB" ]]; then
+    echo "FAIL: Scripts/sparkle_public_key.txt is empty." >&2
+    exit 1
+fi
+if [[ -z "$KEYCHAIN_PUB" ]]; then
+    echo "FAIL: no Sparkle private key in the login Keychain (run generate_keys)." >&2
+    exit 1
+fi
+if [[ "$KEYCHAIN_PUB" != "$COMMITTED_PUB" ]]; then
+    echo "FAIL: Sparkle key mismatch — the Keychain private key does NOT match" >&2
+    echo "      Scripts/sparkle_public_key.txt. Signing now would ship an" >&2
+    echo "      appcast no installed client can verify. Aborting before tag." >&2
+    exit 1
+fi
+echo "==> Sparkle key-pair OK (Keychain private key matches committed public key)"
+
 echo "==> Staging appcast inputs"
 run rm -rf "$STAGE_DIR"
 run mkdir -p "$STAGE_DIR"

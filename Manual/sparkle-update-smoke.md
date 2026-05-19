@@ -24,6 +24,9 @@ release and whenever signing/packaging changes.
    resolves and is signed (`sparkle:edSignature` present).
 3. With a deliberately older local build, **Check for Updates…** → the
    prompt offers the published version.
+4. If a publish aborts after the tag was pushed (rare — gates run before
+   the tag), delete the orphan remote tag (`git push origin :vX.Y.Z`),
+   fix the cause, and re-run `make publish`.
 
 ## First-release caveat
 
