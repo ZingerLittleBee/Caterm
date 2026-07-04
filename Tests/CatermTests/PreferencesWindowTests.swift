@@ -4,15 +4,17 @@ import SettingsStore
 
 @MainActor
 final class PreferencesWindowTests: XCTestCase {
-    func testWindowHasFourTabs() {
-        let ctrl = PreferencesWindowController()
-        XCTAssertEqual(ctrl.tabs.map(\.title), ["General", "Terminal", "Themes", "Sync"])
+    func testSidebarSectionsCoverAllDomains() {
+        XCTAssertEqual(
+            SettingsSection.allCases.map(\.title),
+            ["Terminal", "Themes", "iCloud Sync", "Credentials", "Backup"]
+        )
     }
 
-    func testSwitchingTabUpdatesActiveIndex() {
+    func testActivateSectionUpdatesSelection() {
         let ctrl = PreferencesWindowController()
-        ctrl.activate(tabIndex: 2)
-        XCTAssertEqual(ctrl.activeTabIndex, 2)
+        ctrl.activate(.themes)
+        XCTAssertEqual(ctrl.model.selection, .themes)
     }
 
     func testUseSettingsStoreReplacesFallbackStore() throws {
@@ -33,15 +35,15 @@ extension PreferencesWindowTests {
         XCTAssertTrue(first === second)
     }
 
-    func testSyncTabRendersExistingView() {
+    func testSyncSectionsConstructibleWithoutSyncEnvironment() {
+        // With no syncEnvironment injected the sync-related sections render
+        // SyncUnavailableView, so tests can still construct a bare
+        // PreferencesWindowController without the sync stack.
         let ctrl = PreferencesWindowController()
-        ctrl.activate(tabIndex: 3)
-        // Visual smoke: hosted view exists. With no syncEnvironment injected
-        // the controller falls back to SyncTabPlaceholderView, so tests can
-        // still construct a bare PreferencesWindowController without the
-        // sync stack.
+        ctrl.activate(.cloudSync)
         XCTAssertNotNil(ctrl.window?.contentViewController)
-        XCTAssertEqual(ctrl.activeTabIndex, 3)
+        XCTAssertEqual(ctrl.model.selection, .cloudSync)
+        XCTAssertNil(ctrl.syncEnvironment)
     }
 
     private func makeSettingsStore() throws -> SettingsStore {

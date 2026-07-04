@@ -1,4 +1,5 @@
 import SwiftUI
+import HostSyncStore
 import SettingsStore
 import ConfigStore
 
@@ -71,8 +72,14 @@ public struct TerminalSettingsBindings {
 
 public struct TerminalSettingsView: View {
     @EnvironmentObject var store: SettingsStore
+    /// Sync-adjacent remote-terminal preference (terminfo installation).
+    /// Injected from the Settings window's SyncEnvironment; nil (tests,
+    /// early boot) hides the Remote section.
+    let syncPreferences: SyncPreferences?
 
-    public init() {}
+    public init(syncPreferences: SyncPreferences? = nil) {
+        self.syncPreferences = syncPreferences
+    }
 
     public var body: some View {
         let b = TerminalSettingsBindings(store: store)
@@ -116,17 +123,20 @@ public struct TerminalSettingsView: View {
                 Stepper("Padding X: \(b.windowPaddingX.wrappedValue)", value: b.windowPaddingX, in: 0...40)
                 Stepper("Padding Y: \(b.windowPaddingY.wrappedValue)", value: b.windowPaddingY, in: 0...40)
             }
-            Divider()
-            HStack {
-                Button("Edit Advanced Config…") {
-                    ConfigStore.revealInFinder(ConfigStore.defaultPath)
+            if let syncPreferences {
+                RemoteTerminalSection(preferences: syncPreferences)
+            }
+            Section("Advanced") {
+                HStack {
+                    Button("Edit Advanced Config…") {
+                        ConfigStore.revealInFinder(ConfigStore.defaultPath)
+                    }
+                    Spacer()
+                    Text(userOverrideHintText())
+                        .foregroundStyle(.secondary).font(.caption)
                 }
-                Spacer()
-                Text(userOverrideHintText())
-                    .foregroundStyle(.secondary).font(.caption)
             }
         }
-        .padding()
         .formStyle(.grouped)
     }
 
@@ -142,6 +152,25 @@ public struct TerminalSettingsView: View {
         ]
         let count = entries.filter { modeled.contains($0.key) }.count
         return count == 0 ? "" : "\(count) user-config override\(count == 1 ? "" : "s") active"
+    }
+}
+
+/// "Remote" section: terminfo installation on SSH hosts. Lives on the
+/// Terminal page because it configures the remote terminal experience —
+/// it is sync-adjacent plumbing (stored in SyncPreferences), not cloud sync.
+private struct RemoteTerminalSection: View {
+    @ObservedObject var preferences: SyncPreferences
+
+    var body: some View {
+        Section("Remote") {
+            Toggle(
+                "Install Ghostty terminfo on remote hosts",
+                isOn: $preferences.installTerminfoEnabled
+            )
+            Text("Provides full Ghostty rendering features (true colors, hyperlinks). Falls back to standard terminfo automatically if installation isn't possible.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 

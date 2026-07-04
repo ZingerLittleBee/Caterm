@@ -54,11 +54,11 @@ public struct ThemePickerView: View {
                 .padding(.bottom)
             }
         }
-        .padding()
+        .padding(20)
     }
 
     private var gridColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(minimum: 140), spacing: 12), count: 3)
+        [GridItem(.adaptive(minimum: 150), spacing: 12)]
     }
 
     private func card(for theme: ThemeRecord) -> some View {
