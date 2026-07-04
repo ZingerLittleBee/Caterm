@@ -1,14 +1,25 @@
+import SnippetSyncClient
+import SSHCommandBuilder
 import SwiftUI
 #if canImport(UIKit)
 import CatermMobileTerminal
 #endif
 
 public struct MobileSettingsView: View {
-	public init() {}
+	private var hosts: Binding<[SSHHost]>?
+	private var snippets: Binding<[Snippet]>?
+
+	/// Pass the shell's host/snippet bindings to enable the Backup
+	/// (encrypted export/import) section; nil hides it (previews/tests).
+	public init(hosts: Binding<[SSHHost]>? = nil,
+	            snippets: Binding<[Snippet]>? = nil) {
+		self.hosts = hosts
+		self.snippets = snippets
+	}
 
 	public var body: some View {
 		#if canImport(UIKit)
-		MobileSettingsForm()
+		MobileSettingsForm(hosts: hosts, snippets: snippets)
 		#else
 		Form {
 			Section("About") {
@@ -22,6 +33,9 @@ public struct MobileSettingsView: View {
 
 #if canImport(UIKit)
 private struct MobileSettingsForm: View {
+	var hosts: Binding<[SSHHost]>?
+	var snippets: Binding<[Snippet]>?
+
 	@AppStorage(MobileTerminalSettings.Keys.defaultThemeID)
 	private var themeID: String = TerminalTheme.presets[0].id
 	@AppStorage(MobileTerminalSettings.Keys.fontSize)
@@ -57,6 +71,10 @@ private struct MobileSettingsForm: View {
 				Text("Keyboard")
 			} footer: {
 				Text("You can still toggle the keyboard inside any session.")
+			}
+
+			if let hosts, let snippets {
+				MobileBackupSection(hosts: hosts, snippets: snippets)
 			}
 
 			Section("Data") {

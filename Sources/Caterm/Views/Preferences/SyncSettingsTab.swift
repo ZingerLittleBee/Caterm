@@ -1,8 +1,10 @@
 import CredentialSync
 import CredentialSyncStore
 import HostSyncStore
+import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
+import SnippetStore
 import SwiftUI
 
 /// Wrapper view that adapts `SyncSettingsView` so it can be embedded as a
@@ -20,6 +22,9 @@ struct SyncSettingsTab: View {
     let credentialSync: CredentialSyncPreferencesStore?
     let credentialSyncCoordinator: CredentialSyncCoordinator?
     let sessionStore: SessionStore?
+    let managedKeyStore: ManagedKeyStore?
+    let snippetStore: SnippetStore?
+    let bookmarkStore: RemoteBookmarkStore?
 
     init(
         authSession: AuthSessionProtocol,
@@ -27,7 +32,10 @@ struct SyncSettingsTab: View {
         preferences: SyncPreferences,
         credentialSync: CredentialSyncPreferencesStore? = nil,
         credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
-        sessionStore: SessionStore? = nil
+        sessionStore: SessionStore? = nil,
+        managedKeyStore: ManagedKeyStore? = nil,
+        snippetStore: SnippetStore? = nil,
+        bookmarkStore: RemoteBookmarkStore? = nil
     ) {
         self.authSession = authSession
         self.syncStore = syncStore
@@ -35,6 +43,9 @@ struct SyncSettingsTab: View {
         self.credentialSync = credentialSync
         self.credentialSyncCoordinator = credentialSyncCoordinator
         self.sessionStore = sessionStore
+        self.managedKeyStore = managedKeyStore
+        self.snippetStore = snippetStore
+        self.bookmarkStore = bookmarkStore
     }
 
     var body: some View {
@@ -44,7 +55,10 @@ struct SyncSettingsTab: View {
             preferences: preferences,
             credentialSync: credentialSync,
             credentialSyncCoordinator: credentialSyncCoordinator,
-            sessionStore: sessionStore
+            sessionStore: sessionStore,
+            managedKeyStore: managedKeyStore,
+            snippetStore: snippetStore,
+            bookmarkStore: bookmarkStore
         )
     }
 }

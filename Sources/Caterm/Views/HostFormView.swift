@@ -1,4 +1,5 @@
 import AppKit
+import HostKeyProvisioning
 import SessionStore
 import SettingsStore
 import SSHCommandBuilder
@@ -9,16 +10,19 @@ enum HostFormMode {
 	case edit(SSHHost)
 }
 
-/// Modal sheet for adding or editing a saved host. Calls `onSubmit(host, secret)`
-/// when the user clicks Save. The optional `secret` is the password (for
-/// password auth), the passphrase (for key+passphrase auth), or `nil` for agent
-/// / unencrypted-key / edit-without-secret-change.
+/// Modal sheet for adding or editing a saved host. Calls
+/// `onSubmit(host, secret, keyMaterial)` when the user clicks Save. The
+/// optional `secret` is the password (for password auth), the passphrase
+/// (for key+passphrase auth), or `nil` for unencrypted-key /
+/// edit-without-secret-change. `keyMaterial` is new private-key material
+/// to import into managed storage (ADR 0003), or `nil` to keep the host's
+/// existing managed key.
 ///
 /// Layout: stacked labels above full-width bordered fields in section cards —
 /// deliberately not a grouped `Form` (see docs/adr/0001).
 struct HostFormView: View {
 	let mode: HostFormMode
-	let onSubmit: (SSHHost, String?) -> Void
+	let onSubmit: (SSHHost, String?, PendingKeyMaterial?) -> Void
 	@Environment(\.dismiss) private var dismiss
 	@EnvironmentObject private var sessionStore: SessionStore
 
@@ -27,7 +31,10 @@ struct HostFormView: View {
 	@State private var port = "22"
 	@State private var username = ""
 	@State private var credKind: CredKind = .password
-	@State private var keyPath = ""
+	@State private var pendingKey: PendingKeyMaterial? = nil
+	/// Managed key path carried through an edit so "Save without touching
+	/// the key" preserves the existing credential. Never user-visible.
+	@State private var existingKeyPath: String? = nil
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
 	@State private var jumpHostId: UUID? = nil
@@ -137,10 +144,10 @@ struct HostFormView: View {
 
 			AuthMethodFields(
 				credKind: $credKind,
-				keyPath: $keyPath,
+				pendingKey: $pendingKey,
 				hasPassphrase: $hasPassphrase,
 				pendingSecret: $pendingSecret,
-				onBrowse: browseKey
+				hasExistingManagedKey: existingKeyPath != nil
 			)
 			.frame(minHeight: 96, alignment: .top)
 		}
@@ -171,15 +178,11 @@ struct HostFormView: View {
 	private var isValid: Bool {
 		guard !hostname.isEmpty,
 		      !username.isEmpty,
-		      credKind != .keyFile || !keyPath.isEmpty,
+		      credKind != .keyFile || pendingKey != nil || existingKeyPath != nil,
 		      Int(port).map({ (1...65535).contains($0) }) ?? false
 		else { return false }
 		// Chain must resolve — reject broken/cyclic jump references.
-		let cred: CredentialSource
-		switch credKind {
-		case .password: cred = .password
-		case .keyFile:  cred = .keyFile(keyPath: keyPath, hasPassphrase: hasPassphrase)
-		}
+		let cred = formCredentialSource
 		var draft = HostFormView.buildHost(
 			mode: mode,
 			name: resolvedName,
@@ -324,7 +327,7 @@ struct HostFormView: View {
 			credKind = .password
 		case let .keyFile(p, hp):
 			credKind = .keyFile
-			keyPath = p
+			existingKeyPath = p
 			hasPassphrase = hp
 		case .agent:
 			// Legacy `.agent` hosts (agent auth was removed in v1.7 — it
@@ -337,26 +340,20 @@ struct HostFormView: View {
 		icon = host.icon
 	}
 
-	private func browseKey() {
-		let panel = NSOpenPanel()
-		panel.canChooseFiles = true
-		panel.canChooseDirectories = false
-		panel.allowsMultipleSelection = false
-		panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
-			.appendingPathComponent(".ssh")
-		if panel.runModal() == .OK, let url = panel.url {
-			keyPath = url.path
+	/// Credential as it should be persisted on the host. For a brand-new
+	/// key the managed path doesn't exist yet — the parent's provisioning
+	/// step rewrites `keyPath` to the managed location after import, so
+	/// the placeholder here is never what ends up on disk.
+	private var formCredentialSource: CredentialSource {
+		switch credKind {
+		case .password: return .password
+		case .keyFile:  return .keyFile(keyPath: existingKeyPath ?? "",
+		                                hasPassphrase: hasPassphrase)
 		}
 	}
 
 	private func submit() {
-		let cred: CredentialSource
-		switch credKind {
-		case .password:
-			cred = .password
-		case .keyFile:
-			cred = .keyFile(keyPath: keyPath, hasPassphrase: hasPassphrase)
-		}
+		let cred = formCredentialSource
 		var host = HostFormView.buildHost(
 			mode: mode,
 			name: resolvedName,
@@ -380,7 +377,7 @@ struct HostFormView: View {
 				return nil
 			}
 		}()
-		onSubmit(host, secret)
+		onSubmit(host, secret, credKind == .keyFile ? pendingKey : nil)
 	}
 
 	/// Build the `SSHHost` payload for `onSubmit`. In `.edit` mode this

@@ -1,5 +1,7 @@
 import AppKit
+import HostKeyProvisioning
 import HostSyncStore
+import ManagedKeyStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
@@ -19,6 +21,7 @@ struct HostListSidebar: View {
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
 	@EnvironmentObject var commandKeys: CommandKeyMonitor  // NEW (v1.7)
+	@Environment(\.managedKeyStore) private var managedKeys
 	let onOpenTab: (UUID) -> Void
 	@State var selectedHostId: UUID?
 	@State var showingAddSheet = false
@@ -92,13 +95,13 @@ struct HostListSidebar: View {
 				}
 			}
 			.sheet(isPresented: $showingAddSheet) {
-				HostFormView(mode: .add) { host, secret in
+				HostFormView(mode: .add) { host, secret, keyMaterial in
 					do {
 						try store.addHost(host)
-						try store.setHostCredentialMaterial(
-							secrets: makeSecrets(for: host.credential, secret: secret),
-							credentialSource: host.credential,
-							for: host.id
+						try applyCredentialChange(
+							hostId: host.id, credential: host.credential,
+							secret: secret, keyMaterial: keyMaterial,
+							forceSecretWrite: true
 						)
 						showingAddSheet = false
 					} catch {
@@ -108,21 +111,20 @@ struct HostListSidebar: View {
 				.environmentObject(store)
 			}
 			.sheet(item: $editingHost) { host in
-				HostFormView(mode: .edit(host)) { updated, secret in
+				HostFormView(mode: .edit(host)) { updated, secret, keyMaterial in
 					do {
 						try store.updateHost(updated)
 						// Only route through the Plan C credential entry point
-						// when the user supplied a new secret. A pure metadata
-						// edit (rename / hostname / port / username) must not
-						// flip `credentialMaterialDirty` or fire the credential
+						// when the user supplied a new secret or new key
+						// material. A pure metadata edit (rename / hostname /
+						// port / username) must not flip
+						// `credentialMaterialDirty` or fire the credential
 						// changed notification.
-						if secret != nil {
-							try store.setHostCredentialMaterial(
-								secrets: makeSecrets(for: updated.credential, secret: secret),
-								credentialSource: updated.credential,
-								for: updated.id
-							)
-						}
+						try applyCredentialChange(
+							hostId: updated.id, credential: updated.credential,
+							secret: secret, keyMaterial: keyMaterial,
+							forceSecretWrite: false
+						)
 						editingHost = nil
 					} catch {
 						errorMessage = error.localizedDescription
@@ -138,12 +140,23 @@ struct HostListSidebar: View {
 				editingHost = host
 			}
 			.sheet(item: $pendingCredentialHost) { host in
-				CredentialSetupView(host: host) { cred, secret in
-					try store.setHostCredentialMaterial(
-						secrets: makeSecrets(for: cred, secret: secret),
-						credentialSource: cred,
-						for: host.id
-					)
+				CredentialSetupView(host: host) { cred, secret, keyMaterial in
+					if let keyMaterial {
+						try await HostKeyProvisioner.provision(
+							material: keyMaterial,
+							hasPassphrase: credHasPassphrase(cred),
+							passphrase: secret,
+							hostId: host.id,
+							sessionStore: store,
+							managedKeys: managedKeys
+						)
+					} else {
+						try store.setHostCredentialMaterial(
+							secrets: makeSecrets(for: cred, secret: secret),
+							credentialSource: cred,
+							for: host.id
+						)
+					}
 					// Write succeeded — dismiss and re-enter connect with the
 					// refreshed host (now needsCredentialSetup == false).
 					if let refreshed = store.hosts.first(where: { $0.id == host.id }) {
@@ -222,6 +235,50 @@ struct HostListSidebar: View {
 		default:
 			return HostSecrets()
 		}
+	}
+
+	/// Route a form submission's credential outcome. New key material is
+	/// imported into managed storage (ADR 0003) via the Plan C entry point;
+	/// otherwise fall back to the direct secret write. `forceSecretWrite`
+	/// distinguishes the add flow (always establish credential state, even
+	/// with an empty secret) from the edit flow (only touch credential
+	/// state when the user actually supplied something new).
+	private func applyCredentialChange(
+		hostId: UUID, credential: CredentialSource,
+		secret: String?, keyMaterial: PendingKeyMaterial?,
+		forceSecretWrite: Bool
+	) throws {
+		if let keyMaterial {
+			// Managed-key write is an actor hop — provision asynchronously;
+			// failures surface through the sidebar's error alert and the
+			// host falls back to needsCredentialSetup on next connect.
+			Task {
+				do {
+					try await HostKeyProvisioner.provision(
+						material: keyMaterial,
+						hasPassphrase: credHasPassphrase(credential),
+						passphrase: secret,
+						hostId: hostId,
+						sessionStore: store,
+						managedKeys: managedKeys
+					)
+				} catch {
+					errorMessage = error.localizedDescription
+				}
+			}
+			return
+		}
+		guard forceSecretWrite || secret != nil else { return }
+		try store.setHostCredentialMaterial(
+			secrets: makeSecrets(for: credential, secret: secret),
+			credentialSource: credential,
+			for: hostId
+		)
+	}
+
+	private func credHasPassphrase(_ cred: CredentialSource) -> Bool {
+		if case .keyFile(_, hasPassphrase: true) = cred { return true }
+		return false
 	}
 
 	private func connect(_ host: SSHHost) {

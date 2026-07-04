@@ -2,9 +2,11 @@ import AppKit
 import CredentialSync
 import CredentialSyncStore
 import HostSyncStore
+import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
+import SnippetStore
 import SwiftUI
 
 /// Container the app injects into the window controller so the Sync tab can
@@ -20,19 +22,29 @@ public struct SyncEnvironment {
     public let credentialSync: CredentialSyncPreferencesStore?
     public let credentialSyncCoordinator: CredentialSyncCoordinator?
     public let sessionStore: SessionStore?
+    // Backup (encrypted export/import) surface — nil hides the section.
+    public let managedKeyStore: ManagedKeyStore?
+    public let snippetStore: SnippetStore?
+    public let bookmarkStore: RemoteBookmarkStore?
 
     public init(authSession: AuthSessionProtocol,
                 syncStore: HostSyncStore,
                 preferences: SyncPreferences,
                 credentialSync: CredentialSyncPreferencesStore? = nil,
                 credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
-                sessionStore: SessionStore? = nil) {
+                sessionStore: SessionStore? = nil,
+                managedKeyStore: ManagedKeyStore? = nil,
+                snippetStore: SnippetStore? = nil,
+                bookmarkStore: RemoteBookmarkStore? = nil) {
         self.authSession = authSession
         self.syncStore = syncStore
         self.preferences = preferences
         self.credentialSync = credentialSync
         self.credentialSyncCoordinator = credentialSyncCoordinator
         self.sessionStore = sessionStore
+        self.managedKeyStore = managedKeyStore
+        self.snippetStore = snippetStore
+        self.bookmarkStore = bookmarkStore
     }
 }
 
@@ -120,7 +132,10 @@ public final class PreferencesWindowController: NSWindowController {
                     preferences: env.preferences,
                     credentialSync: env.credentialSync,
                     credentialSyncCoordinator: env.credentialSyncCoordinator,
-                    sessionStore: env.sessionStore
+                    sessionStore: env.sessionStore,
+                    managedKeyStore: env.managedKeyStore,
+                    snippetStore: env.snippetStore,
+                    bookmarkStore: env.bookmarkStore
                 )
             )
         } else {

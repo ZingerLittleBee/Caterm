@@ -6,6 +6,7 @@ import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
 import Foundation
+import HostKeyProvisioning
 import HostSyncStore
 import KeychainStore
 import ManagedKeyStore
@@ -206,6 +207,20 @@ struct CatermApp: App {
 				await settingsSync.startSync()
 			}
 		}
+		// One-time managed-key migration (ADR 0003): relocate external
+		// .keyFile paths into ManagedKeyStore. Uses setCredentialOnly, so
+		// it never dirties credentials or bumps updatedAt — safe to run
+		// before/alongside the first sync cycle. Idempotent (already-
+		// managed paths are skipped), so running every launch is fine.
+		Task { @MainActor in
+			let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
+				sessionStore: session, managedKeys: mngs
+			)
+			if summary.migrated > 0 || summary.skippedUnreadable > 0 {
+				NSLog("[CatermApp] Managed-key migration: %d migrated, %d unreadable (left as-is), %d already managed",
+				      summary.migrated, summary.skippedUnreadable, summary.alreadyManaged)
+			}
+		}
 	}
 
 	var body: some Scene {
@@ -237,6 +252,7 @@ struct CatermApp: App {
 			.environmentObject(snippetStore)
 			.environmentObject(snippetSync)
 			.environmentObject(commandKeyMonitor)
+			.environment(\.managedKeyStore, managedKeyStore)
 			.background(OpenTabBridge(store: store))
 			// .task closure is sync — syncIfSignedIn() returns immediately;
 			// the actual sync work runs as an unstructured Task owned by
@@ -304,7 +320,10 @@ struct CatermApp: App {
 					preferences: preferences,
 					credentialSync: credentialSync,
 					credentialSyncCoordinator: credentialSyncCoordinator,
-					sessionStore: store
+					sessionStore: store,
+					managedKeyStore: managedKeyStore,
+					snippetStore: snippetStore,
+					bookmarkStore: remoteBookmarks
 				)
 				preferencesWindow.activate(tabIndex: 3)
 				preferencesWindow.showAndActivate()
@@ -345,7 +364,10 @@ struct CatermApp: App {
 						preferences: preferences,
 						credentialSync: credentialSync,
 						credentialSyncCoordinator: credentialSyncCoordinator,
-						sessionStore: store
+						sessionStore: store,
+						managedKeyStore: managedKeyStore,
+						snippetStore: snippetStore,
+						bookmarkStore: remoteBookmarks
 					)
 					preferencesWindow.showAndActivate()
 				}

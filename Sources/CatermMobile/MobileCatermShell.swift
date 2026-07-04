@@ -169,7 +169,7 @@ private struct MobileCompactShell: View {
 			.tabItem { Label("Files", systemImage: "folder") }
 
 			NavigationStack {
-				MobileSettingsView()
+				MobileSettingsView(hosts: $hosts, snippets: $snippets)
 			}
 			.tabItem { Label("Settings", systemImage: "gearshape") }
 		}
@@ -278,7 +278,7 @@ private struct MobileShellDetail: View {
 		case .files:
 			MobileFileBrowserView(entries: remoteEntries, transfers: transfers)
 		case .settings:
-			MobileSettingsView()
+			MobileSettingsView(hosts: $hosts, snippets: $snippets)
 		case nil:
 			MobileHostsView(hosts: $hosts)
 		}

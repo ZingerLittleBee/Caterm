@@ -1,9 +1,11 @@
 import CredentialSync
 import CredentialSyncStore
 import HostSyncStore
+import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsSyncStore
+import SnippetStore
 import SwiftUI
 import UserNotifications
 
@@ -50,6 +52,9 @@ struct SyncSettingsView: View {
     let credentialSync: CredentialSyncPreferencesStore?
     let credentialSyncCoordinator: CredentialSyncCoordinator?
     let sessionStore: SessionStore?
+    let managedKeyStore: ManagedKeyStore?
+    let snippetStore: SnippetStore?
+    let bookmarkStore: RemoteBookmarkStore?
     @State private var isSyncing = false
     @State private var lastSyncError: ServerSyncError?
     @State private var notifyToggleRequestID = 0
@@ -69,7 +74,10 @@ struct SyncSettingsView: View {
         preferences: SyncPreferences,
         credentialSync: CredentialSyncPreferencesStore? = nil,
         credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
-        sessionStore: SessionStore? = nil
+        sessionStore: SessionStore? = nil,
+        managedKeyStore: ManagedKeyStore? = nil,
+        snippetStore: SnippetStore? = nil,
+        bookmarkStore: RemoteBookmarkStore? = nil
     ) {
         self.authSession = authSession
         self.syncStore = syncStore
@@ -77,6 +85,9 @@ struct SyncSettingsView: View {
         self.credentialSync = credentialSync
         self.credentialSyncCoordinator = credentialSyncCoordinator
         self.sessionStore = sessionStore
+        self.managedKeyStore = managedKeyStore
+        self.snippetStore = snippetStore
+        self.bookmarkStore = bookmarkStore
     }
 
     var body: some View {
@@ -152,6 +163,14 @@ struct SyncSettingsView: View {
                 Text("A key you explicitly pick for a host always syncs (when iCloud credential sync is on). Keys discovered automatically in ~/.ssh stay on this device unless this is enabled, and only after one of them successfully connects.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            if let sessionStore, let managedKeyStore {
+                BackupSettingsSection(
+                    sessionStore: sessionStore,
+                    managedKeys: managedKeyStore,
+                    snippetStore: snippetStore,
+                    bookmarkStore: bookmarkStore
+                )
             }
             Section("Terminal") {
                 Toggle(

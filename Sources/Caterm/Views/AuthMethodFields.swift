@@ -1,3 +1,5 @@
+import AppKit
+import HostKeyProvisioning
 import SwiftUI
 
 /// Small label rendered above a form field. Shared by `HostFormView` and
@@ -19,15 +21,22 @@ struct FieldLabel: View {
 /// `CredKind` variants so that flipping the segmented picker doesn't shift
 /// the parent sheet's footer buttons.
 ///
+/// Private keys are never referenced by user path (ADR 0003): choosing a
+/// file or pasting key text stages `PendingKeyMaterial`, which the parent
+/// imports into Caterm's managed key storage on Save.
+///
 /// Fields are stacked (label above a full-width bordered field) per ADR 0001.
 struct AuthMethodFields: View {
 	@Binding var credKind: CredKind
-	@Binding var keyPath: String
+	@Binding var pendingKey: PendingKeyMaterial?
 	@Binding var hasPassphrase: Bool
 	@Binding var pendingSecret: String
-	var onBrowse: () -> Void
+	/// True when the host already has a key imported into managed storage
+	/// (edit / re-key flows) — Save stays enabled without new material.
+	var hasExistingManagedKey = false
 
 	@State private var discoveredKeys: [DefaultSSHKeyScanner.DiscoveredKey] = []
+	@State private var pasteError: String?
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 10) {
@@ -44,23 +53,32 @@ struct AuthMethodFields: View {
 			case .keyFile:
 				VStack(alignment: .leading, spacing: 5) {
 					FieldLabel("Private key")
+					keyStatusRow
 					HStack {
-						TextField("", text: $keyPath, prompt: Text("~/.ssh/id_ed25519"))
-							.help("Path to your SSH private key. A key you pick here is uploaded and synced to your other devices when iCloud credential sync is on.")
+						Button("Choose File…") { browseKey() }
+							.help("Pick a private key file. Its contents are imported into Caterm — the original file stays where it is and is no longer referenced.")
 						if !discoveredKeys.isEmpty {
 							Menu {
 								ForEach(discoveredKeys) { key in
-									Button(key.displayName) { keyPath = key.path }
-										.help(key.path)
+									Button(key.displayName) {
+										stage(.file(path: key.path))
+									}
+									.help(key.path)
 								}
 							} label: {
 								Image(systemName: "key.horizontal")
 							}
 							.menuStyle(.borderlessButton)
 							.fixedSize()
-							.help("Pick a key found in ~/.ssh. Choosing one here makes it this host's key (and syncs it when iCloud credential sync is on).")
+							.help("Import a key found in ~/.ssh.")
 						}
-						Button("Browse…") { onBrowse() }
+						Button("Paste from Clipboard") { pasteFromClipboard() }
+							.help("Import a private key you copied to the clipboard.")
+					}
+					if let pasteError {
+						Text(pasteError)
+							.font(.caption)
+							.foregroundStyle(.red)
 					}
 				}
 				Toggle("Key has passphrase", isOn: $hasPassphrase)
@@ -73,11 +91,7 @@ struct AuthMethodFields: View {
 							.help("Stored in your macOS Keychain, never written to disk in plaintext.")
 					}
 				}
-				footnote(
-					hasPassphrase
-						? "Path stored locally; passphrase stored in Keychain. The key itself syncs with iCloud credential sync."
-						: "The key you pick syncs with iCloud credential sync. Keys auto-discovered in ~/.ssh are never uploaded unless you opt in under Settings → Sync."
-				)
+				footnote("The key is imported and stored by Caterm (passphrase in Keychain). It syncs with iCloud credential sync when enabled.")
 			}
 		}
 		.textFieldStyle(.roundedBorder)
@@ -86,6 +100,81 @@ struct AuthMethodFields: View {
 				discoveredKeys = DefaultSSHKeyScanner.scan()
 			}
 		}
+	}
+
+	/// One line reflecting the staged key state so the user always sees
+	/// what Save will import (or keep).
+	@ViewBuilder
+	private var keyStatusRow: some View {
+		switch pendingKey {
+		case let .file(path):
+			stagedRow(
+				icon: "doc.badge.plus",
+				text: "Will import “\((path as NSString).lastPathComponent)”"
+			)
+		case .pasted:
+			stagedRow(icon: "doc.on.clipboard", text: "Will import pasted key")
+		case nil:
+			if hasExistingManagedKey {
+				HStack(spacing: 6) {
+					Image(systemName: "checkmark.seal")
+					Text("Key stored in Caterm")
+				}
+				.font(.callout)
+				.foregroundStyle(.secondary)
+			} else {
+				Text("No key selected")
+					.font(.callout)
+					.foregroundStyle(.secondary)
+			}
+		}
+	}
+
+	private func stagedRow(icon: String, text: String) -> some View {
+		HStack(spacing: 6) {
+			Image(systemName: icon)
+			Text(text)
+			Button {
+				stage(nil)
+			} label: {
+				Image(systemName: "xmark.circle.fill")
+					.foregroundStyle(.secondary)
+			}
+			.buttonStyle(.borderless)
+			.help(hasExistingManagedKey ? "Keep the key already stored in Caterm" : "Clear selection")
+		}
+		.font(.callout)
+	}
+
+	private func stage(_ material: PendingKeyMaterial?) {
+		pendingKey = material
+		pasteError = nil
+	}
+
+	private func browseKey() {
+		let panel = NSOpenPanel()
+		panel.canChooseFiles = true
+		panel.canChooseDirectories = false
+		panel.allowsMultipleSelection = false
+		panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
+			.appendingPathComponent(".ssh")
+		if panel.runModal() == .OK, let url = panel.url {
+			stage(.file(path: url.path))
+		}
+	}
+
+	private func pasteFromClipboard() {
+		let content = NSPasteboard.general.string(forType: .string) ?? ""
+		let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !trimmed.isEmpty else {
+			pasteError = "Clipboard doesn't contain any text."
+			return
+		}
+		guard trimmed.contains("PRIVATE KEY") || trimmed.contains("BEGIN") else {
+			pasteError = "Clipboard text doesn't look like a private key."
+			return
+		}
+		stage(.pasted(content: content))
 	}
 
 	private func footnote(_ text: String) -> some View {

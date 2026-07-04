@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "CatermMobileApp", targets: ["CatermMobileApp"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.5.0"),
         .package(url: "https://github.com/apple/swift-nio-ssh.git", from: "0.9.0"),
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.2.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
@@ -111,6 +112,25 @@ let package = Package(
             path: "Sources/ManagedKeyStore"
         ),
         .target(
+            name: "BackupArchive",
+            dependencies: [
+                "SettingsStore",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "CryptoExtras", package: "swift-crypto"),
+            ],
+            path: "Sources/BackupArchive"
+        ),
+        .target(
+            name: "BackupService",
+            dependencies: ["BackupArchive", "SessionStore", "ManagedKeyStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "KeychainStore"],
+            path: "Sources/BackupService"
+        ),
+        .target(
+            name: "HostKeyProvisioning",
+            dependencies: ["SessionStore", "ManagedKeyStore", "SSHCommandBuilder"],
+            path: "Sources/HostKeyProvisioning"
+        ),
+        .target(
             name: "CredentialSync",
             dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Sources/CredentialSync"
@@ -121,7 +141,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal"],
+            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore"],
             path: "Sources/CatermMobile"
         ),
         .target(
@@ -160,6 +180,10 @@ let package = Package(
                 "CloudKitSyncClient",
                 "CredentialSync",
                 "CredentialSyncStore",
+                "HostKeyProvisioning",
+                "ManagedKeyStore",
+                "BackupArchive",
+                "BackupService",
                 "SettingsSyncStore",
                 "SnippetStore",
                 "SnippetSyncClient",
@@ -229,7 +253,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermMobileTests",
-            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore"],
+            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore"],
             path: "Tests/CatermMobileTests"
         ),
         .testTarget(
@@ -281,6 +305,21 @@ let package = Package(
             name: "ManagedKeyStoreTests",
             dependencies: ["ManagedKeyStore"],
             path: "Tests/ManagedKeyStoreTests"
+        ),
+        .testTarget(
+            name: "BackupArchiveTests",
+            dependencies: ["BackupArchive", "SettingsStore"],
+            path: "Tests/BackupArchiveTests"
+        ),
+        .testTarget(
+            name: "BackupServiceTests",
+            dependencies: ["BackupService", "BackupArchive", "SessionStore", "ManagedKeyStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "KeychainStore"],
+            path: "Tests/BackupServiceTests"
+        ),
+        .testTarget(
+            name: "HostKeyProvisioningTests",
+            dependencies: ["HostKeyProvisioning", "SessionStore", "ManagedKeyStore", "KeychainStore", "SSHCommandBuilder"],
+            path: "Tests/HostKeyProvisioningTests"
         ),
         .testTarget(
             name: "CredentialSyncTests",
