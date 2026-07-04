@@ -207,6 +207,12 @@ codesign -dvv "$APP" 2>&1 | grep -E "TeamIdentifier|Authority|Identifier" || tru
 # and frameworks like UserNotifications resolve a bundle identity.
 # ---------------------------------------------------------------------------
 echo "==> Launching $APP"
-open "$APP"
+OPEN_ENV_ARGS=()
+if [[ -n "${CATERM_DEV_OPEN_ENV:-}" ]]; then
+    for env_pair in $CATERM_DEV_OPEN_ENV; do
+        OPEN_ENV_ARGS+=(--env "$env_pair")
+    done
+fi
+open "${OPEN_ENV_ARGS[@]}" "$APP"
 echo "Logs: tail -f \$TMPDIR/caterm-dev.log  # if you set CFBundleDocumentTypes/log redirect"
 echo "Force quit if needed: pkill -f Caterm.app/Contents/MacOS/caterm"
