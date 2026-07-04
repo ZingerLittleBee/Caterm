@@ -13,6 +13,9 @@ enum HostFormMode {
 /// when the user clicks Save. The optional `secret` is the password (for
 /// password auth), the passphrase (for key+passphrase auth), or `nil` for agent
 /// / unencrypted-key / edit-without-secret-change.
+///
+/// Layout: stacked labels above full-width bordered fields in section cards —
+/// deliberately not a grouped `Form` (see docs/adr/0001).
 struct HostFormView: View {
 	let mode: HostFormMode
 	let onSubmit: (SSHHost, String?) -> Void
@@ -33,91 +36,26 @@ struct HostFormView: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
-			Form {
-				Section("Connection") {
-					LabeledContent("Label") {
-						TextField("", text: $label, prompt: Text("Optional"))
-					}
-					LabeledContent("Icon") {
-						HostIconPicker(
-							icon: $icon,
-							fallbackSymbol: credentialIconFallback
-						)
-					}
-					LabeledContent("Hostname") {
-						TextField("", text: $hostname)
-					}
-					LabeledContent("Port") {
-						TextField("", text: $port)
-					}
-					LabeledContent("Username") {
-						TextField("", text: $username)
-					}
-					LabeledContent("Via host") {
-						Picker("Via host", selection: $jumpHostId) {
-							Text("(none)").tag(UUID?.none)
-							ForEach(eligibleJumpHosts, id: \.id) { host in
-								Text("\(host.name) (\(host.username)@\(host.hostname))")
-									.tag(UUID?.some(host.id))
-							}
-						}
-						.pickerStyle(.menu)
-						.labelsHidden()
-					}
-					if !chainPreviewText.isEmpty {
-						Text(chainPreviewText)
-							.font(.caption)
-							.foregroundStyle(chainHasMissingHost ? .red : .secondary)
-					}
-				}
-
-				Section("Authentication") {
-					Picker("Method", selection: $credKind) {
-						ForEach(CredKind.allCases) { kind in
-							Text(kind.displayName).tag(kind)
+			ScrollView {
+				VStack(alignment: .leading, spacing: 16) {
+					connectionCard
+					authenticationCard
+					portForwardingCard
+					// Theme override only makes sense for an existing host —
+					// the override key is the host's UUID, which doesn't exist
+					// yet in the `.add` case.
+					if case let .edit(host) = mode {
+						FormCard("Theme Override") {
+							HostThemeOverridePicker(hostId: HostId(host.id.uuidString))
+								.labelsHidden()
+								.frame(maxWidth: 260, alignment: .leading)
 						}
 					}
-					.pickerStyle(.segmented)
-					.labelsHidden()
-
-					AuthMethodFields(
-						credKind: $credKind,
-						keyPath: $keyPath,
-						hasPassphrase: $hasPassphrase,
-						pendingSecret: $pendingSecret,
-						onBrowse: browseKey
-					)
-					.frame(minHeight: 96, alignment: .top)
 				}
-
-				Section("Port Forwarding") {
-					if forwards.isEmpty {
-						HStack {
-							Text("No port forwards")
-								.foregroundStyle(.secondary)
-							Spacer()
-							Button("+ Add") { addForward() }
-								.buttonStyle(.borderless)
-						}
-					} else {
-						ForwardListEditor(
-							forwards: $forwards,
-							onAdd: addForward,
-							onDelete: deleteForward
-						)
-					}
-				}
-
-				// Theme override only makes sense for an existing host —
-				// the override key is the host's UUID, which doesn't exist
-				// yet in the `.add` case.
-				if case let .edit(host) = mode {
-					Section("Theme Override") {
-						HostThemeOverridePicker(hostId: HostId(host.id.uuidString))
-					}
-				}
+				.textFieldStyle(.roundedBorder)
+				.controlSize(.large)
+				.padding(20)
 			}
-			.formStyle(.grouped)
 
 			Divider()
 
@@ -132,8 +70,102 @@ struct HostFormView: View {
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
-		.frame(width: 520, height: 560)
+		.frame(width: 560, height: 680)
 		.onAppear { populate() }
+	}
+
+	private var connectionCard: some View {
+		FormCard("Connection") {
+			HStack(alignment: .top, spacing: 12) {
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("Label (optional)")
+					TextField("", text: $label, prompt: Text("Defaults to user@host"))
+				}
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("Icon")
+					HostIconPicker(
+						icon: $icon,
+						fallbackSymbol: credentialIconFallback
+					)
+				}
+			}
+			HStack(alignment: .top, spacing: 12) {
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("Hostname")
+					TextField("", text: $hostname, prompt: Text("e.g. 192.168.1.10"))
+				}
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("Port")
+					TextField("", text: $port, prompt: Text("22"))
+						.frame(width: 90)
+				}
+			}
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Username")
+				TextField("", text: $username, prompt: Text("e.g. root"))
+			}
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Via host (jump host)")
+				Picker("Via host", selection: $jumpHostId) {
+					Text("(none)").tag(UUID?.none)
+					ForEach(eligibleJumpHosts, id: \.id) { host in
+						Text("\(host.name) (\(host.username)@\(host.hostname))")
+							.tag(UUID?.some(host.id))
+					}
+				}
+				.pickerStyle(.menu)
+				.labelsHidden()
+				.frame(maxWidth: 320, alignment: .leading)
+			}
+			if !chainPreviewText.isEmpty {
+				Text(chainPreviewText)
+					.font(.caption)
+					.foregroundStyle(chainHasMissingHost ? .red : .secondary)
+			}
+		}
+	}
+
+	private var authenticationCard: some View {
+		FormCard("Authentication") {
+			Picker("Method", selection: $credKind) {
+				ForEach(CredKind.allCases) { kind in
+					Text(kind.displayName).tag(kind)
+				}
+			}
+			.pickerStyle(.segmented)
+			.labelsHidden()
+
+			AuthMethodFields(
+				credKind: $credKind,
+				keyPath: $keyPath,
+				hasPassphrase: $hasPassphrase,
+				pendingSecret: $pendingSecret,
+				onBrowse: browseKey
+			)
+			.frame(minHeight: 96, alignment: .top)
+		}
+	}
+
+	private var portForwardingCard: some View {
+		FormCard("Port Forwarding") {
+			if forwards.isEmpty {
+				Text("No port forwards")
+					.font(.callout)
+					.foregroundStyle(.secondary)
+			} else {
+				ForEach($forwards) { $forward in
+					ForwardRuleCard(
+						forward: $forward,
+						onDelete: { deleteForward(forward.id) }
+					)
+				}
+			}
+			Button {
+				addForward()
+			} label: {
+				Label("Add port forward", systemImage: "plus")
+			}
+		}
 	}
 
 	private var isValid: Bool {
@@ -393,40 +425,34 @@ struct HostFormView: View {
 	}
 }
 
-private struct ForwardListEditor: View {
-	@Binding var forwards: [PortForward]
-	let onAdd: () -> Void
-	let onDelete: (UUID) -> Void
+/// Titled section card: the host form's replacement for `Form` sections
+/// (ADR 0001). Content is stacked with a consistent gutter.
+private struct FormCard<Content: View>: View {
+	let title: String
+	@ViewBuilder let content: Content
+
+	init(_ title: String, @ViewBuilder content: () -> Content) {
+		self.title = title
+		self.content = content()
+	}
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 6) {
-			ScrollView {
-				LazyVStack(spacing: 8) {
-					ForEach($forwards) { $forward in
-						ForwardRow(forward: $forward, onDelete: { onDelete(forward.id) })
-					}
-				}
-			}
-			.frame(maxHeight: forwards.count > 4 ? 220 : nil)
-
-			Button("+ Add port forward", action: onAdd)
-				.buttonStyle(.borderless)
+		VStack(alignment: .leading, spacing: 12) {
+			Text(title).font(.headline)
+			content
 		}
+		.padding(16)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(RoundedRectangle(cornerRadius: 10).fill(.background.secondary))
 	}
 }
 
-private struct ForwardRow: View {
+/// One port-forward rule as a labelled mini-card: kind + required + delete
+/// in the header, then per-field labelled inputs, then the plain-language
+/// explanation. Invalid rules get a red border.
+private struct ForwardRuleCard: View {
 	@Binding var forward: PortForward
 	let onDelete: () -> Void
-
-	/// Plain-language name shown in the type menu instead of ssh's L/R/D.
-	private static func typeName(_ k: PortForward.Kind) -> String {
-		switch k {
-		case .local:   return "Local port"
-		case .remote:  return "Remote port"
-		case .dynamic: return "SOCKS proxy"
-		}
-	}
 
 	/// One-line, jargon-free description of what this rule does, kept in
 	/// sync with the entered values so the user sees the effect at a glance.
@@ -453,8 +479,8 @@ private struct ForwardRow: View {
 	}
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 3) {
-			HStack(spacing: 8) {
+		VStack(alignment: .leading, spacing: 10) {
+			HStack {
 				Picker("", selection: $forward.kind) {
 					Text("Local port").tag(PortForward.Kind.local)
 					Text("Remote port").tag(PortForward.Kind.remote)
@@ -462,7 +488,7 @@ private struct ForwardRow: View {
 				}
 				.pickerStyle(.menu)
 				.labelsHidden()
-				.frame(width: 116)
+				.fixedSize()
 				.help(typeHelp)
 				.onChange(of: forward.kind) { _, newKind in
 					if newKind == .dynamic {
@@ -474,55 +500,60 @@ private struct ForwardRow: View {
 					}
 				}
 
-				TextField("", value: $forward.bindPort,
-				          format: .number.grouping(.never),
-				          prompt: Text("8080"))
-					.labelsHidden()
-					.multilineTextAlignment(.center)
-					.frame(width: 72)
-					.help("The port number to open.")
+				Spacer()
 
-				if forward.kind == .dynamic {
-					Spacer(minLength: 0)
-				} else {
-					Image(systemName: "arrow.right")
-						.font(.caption)
-						.foregroundStyle(.secondary)
-
-					TextField("", text: Binding(
-						get: { forward.remoteHost ?? "" },
-						set: { forward.remoteHost = $0.isEmpty ? nil : $0 }
-					), prompt: Text("localhost"))
-					.labelsHidden()
-					.frame(minWidth: 90)
-					.help("The destination host, as seen from the other side.")
-
-					Text(":").foregroundStyle(.secondary)
-
-					TextField("", value: Binding(
-						get: { forward.remotePort ?? 0 },
-						set: { forward.remotePort = $0 }
-					), format: .number.grouping(.never),
-					   prompt: Text("80"))
-					.labelsHidden()
-					.multilineTextAlignment(.center)
-					.frame(width: 64)
-					.help("The destination port.")
-				}
-
-				Toggle("", isOn: $forward.required)
-					.labelsHidden()
+				Toggle("Required", isOn: $forward.required)
 					.toggleStyle(.checkbox)
 					.help("Required: if this port can't be opened, abort the whole connection (only when every forward on this host is required).")
 
 				Button {
 					onDelete()
 				} label: {
-					Image(systemName: "xmark.circle.fill")
+					Image(systemName: "trash")
 						.foregroundStyle(.secondary)
 				}
 				.buttonStyle(.borderless)
 				.help("Remove this rule")
+			}
+
+			HStack(alignment: .bottom, spacing: 10) {
+				VStack(alignment: .leading, spacing: 4) {
+					FieldLabel("Port to open")
+					TextField("", value: $forward.bindPort,
+					          format: .number.grouping(.never),
+					          prompt: Text("8080"))
+						.frame(width: 90)
+						.help("The port number to open.")
+				}
+
+				if forward.kind != .dynamic {
+					Image(systemName: "arrow.right")
+						.font(.caption)
+						.foregroundStyle(.secondary)
+						.padding(.bottom, 7)
+
+					VStack(alignment: .leading, spacing: 4) {
+						FieldLabel("Destination host")
+						TextField("", text: Binding(
+							get: { forward.remoteHost ?? "" },
+							set: { forward.remoteHost = $0.isEmpty ? nil : $0 }
+						), prompt: Text("localhost"))
+						.help("The destination host, as seen from the other side.")
+					}
+
+					VStack(alignment: .leading, spacing: 4) {
+						FieldLabel("Destination port")
+						TextField("", value: Binding(
+							get: { forward.remotePort ?? 0 },
+							set: { forward.remotePort = $0 }
+						), format: .number.grouping(.never),
+						   prompt: Text("80"))
+						.frame(width: 90)
+						.help("The destination port.")
+					}
+				} else {
+					Spacer(minLength: 0)
+				}
 			}
 
 			Text(explanation)
@@ -530,13 +561,13 @@ private struct ForwardRow: View {
 				.foregroundStyle(.secondary)
 				.fixedSize(horizontal: false, vertical: true)
 		}
-		.padding(.vertical, 4)
-		.overlay(alignment: .leading) {
+		.padding(12)
+		.background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+		.overlay {
 			let isValid = (try? forward.validate()) != nil
 			if !isValid {
-				RoundedRectangle(cornerRadius: 4)
+				RoundedRectangle(cornerRadius: 8)
 					.stroke(.red, lineWidth: 1)
-					.padding(-2)
 					.help("This rule has invalid settings — check the port numbers and host.")
 			}
 		}
