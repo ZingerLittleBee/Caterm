@@ -56,6 +56,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 		}
 	}
 
+	/// Force overlay scroll bars (thin, auto-hiding, shown only while
+	/// scrolling) for every scrollable view in the app — Lists, Forms,
+	/// ScrollViews are all NSScrollView-backed and resolve their style from
+	/// `NSScroller.preferredScrollerStyle`.
+	///
+	/// That style normally follows the system-wide "Show scroll bars"
+	/// preference: "Always", or "Automatic" with a mouse connected, yields
+	/// legacy scrollers that are thick and permanently visible. Writing
+	/// `AppleShowScrollBars` into this app's own defaults domain shadows
+	/// NSGlobalDomain for this process only, so Caterm always gets overlay
+	/// scrollers without touching the user's system setting. Must run
+	/// before the first window (and its scrollers) is created.
+	func applicationWillFinishLaunching(_: Notification) {
+		UserDefaults.standard.set("WhenScrolling", forKey: "AppleShowScrollBars")
+	}
+
 	func applicationDidFinishLaunching(_: Notification) {
 		NSApp.setActivationPolicy(.regular)
 		NSApp.activate(ignoringOtherApps: true)
