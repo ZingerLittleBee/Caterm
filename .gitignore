@@ -44,6 +44,9 @@ sign
 .worktrees/
 .superpowers/
 
+# Local-only scratch space (test keys, throwaway fixtures)
+ignore/
+
 # Misc
 *.tgz
 .cache
@@ -53,3 +56,4 @@ coverage
 
 # Sparkle EdDSA private key export (public key lives in Scripts/sparkle_public_key.txt)
 sign/sparkle_ed_private_key*
+.testloop/
