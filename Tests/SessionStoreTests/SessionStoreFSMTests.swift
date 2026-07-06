@@ -119,4 +119,58 @@ final class SessionStoreFSMTests: XCTestCase {
         guard let after = tab(id: tabId) else { XCTFail("tab missing"); return }
         XCTAssertEqual(after.reconnectAttempts, 0)
     }
+
+    // MARK: - markConnectedProvisional
+
+    /// Provisional connect dismisses the overlay (enters `.connected`) but does
+    /// NOT commit `hadConnected` — so a later exit still classifies by failure.
+    func testProvisionalEntersConnectedWithoutCommittingHadConnected() {
+        let tabId = sut.openTab(host: makeHost())
+        sut.markConnectedProvisional(tabId: tabId)
+
+        guard let t = tab(id: tabId) else { XCTFail("tab missing"); return }
+        guard case .connected = t.state else {
+            XCTFail("expected .connected, got \(t.state)"); return
+        }
+        XCTAssertFalse(t.hadConnected,
+                       "provisional connect must not commit hadConnected")
+    }
+
+    /// A *slow* auth/setup failure — process exits after a provisional connect
+    /// but before the confirming `markConnected` — must still classify as
+    /// `.authOrSetupFail` (never a reconnectable `.connectionDropped`), because
+    /// `hadConnected` was never committed.
+    func testProvisionalThenExitClassifiesAsAuthFail() {
+        let tabId = sut.openTab(host: makeHost())
+        sut.markConnectedProvisional(tabId: tabId)
+
+        sut.markChildExited(tabId: tabId, exitCode: 255)
+
+        guard let t = tab(id: tabId) else { XCTFail("tab missing"); return }
+        if case let .failed(kind) = t.state {
+            XCTAssertEqual(kind, .authOrSetupFail)
+        } else {
+            XCTFail("expected .failed(.authOrSetupFail), got \(t.state)")
+        }
+    }
+
+    /// Provisional is a no-op once the tab has truly connected: it must not
+    /// clobber a committed `hadConnected` (which would misclassify a later drop).
+    func testProvisionalIsNoOpAfterRealConnect() {
+        let tabId = sut.openTab(host: makeHost())
+        sut.markConnected(tabId: tabId)
+
+        sut.markConnectedProvisional(tabId: tabId)
+
+        guard let t = tab(id: tabId) else { XCTFail("tab missing"); return }
+        XCTAssertTrue(t.hadConnected,
+                      "provisional must not un-commit a real connection")
+
+        // A subsequent drop after a real connect still reconnects.
+        sut.markChildExited(tabId: tabId, exitCode: 255)
+        guard let after = tab(id: tabId) else { XCTFail("tab missing"); return }
+        if case .reconnecting = after.state {} else {
+            XCTFail("expected .reconnecting, got \(after.state)")
+        }
+    }
 }

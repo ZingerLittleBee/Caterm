@@ -36,7 +36,20 @@ public final class GhosttySurface {
 	/// so this is a precise "the session is live" signal and is safe to use
 	/// to dismiss the connecting overlay immediately, without disturbing the
 	/// exit-code-based failure classification.
-	public var onSessionLive: (() -> Void)?
+	public var onSessionLive: (() -> Void)? {
+		didSet {
+			// Sticky signal: the surface is created lazily (in
+			// `viewDidMoveToWindow`) and the ssh child starts at the same
+			// moment, so the remote's first title/pwd can arrive BEFORE the
+			// host has finished attaching this callback. `handleSessionLive`
+			// latches `sessionLiveSignalled` regardless; if it already fired,
+			// replay it the instant the callback lands instead of losing the
+			// signal and waiting out the grace timer.
+			if sessionLiveSignalled, onSessionLive != nil {
+				onSessionLive?()
+			}
+		}
+	}
 	private var sessionLiveSignalled = false
 
 	/// Fired when libghostty asks the apprt to change the mouse cursor shape
@@ -309,7 +322,9 @@ public final class GhosttySurface {
 	}
 
 	/// Latched: the remote shell emits many title/pwd updates over a session;
-	/// only the first one means "we just went live".
+	/// only the first one means "we just went live". If the callback isn't
+	/// attached yet, the latch persists and `onSessionLive`'s `didSet` replays
+	/// it on attach (see the property above).
 	func handleSessionLive() {
 		guard !sessionLiveSignalled else { return }
 		sessionLiveSignalled = true

@@ -562,6 +562,24 @@ public final class SessionStore: ObservableObject {
         }
     }
 
+    /// Provisionally enter `.connected` to dismiss the connecting overlay early
+    /// — without committing `hadConnected`. Used by the short-grace path when a
+    /// silent remote shell (no OSC title/pwd) leaves us no positive "live"
+    /// signal: the ssh process being alive this far past a successful TCP
+    /// preflight is a strong hint it's connected, so we stop showing a spinner
+    /// over what is almost always a working terminal. Because `hadConnected`
+    /// stays `false`, a *slow* auth/setup failure that exits before the later
+    /// `markConnected` confirm still classifies as `.authOrSetupFail` (not a
+    /// reconnectable `.connectionDropped`). No-op if the tab already truly
+    /// connected (e.g. the fast-path `onSessionLive` beat us here).
+    public func markConnectedProvisional(tabId: UUID) {
+        update(tabId) { tab in
+            guard !tab.hadConnected else { return }
+            if case .connected = tab.state { return }
+            tab.state = .connected(connectedAt: Date())
+        }
+    }
+
     public func markChildExited(tabId: UUID, exitCode: Int32) {
         // Clean up any per-session ssh_config before state transition.
         if let idx = tabs.firstIndex(where: { $0.id == tabId }),

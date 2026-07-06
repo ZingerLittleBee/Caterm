@@ -73,14 +73,6 @@ public enum SSHCommandBuilder {
 		let controlPath = "~/Library/Caches/Caterm/cm/\(host.id.uuidString).sock"
 		lines.append("ControlPath \(try SSHConfigQuote.encode(controlPath))")
 
-		// Connection-established beacon (see `_build`): target only. Jump
-		// hops run as `ssh -W` transports whose stdout IS the next hop's
-		// SSH byte stream — a LocalCommand printf there would corrupt it.
-		if isTarget {
-			lines.append("PermitLocalCommand yes")
-			lines.append("LocalCommand \(localCommandBeaconScript)")
-		}
-
 		// Per-credential options.
 		var identityFile: String?
 		switch host.credential {
@@ -149,13 +141,6 @@ public enum SSHCommandBuilder {
 		try paths.map { try SSHConfigQuote.encode($0) }.joined(separator: " ")
 	}
 
-	/// Shell snippet OpenSSH runs locally (`LocalCommand`) once the connection
-	/// is established: prints an empty OSC 0 title sequence to the PTY so
-	/// libghostty fires SET_TITLE — the `onSessionLive` beacon. Kept in one
-	/// place so the direct path (`-o LocalCommand=…`) and the chain path
-	/// (ssh_config `LocalCommand …` line) can never drift apart.
-	internal static let localCommandBeaconScript = "printf '\\033]0;\\007'"
-
 	// MARK: - Command argument model
 
 	/// One argument piece; either emitted raw (for ssh's own flags / constant
@@ -214,16 +199,6 @@ public enum SSHCommandBuilder {
 		args += [.raw("-o"), .quoted("ControlMaster=auto")]
 		args += [.raw("-o"), .quoted("ControlPersist=10m")]
 		args += [.raw("-o"), .quoted("ControlPath=\(controlPath)")]
-
-		// Connection-established beacon: LocalCommand runs locally right after
-		// auth succeeds, with stdout attached to the PTY. The OSC 0 (empty
-		// title) sequence it prints makes libghostty fire SET_TITLE, which is
-		// the `onSessionLive` signal that dismisses the connecting overlay —
-		// without depending on the remote shell ever emitting a title itself.
-		// printf's octal escapes (\033 ESC, \007 BEL) are POSIX and work in
-		// fish, which OpenSSH may pick as the LocalCommand shell via $SHELL.
-		args += [.raw("-o"), .quoted("PermitLocalCommand=yes")]
-		args += [.raw("-o"), .quoted("LocalCommand=\(localCommandBeaconScript)")]
 
 		var env: [(String, String)] = []
 

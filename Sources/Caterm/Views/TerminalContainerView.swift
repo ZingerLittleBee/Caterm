@@ -144,18 +144,27 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		let capturedGeneration = store.tabs
 			.first(where: { $0.id == tabId })?.surfaceGeneration ?? 0
 		context.coordinator.probe = Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
-			// Promote the tab to `.connected` (dismissing the overlay) only
-			// if this representable still owns the tab's connection — i.e.
-			// the process is alive and the surface generation hasn't moved
-			// on under us. Safe to call more than once: `markConnected` is
-			// idempotent and the early signal usually wins the race with the
-			// grace timer below.
-			@MainActor func reportConnectedIfCurrent() {
+			// Shared guard: only report progress if this representable still
+			// owns the tab's connection — the process is alive and the surface
+			// generation hasn't moved on under us. Callers may fire more than
+			// once; the fast-path `onSessionLive` signal usually wins the race
+			// with the grace timers below.
+			@MainActor func stillOwnsLiveConnection() -> SessionStore? {
 				guard let store, let surface = view?.surface,
-				      !surface.processExited else { return }
+				      !surface.processExited else { return nil }
 				guard store.tabs.first(where: { $0.id == capturedTabId })?
-					.surfaceGeneration == capturedGeneration else { return }
-				store.markConnected(tabId: capturedTabId)
+					.surfaceGeneration == capturedGeneration else { return nil }
+				return store
+			}
+
+			@MainActor func reportConnectedIfCurrent() {
+				stillOwnsLiveConnection()?.markConnected(tabId: capturedTabId)
+			}
+
+			// Provisional: dismiss the overlay early without committing
+			// `hadConnected` (see `markConnectedProvisional`).
+			@MainActor func reportProvisionalIfCurrent() {
+				stillOwnsLiveConnection()?.markConnectedProvisional(tabId: capturedTabId)
 			}
 
 			// `view.surface` is built lazily in `viewDidMoveToWindow`. Yield
@@ -169,14 +178,14 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 							store?.markChildExited(tabId: capturedTabId, exitCode: code)
 						}
 					}
-					// Real "session is live" signal: fires on the first OSC
-					// title/pwd in the stream. SSHCommandBuilder plants a
-					// LocalCommand beacon that prints one the instant the
-					// connection is established, so this no longer depends on
-					// the remote shell setting a title (that still works as a
-					// second trigger). Auth/DNS failures exit before
-					// LocalCommand runs and never fire this, so the failure
-					// path is unaffected.
+					// Fast-path "session is live" signal: fires on the first OSC
+					// title/pwd the remote shell emits (zsh, a bash with a
+					// title-setting PROMPT_COMMAND, etc.). Dismisses the overlay
+					// the instant the shell is interactive instead of waiting out
+					// the grace timer. Shells that never set a title (minimal
+					// `sh`, appliances) fall through to the grace timer below.
+					// Auth/DNS failures exit before any shell starts and never
+					// fire this, so the failure path is unaffected.
 					surface.onSessionLive = {
 						MainActor.assumeIsolated { reportConnectedIfCurrent() }
 					}
@@ -187,12 +196,28 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 				}
 				try? await Task.sleep(nanoseconds: 50_000_000)
 			}
-			// Fallback grace period for sessions that never emit an OSC
-			// title/pwd (minimal `sh`, appliances): if the process is still
-			// alive after 3s, treat it as connected. This is also the sole
-			// path that lets a fast auth failure (process exits before the
-			// grace elapses) stay classified as `.authOrSetupFail`.
-			try? await Task.sleep(nanoseconds: 3_000_000_000)
+			// Two-phase fallback for sessions that never emit an OSC title/pwd
+			// (minimal `sh`, appliances, remote hosts whose PROMPT_COMMAND
+			// doesn't set a title), where the fast-path `onSessionLive` never
+			// fires:
+			//
+			//   Phase 1 (short grace): if the ssh process is still alive a
+			//   fraction of a second past a successful TCP preflight, that's a
+			//   strong signal it's really connected — dismiss the overlay
+			//   *provisionally* (no `hadConnected` commit) so the user isn't
+			//   staring at a spinner over a working terminal. This is the fix
+			//   for "terminal is up but loading keeps spinning".
+			//
+			//   Phase 2 (full grace): if it survives to the full grace window,
+			//   commit the real `.connected` (sets `hadConnected`). Keeping the
+			//   commit late is what lets a *slow* auth/setup failure — one that
+			//   exits after phase 1 but before phase 2 — still classify as
+			//   `.authOrSetupFail` rather than a reconnectable drop.
+			try? await Task.sleep(nanoseconds: 600_000_000)
+			if Task.isCancelled { return }
+			reportProvisionalIfCurrent()
+
+			try? await Task.sleep(nanoseconds: 2_400_000_000)
 			if Task.isCancelled { return }
 			reportConnectedIfCurrent()
 		}
