@@ -169,12 +169,14 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 							store?.markChildExited(tabId: capturedTabId, exitCode: code)
 						}
 					}
-					// Real "session is live" signal: the moment the remote
-					// shell emits its first OSC title/pwd we know we're
-					// genuinely connected — drop the overlay now instead of
-					// waiting out the grace timer. Auth/DNS failures exit
-					// before any shell starts and never fire this, so the
-					// failure path is unaffected.
+					// Real "session is live" signal: fires on the first OSC
+					// title/pwd in the stream. SSHCommandBuilder plants a
+					// LocalCommand beacon that prints one the instant the
+					// connection is established, so this no longer depends on
+					// the remote shell setting a title (that still works as a
+					// second trigger). Auth/DNS failures exit before
+					// LocalCommand runs and never fire this, so the failure
+					// path is unaffected.
 					surface.onSessionLive = {
 						MainActor.assumeIsolated { reportConnectedIfCurrent() }
 					}
