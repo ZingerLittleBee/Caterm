@@ -80,8 +80,27 @@ struct HostListSidebar: View {
 			}
 			.toolbar {
 				ToolbarItem(placement: .primaryAction) {
-					Button {
-						showingAddSheet = true
+					Menu {
+						if !store.hosts.isEmpty {
+							Section("Connect to saved host") {
+								ForEach(store.hosts) { host in
+									Button {
+										connect(host)
+									} label: {
+										Label(
+											"\(host.name) — \(host.username)@\(host.hostname)",
+											systemImage: hostIconName(for: host)
+										)
+									}
+								}
+							}
+							Divider()
+						}
+						Button {
+							showingAddSheet = true
+						} label: {
+							Label("Add New Host…", systemImage: "plus")
+						}
 					} label: {
 						Image(systemName: "plus")
 							.overlay(alignment: .bottomTrailing) {
@@ -91,7 +110,8 @@ struct HostListSidebar: View {
 								}
 							}
 					}
-					.help("Add a new host (⇧⌘T)")
+					.menuIndicator(.hidden)
+					.help("Connect to a saved host or add a new one (⇧⌘T)")
 				}
 			}
 			.sheet(isPresented: $showingAddSheet) {
