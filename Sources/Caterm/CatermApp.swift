@@ -564,8 +564,8 @@ struct LandingView: View {
         Image(systemName: "terminal").font(.system(size: 64))
           .foregroundColor(.secondary)
         Text("Caterm").font(.largeTitle)
-        Text("Pick a host from the sidebar, or press ⌘T to add one")
-          .foregroundColor(.secondary)
+        ShortcutReferenceList()
+          .padding(.top, 8)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
