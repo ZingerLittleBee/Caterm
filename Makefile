@@ -72,7 +72,9 @@ help: ## Show this help
 .PHONY: dev
 dev: ## watch Swift files and relaunch Caterm.app on changes
 	@command -v watchexec >/dev/null || { echo "watchexec not found. Install with: brew install watchexec"; exit 1; }
-	watchexec -r -e swift -- bash -lc 'make kill >/dev/null; exec make run-app'
+	CATERM_DEV_IDENTITY="$(CATERM_DEV_IDENTITY)" \
+	    CATERM_DEV_BUNDLE_ID="$(CATERM_DEV_BUNDLE_ID)" \
+	    watchexec -r -e swift -- bash Scripts/dev-watch-run.sh
 
 .PHONY: build
 build: ## swift build (debug)
