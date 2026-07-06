@@ -1,6 +1,7 @@
 # Caterm macOS dev Makefile
 #
 # Quick start:
+#   make dev         # watch Swift files + rebuild/sign/relaunch Caterm.app
 #   make run-app     # build + codesign + wrap in Caterm.app bundle + launch
 #                    # (default dev loop — needed because AppDelegate registers
 #                    # for APS push on every launch, which requires a bundle
@@ -67,6 +68,11 @@ help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo
 	@echo "Detected codesign identity: $(CATERM_DEV_IDENTITY)"
+
+.PHONY: dev
+dev: ## watch Swift files and relaunch Caterm.app on changes
+	@command -v watchexec >/dev/null || { echo "watchexec not found. Install with: brew install watchexec"; exit 1; }
+	watchexec -r -e swift -- bash -lc 'make kill >/dev/null; exec make run-app'
 
 .PHONY: build
 build: ## swift build (debug)
