@@ -163,7 +163,8 @@ let package = Package(
         .executableTarget(
             name: "CatermMobileApp",
             dependencies: ["CatermMobile", "CatermMobileTerminal"],
-            path: "App/iOS"
+            path: "App/iOS",
+            exclude: ["Info.plist"]
         ),
         .executableTarget(
             name: "Caterm",

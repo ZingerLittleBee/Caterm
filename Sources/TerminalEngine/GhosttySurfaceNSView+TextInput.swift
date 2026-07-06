@@ -14,7 +14,7 @@ import GhosttyKit
 ///   - `firstRect(forCharacterRange:)` reports the cursor anchor in screen
 ///     coordinates so AppKit can position the candidate panel near the
 ///     terminal cursor instead of the screen corner.
-extension GhosttySurfaceNSView: NSTextInputClient {
+extension GhosttySurfaceNSView: @MainActor NSTextInputClient {
 
 	public func insertText(_ string: Any, replacementRange: NSRange) {
 		let s: String
