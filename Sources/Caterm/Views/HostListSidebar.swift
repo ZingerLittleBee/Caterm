@@ -20,7 +20,6 @@ struct HostListSidebar: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
-	@EnvironmentObject var commandKeys: CommandKeyMonitor  // NEW (v1.7)
 	@Environment(\.managedKeyStore) private var managedKeys
 	let onOpenTab: (UUID) -> Void
 	@State var selectedHostId: UUID?
@@ -71,7 +70,7 @@ struct HostListSidebar: View {
 						Text("Click + or press ⌘⇧T to add a host")
 							.font(.caption)
 							.foregroundColor(.secondary)
-						Text("⌘T opens a new tab • hold ⌘ to reveal shortcuts")
+						Text("⌘T opens a new tab")
 							.font(.caption2)
 							.foregroundColor(.secondary)
 					}
@@ -103,12 +102,6 @@ struct HostListSidebar: View {
 						}
 					} label: {
 						Image(systemName: "plus")
-							.overlay(alignment: .bottomTrailing) {
-								if commandKeys.isCommandHeld {
-									ShortcutBadge(keys: "⇧⌘T")
-										.offset(x: 10, y: 8)
-								}
-							}
 					}
 					.menuIndicator(.hidden)
 					.help("Connect to a saved host or add a new one (⇧⌘T)")
@@ -228,13 +221,9 @@ struct HostListSidebar: View {
 			}
 			#endif
 
-			if commandKeys.isCommandHeld {
-				ShortcutHintBar()
-			}
 			Divider()
 			SyncStatusRow()
 		}
-		.animation(.easeOut(duration: 0.12), value: commandKeys.isCommandHeld)
 	}
 
 	/// Build a `HostSecrets` payload from the optional plain-text secret

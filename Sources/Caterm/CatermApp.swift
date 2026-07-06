@@ -34,7 +34,6 @@ struct CatermApp: App {
   @StateObject var surfaceRegistry: SurfaceRegistry
   @StateObject private var snippetStore: SnippetStore
   @StateObject private var snippetSync: SnippetSyncStore
-  @StateObject private var commandKeyMonitor = CommandKeyMonitor()
   private let updaterController = UpdaterController()
 
   /// Holds the live-reload dispatcher and its NotificationCenter
@@ -284,7 +283,6 @@ struct CatermApp: App {
       .environmentObject(surfaceRegistry)
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
-      .environmentObject(commandKeyMonitor)
       .environment(\.managedKeyStore, managedKeyStore)
       .background(OpenTabBridge(store: store))
       // .task closure is sync — syncIfSignedIn() returns immediately;
