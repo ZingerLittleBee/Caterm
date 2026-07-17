@@ -1,72 +1,114 @@
 import Foundation
 
-public enum ChainResolutionError: Error, Equatable {
-	/// The `jumpHostServerId` references a host that's not in the
-	/// in-memory list (deleted, or not yet pulled from CloudKit on
-	/// this device).
-	case missingHost(serverId: String)
+public struct ChainResolution: Equatable {
+	public enum Reference: Equatable {
+		case localID(UUID)
+		case serverID(String)
+	}
 
-	/// Self-loop or cycle. The associated `serverId` is the first
-	/// node revisited.
-	case cycle(involvingServerId: String)
+	public enum Diagnostic: Equatable {
+		case missing(reference: Reference)
+		case cycle(reference: Reference)
+	}
+
+	/// Ancestors in traversal order: direct parent, grandparent, and so on.
+	public let ancestors: [SSHHost]
+	public let diagnostic: Diagnostic?
+
+	/// Ancestors in the order SSH must connect to them.
+	public var connectionOrder: [SSHHost] {
+		Array(ancestors.reversed())
+	}
+
+	public var isComplete: Bool { diagnostic == nil }
+}
+
+/// Resolves jump-host graphs against one indexed host snapshot.
+public struct ChainResolver {
+	private let hostsByLocalID: [UUID: SSHHost]
+	private let hostsByServerID: [String: SSHHost]
+
+	public init(hosts: [SSHHost]) {
+		var hostsByLocalID: [UUID: SSHHost] = [:]
+		var hostsByServerID: [String: SSHHost] = [:]
+		for host in hosts {
+			hostsByLocalID[host.id] = host
+			if let serverID = host.serverId, hostsByServerID[serverID] == nil {
+				hostsByServerID[serverID] = host
+			}
+		}
+		self.hostsByLocalID = hostsByLocalID
+		self.hostsByServerID = hostsByServerID
+	}
+
+	/// Preserves the valid prefix and returns a diagnostic when traversal
+	/// cannot continue.
+	public func resolve(_ host: SSHHost) -> ChainResolution {
+		var ancestors: [SSHHost] = []
+		var visitedHostIDs: Set<UUID> = [host.id]
+		var cursor = host
+		while let next = nextJumpStep(from: cursor) {
+			switch next {
+			case .missing(let reference):
+				return ChainResolution(
+					ancestors: ancestors,
+					diagnostic: .missing(reference: reference)
+				)
+			case .parent(let reference, let parent):
+				guard visitedHostIDs.insert(parent.id).inserted else {
+					return ChainResolution(
+						ancestors: ancestors,
+						diagnostic: .cycle(reference: reference)
+					)
+				}
+				ancestors.append(parent)
+				cursor = parent
+			}
+		}
+		return ChainResolution(ancestors: ancestors, diagnostic: nil)
+	}
+
+	private func nextJumpStep(from host: SSHHost) -> JumpStep? {
+		if let jumpHostID = host.jumpHostId {
+			let localReference = ChainResolution.Reference.localID(jumpHostID)
+			if let parent = hostsByLocalID[jumpHostID] {
+				return .parent(reference: localReference, host: parent)
+			}
+			if host.jumpHostServerId == nil {
+				return .missing(reference: localReference)
+			}
+		}
+		guard let jumpHostServerID = host.jumpHostServerId else { return nil }
+		let serverReference = ChainResolution.Reference.serverID(jumpHostServerID)
+		guard let parent = hostsByServerID[jumpHostServerID] else {
+			return .missing(reference: serverReference)
+		}
+		return .parent(reference: serverReference, host: parent)
+	}
 }
 
 public extension SSHHost {
-	/// Returns the chain ancestors in connect order — index 0 is the
-	/// host ssh dials *first* (deepest ancestor); the last entry is
-	/// `self`'s direct parent. Returns an empty array when
-	/// no jump-host reference is set. Throws when the chain cycles or
-	/// references a host not present in `hosts`.
-	func resolvedChain(in hosts: [SSHHost]) throws -> [SSHHost] {
-		var ancestors: [SSHHost] = []
-		var visited: Set<String> = []
-		var cursor = self
-		while let nextReference = try cursor.nextJumpReference(in: hosts) {
-			if nextReference.parent.id == self.id {
-				throw ChainResolutionError.cycle(involvingServerId: nextReference.reference)
-			}
-			if visited.contains(nextReference.reference) {
-				throw ChainResolutionError.cycle(involvingServerId: nextReference.reference)
-			}
-			visited.insert(nextReference.reference)
-			let parent = nextReference.parent
-			ancestors.append(parent)
-			cursor = parent
-		}
-		// `ancestors` is in walk order (parent, grandparent, ...).
-		// Spec wants index 0 = deepest ancestor (host ssh dials first).
-		return ancestors.reversed()
+	/// Convenience for one-off resolution. Reuse `ChainResolver` when resolving
+	/// multiple hosts against the same snapshot.
+	func chainResolution(in hosts: [SSHHost]) -> ChainResolution {
+		ChainResolver(hosts: hosts).resolve(self)
 	}
 
 	/// First TCP endpoint ssh actually dials — i.e., the deepest
 	/// ancestor's `(hostname, port)` when there's a chain, else
 	/// `self`'s. Returns nil only when the chain is broken.
 	func firstHopAddress(in hosts: [SSHHost]) -> (hostname: String, port: Int)? {
-		do {
-			let chain = try self.resolvedChain(in: hosts)
-			if let deepest = chain.first {
-				return (deepest.hostname, deepest.port)
-			}
-			return (self.hostname, self.port)
-		} catch {
-			return nil
+		let resolution = chainResolution(in: hosts)
+		guard resolution.isComplete else { return nil }
+		if let deepest = resolution.connectionOrder.first {
+			return (deepest.hostname, deepest.port)
 		}
+		return (self.hostname, self.port)
 	}
 
-	private func nextJumpReference(in hosts: [SSHHost]) throws -> (reference: String, parent: SSHHost)? {
-		if let jumpHostId {
-			let localReference = jumpHostId.uuidString
-			if let parent = hosts.first(where: { $0.id == jumpHostId }) {
-				return (localReference, parent)
-			}
-			if jumpHostServerId == nil {
-				throw ChainResolutionError.missingHost(serverId: localReference)
-			}
-		}
-		guard let jumpHostServerId else { return nil }
-		guard let parent = hosts.first(where: { $0.serverId == jumpHostServerId }) else {
-			throw ChainResolutionError.missingHost(serverId: jumpHostServerId)
-		}
-		return (jumpHostServerId, parent)
-	}
+}
+
+private enum JumpStep {
+	case parent(reference: ChainResolution.Reference, host: SSHHost)
+	case missing(reference: ChainResolution.Reference)
 }

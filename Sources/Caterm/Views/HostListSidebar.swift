@@ -36,10 +36,14 @@ struct HostListSidebar: View {
 	}
 
 	var body: some View {
-		VStack(spacing: 0) {
+		let chainResolver = ChainResolver(hosts: store.hosts)
+		return VStack(spacing: 0) {
 			List(selection: $selectedHostId) {
 				ForEach(store.hosts) { host in
-					HostRow(host: host)
+					HostRow(
+						host: host,
+						chainResolution: chainResolver.resolve(host)
+					)
 						.tag(host.id)
 						.contextMenu {
 							Button("Connect") { connect(host) }
@@ -439,6 +443,7 @@ private extension NSView {
 struct HostRow: View {
 	@EnvironmentObject var store: SessionStore
 	let host: SSHHost
+	let chainResolution: ChainResolution
 
 	var body: some View {
 		// Truncation strategy: three rounds of pure-SwiftUI defensive layout
@@ -475,7 +480,7 @@ struct HostRow: View {
 				Image(systemName: "arrow.triangle.branch")
 					.font(.caption2)
 					.foregroundStyle(.secondary)
-					.help(chainTooltip(for: host))
+					.help(chainTooltip)
 					.layoutPriority(1)
 			}
 			if store.needsCredentialSetup(host) {
@@ -494,31 +499,14 @@ struct HostRow: View {
 		.padding(.vertical, 2)
 	}
 
-	private func chainTooltip(for host: SSHHost) -> String {
-		var names: [String] = []
-		var cursor: SSHHost? = host
-		var visited: Set<UUID> = []
-		while let current = cursor {
-			if let nextId = current.jumpHostId {
-				if visited.contains(nextId) { names.append("(cycle)"); break }
-				visited.insert(nextId)
-				guard let parent = store.hosts.first(where: { $0.id == nextId }) else {
-					names.append("(deleted)")
-					break
-				}
-				names.append(parent.name)
-				cursor = parent
-				continue
-			}
-			if let nextSid = current.jumpHostServerId {
-				guard let parent = store.hosts.first(where: { $0.serverId == nextSid }) else {
-					names.append("(deleted)")
-					break
-				}
-				names.append(parent.name)
-				cursor = parent
-				continue
-			}
+	private var chainTooltip: String {
+		var names = chainResolution.ancestors.map(\.name)
+		switch chainResolution.diagnostic {
+		case .missing:
+			names.append("(deleted)")
+		case .cycle:
+			names.append("(cycle)")
+		case .none:
 			break
 		}
 		return "via \(names.joined(separator: " → "))"

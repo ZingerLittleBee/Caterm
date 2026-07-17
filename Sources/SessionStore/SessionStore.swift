@@ -216,22 +216,15 @@ public final class SessionStore: ObservableObject {
     @discardableResult
     public func openTab(host: SSHHost, installTerminfo: Bool = false) -> UUID {
         // 1. Resolve the jump-host chain. Fail-fast if broken or cyclic.
-        let chain: [SSHHost]
-        do {
-            chain = try host.resolvedChain(in: hosts)
-        } catch ChainResolutionError.cycle, ChainResolutionError.missingHost {
+        let chainResolution = ChainResolver(hosts: hosts).resolve(host)
+        guard chainResolution.isComplete else {
             let id = UUID()
             let msg = "Jump host chain is broken — edit host to fix"
             tabs.append(Tab(id: id, host: host,
                             failedWith: .networkUnreachable(.other(code: 0, message: msg))))
             return id
-        } catch {
-            let id = UUID()
-            let msg = "Jump host chain error: \(error)"
-            tabs.append(Tab(id: id, host: host,
-                            failedWith: .networkUnreachable(.other(code: 0, message: msg))))
-            return id
         }
+        let chain = chainResolution.connectionOrder
 
         // 2. Credential pre-check: every ancestor in the chain must be ready.
         // The target's credential state is handled by the interactive SSH auth
