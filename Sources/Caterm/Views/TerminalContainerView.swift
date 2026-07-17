@@ -113,15 +113,22 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	/// handshake, racing the new state machine.
 	@MainActor
 	final class Coordinator {
-		var probe: Task<Void, Never>?
-		deinit { probe?.cancel() }
+		var probe: SessionLivenessProbe?
+		var probeTask: Task<Void, Never>?
+
+		func cancelProbe() {
+			probeTask?.cancel()
+			probeTask = nil
+			probe = nil
+		}
+
+		deinit { probeTask?.cancel() }
 	}
 
 	func makeCoordinator() -> Coordinator { Coordinator() }
 
 	static func dismantleNSView(_: GhosttySurfaceNSView, coordinator: Coordinator) {
-		coordinator.probe?.cancel()
-		coordinator.probe = nil
+		coordinator.cancelProbe()
 	}
 
 	func makeNSView(context: Context) -> GhosttySurfaceNSView {
@@ -143,83 +150,58 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		// connection as connected.
 		let capturedGeneration = store.tabs
 			.first(where: { $0.id == tabId })?.surfaceGeneration ?? 0
-		context.coordinator.probe = Task { @MainActor [weak store, weak surfaceRegistry, weak view] in
-			// Shared guard: only report progress if this representable still
-			// owns the tab's connection — the process is alive and the surface
-			// generation hasn't moved on under us. Callers may fire more than
-			// once; the fast-path `onSessionLive` signal usually wins the race
-			// with the grace timers below.
-			@MainActor func stillOwnsLiveConnection() -> SessionStore? {
-				guard let store, let surface = view?.surface,
-				      !surface.processExited else { return nil }
-				guard store.tabs.first(where: { $0.id == capturedTabId })?
-					.surfaceGeneration == capturedGeneration else { return nil }
-				return store
-			}
-
-			@MainActor func reportConnectedIfCurrent() {
-				stillOwnsLiveConnection()?.markConnected(tabId: capturedTabId)
-			}
-
-			// Provisional: dismiss the overlay early without committing
-			// `hadConnected` (see `markConnectedProvisional`).
-			@MainActor func reportProvisionalIfCurrent() {
-				stillOwnsLiveConnection()?.markConnectedProvisional(tabId: capturedTabId)
-			}
-
-			// `view.surface` is built lazily in `viewDidMoveToWindow`. Yield
-			// until it exists or give up after ~3s.
-			let deadline = Date().addingTimeInterval(3)
-			while Date() < deadline {
-				if Task.isCancelled { return }
-				if let surface = view?.surface {
-					surface.onChildExit = { [weak store] code in
-						Task { @MainActor in
-							store?.markChildExited(tabId: capturedTabId, exitCode: code)
-						}
+		weak var probeReference: SessionLivenessProbe?
+		let probe = SessionLivenessProbe(
+			expectedGeneration: .init(capturedGeneration),
+			observation: { [weak store, weak view] in
+				guard let generation = store?.tabs
+					.first(where: { $0.id == capturedTabId })?
+					.surfaceGeneration else {
+					return .sessionMissing
+				}
+				let currentGeneration = SessionLivenessProbe.Generation(generation)
+				guard let surface = view?.surface else {
+					return .surfaceUnavailable(generation: currentGeneration)
+				}
+				return surface.processExited
+					? .surfaceExited(generation: currentGeneration)
+					: .surfaceRunning(generation: currentGeneration)
+			},
+			prepareSurface: { [weak store, weak surfaceRegistry, weak view] in
+				guard let surface = view?.surface else {
+					probeReference?.connectionDidEnd()
+					return
+				}
+				surface.onChildExit = { [weak store, weak probeReference] code in
+					Task { @MainActor in
+						probeReference?.connectionDidEnd()
+						store?.markChildExited(tabId: capturedTabId, exitCode: code)
 					}
-					// Fast-path "session is live" signal: fires on the first OSC
-					// title/pwd the remote shell emits (zsh, a bash with a
-					// title-setting PROMPT_COMMAND, etc.). Dismisses the overlay
-					// the instant the shell is interactive instead of waiting out
-					// the grace timer. Shells that never set a title (minimal
-					// `sh`, appliances) fall through to the grace timer below.
-					// Auth/DNS failures exit before any shell starts and never
-					// fire this, so the failure path is unaffected.
-					surface.onSessionLive = {
-						MainActor.assumeIsolated { reportConnectedIfCurrent() }
+				}
+				surface.onSessionLive = { [weak probeReference] in
+					MainActor.assumeIsolated {
+						probeReference?.sessionDidBecomeLive()
 					}
-					surfaceRegistry?.register(surface, for: capturedTabId)
-					let hostId = store?.hostId(for: capturedTabId).map { HostId($0.uuidString) }
-					surface.applyConfig(hostId: hostId)
+				}
+				surfaceRegistry?.register(surface, for: capturedTabId)
+				let hostId = store?.hostId(for: capturedTabId).map { HostId($0.uuidString) }
+				surface.applyConfig(hostId: hostId)
+			},
+			onEvent: { [weak store] event in
+				switch event {
+				case .provisional:
+					store?.markConnectedProvisional(tabId: capturedTabId)
+				case .confirmed:
+					store?.markConnected(tabId: capturedTabId)
+				case .lost:
 					break
 				}
-				try? await Task.sleep(nanoseconds: 50_000_000)
 			}
-			// Two-phase fallback for sessions that never emit an OSC title/pwd
-			// (minimal `sh`, appliances, remote hosts whose PROMPT_COMMAND
-			// doesn't set a title), where the fast-path `onSessionLive` never
-			// fires:
-			//
-			//   Phase 1 (short grace): if the ssh process is still alive a
-			//   fraction of a second past a successful TCP preflight, that's a
-			//   strong signal it's really connected — dismiss the overlay
-			//   *provisionally* (no `hadConnected` commit) so the user isn't
-			//   staring at a spinner over a working terminal. This is the fix
-			//   for "terminal is up but loading keeps spinning".
-			//
-			//   Phase 2 (full grace): if it survives to the full grace window,
-			//   commit the real `.connected` (sets `hadConnected`). Keeping the
-			//   commit late is what lets a *slow* auth/setup failure — one that
-			//   exits after phase 1 but before phase 2 — still classify as
-			//   `.authOrSetupFail` rather than a reconnectable drop.
-			try? await Task.sleep(nanoseconds: 600_000_000)
-			if Task.isCancelled { return }
-			reportProvisionalIfCurrent()
-
-			try? await Task.sleep(nanoseconds: 2_400_000_000)
-			if Task.isCancelled { return }
-			reportConnectedIfCurrent()
+		)
+		probeReference = probe
+		context.coordinator.probe = probe
+		context.coordinator.probeTask = Task { @MainActor [weak probe] in
+			await probe?.run()
 		}
 		return view
 	}
