@@ -22,13 +22,14 @@ final class AccountSwitchInitialSyncGraceTests: XCTestCase {
         let holder = Holder()
         let sync = SettingsSyncStore(
             store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-            currentTokenProvider: { TestToken(holder.id) }
+            currentTokenProvider: { TestToken(holder.id) },
+            configuration: SettingsSyncConfiguration(
+                bootTimeout: .milliseconds(10),
+                initialSyncGrace: .milliseconds(60)
+            )
         )
-        sync.testInitialSyncTimeout = .milliseconds(10)
-        sync.testInitialSyncGrace = .milliseconds(60)
         sync.installLifecycleObservers()
         await sync.startSync()
-        await sync.testWaitForBootDecision()
 
         // Flip identity, plant cloud Y data
         holder.id = "user-Y"
@@ -39,9 +40,9 @@ final class AccountSwitchInitialSyncGraceTests: XCTestCase {
         kvs.set(try SettingsBlobCodec.encode(cloudY), forKey: SettingsSyncStore.kvsKey)
 
         // .initialSyncChange — barrier extends synchronously, then grace, then classifyAndApply.
-        sync.testPostExternalChange(reason: NSUbiquitousKeyValueStoreInitialSyncChange)
+        postKVSExternalChange(reason: NSUbiquitousKeyValueStoreInitialSyncChange)
         try await Task.sleep(for: .milliseconds(10))
-        XCTAssertTrue(sync.testPushSuspended, "barrier active during grace")
+        XCTAssertTrue(sync.isPushSuspended, "barrier active during grace")
         try await Task.sleep(for: .milliseconds(120))
         XCTAssertEqual(store.settings.global.fontSize, 88, "force-applied after grace")
         guard case .token(let stored) = tokenStore.loadPersisted() else {

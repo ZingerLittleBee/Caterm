@@ -1,4 +1,3 @@
-import HostSyncStore
 import SessionStore
 import SettingsStore
 import SSHCommandBuilder
@@ -100,7 +99,6 @@ struct TerminalContainerView: View {
 /// kicking off a fresh ssh subprocess.
 struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	@EnvironmentObject var store: SessionStore
-	@EnvironmentObject var preferences: SyncPreferences
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	let tabId: UUID
 	let backgroundTransparencyEnabled: Bool
@@ -132,10 +130,7 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	}
 
 	func makeNSView(context: Context) -> GhosttySurfaceNSView {
-		guard let cfg = store.surfaceConfig(
-			for: tabId,
-			installTerminfo: preferences.installTerminfoEnabled
-		) else {
+		guard let cfg = store.surfaceConfig(for: tabId) else {
 			let view = GhosttySurfaceNSView(command: nil)
 			view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
 			return view

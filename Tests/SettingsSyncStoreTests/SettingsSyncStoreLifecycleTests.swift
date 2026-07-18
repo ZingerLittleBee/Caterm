@@ -25,17 +25,28 @@ final class SettingsSyncStoreLifecycleTests: XCTestCase {
 	}
 
 	func test_startSync_isIdempotent() async throws {
-		let (store, kvs, tokenStore, _) = try makeStore()
+		let (store, _, tokenStore, _) = try makeStore()
+		store.debounceInterval = .zero
+		let kvs = CountingKVS()
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-A") }
+			currentTokenProvider: { TestToken("user-A") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .zero,
+				initialSyncGrace: .zero
+			)
 		)
 		sync.installLifecycleObservers()
 		await sync.startSync()
 		await sync.startSync()
-		XCTAssertEqual(sync.startSyncCallCount, 2)
-		XCTAssertEqual(sync.observersRegisteredCount, 1)
+		let baselineSetCount = kvs.setCallCount
+
+		store.update { $0.global.fontSize = 19 }
+		store.flushNow()
+		try await Task.sleep(for: .milliseconds(30))
+
+		XCTAssertEqual(kvs.setCallCount, baselineSetCount + 1)
 	}
 
 	func test_signedOutCold_startSync_doesNotRegisterSyncObservers() async throws {
@@ -43,12 +54,45 @@ final class SettingsSyncStoreLifecycleTests: XCTestCase {
 		let session = AlwaysSignedOutSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { nil }
+			currentTokenProvider: { nil },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .zero,
+				initialSyncGrace: .zero
+			)
 		)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		XCTAssertEqual(sync.observersRegisteredCount, 0)
+
+		var cloud = CatermSettings()
+		cloud.global.fontSize = 42
+		cloud.firstUserEditedAt = Date(timeIntervalSince1970: 1)
+		cloud.revision = "cloud"
+		kvs.set(try SettingsBlobCodec.encode(cloud), forKey: SettingsSyncStore.kvsKey)
+		postKVSExternalChange(reason: NSUbiquitousKeyValueStoreServerChange)
+		try await Task.sleep(for: .milliseconds(30))
+
+		XCTAssertNotEqual(store.settings.global.fontSize, 42)
 	}
+}
+
+private final class CountingKVS: KVSProtocol {
+	private var storage: [String: Data] = [:]
+	private(set) var setCallCount = 0
+
+	func data(forKey key: String) -> Data? { storage[key] }
+
+	func set(_ data: Data, forKey key: String) {
+		setCallCount += 1
+		storage[key] = data
+	}
+
+	func removeObject(forKey key: String) {
+		storage.removeValue(forKey: key)
+	}
+
+	func synchronize() -> Bool { true }
+
+	func dictionaryRepresentation() -> [String: Any] { storage }
 }
 
 // MARK: - Test doubles

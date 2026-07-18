@@ -109,8 +109,6 @@ struct MainWindow: View {
 				host: host,
 				controlPath: cm.socketPath(for: host.id),
 				credentials: SFTPCredentials(
-					askpassPath: URL(fileURLWithPath: store.askpassPath),
-					identityFiles: [],
 					knownHostsCaterm: URL(fileURLWithPath: store.knownHostsCaterm),
 					knownHostsUser: URL(fileURLWithPath: store.knownHostsUser),
 					strictHostKeyChecking: .acceptNew

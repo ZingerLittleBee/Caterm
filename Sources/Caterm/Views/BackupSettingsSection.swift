@@ -1,7 +1,6 @@
 import AppKit
 import BackupArchive
 import BackupService
-import ManagedKeyStore
 import SessionStore
 import SettingsStore
 import SnippetStore
@@ -13,7 +12,6 @@ import UniformTypeIdentifiers
 /// sync for users who keep iCloud sync off.
 struct BackupSettingsSection: View {
 	let sessionStore: SessionStore
-	let managedKeys: ManagedKeyStore
 	let snippetStore: SnippetStore?
 	let bookmarkStore: RemoteBookmarkStore?
 	@EnvironmentObject private var settingsStore: SettingsStore
@@ -103,11 +101,10 @@ struct BackupSettingsSection: View {
 
 		isWorking = true
 		defer { isWorking = false }
-		let payload = try BackupExporter.makePayload(
+		let payload = try await BackupExporter.makePayload(
 			includeSecrets: includeSecrets,
 			appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
 			sessionStore: sessionStore,
-			managedKeys: managedKeys,
 			snippets: snippetStore?.snippets ?? [],
 			settings: settingsStore.settings,
 			bookmarks: { hostId in bookmarkStore?.bookmarks(for: hostId) ?? [] }
@@ -142,10 +139,17 @@ struct BackupSettingsSection: View {
 			try BackupArchive.open(sealed, passphrase: passphrase)
 		}.value
 		let payload = try BackupPayload.decode(plaintext)
+		let localHosts = sessionStore.hosts
+		var hostsNeedingCredentials: Set<UUID> = []
+		for host in localHosts {
+			if await sessionStore.needsCredentialSetup(host) {
+				hostsNeedingCredentials.insert(host.id)
+			}
+		}
 		let plan = BackupMergePlanner.plan(
 			payload: payload,
-			localHosts: sessionStore.hosts,
-			needsCredentialSetup: { sessionStore.needsCredentialSetup($0) },
+			localHosts: localHosts,
+			needsCredentialSetup: { hostsNeedingCredentials.contains($0.id) },
 			localSnippets: snippetStore?.snippets ?? [],
 			localSettingsRevision: settingsStore.settings.revision,
 			localBookmarks: { bookmarkStore?.bookmarks(for: $0) ?? [] },
@@ -163,7 +167,6 @@ struct BackupSettingsSection: View {
 			importSummary = try await BackupImporter.apply(
 				plan: pending.plan,
 				sessionStore: sessionStore,
-				managedKeys: managedKeys,
 				snippetStore: snippetStore,
 				settingsStore: settingsStore,
 				archiveSettings: pending.payload.settings,

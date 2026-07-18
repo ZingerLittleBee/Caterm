@@ -10,6 +10,9 @@ enum ConnectIntent: Equatable {
 }
 
 @MainActor
-func resolveConnectIntent(for host: SSHHost, in store: SessionStore) -> ConnectIntent {
-	store.needsCredentialSetup(host) ? .promptCredentials : .openTab
+func resolveConnectIntent(
+	for host: SSHHost,
+	in store: SessionStore
+) async -> ConnectIntent {
+	await store.needsCredentialSetup(host) ? .promptCredentials : .openTab
 }

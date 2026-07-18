@@ -112,6 +112,13 @@ public final class FileTransferStore: ObservableObject {
 			}
 			return
 		}
+		guard await liveness.isAlive(hostId: t.hostId) else {
+			if let index = tasks.firstIndex(where: { $0.id == t.id }) {
+				tasks[index].status = .failed
+				tasks[index].error = "SSH session is no longer available"
+			}
+			return
+		}
 		let controlPath = controlPathFor(t.hostId)
 		let creds = credentialsFor(t.hostId)
 		let resume = t.error != nil  // retry path

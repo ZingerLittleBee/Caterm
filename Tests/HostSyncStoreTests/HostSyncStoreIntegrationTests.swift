@@ -74,7 +74,8 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
         ]
         try await sut.sync()
         let pulled = sessionStore.hosts[0]
-        XCTAssertTrue(sessionStore.needsCredentialSetup(pulled))
+		let requiresSetup = await sessionStore.needsCredentialSetup(pulled)
+		XCTAssertTrue(requiresSetup)
     }
 
     func testSyncedThenRemoteDeletedRemovesLocal() async throws {
@@ -88,10 +89,11 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
         XCTAssertTrue(sessionStore.hosts.isEmpty)
     }
 
-    func testLocalOnlyAgentHostDoesNotNeedCredentialSetup() throws {
+	func testLocalOnlyAgentHostDoesNotNeedCredentialSetup() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
         try sessionStore.addHost(h)
-        XCTAssertFalse(sessionStore.needsCredentialSetup(h))
+		let requiresSetup = await sessionStore.needsCredentialSetup(h)
+		XCTAssertFalse(requiresSetup)
     }
 }
 

@@ -1,5 +1,6 @@
 import BackupArchive
 import Foundation
+import MergeDecision
 import SessionStore
 import SnippetSyncClient
 import SSHCommandBuilder
@@ -96,9 +97,21 @@ public enum BackupMergePlanner {
 	) -> BackupMergePlan {
 		var mapping: [UUID: UUID] = [:]
 		var hostActions: [BackupMergePlan.HostAction] = []
+		let hostIndex = MergeIdentityIndex(
+			localHosts,
+			localID: { $0.id },
+			serverID: { $0.serverId }
+		)
+		let hostPolicy = MergePolicy<SSHHost, BackupHost>(
+			local: { $0.updatedAt },
+			incoming: { $0.updatedAt }
+		)
 
 		for archiveHost in payload.hosts {
-			let local = match(archiveHost, in: localHosts)
+			let local = hostIndex.match(
+				localID: archiveHost.id,
+				serverID: archiveHost.serverId
+			)
 			let hasSecrets = archiveHost.password != nil
 				|| archiveHost.passphrase != nil
 				|| archiveHost.privateKey != nil
@@ -110,7 +123,7 @@ public enum BackupMergePlanner {
 				continue
 			}
 			mapping[archiveHost.id] = local.id
-			if archiveHost.updatedAt > local.updatedAt {
+			if hostPolicy.decide(local: local, incoming: archiveHost) == .incoming {
 				hostActions.append(.init(kind: .update, archiveHost: archiveHost,
 				                         localHostId: local.id, appliesSecrets: hasSecrets))
 			} else if hasSecrets, needsCredentialSetup(local) {
@@ -125,18 +138,41 @@ public enum BackupMergePlanner {
 			}
 		}
 
+		let snippetIndex = MergeIdentityIndex(
+			localSnippets,
+			localID: { $0.id },
+			serverID: { $0.serverId }
+		)
+		let snippetPolicy = MergePolicy<Snippet, BackupSnippet>(
+			local: { $0.updatedAt },
+			incoming: { $0.updatedAt }
+		)
 		let snippetActions: [BackupMergePlan.SnippetAction] = payload.snippets.map { s in
-			guard let local = localSnippets.first(where: { $0.id == s.id }) else {
+			guard let local = snippetIndex.match(
+				localID: s.id,
+				serverID: nil
+			) else {
 				return .init(kind: .add, archiveSnippet: s)
 			}
-			return .init(kind: s.updatedAt > local.updatedAt ? .update : .skipLocalNewer,
+			let kind: BackupMergePlan.SnippetAction.Kind =
+				snippetPolicy.decide(local: local, incoming: s) == .incoming
+					? .update
+					: .skipLocalNewer
+			return .init(kind: kind,
 			             archiveSnippet: s)
 		}
 
 		let settingsAction: BackupMergePlan.SettingsAction
 		if let archiveSettings = payload.settings {
 			// Same sortable-revision LWW the settings sync channel uses.
-			settingsAction = archiveSettings.revision > (localSettingsRevision ?? "")
+			let policy = MergePolicy<String, String>(
+				local: { $0 },
+				incoming: { $0 }
+			)
+			settingsAction = policy.decide(
+				local: localSettingsRevision ?? "",
+				incoming: archiveSettings.revision
+			) == .incoming
 				? .apply : .skipLocalNewer
 		} else {
 			settingsAction = .none
@@ -171,16 +207,4 @@ public enum BackupMergePlanner {
 		)
 	}
 
-	/// Identity matching: UUID first (same-device round trip), then
-	/// serverId (devices that share a CloudKit zone regenerate local UUIDs
-	/// per device — serverId is the cross-device key). No endpoint
-	/// heuristics: two entries with the same hostname are allowed to be
-	/// distinct hosts; the preview makes duplicates visible instead.
-	private static func match(_ archiveHost: BackupHost, in locals: [SSHHost]) -> SSHHost? {
-		if let byId = locals.first(where: { $0.id == archiveHost.id }) { return byId }
-		if let sid = archiveHost.serverId {
-			return locals.first { $0.serverId == sid }
-		}
-		return nil
-	}
 }

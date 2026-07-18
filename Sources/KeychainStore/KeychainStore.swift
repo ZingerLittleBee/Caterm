@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import SSHCredentialContract
 
 public enum KeychainError: Error, Equatable {
     case notFound
@@ -15,7 +16,10 @@ public final class KeychainStore {
     public let service: String
     public let accessGroup: String?
 
-    public init(service: String = "com.caterm.host", accessGroup: String?) {
+    public init(
+        service: String = SSHCredentialContract.keychainService,
+        accessGroup: String?
+    ) {
         self.service = service
         self.accessGroup = accessGroup
     }

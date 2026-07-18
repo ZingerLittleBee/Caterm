@@ -2,7 +2,6 @@ import AppKit
 import CredentialSync
 import CredentialSyncStore
 import HostSyncStore
-import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
@@ -23,7 +22,6 @@ public struct SyncEnvironment {
   public let credentialSyncCoordinator: CredentialSyncCoordinator?
   public let sessionStore: SessionStore?
   // Backup (encrypted export/import) surface — nil hides the section.
-  public let managedKeyStore: ManagedKeyStore?
   public let snippetStore: SnippetStore?
   public let bookmarkStore: RemoteBookmarkStore?
 
@@ -34,7 +32,6 @@ public struct SyncEnvironment {
     credentialSync: CredentialSyncPreferencesStore? = nil,
     credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
     sessionStore: SessionStore? = nil,
-    managedKeyStore: ManagedKeyStore? = nil,
     snippetStore: SnippetStore? = nil,
     bookmarkStore: RemoteBookmarkStore? = nil
   ) {
@@ -44,7 +41,6 @@ public struct SyncEnvironment {
     self.credentialSync = credentialSync
     self.credentialSyncCoordinator = credentialSyncCoordinator
     self.sessionStore = sessionStore
-    self.managedKeyStore = managedKeyStore
     self.snippetStore = snippetStore
     self.bookmarkStore = bookmarkStore
   }

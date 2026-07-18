@@ -20,15 +20,16 @@ final class FirstEditUnfreezeTests: XCTestCase {
         let session = AlwaysSignedInSession()
         let sync = SettingsSyncStore(
             store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-            currentTokenProvider: { TestToken("user-Y") }
+            currentTokenProvider: { TestToken("user-Y") },
+            configuration: SettingsSyncConfiguration(
+                bootTimeout: .milliseconds(10),
+                initialSyncGrace: .zero
+            )
         )
-        sync.testInitialSyncTimeout = .milliseconds(10)
-        sync.testInitialSyncGrace = .milliseconds(0)
         sync.installLifecycleObservers()
         await sync.startSync()
-        await sync.testWaitForBootDecision()
 
-        XCTAssertTrue(sync.testPushSuspended)
+        XCTAssertTrue(sync.isPushSuspended)
         XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey))
         guard case .token(let stillX) = tokenStore.loadPersisted() else {
             XCTFail("token missing"); return
@@ -41,7 +42,7 @@ final class FirstEditUnfreezeTests: XCTestCase {
 
         XCTAssertNotNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
             "first edit must push the blob")
-        XCTAssertFalse(sync.testPushSuspended)
+        XCTAssertFalse(sync.isPushSuspended)
         guard case .token(let nowY) = tokenStore.loadPersisted() else {
             XCTFail("token missing"); return
         }

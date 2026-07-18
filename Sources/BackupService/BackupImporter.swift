@@ -1,6 +1,5 @@
 import BackupArchive
 import Foundation
-import ManagedKeyStore
 import SessionStore
 import SettingsStore
 import SnippetStore
@@ -35,7 +34,6 @@ public enum BackupImporter {
 	public static func apply(
 		plan: BackupMergePlan,
 		sessionStore: SessionStore,
-		managedKeys: ManagedKeyStore,
 		snippetStore: SnippetStore?,
 		settingsStore: SettingsStore?,
 		archiveSettings: BackupSettings?,
@@ -87,7 +85,7 @@ public enum BackupImporter {
 		for action in plan.hosts where action.appliesSecrets {
 			guard let localId = plan.hostIdMapping[action.archiveHost.id] else { continue }
 			try await applyCredentials(action.archiveHost, to: localId,
-			                           sessionStore: sessionStore, managedKeys: managedKeys)
+			                           sessionStore: sessionStore)
 		}
 
 		// Snippets.
@@ -193,12 +191,11 @@ public enum BackupImporter {
 
 	private static func applyCredentials(
 		_ a: BackupHost, to localId: UUID,
-		sessionStore: SessionStore, managedKeys: ManagedKeyStore
+		sessionStore: SessionStore
 	) async throws {
 		let source: CredentialSource
-		if let keyBytes = a.privateKey {
-			let target = try await managedKeys.write(hostId: localId, bytes: keyBytes)
-			source = .keyFile(keyPath: target.path, hasPassphrase: a.passphrase != nil)
+		if a.privateKey != nil {
+			source = .keyFile(keyPath: "", hasPassphrase: a.passphrase != nil)
 		} else if a.credentialKind == "keyFile" {
 			// Passphrase-only material for a key that didn't travel: keep
 			// whatever key reference the local host already has.
@@ -208,7 +205,7 @@ public enum BackupImporter {
 		} else {
 			source = .password
 		}
-		try sessionStore.setHostCredentialMaterial(
+		try await sessionStore.setHostCredentialMaterial(
 			secrets: HostSecrets(
 				password: a.password.map { Data($0.utf8) },
 				passphrase: a.passphrase.map { Data($0.utf8) },

@@ -1,6 +1,7 @@
 import Foundation
 import KeychainStore
 import SSHCommandBuilder
+import SSHCredentialContract
 import SwiftUI
 
 /// A single keychain mutation derived from a saved host draft.
@@ -15,11 +16,11 @@ public enum MobileCredentialOp: Equatable {
 /// service `com.caterm.host`) so desktop and CloudKit read the same items.
 public enum MobileCredentialPlan {
 	public static func passwordAccount(_ id: UUID) -> String {
-		"\(id.uuidString).password"
+		SSHCredentialContract.account(hostID: id, kind: .password)
 	}
 
 	public static func keyPassphraseAccount(_ id: UUID) -> String {
-		"\(id.uuidString).keyPassphrase"
+		SSHCredentialContract.account(hostID: id, kind: .keyPassphrase)
 	}
 
 	public static func operations(
@@ -54,7 +55,7 @@ public enum MobileCredentialPlan {
 /// removing an account that was never written is not an error.
 @MainActor
 public struct MobileCredentialWriter {
-	public static let defaultService = "com.caterm.host"
+	public static let defaultService = SSHCredentialContract.keychainService
 
 	private let keychain: KeychainStore
 
@@ -79,7 +80,9 @@ public struct MobileCredentialWriter {
 
 	/// Remove every secret for a host (called when the host is deleted).
 	public func clearAll(hostId: UUID) {
-		try? keychain.deleteAll(prefix: "\(hostId.uuidString).")
+		try? keychain.deleteAll(
+			prefix: SSHCredentialContract.accountPrefix(hostID: hostId)
+		)
 	}
 }
 

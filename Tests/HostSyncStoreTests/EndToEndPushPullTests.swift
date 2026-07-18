@@ -61,7 +61,7 @@ final class EndToEndPushPullTests: XCTestCase {
         )
         try mac.a.session.addHost(host)
         try mac.a.session.setServerId("rec-A1", for: aHostId)
-        try mac.a.session.setHostCredentialMaterial(
+        try await mac.a.session.setHostCredentialMaterial(
             secrets: HostSecrets(password: Data("p1".utf8)),
             credentialSource: .password,
             for: aHostId
@@ -169,13 +169,13 @@ final class EndToEndPushPullTests: XCTestCase {
         try mac.a.session.addHost(host)
         try mac.a.session.setServerId("rec-A2", for: aHostId)
 
-        // Write managed key bytes via Mac A's ManagedKeyStore so the
-        // dirty-scan/push path can read them.
         let pkBytes = Data("FAKE-RSA-PRIVATE-KEY-CONTENT".utf8)
-        let url = try await mac.a.managed.write(hostId: aHostId, bytes: pkBytes)
-        try mac.a.session.setHostCredentialMaterial(
-            secrets: HostSecrets(passphrase: Data("pp".utf8)),
-            credentialSource: .keyFile(keyPath: url.path, hasPassphrase: true),
+        try await mac.a.session.setHostCredentialMaterial(
+            secrets: HostSecrets(
+                passphrase: Data("pp".utf8),
+                privateKeyBytes: pkBytes
+            ),
+            credentialSource: .keyFile(keyPath: "", hasPassphrase: true),
             for: aHostId
         )
 
@@ -276,7 +276,7 @@ final class EndToEndPushPullTests: XCTestCase {
         )
         try mac.a.session.addHost(host)
         try mac.a.session.setServerId("rec-A3", for: aHostId)
-        try mac.a.session.setHostCredentialMaterial(
+        try await mac.a.session.setHostCredentialMaterial(
             secrets: HostSecrets(password: Data("p1".utf8)),
             credentialSource: .password,
             for: aHostId
@@ -376,9 +376,14 @@ final class EndToEndPushPullTests: XCTestCase {
             service: "e2e-secrets-\(suffix)-\(UUID().uuidString)",
             accessGroup: nil
         )
+		let managedRoot = tmp.appendingPathComponent(
+			"managed-keys", isDirectory: true
+		)
+		let managed = ManagedKeyStore(rootURL: managedRoot)
         let session = SessionStore(
             askpassPath: "/x", knownHostsCaterm: "/A", knownHostsUser: "/B",
-            accessGroup: nil, hostsURL: hostsURL, keychain: keychain
+			accessGroup: nil, hostsURL: hostsURL, keychain: keychain,
+			managedKeyStore: managed
         )
         let isolatedDefaults = UserDefaults(
             suiteName: "e2e-syncprefs-\(suffix)-\(UUID().uuidString)"
@@ -389,10 +394,6 @@ final class EndToEndPushPullTests: XCTestCase {
                 suiteName: "e2e-credprefs-\(suffix)-\(UUID().uuidString)"
             )!
         )
-        let managedRoot = tmp.appendingPathComponent(
-            "managed-keys", isDirectory: true
-        )
-        let managed = ManagedKeyStore(rootURL: managedRoot)
         let fake = FakeIncrementalHostSyncClient()
         let store = HostSyncStore(
             client: fake,
@@ -401,7 +402,6 @@ final class EndToEndPushPullTests: XCTestCase {
             preferences: syncPrefs,
             credentialSync: prefs,
             masterKeyStore: masterKey,
-            managedKeyStore: managed,
             // Use a long debounce so SessionStore mutations don't kick off a
             // racing auto-sync that consumes our staged fetchSnapshotResult
             // before the test's explicit `sync()` runs. Manual sync()

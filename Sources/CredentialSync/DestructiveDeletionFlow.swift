@@ -9,8 +9,9 @@ import SessionStore
 /// records a `DeletionProgress` entry naming every locally-known host with a
 /// serverId. The matching driver lives in `HostSyncStore.runDestructiveSubPipeline`,
 /// which pushes a `.tombstone` blob per host and shrinks the pending list as
-/// each push succeeds. If the process is killed mid-pipeline, the persisted
-/// list lets the next sync cycle resume from the remaining hosts.
+/// each push succeeds. `HostCredentialSyncEngine` drives that pipeline before
+/// normal host sync. If the process is killed mid-pipeline, the persisted list
+/// lets the next sync cycle resume from the remaining hosts.
 @MainActor
 public enum DestructiveDeletionFlow {
     /// Atomically:

@@ -24,8 +24,7 @@ final class RemoteFileSystemTests: XCTestCase {
 		SSHHost(id: UUID(), name: "x", hostname: "h", port: 22, username: "u", credential: .agent)
 	}
 	func makeCreds() -> SFTPCredentials {
-		SFTPCredentials(askpassPath: nil, identityFiles: [],
-		                knownHostsCaterm: URL(fileURLWithPath: "/k1"),
+		SFTPCredentials(knownHostsCaterm: URL(fileURLWithPath: "/k1"),
 		                knownHostsUser: URL(fileURLWithPath: "/k2"),
 		                strictHostKeyChecking: .acceptNew)
 	}

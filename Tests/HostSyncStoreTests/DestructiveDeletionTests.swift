@@ -14,10 +14,9 @@ import XCTest
 /// `DestructiveDeletionFlow.confirm` atomically clears every host's
 /// `credentialMaterialDirty` bit and stages a persisted
 /// `DeletionProgress(pendingLocalHostIds: …)`. The matching driver in
-/// `HostSyncStore.runDestructiveSubPipeline` pushes a `.tombstone` blob per
-/// host and shrinks the persisted list as each push succeeds. A push that
-/// throws aborts the loop without dropping the failed host from the list, so
-/// the next cycle resumes naturally.
+/// `HostCredentialSyncEngine` pushes a `.tombstone` blob per host and shrinks
+/// the persisted list as each push succeeds. A push that throws propagates
+/// without dropping the failed host, so the next cycle resumes naturally.
 @MainActor
 final class DestructiveDeletionTests: XCTestCase {
     private var sessionStore: SessionStore!
@@ -142,9 +141,9 @@ final class DestructiveDeletionTests: XCTestCase {
         let sut = makeStore()
         do {
             try await sut.sync()
+            XCTFail("a destructive push failure must propagate")
         } catch {
-            // Sub-pipeline swallows the error via early `return`; outer cycle
-            // completes normally. No throw is expected — but tolerate either.
+            // Persisted progress makes the failed host retryable next cycle.
         }
 
         XCTAssertEqual(fakeClient.pushCredentialCalls.count, 1,
@@ -321,7 +320,7 @@ final class DestructiveDeletionTests: XCTestCase {
         // Mutate via the public API so the notification path mirrors real
         // user edits: setHostCredentialMaterial sets dirty=true, persists,
         // then posts catermHostCredentialMaterialChanged.
-        try sessionStore.setHostCredentialMaterial(
+        try await sessionStore.setHostCredentialMaterial(
             secrets: HostSecrets(password: Data("p".utf8)),
             credentialSource: .password,
             for: host.id

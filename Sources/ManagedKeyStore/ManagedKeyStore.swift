@@ -5,6 +5,8 @@ public actor ManagedKeyStore {
         case tooLarge
         case unsafePath
         case writeFailed(String)
+        case deleteFailed(String)
+		case wipeFailed(String)
     }
 
     public static let maxBytes = 1_000_000
@@ -69,12 +71,24 @@ public actor ManagedKeyStore {
         return target
     }
 
-    public func delete(hostId: UUID) {
-        try? FileManager.default.removeItem(at: path(hostId: hostId))
+    public func delete(hostId: UUID) throws {
+        do {
+            try FileManager.default.removeItem(at: path(hostId: hostId))
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return
+        } catch {
+            throw Error.deleteFailed(error.localizedDescription)
+        }
     }
 
-    public func wipeAll() {
-        try? FileManager.default.removeItem(at: rootURL)
+	public func wipeAll() throws {
+		do {
+			try FileManager.default.removeItem(at: rootURL)
+		} catch let error as CocoaError where error.code == .fileNoSuchFile {
+			return
+		} catch {
+			throw Error.wipeFailed(error.localizedDescription)
+		}
     }
 
     private func ensureRoot() throws {

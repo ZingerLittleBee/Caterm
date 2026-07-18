@@ -1,7 +1,10 @@
 import Combine
 import Foundation
 import KeychainStore
+import ManagedKeyStore
+import os
 import SSHCommandBuilder
+import SSHCredentialContract
 import ServerSyncClient
 
 // We deliberately import Combine (not SwiftUI/AppKit) here so the public `Host`
@@ -26,6 +29,11 @@ public protocol ControlMasterTearDowning: Sendable {
 
 @MainActor
 public final class SessionStore: ObservableObject {
+	private static let log = Logger(
+		subsystem: "com.caterm.app",
+		category: "session-store"
+	)
+
     public struct Tab: Identifiable {
         public let id: UUID
         public var host: SSHHost
@@ -78,6 +86,7 @@ public final class SessionStore: ObservableObject {
     /// `addHost / updateHost / deleteHost` methods to mutate — direct mutation
     /// won't trigger persistence.
     @Published public private(set) var hosts: [SSHHost] = []
+	@Published public private(set) var credentialAvailabilityRevision: UInt64 = 0
 
 	public struct SkippedForwardNotice: Identifiable, Equatable, Sendable {
 		public let id: UUID
@@ -121,7 +130,9 @@ public final class SessionStore: ObservableObject {
     public let knownHostsUser: String
     public let accessGroup: String?
     public let hostsURL: URL
-    public let keychain: KeychainStore
+	let keychain: KeychainStore
+	public let credentialMaterialStore: SessionCredentialMaterialStore
+	let managedKeyStore: ManagedKeyStore
 
     /// Optional ControlMaster manager used to tear down per-host shared SSH
     /// connections when the last tab for a host closes (after a grace
@@ -153,23 +164,78 @@ public final class SessionStore: ObservableObject {
 
     /// Per-host secret kind. Maps to the keychain account suffix
     /// (`<hostId>.<rawValue>`) so different secrets per host don't collide.
-    public enum SecretKind: String {
+	enum SecretKind {
         case password
         case keyPassphrase
+
+		var credentialKind: SSHCredentialKind {
+			switch self {
+			case .password: return .password
+			case .keyPassphrase: return .keyPassphrase
+			}
+		}
     }
 
-    public init(askpassPath: String, knownHostsCaterm: String,
-                knownHostsUser: String, accessGroup: String?,
-                hostsURL: URL, keychain: KeychainStore,
-                controlMasterManager: ControlMasterTearDowning? = nil,
-                preflight: PreflightProbing = Preflight(),
-                configSink: SSHConfigSink = CatermSSHConfigSink()) {
+	public convenience init(
+		askpassPath: String,
+		knownHostsCaterm: String,
+		knownHostsUser: String,
+		accessGroup: String?,
+		hostsURL: URL,
+		keychain: KeychainStore,
+		controlMasterManager: ControlMasterTearDowning? = nil,
+		preflight: PreflightProbing = Preflight(),
+		configSink: SSHConfigSink = CatermSSHConfigSink(),
+		managedKeyStore: ManagedKeyStore = ManagedKeyStore()
+	) {
+		self.init(
+			askpassPath: askpassPath,
+			knownHostsCaterm: knownHostsCaterm,
+			knownHostsUser: knownHostsUser,
+			accessGroup: accessGroup,
+			hostsURL: hostsURL,
+			keychain: keychain,
+			controlMasterManager: controlMasterManager,
+			preflight: preflight,
+			configSink: configSink,
+			managedKeyStore: managedKeyStore,
+			credentialMaterialStore: nil
+		)
+	}
+
+	init(
+		askpassPath: String,
+		knownHostsCaterm: String,
+		knownHostsUser: String,
+		accessGroup: String?,
+		hostsURL: URL,
+		keychain: KeychainStore,
+		controlMasterManager: ControlMasterTearDowning? = nil,
+		preflight: PreflightProbing = Preflight(),
+		configSink: SSHConfigSink = CatermSSHConfigSink(),
+		managedKeyStore: ManagedKeyStore,
+		credentialMaterialStore: SessionCredentialMaterialStore?
+	) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
         self.knownHostsUser = knownHostsUser
         self.accessGroup = accessGroup
         self.hostsURL = hostsURL
         self.keychain = keychain
+		self.managedKeyStore = managedKeyStore
+		if let credentialMaterialStore {
+			precondition(
+				credentialMaterialStore.managedKeyStore === managedKeyStore,
+				"SessionStore requires one canonical ManagedKeyStore"
+			)
+			self.credentialMaterialStore = credentialMaterialStore
+		} else {
+			self.credentialMaterialStore = SessionCredentialMaterialStore(
+				keychainService: keychain.service,
+				keychainAccessGroup: keychain.accessGroup,
+				managedKeyStore: managedKeyStore
+			)
+		}
         self.controlMasterManager = controlMasterManager
         self.preflight = preflight
         self.configSink = configSink
@@ -191,24 +257,49 @@ public final class SessionStore: ObservableObject {
     public func updateHost(_ host: SSHHost) throws {
         guard let idx = hosts.firstIndex(where: { $0.id == host.id }) else { return }
         var updated = host
+		updated.credential = hosts[idx].credential
+		updated.credentialMaterialDirty = hosts[idx].credentialMaterialDirty
         updated.updatedAt = Date()
         hosts[idx] = updated
         try HostPersistence.save(hosts, to: hostsURL)
         mutationsForSyncSubject.send()
     }
 
-    public func deleteHost(id: UUID) throws {
-        hosts.removeAll { $0.id == id }
-        try HostPersistence.save(hosts, to: hostsURL)
-        // Best-effort keychain cleanup; Task 1.7 expands this with explicit kind enumeration.
-        try? keychain.deleteAll(prefix: "\(id.uuidString).")
+    public func deleteHost(id: UUID) async throws {
+        guard hosts.contains(where: { $0.id == id }) else { return }
+		let commit = try await credentialMaterialStore.beginDeletion(for: id)
+        var updated = hosts
+        updated.removeAll { $0.id == id }
+        do {
+            try HostPersistence.save(updated, to: hostsURL)
+        } catch {
+            let persistenceError = error
+            do {
+                try await credentialMaterialStore.rollbackDeletion(commit)
+            } catch {
+                let rollbackDescription = String(describing: error)
+                Self.log.error(
+                    "credential deletion rollback failed: \(id, privacy: .public): \(rollbackDescription, privacy: .public)"
+                )
+            }
+            throw persistenceError
+        }
+        hosts = updated
+        await credentialMaterialStore.finalizeDeletion(commit)
+		credentialAvailabilityRevision &+= 1
         mutationsForSyncSubject.send()
     }
 
-    /// Persist a per-host secret (password or key passphrase) to Keychain
-    /// under the account `<hostId>.<kind>`.
-    public func setHostSecret(_ secret: String, hostId: UUID, kind: SecretKind) throws {
-        try keychain.set(account: "\(hostId.uuidString).\(kind.rawValue)", secret: secret)
+	/// Test seam for seeding Keychain-backed connection fixtures. Production
+	/// credential writes must use `setHostCredentialMaterial`.
+	func setHostSecret(_ secret: String, hostId: UUID, kind: SecretKind) throws {
+		try keychain.set(
+			account: SSHCredentialContract.account(
+				hostID: hostId,
+				kind: kind.credentialKind
+			),
+			secret: secret
+		)
     }
 
     // MARK: - Tabs
@@ -226,20 +317,8 @@ public final class SessionStore: ObservableObject {
         }
         let chain = chainResolution.connectionOrder
 
-        // 2. Credential pre-check: every ancestor in the chain must be ready.
-        // The target's credential state is handled by the interactive SSH auth
-        // flow (caterm-askpass). Ancestors cannot be interactively authenticated
-        // through a jump hop, so they must be preconfigured.
-        let needsCred = chain.first { needsCredentialSetup($0) }
-        if let h = needsCred {
-            let id = UUID()
-            let msg = "\(h.name) needs credentials configured first — connect to it directly to set them up"
-            tabs.append(Tab(id: id, host: host,
-                            failedWith: .networkUnreachable(.other(code: 0, message: msg))))
-            return id
-        }
-
-        // 3. Happy path — register with ControlMaster and start connection.
+        // 2. Register the tab, then let the async connection task validate
+		// ancestor credentials through the credential-material lease.
         // Re-opening a tab for the same host within the grace window
         // cancels any pending ControlMaster teardown so we keep reusing
         // the existing shared connection.
@@ -325,19 +404,22 @@ public final class SessionStore: ObservableObject {
                                       execute: item)
     }
 
-    /// Build the (commandString, env) pair for a given tab. `installTerminfo`
-    /// (v1.6) drives whether the resulting command appends an inline
-    /// terminfo-install wrapper and a `TERM=xterm-ghostty` env override.
+    /// Build the command and environment from the tab's open-time snapshot.
     ///
     /// For chained (jump-host) connections the full `SSHCommandBuilder.Output`
     /// is captured in `tab.chainOutput` by `runConnection`. We return its
     /// (command, env) directly so the chain feature works end-to-end. The
     /// direct-path build is only invoked for single-hop (no-jump) tabs.
-    public func surfaceConfig(for tabId: UUID, installTerminfo: Bool = false) -> (command: String, env: [(String, String)])? {
+    public func surfaceConfig(
+        for tabId: UUID,
+        installTerminfo _: Bool = false
+    ) -> (command: String, env: [(String, String)])? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
         if let chainOut = tab.chainOutput {
             var env = chainOut.env
-            if let accessGroup { env.append(("CATERM_ACCESS_GROUP", accessGroup)) }
+            if let accessGroup {
+                env.append((SSHCredentialEnvironmentKey.accessGroup.rawValue, accessGroup))
+            }
             return (chainOut.command, env)
         }
         let cmd = SSHCommandBuilder.build(
@@ -345,10 +427,12 @@ public final class SessionStore: ObservableObject {
             askpassPath: askpassPath,
             knownHostsCaterm: knownHostsCaterm,
             knownHostsUser: knownHostsUser,
-            installTerminfo: installTerminfo
+            installTerminfo: tab.installTerminfo
         )
         var env = cmd.env
-        if let accessGroup { env.append(("CATERM_ACCESS_GROUP", accessGroup)) }
+        if let accessGroup {
+            env.append((SSHCredentialEnvironmentKey.accessGroup.rawValue, accessGroup))
+        }
         return (cmd.command, env)
     }
 
@@ -378,6 +462,20 @@ public final class SessionStore: ObservableObject {
 		let chain = tab.resolvedChain
 		let token = (connectionAttempts[tabId] ?? 0) &+ 1
 		connectionAttempts[tabId] = token
+
+		for ancestor in chain {
+			guard await needsCredentialSetup(ancestor) else { continue }
+			applyIfCurrent(tabId: tabId, token: token) { current in
+				let message = "\(ancestor.name) needs credentials configured first — connect to it directly to set them up"
+				current.state = .failed(
+					.networkUnreachable(.other(code: 0, message: message))
+				)
+			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
 
 		// Determine the first TCP hop address. Defense-in-depth: openTab already
 		// validated the chain, but broken configurations can arise from race
@@ -627,20 +725,32 @@ public final class SessionStore: ObservableObject {
     /// True when this host has no usable local credential. Pulled hosts always
     /// fall here (no Keychain item under their local UUID). Local-only `.agent`
     /// hosts are always false. See spec §7.1.2 needsCredentialSetup.
-    public func needsCredentialSetup(_ host: SSHHost) -> Bool {
-        switch host.credential {
-        case .agent:
-            return false
-        case .password:
-            return (try? keychain.get(account: "\(host.id.uuidString).password")) == nil
-        case let .keyFile(keyPath, hasPassphrase):
-            if !FileManager.default.fileExists(atPath: keyPath) { return true }
-            if hasPassphrase {
-                return (try? keychain.get(account: "\(host.id.uuidString).keyPassphrase")) == nil
-            }
-            return false
-        }
+    public func needsCredentialSetup(_ host: SSHHost) async -> Bool {
+		var source = hosts.first(where: { $0.id == host.id })?.credential
+			?? host.credential
+		while true {
+			guard let check = await credentialMaterialStore
+				.beginCredentialSetupCheck(for: host.id, source: source) else {
+				return true
+			}
+			guard let currentSource = hosts.first(where: {
+				$0.id == host.id
+			})?.credential else {
+				await credentialMaterialStore.finishCredentialSetupCheck(check)
+				return true
+			}
+			if currentSource == source {
+				await credentialMaterialStore.finishCredentialSetupCheck(check)
+				return check.requiresSetup
+			}
+			await credentialMaterialStore.finishCredentialSetupCheck(check)
+			source = currentSource
+		}
     }
+
+	public func managedKeyPath(for hostId: UUID) -> String {
+		managedKeyStore.path(hostId: hostId).path
+	}
 
     /// Replace the `serverId` of an existing host in-memory and persist.
     public func setServerId(_ serverId: String, for hostId: UUID) throws {
@@ -716,8 +826,8 @@ public final class SessionStore: ObservableObject {
     /// after `HostPersistence.save` returns. A disk-write failure throws
     /// without mutating in-memory state, so callers can treat the call as
     /// all-or-nothing for SessionStore-side state.
-    public func setCredentialOnly(_ source: CredentialSource,
-                                  for hostId: UUID) throws {
+	func setCredentialOnly(_ source: CredentialSource,
+	                       for hostId: UUID) throws {
         guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
         var updated = hosts
         updated[idx].credential = source
@@ -725,33 +835,72 @@ public final class SessionStore: ObservableObject {
         hosts = updated
     }
 
-	/// Plan C: single credential-mutation entry point.
-	/// Atomic ordering: Keychain writes (password / keyPassphrase) →
-	/// host.credential update + dirty=true → HostPersistence.save → post
-	/// notification. ManagedKeyStore writes for `secrets.privateKeyBytes`
-	/// happen on the caller side (SessionStore has no dependency on
-	/// ManagedKeyStore — avoids module graph entanglement). Callers must
-	/// have already written private-key bytes via ManagedKeyStore before
-	/// calling, and the `credentialSource` they pass already encodes the
-	/// resulting managedPath.
+	/// Single local credential-material mutation entry point. The material store
+	/// retains a per-host transaction lease until the credential source, dirty
+	/// bit, and notification have committed on the main actor.
 	public func setHostCredentialMaterial(
 		secrets: HostSecrets,
 		credentialSource: CredentialSource,
 		for hostId: UUID
-	) throws {
-		if let pw = secrets.password {
-			guard let s = String(data: pw, encoding: .utf8) else { throw KeychainError.decodeFailed }
-			try keychain.set(account: "\(hostId.uuidString).password", secret: s)
+	) async throws {
+		guard hosts.contains(where: { $0.id == hostId }) else { return }
+		let localSource: LocalCredentialSource
+		switch credentialSource {
+		case .password:
+			localSource = .password
+		case let .keyFile(path, hasPassphrase):
+			localSource = .keyFile(
+				path: path,
+				hasPassphrase: hasPassphrase
+			)
+		case .agent:
+			localSource = .agent
 		}
-		if let pp = secrets.passphrase {
-			guard let s = String(data: pp, encoding: .utf8) else { throw KeychainError.decodeFailed }
-			try keychain.set(account: "\(hostId.uuidString).keyPassphrase", secret: s)
+
+		let commit = try await credentialMaterialStore.applyLocal(
+			secrets,
+			source: localSource,
+			for: hostId
+		)
+		do {
+			try Task.checkCancellation()
+		} catch {
+			if hosts.contains(where: { $0.id == hostId }) {
+				try await credentialMaterialStore.rollbackLocalCommit(commit)
+			} else {
+				try await credentialMaterialStore
+					.discardLocalCommitForDeletedHost(commit)
+			}
+			throw error
 		}
-		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
+
+		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else {
+			try await credentialMaterialStore
+				.discardLocalCommitForDeletedHost(commit)
+			return
+		}
+		let resolvedSource: CredentialSource
+		switch commit.source {
+		case .password:
+			resolvedSource = .password
+		case let .keyFile(path, hasPassphrase):
+			resolvedSource = .keyFile(
+				keyPath: path,
+				hasPassphrase: hasPassphrase
+			)
+		case .agent:
+			resolvedSource = .agent
+		}
 		var updated = hosts
-		updated[idx].credential = credentialSource
+		updated[idx].credential = resolvedSource
 		updated[idx].credentialMaterialDirty = true
-		try HostPersistence.save(updated, to: hostsURL)
+		do {
+			try HostPersistence.save(updated, to: hostsURL)
+		} catch {
+			let persistenceError = error
+			try await credentialMaterialStore.rollbackLocalCommit(commit)
+			throw persistenceError
+		}
 		hosts = updated
 
 		NotificationCenter.default.post(
@@ -759,6 +908,83 @@ public final class SessionStore: ObservableObject {
 			object: nil,
 			userInfo: [CatermHostCredentialMaterialChangedKeys.hostId: hostId]
 		)
+		await credentialMaterialStore.finalizeLocalCommit(commit)
+		credentialAvailabilityRevision &+= 1
+	}
+
+	/// Relocates a legacy external key reference into the canonical managed
+	/// store without creating a sync-visible credential edit.
+	public func migrateExternalPrivateKey(
+		_ privateKeyBytes: Data,
+		from expectedSource: CredentialSource,
+		for hostId: UUID
+	) async throws -> Bool {
+		guard case let .keyFile(_, hasPassphrase) = expectedSource,
+		      hosts.first(where: { $0.id == hostId })?.credential == expectedSource else {
+			return false
+		}
+
+		let expectedGeneration = await credentialMaterialStore.currentGeneration(
+			for: hostId
+		)
+		guard hosts.first(where: { $0.id == hostId })?.credential == expectedSource,
+		      let commit = try await credentialMaterialStore.applyMigration(
+				privateKeyBytes: privateKeyBytes,
+				for: hostId,
+				expectedGeneration: expectedGeneration
+		      ) else {
+			return false
+		}
+
+		do {
+			try Task.checkCancellation()
+		} catch {
+			if hosts.contains(where: { $0.id == hostId }) {
+				try await credentialMaterialStore.rollbackMigration(commit)
+			} else {
+				try await credentialMaterialStore
+					.discardMigrationForDeletedHost(commit)
+			}
+			throw error
+		}
+
+		guard let index = hosts.firstIndex(where: { $0.id == hostId }) else {
+			try await credentialMaterialStore.discardMigrationForDeletedHost(commit)
+			return false
+		}
+		guard hosts[index].credential == expectedSource else {
+			try await credentialMaterialStore.rollbackMigration(commit)
+			return false
+		}
+
+		var updated = hosts
+		updated[index].credential = .keyFile(
+			keyPath: commit.managedPath,
+			hasPassphrase: hasPassphrase
+		)
+		do {
+			try HostPersistence.save(updated, to: hostsURL)
+		} catch {
+			let persistenceError = error
+			do {
+				try await credentialMaterialStore.rollbackMigration(commit)
+			} catch {
+				let rollbackDescription = String(describing: error)
+				Self.log.error(
+					"credential migration rollback failed: \(hostId, privacy: .public): \(rollbackDescription, privacy: .public)"
+				)
+			}
+			throw persistenceError
+		}
+		hosts = updated
+		await credentialMaterialStore.finalizeMigration(commit)
+		credentialAvailabilityRevision &+= 1
+		return true
+	}
+
+	public func resetCredentialMaterialForAccountChange() async throws {
+		try await credentialMaterialStore.resetManagedKeysForAccountChange()
+		credentialAvailabilityRevision &+= 1
 	}
 
 	public func clearCredentialMaterialDirty(_ hostId: UUID) throws {
@@ -770,37 +996,29 @@ public final class SessionStore: ObservableObject {
 		hosts = updated
 	}
 
-	/// Plan C pull-side credential application. Caller (HostSyncStore)
-	/// decrypts ciphertext and (if private-key bytes present) has already
-	/// called `ManagedKeyStore.write` to obtain `managedKeyPath`.
-	/// Does NOT set credentialMaterialDirty — the bytes came FROM the
-	/// remote, so re-pushing would be a useless write loop.
-	public func applyRemoteCredential(
-		decryptedPassword: Data?,
-		decryptedPassphrase: Data?,
-		decryptedPrivateKey: Data?,
-		managedKeyPath: String?,
-		for hostId: UUID
+	/// Commits the resulting credential reference to main-actor host state after
+	/// a background worker has persisted the credential bytes. Remote material
+	/// never sets the local dirty bit, which avoids a redundant push loop.
+	public func applyRemoteCredentialSource(
+		_ commit: RemoteCredentialMaterialCommit
 	) throws {
+		let hostId = commit.hostId
 		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
-
-		if let pw = decryptedPassword {
-			guard let s = String(data: pw, encoding: .utf8) else { throw KeychainError.decodeFailed }
-			try keychain.set(account: "\(hostId.uuidString).password", secret: s)
-		}
-		if let pp = decryptedPassphrase {
-			guard let s = String(data: pp, encoding: .utf8) else { throw KeychainError.decodeFailed }
-			try keychain.set(account: "\(hostId.uuidString).keyPassphrase", secret: s)
-		}
-
 		var updated = hosts
-		if decryptedPrivateKey != nil, let path = managedKeyPath {
-			updated[idx].credential = .keyFile(keyPath: path, hasPassphrase: decryptedPassphrase != nil)
-		} else if decryptedPassword != nil {
+		switch commit.source {
+		case .unchanged:
+			break
+		case .password:
 			updated[idx].credential = .password
-		}  // else: leave existing credential alone (e.g., .agent)
+		case let .keyFile(path, hasPassphrase):
+			updated[idx].credential = .keyFile(
+				keyPath: path,
+				hasPassphrase: hasPassphrase
+			)
+		}
 		try HostPersistence.save(updated, to: hostsURL)
 		hosts = updated
+		credentialAvailabilityRevision &+= 1
 	}
 
 	// MARK: - Test helpers (internal — accessible via @testable import)
@@ -845,9 +1063,8 @@ public final class SessionStore: ObservableObject {
 	///   is needed.
 	/// - `credentialsAvailableFor`: Set of host `id`s for which
 	///   `needsCredentialSetup` should return `false`. The factory writes a
-	///   dummy password to the isolated test keychain for each listed id so
-	///   the existing Keychain-backed `needsCredentialSetup` logic works
-	///   without modification.
+	///   dummy password to the isolated test keychain for each listed id so the
+	///   leased credential-availability read observes committed material.
 	/// - `configSink`: Injected `SSHConfigSink`; defaults to
 	///   `InMemorySSHConfigSink` so tests never touch the filesystem.
 	public static func makeForTest(
@@ -861,7 +1078,11 @@ public final class SessionStore: ObservableObject {
 		                       accessGroup: nil)
 		// Write a dummy password for each host that should appear credentialed.
 		for hostId in credentialsAvailableFor {
-			try? kc.set(account: "\(hostId.uuidString).password", secret: "dummy")
+			try? kc.set(
+				account: SSHCredentialContract.account(
+					hostID: hostId, kind: .password),
+				secret: "dummy"
+			)
 		}
 		let store = SessionStore(
 			askpassPath: "/dev/null",

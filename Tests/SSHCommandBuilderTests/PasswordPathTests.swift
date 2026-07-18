@@ -37,6 +37,20 @@ final class PasswordPathTests: XCTestCase {
         XCTAssertTrue(result.command.contains("UserKnownHostsFile=/A/known_hosts /B/known_hosts"))
     }
 
+	func testKnownHostsPathWithSpacesUsesInnerSSHConfigQuoting() {
+		let catermPath = "/Users/alice/Library/Application Support/Caterm/known_hosts"
+		let userPath = "/Users/alice/.ssh/known_hosts"
+		let result = SSHCommandBuilder.build(
+			host: host,
+			askpassPath: "/x/askpass",
+			knownHostsCaterm: catermPath,
+			knownHostsUser: userPath
+		)
+		let option = "UserKnownHostsFile=\"\(catermPath)\" \(userPath)"
+
+		XCTAssertTrue(result.command.contains("-o \(ShellQuote.posix(option))"))
+	}
+
     func testEnvVarsContainAskpass() {
         let result = SSHCommandBuilder.build(
             host: host,

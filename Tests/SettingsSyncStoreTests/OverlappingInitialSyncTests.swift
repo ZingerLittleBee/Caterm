@@ -28,13 +28,14 @@ final class OverlappingInitialSyncTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-A") }
+			currentTokenProvider: { TestToken("user-A") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .milliseconds(150)
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(150)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		// Post #1: starts grace task A (will naturally wake at T0+150ms).
 		NotificationCenter.default.post(
@@ -43,7 +44,7 @@ final class OverlappingInitialSyncTests: XCTestCase {
 			userInfo: [NSUbiquitousKeyValueStoreChangeReasonKey: NSUbiquitousKeyValueStoreInitialSyncChange]
 		)
 		try await Task.sleep(for: .milliseconds(60))
-		XCTAssertTrue(sync.testPushSuspended, "post #1 grace must be active")
+		XCTAssertTrue(sync.isPushSuspended, "post #1 grace must be active")
 
 		// Post #2 ~60ms later: starts grace task B (wakes at T0+210ms).
 		NotificationCenter.default.post(
@@ -57,7 +58,7 @@ final class OverlappingInitialSyncTests: XCTestCase {
 		// the flag.
 		try await Task.sleep(for: .milliseconds(110))
 
-		XCTAssertTrue(sync.testPushSuspended,
+		XCTAssertTrue(sync.isPushSuspended,
 			"task B's grace must still be active; the older overlapping grace task must not clear inInitialSyncGrace")
 	}
 
@@ -76,13 +77,14 @@ final class OverlappingInitialSyncTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-A") }
+			currentTokenProvider: { TestToken("user-A") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .milliseconds(500)
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(500)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		// Open the grace barrier.
 		NotificationCenter.default.post(
@@ -91,7 +93,7 @@ final class OverlappingInitialSyncTests: XCTestCase {
 			userInfo: [NSUbiquitousKeyValueStoreChangeReasonKey: NSUbiquitousKeyValueStoreInitialSyncChange]
 		)
 		try await Task.sleep(for: .milliseconds(20))
-		XCTAssertTrue(sync.testPushSuspended, "grace open")
+		XCTAssertTrue(sync.isPushSuspended, "grace open")
 
 		// Now a serverChange supersedes — flag must clear (otherwise no user
 		// edit can ever push again until the grace task naturally completes).
@@ -106,7 +108,7 @@ final class OverlappingInitialSyncTests: XCTestCase {
 		// state (.active in this scenario — local-only data, cloud absent).
 		XCTAssertEqual(sync.syncState, .active,
 			"serverChange supersedes grace; classifyAndApply runs and lands the new state")
-		XCTAssertFalse(sync.testPushSuspended,
+		XCTAssertFalse(sync.isPushSuspended,
 			"non-grace pull must clear inInitialSyncGrace so user edits aren't frozen indefinitely")
 	}
 }

@@ -35,11 +35,12 @@ final class SessionStoreChainTests: XCTestCase {
 		              "got: \(msg)")
 	}
 
-	func testOpenTabFailsFastOnMissingCredentialOnAncestor() throws {
+	func testOpenTabFailsFastOnMissingCredentialOnAncestor() async throws {
 		let bastion = host("bastion", "rh-bastion")
 		let target = host("target", "rh-target", jump: "rh-bastion")
 		let store = SessionStore.makeForTest(hosts: [bastion, target])
 		let tabId = store.openTab(host: target)
+		await store.awaitConnectionAttempt(tabId: tabId)
 		guard case .failed(let kind) = store.tabs.first(where: { $0.id == tabId })?.state,
 		      case .networkUnreachable(.other(_, let msg)) = kind
 		else { return XCTFail("expected failed networkUnreachable.other") }

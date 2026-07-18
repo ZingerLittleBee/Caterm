@@ -1,6 +1,7 @@
 import Foundation
 import KeychainStore
 import CatermAskpassCore
+import SSHCredentialContract
 
 // caterm-askpass — invoked by ssh via SSH_ASKPASS=<this binary>.
 //
@@ -78,19 +79,25 @@ func saveChainAskpassState(_ state: ChainAskpassState, to path: String?) {
 //   CATERM_ASKPASS_SECRET=<secret> \
 //   CATERM_ACCESS_GROUP=<optional> \
 //     ./caterm-askpass
-if env["CATERM_ASKPASS_STUFF"] == "1" {
-    guard let hostId = env["CATERM_HOST_ID"], !hostId.isEmpty,
-          let kind = env["CATERM_ASKPASS_KIND"],
-          kind == "password" || kind == "keyPassphrase",
-          let secret = env["CATERM_ASKPASS_SECRET"]
+if env[SSHCredentialEnvironmentKey.stuffMode.rawValue]
+    == SSHCredentialContract.stuffModeEnabledValue {
+    guard let hostId = env[SSHCredentialEnvironmentKey.hostID.rawValue], !hostId.isEmpty,
+          let rawKind = env[SSHCredentialEnvironmentKey.credentialKind.rawValue],
+          let kind = SSHCredentialKind(rawValue: rawKind),
+          let secret = env[SSHCredentialEnvironmentKey.stuffSecret.rawValue]
     else {
         FileHandle.standardError.write(Data("stuff: missing required env\n".utf8))
         exit(1)
     }
-    let stuffStore = KeychainStore(service: "com.caterm.host",
-                                   accessGroup: env["CATERM_ACCESS_GROUP"])
+    let stuffStore = KeychainStore(
+        service: SSHCredentialContract.keychainService,
+        accessGroup: env[SSHCredentialEnvironmentKey.accessGroup.rawValue]
+    )
     do {
-        try stuffStore.set(account: "\(hostId).\(kind)", secret: secret)
+        try stuffStore.set(
+            account: SSHCredentialContract.account(hostID: hostId, kind: kind),
+            secret: secret
+        )
         exit(0)
     } catch {
         FileHandle.standardError.write(Data("stuff: keychain write failed \(error)\n".utf8))
@@ -102,7 +109,7 @@ if env["CATERM_ASKPASS_STUFF"] == "1" {
 // Triggered when SSHCommandBuilder set CATERM_CHAIN. The resolver
 // matches argv[1] against the chain and tells us which host's
 // secret to fetch. On ambiguity or unknown prompt, exit 2.
-if let chainJSON = env["CATERM_CHAIN"], !chainJSON.isEmpty {
+if let chainJSON = env[SSHCredentialEnvironmentKey.chain.rawValue], !chainJSON.isEmpty {
     let chain: [AskpassChainEntry]
     do {
         chain = try JSONDecoder().decode([AskpassChainEntry].self,
@@ -115,7 +122,7 @@ if let chainJSON = env["CATERM_CHAIN"], !chainJSON.isEmpty {
     }
 
     let prompt = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
-    let statePath = env["CATERM_CHAIN_STATE_PATH"]
+    let statePath = env[SSHCredentialEnvironmentKey.chainStatePath.rawValue]
     var chainState = loadChainAskpassState(from: statePath)
     let resolution = resolveAskpassPrompt(
         prompt,
@@ -124,14 +131,14 @@ if let chainJSON = env["CATERM_CHAIN"], !chainJSON.isEmpty {
     )
 
     let hostId: String
-    let kind: String
+    let kind: SSHCredentialKind
     switch resolution {
     case .found(.password(let id)):
         hostId = id
-        kind = "password"
+        kind = .password
     case .found(.passphrase(let id)):
         hostId = id
-        kind = "keyPassphrase"
+        kind = .keyPassphrase
     case .ambiguous:
         FileHandle.standardError.write(Data(
             "askpass: ambiguous chain entry for prompt: \(prompt)\n".utf8))
@@ -144,16 +151,16 @@ if let chainJSON = env["CATERM_CHAIN"], !chainJSON.isEmpty {
         exit(2)
     }
 
-    let account = "\(hostId).\(kind)"
-    let accessGroup = env["CATERM_ACCESS_GROUP"]
+    let account = SSHCredentialContract.account(hostID: hostId, kind: kind)
+    let accessGroup = env[SSHCredentialEnvironmentKey.accessGroup.rawValue]
     let groupTag = accessGroup ?? "<nil>"
-    let store = KeychainStore(service: "com.caterm.host",
+    let store = KeychainStore(service: SSHCredentialContract.keychainService,
                               accessGroup: accessGroup)
     do {
         let secret = try store.get(account: account)
         let out = secret + "\n"
         FileHandle.standardOutput.write(Data(out.utf8))
-        if kind == "password",
+        if kind == .password,
            !chainState.consumedPasswordHostIDs.contains(hostId) {
             chainState.consumedPasswordHostIDs.append(hostId)
             saveChainAskpassState(chainState, to: statePath)
@@ -176,22 +183,25 @@ if let chainJSON = env["CATERM_CHAIN"], !chainJSON.isEmpty {
     }
 }
 
-guard let hostId = env["CATERM_HOST_ID"], !hostId.isEmpty else {
+guard let hostId = env[SSHCredentialEnvironmentKey.hostID.rawValue], !hostId.isEmpty else {
     FileHandle.standardError.write(Data("CATERM_HOST_ID not set\n".utf8))
     logLine("FAIL exit=1 reason=CATERM_HOST_ID-not-set")
     exit(1)
 }
-guard let kind = env["CATERM_ASKPASS_KIND"],
-      kind == "password" || kind == "keyPassphrase" else {
+guard let rawKind = env[SSHCredentialEnvironmentKey.credentialKind.rawValue],
+      let kind = SSHCredentialKind(rawValue: rawKind) else {
     FileHandle.standardError.write(Data("CATERM_ASKPASS_KIND invalid\n".utf8))
     logLine("FAIL exit=1 reason=CATERM_ASKPASS_KIND-invalid host=\(hostId)")
     exit(1)
 }
 
-let account = "\(hostId).\(kind)"
-let accessGroup = env["CATERM_ACCESS_GROUP"]
+let account = SSHCredentialContract.account(hostID: hostId, kind: kind)
+let accessGroup = env[SSHCredentialEnvironmentKey.accessGroup.rawValue]
 let groupTag = accessGroup ?? "<nil>"
-let store = KeychainStore(service: "com.caterm.host", accessGroup: accessGroup)
+let store = KeychainStore(
+    service: SSHCredentialContract.keychainService,
+    accessGroup: accessGroup
+)
 
 do {
     let secret = try store.get(account: account)

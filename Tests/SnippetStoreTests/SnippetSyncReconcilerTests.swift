@@ -32,6 +32,32 @@ final class SnippetSyncReconcilerTests: XCTestCase {
 		XCTAssertEqual(ops, [.applyRemote(remote)])
 	}
 
+	func test_revisionPrecedesNewerLocalTimestamps() {
+		let id = UUID()
+		let local = snip(
+			id: id,
+			revision: 1,
+			metaUpdated: Date(timeIntervalSince1970: 300),
+			updatedAt: Date(timeIntervalSince1970: 300)
+		)
+		let remote = snip(
+			id: id,
+			name: "remote",
+			revision: 2,
+			metaUpdated: Date(timeIntervalSince1970: 100),
+			updatedAt: Date(timeIntervalSince1970: 100)
+		)
+
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local],
+			changedSnippets: [remote],
+			deletedIDs: [],
+			locallyDirty: []
+		)
+
+		XCTAssertEqual(ops, [.applyRemote(remote)])
+	}
+
 	func test_remoteLowerRevision_pushesLocalIfDirty() {
 		let id = UUID()
 		let local = snip(id: id, revision: 5)
@@ -65,6 +91,103 @@ final class SnippetSyncReconcilerTests: XCTestCase {
 		XCTAssertEqual(ops, [.applyRemote(remote)])
 	}
 
+	func test_metadataPresenceBeatsMissingIncomingMetadata() {
+		let id = UUID()
+		let local = snip(
+			id: id,
+			revision: 1,
+			metaUpdated: Date(timeIntervalSince1970: 100)
+		)
+		let remote = snip(id: id, name: "remote", revision: 1)
+
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local],
+			changedSnippets: [remote],
+			deletedIDs: [],
+			locallyDirty: [id]
+		)
+
+		XCTAssertEqual(ops, [.pushLocal(local)])
+	}
+
+	func test_newerLocalMetadataDatePushesWhenDirty() {
+		let id = UUID()
+		let local = snip(
+			id: id,
+			revision: 1,
+			metaUpdated: Date(timeIntervalSince1970: 200)
+		)
+		let remote = snip(
+			id: id,
+			name: "remote",
+			revision: 1,
+			metaUpdated: Date(timeIntervalSince1970: 100)
+		)
+
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local],
+			changedSnippets: [remote],
+			deletedIDs: [],
+			locallyDirty: [id]
+		)
+
+		XCTAssertEqual(ops, [.pushLocal(local)])
+	}
+
+	func test_updatedAtBreaksTieAfterEqualMetadata() {
+		let id = UUID()
+		let metadataDate = Date(timeIntervalSince1970: 100)
+		let local = snip(
+			id: id,
+			revision: 1,
+			metaUpdated: metadataDate,
+			updatedAt: Date(timeIntervalSince1970: 100)
+		)
+		let remote = snip(
+			id: id,
+			name: "remote",
+			revision: 1,
+			metaUpdated: metadataDate,
+			updatedAt: Date(timeIntervalSince1970: 200)
+		)
+
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local],
+			changedSnippets: [remote],
+			deletedIDs: [],
+			locallyDirty: []
+		)
+
+		XCTAssertEqual(ops, [.applyRemote(remote)])
+	}
+
+	func test_newerLocalUpdatedAtPushesWhenDirty() {
+		let id = UUID()
+		let metadataDate = Date(timeIntervalSince1970: 100)
+		let local = snip(
+			id: id,
+			revision: 1,
+			metaUpdated: metadataDate,
+			updatedAt: Date(timeIntervalSince1970: 200)
+		)
+		let remote = snip(
+			id: id,
+			name: "remote",
+			revision: 1,
+			metaUpdated: metadataDate,
+			updatedAt: Date(timeIntervalSince1970: 100)
+		)
+
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local],
+			changedSnippets: [remote],
+			deletedIDs: [],
+			locallyDirty: [id]
+		)
+
+		XCTAssertEqual(ops, [.pushLocal(local)])
+	}
+
 	func test_parity_emitsNoOps() {
 		let id = UUID()
 		let meta = Date(timeIntervalSince1970: 100)
@@ -76,6 +199,34 @@ final class SnippetSyncReconcilerTests: XCTestCase {
 			locallyDirty: []
 		)
 		XCTAssertEqual(ops, [])
+	}
+
+	func test_equalVersionWithDivergentContentAppliesCloudTieBreak() {
+		let id = UUID()
+		let timestamp = Date(timeIntervalSince1970: 100)
+		let local = snip(
+			id: id,
+			name: "local",
+			revision: 1,
+			metaUpdated: timestamp,
+			updatedAt: timestamp
+		)
+		let remote = snip(
+			id: id,
+			name: "remote",
+			revision: 1,
+			metaUpdated: timestamp,
+			updatedAt: timestamp
+		)
+
+		let ops = SnippetSyncReconciler.reconcileDelta(
+			local: [local],
+			changedSnippets: [remote],
+			deletedIDs: [],
+			locallyDirty: []
+		)
+
+		XCTAssertEqual(ops, [.applyRemote(remote)])
 	}
 
 	func test_remoteTombstone_emitsApplyTombstone_evenIfLocalDirty() {

@@ -3,7 +3,7 @@ import SSHCommandBuilder
 
 /// One row of `sshHost.list`. Mirrors `packages/api/src/routers/ssh-host.ts`
 /// (the metadata-only projection — no password/privateKey/keyPassphrase columns).
-public struct RemoteHost: Codable, Equatable, Identifiable {
+public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let hostname: String

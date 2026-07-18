@@ -27,27 +27,23 @@ public enum SFTPCommandBuilder {
 	) throws -> SFTPInvocation {
 		var argv: [String] = ["/usr/bin/sftp"]
 
-		// No-fallback options FIRST (first-value-wins under OpenSSH).
-		argv += ["-o", "ControlMaster=no"]
-		argv += ["-o", "BatchMode=yes"]
-		argv += ["-o", "PreferredAuthentications=none"]
-		argv += ["-o", "ProxyCommand=none"]
-
-		// Master socket
-		argv += ["-o", "ControlPath=\(controlPath.path)"]
-		argv += ["-o", "ControlPersist=10m"]
-
-		// Policy parity
-		argv += ["-o", "StrictHostKeyChecking=\(credentials.strictHostKeyChecking.rawValue)"]
-		argv += ["-o", "UserKnownHostsFile=\(credentials.knownHostsCaterm.path) \(credentials.knownHostsUser.path)"]
-		for id in credentials.identityFiles {
-			argv += ["-i", id.path]
+		// No-fallback options stay first because OpenSSH uses the first value.
+		let socketOptions = SSHConnectionPolicy.existingControlSocketPlan(
+			controlPath: controlPath.path,
+			strictHostKeyChecking: credentials.strictHostKeyChecking.rawValue,
+			knownHostsFiles: [
+				credentials.knownHostsCaterm.path,
+				credentials.knownHostsUser.path,
+			]
+		)
+		for option in socketOptions {
+			argv += try option.invocationArguments()
 		}
 
 		// Filtered extras (case-insensitive denylist).
 		for (k, v) in credentials.extraSSHOptions.sorted(by: { $0.key < $1.key }) {
 			if SFTPCredentialsDenylist.contains(k.lowercased()) { continue }
-			argv += ["-o", "\(k)=\(v)"]
+			argv += try SSHOption.option(k, v).invocationArguments()
 		}
 
 		// Batch script + destination
@@ -64,14 +60,7 @@ public enum SFTPCommandBuilder {
 			}
 		}
 
-		var env: [String: String] = [:]
-		if let askpass = credentials.askpassPath {
-			env["SSH_ASKPASS"] = askpass.path
-			env["SSH_ASKPASS_REQUIRE"] = "force"
-			env["CATERM_HOST_ID"] = host.id.uuidString
-		}
-
-		return SFTPInvocation(argv: argv, environment: env, scriptStdin: script)
+		return SFTPInvocation(argv: argv, environment: [:], scriptStdin: script)
 	}
 
 	private static func makeScript(_ op: SFTPOperation) throws -> String {

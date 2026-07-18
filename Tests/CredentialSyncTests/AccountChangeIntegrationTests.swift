@@ -1,7 +1,9 @@
 import CredentialSyncStore
 import CredentialSyncTypes
 import Foundation
+import KeychainStore
 import ManagedKeyStore
+import SessionStore
 import XCTest
 @testable import CredentialSync
 
@@ -43,10 +45,10 @@ final class AccountChangeIntegrationTests: XCTestCase {
 
 		let coordinator = CredentialSyncAccountResetCoordinator(
 			prefsStore: prefsStore,
-			managedKeyStore: managedKeyStore
+			sessionStore: makeSessionStore(managedKeyStore: managedKeyStore)
 		)
 
-		await coordinator.resetForAccountChange()
+		try await coordinator.resetForAccountChange()
 
 		// Managed key wiped (file gone).
 		XCTAssertNil(try managedKeyStore.read(hostId: hostId))
@@ -65,13 +67,30 @@ final class AccountChangeIntegrationTests: XCTestCase {
 		let prefsStore = CredentialSyncPreferencesStore(defaults: defaults)
 		let coordinator = CredentialSyncAccountResetCoordinator(
 			prefsStore: prefsStore,
-			managedKeyStore: managedKeyStore
+			sessionStore: makeSessionStore(managedKeyStore: managedKeyStore)
 		)
 
-		await coordinator.resetForAccountChange()
+		try await coordinator.resetForAccountChange()
 		// Run again — must still be safe.
-		await coordinator.resetForAccountChange()
+		try await coordinator.resetForAccountChange()
 
 		XCTAssertEqual(prefsStore.prefs.state, .disabled)
+	}
+
+	private func makeSessionStore(
+		managedKeyStore: ManagedKeyStore
+	) -> SessionStore {
+		SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: tmpDir.appendingPathComponent("hosts.json"),
+			keychain: KeychainStore(
+				service: "com.caterm.test.account-reset.\(UUID())",
+				accessGroup: nil
+			),
+			managedKeyStore: managedKeyStore
+		)
 	}
 }

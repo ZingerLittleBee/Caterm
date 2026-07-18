@@ -41,7 +41,9 @@ final class TwoMacIntegrationTests: XCTestCase {
 	private func makeMac(
 		kvs: SharedFakeKVS,
 		local: CatermSettings = CatermSettings(),
-		currentToken: NSObject & NSCoding & NSCopying = TestToken("shared")
+		currentToken: NSObject & NSCoding & NSCopying = TestToken("shared"),
+		bootTimeout: Duration = .milliseconds(10),
+		initialSyncGrace: Duration = .zero
 	) -> Mac {
 		let tmp = FileManager.default.temporaryDirectory
 			.appendingPathComponent("mac-\(UUID().uuidString).plist")
@@ -52,10 +54,12 @@ final class TwoMacIntegrationTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { currentToken }
+			currentTokenProvider: { currentToken },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: bootTimeout,
+				initialSyncGrace: initialSyncGrace
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		return Mac(store: store, sync: sync, kvs: kvs, tokenStore: tokenStore)
 	}
@@ -72,8 +76,8 @@ final class TwoMacIntegrationTests: XCTestCase {
 		let kvs = SharedFakeKVS()
 		let A = makeMac(kvs: kvs, local: realLocal(font: 13, revision: "a-1"))
 		let B = makeMac(kvs: kvs, local: CatermSettings())
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
-		await B.sync.startSync(); await B.sync.testWaitForBootDecision()
+		await A.sync.startSync()
+		await B.sync.startSync()
 
 		A.store.update { $0.global.fontSize = 22 }
 		A.store.flushNow()
@@ -86,8 +90,8 @@ final class TwoMacIntegrationTests: XCTestCase {
 		let kvs = SharedFakeKVS()
 		let A = makeMac(kvs: kvs, local: realLocal(font: 13, revision: "rev-A-old"))
 		let B = makeMac(kvs: kvs, local: realLocal(font: 13, revision: "rev-Z-newer"))
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
-		await B.sync.startSync(); await B.sync.testWaitForBootDecision()
+		await A.sync.startSync()
+		await B.sync.startSync()
 		try await Task.sleep(for: .milliseconds(80))
 		let blob = try SettingsBlobCodec.decode(kvs.data(forKey: SettingsSyncStore.kvsKey)!)
 		XCTAssertEqual(blob.revision, "rev-Z-newer")
@@ -96,7 +100,7 @@ final class TwoMacIntegrationTests: XCTestCase {
 	func test_scenario3_antiSeedPollution() async throws {
 		let kvs = SharedFakeKVS()
 		let A = makeMac(kvs: kvs, local: realLocal(font: 21, revision: "a-real"))
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
+		await A.sync.startSync()
 		var bSeed = CatermSettings.empty
 		bSeed.global = CatermSettings.defaultsSeed
 		bSeed.seededByDefault = true
@@ -104,7 +108,7 @@ final class TwoMacIntegrationTests: XCTestCase {
 		bSeed.canonicalSeedHash = KnownSeedTable.canonicalHash(of: CatermSettings.defaultsSeed)
 		bSeed.revision = "b-seed-newer-than-a"
 		let B = makeMac(kvs: kvs, local: bSeed)
-		await B.sync.startSync(); await B.sync.testWaitForBootDecision()
+		await B.sync.startSync()
 		XCTAssertEqual(B.store.settings.global.fontSize, 21,
 			"B must apply A's real cloud data, not push its newer-revision default seed")
 	}
@@ -112,7 +116,7 @@ final class TwoMacIntegrationTests: XCTestCase {
 	func test_scenario4_clockTamperedSeedStillYields() async throws {
 		let kvs = SharedFakeKVS()
 		let A = makeMac(kvs: kvs, local: realLocal(font: 21, revision: "a-real"))
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
+		await A.sync.startSync()
 		var bSeed = CatermSettings.empty
 		bSeed.global = CatermSettings.defaultsSeed
 		bSeed.seededByDefault = true
@@ -120,7 +124,7 @@ final class TwoMacIntegrationTests: XCTestCase {
 		bSeed.canonicalSeedHash = KnownSeedTable.canonicalHash(of: CatermSettings.defaultsSeed)
 		bSeed.revision = "z-future-clock-revision"
 		let B = makeMac(kvs: kvs, local: bSeed)
-		await B.sync.startSync(); await B.sync.testWaitForBootDecision()
+		await B.sync.startSync()
 		XCTAssertEqual(B.store.settings.global.fontSize, 21,
 			"isDefaultSeedUnedited doesn't depend on time — still yields to cloud")
 	}
@@ -148,13 +152,14 @@ final class TwoMacIntegrationTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: macXTokenStore,
-			currentTokenProvider: { TestToken("user-Y") }
+			currentTokenProvider: { TestToken("user-Y") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .zero
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		XCTAssertEqual(store.settings.global.fontSize, 42, "force-apply Y, ignored revision LWW")
 		XCTAssertEqual(store.settings.revision, "y-old")
@@ -180,16 +185,17 @@ final class TwoMacIntegrationTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-Y") }
+			currentTokenProvider: { TestToken("user-Y") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .zero
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey))
-		XCTAssertTrue(sync.testPushSuspended)
+		XCTAssertTrue(sync.isPushSuspended)
 		if case .token(let t) = tokenStore.loadPersisted() {
 			XCTAssertTrue(t.isEqual(TestToken("user-X")), "still X pre-edit")
 		}
@@ -198,26 +204,28 @@ final class TwoMacIntegrationTests: XCTestCase {
 		store.flushNow()
 		try await Task.sleep(for: .milliseconds(50))
 		XCTAssertNotNil(kvs.data(forKey: SettingsSyncStore.kvsKey))
-		XCTAssertFalse(sync.testPushSuspended)
+		XCTAssertFalse(sync.isPushSuspended)
 	}
 
 	func test_scenario7_catermICloudAccountChanged_doesNotTriggerSwitch() async throws {
 		let kvs = SharedFakeKVS()
 		let A = makeMac(kvs: kvs, local: realLocal(font: 13, revision: "a-1"),
 						currentToken: TestToken("user-A"))
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
-		XCTAssertFalse(A.sync.testPushSuspended)
+		await A.sync.startSync()
+		XCTAssertFalse(A.sync.isPushSuspended)
 		NotificationCenter.default.post(name: .catermICloudAccountChanged, object: nil)
 		try await Task.sleep(for: .milliseconds(50))
-		XCTAssertFalse(A.sync.testPushSuspended,
+		XCTAssertFalse(A.sync.isPushSuspended,
 			".catermICloudAccountChanged with same identity must NOT trigger any account-switch flow")
 	}
 
 	func test_scenario8_initialSyncWriteBarrier() async throws {
 		let kvs = SharedFakeKVS()
-		let A = makeMac(kvs: kvs, local: realLocal(font: 13, revision: "a-1"))
-		A.sync.testInitialSyncTimeout = .milliseconds(80)
-		A.sync.testInitialSyncGrace = .milliseconds(0)
+		let A = makeMac(
+			kvs: kvs,
+			local: realLocal(font: 13, revision: "a-1"),
+			bootTimeout: .milliseconds(80)
+		)
 		let pushTask = Task { await A.sync.startSync() }
 		try await Task.sleep(for: .milliseconds(10))
 		A.store.update { $0.global.fontSize = 99 }
@@ -225,7 +233,6 @@ final class TwoMacIntegrationTests: XCTestCase {
 		XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
 			"observer-plane push must be suspended during boot wait")
 		await pushTask.value
-		await A.sync.testWaitForBootDecision()
 		XCTAssertNotNil(kvs.data(forKey: SettingsSyncStore.kvsKey))
 	}
 
@@ -233,7 +240,7 @@ final class TwoMacIntegrationTests: XCTestCase {
 		let kvs = SharedFakeKVS()
 		let A = makeMac(kvs: kvs, local: realLocal(font: 17, revision: "a-1"),
 						currentToken: TestToken("first-time"))
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
+		await A.sync.startSync()
 		XCTAssertNotNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
 			"firstObservation routes via BootstrapDecider; cloud nil + local real → pushLocal")
 		if case .token(let t) = A.tokenStore.loadPersisted() {
@@ -259,13 +266,14 @@ final class TwoMacIntegrationTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("any") }
+			currentTokenProvider: { TestToken("any") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .zero
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 		XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
 			"unknownPrevious + Y empty → suspendUntilFirstEdit; do NOT push")
 		XCTAssertEqual(tokenStore.loadPersisted(), .archiveFailed,
@@ -281,7 +289,7 @@ final class TwoMacIntegrationTests: XCTestCase {
 		future.firstUserEditedAt = Date(timeIntervalSince1970: 1)
 		kvs.set(try SettingsBlobCodec.encode(future), forKey: SettingsSyncStore.kvsKey)
 		let A = makeMac(kvs: kvs, local: realLocal(font: 17, revision: "a-r"))
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
+		await A.sync.startSync()
 		XCTAssertEqual(A.store.settings.global.fontSize, 17,
 			"v2 client rejects v3 blob; local untouched")
 	}
@@ -292,8 +300,8 @@ final class TwoMacIntegrationTests: XCTestCase {
 		aLocal.migrationsCompleted = ["settings-gui-v1"]
 		let A = makeMac(kvs: kvs, local: aLocal)
 		let B = makeMac(kvs: kvs, local: CatermSettings())
-		await A.sync.startSync(); await A.sync.testWaitForBootDecision()
-		await B.sync.startSync(); await B.sync.testWaitForBootDecision()
+		await A.sync.startSync()
+		await B.sync.startSync()
 		try await Task.sleep(for: .milliseconds(80))
 		XCTAssertFalse(B.store.settings.migrationsCompleted.contains("settings-gui-v1"),
 			"migrationsCompleted is local-only and must NOT propagate via sync")

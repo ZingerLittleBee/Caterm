@@ -106,7 +106,7 @@ final class HostSyncStoreIsSyncingTests: XCTestCase {
 
     // MARK: - Generation gate (chained cancel-and-drain)
 
-    func testGenerationGateKeepsIsSyncingTrueAcrossChainedCancel() async throws {
+    func testSchedulerKeepsIsSyncingTrueAcrossChainedCancel() async throws {
         // First sync parks in listHosts().
         fakeClient.listHostsDelay = 0.5
         let h1 = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
@@ -129,6 +129,6 @@ final class HostSyncStoreIsSyncingTests: XCTestCase {
         // Let the second sync finish.
         try await Task.sleep(nanoseconds: 600_000_000)  // 0.6 s
         XCTAssertFalse(sut.isSyncing,
-            "Final task's defer clears isSyncing once syncGeneration matches")
+            "The scheduler clears isSyncing only after the latest task exits")
     }
 }

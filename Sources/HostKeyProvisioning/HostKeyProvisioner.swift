@@ -1,5 +1,4 @@
 import Foundation
-import ManagedKeyStore
 import SessionStore
 import SSHCommandBuilder
 
@@ -28,20 +27,23 @@ public struct KeyMigrationSummary: Equatable, Sendable {
 	/// `needsCredentialSetup` guides the user on next connect.
 	public var skippedUnreadable = 0
 	public var alreadyManaged = 0
+	public var skippedChanged = 0
 
 	public init() {}
 }
 
 /// Imports private-key bytes into `ManagedKeyStore` and keeps host
 /// credentials pointing inside managed storage — the only key reference
-/// shape hosts may hold (ADR 0003). Sits above SessionStore and
-/// ManagedKeyStore because SessionStore deliberately has no
-/// ManagedKeyStore dependency (Plan C: callers write key bytes first).
+/// shape hosts may hold (ADR 0003). Sits above SessionStore because it owns
+/// user-supplied file and pasted-text parsing before the store commits the
+/// resulting credential transaction.
 @MainActor
 public enum HostKeyProvisioner {
 
 	/// Resolve pending material to raw key bytes.
-	public static func keyBytes(from material: PendingKeyMaterial) throws -> Data {
+	public nonisolated static func keyBytes(
+		from material: PendingKeyMaterial
+	) throws -> Data {
 		switch material {
 		case let .file(path):
 			let expanded = (path as NSString).expandingTildeInPath
@@ -59,7 +61,7 @@ public enum HostKeyProvisioner {
 	}
 
 	/// Import `material` for `hostId` and persist the credential through
-	/// SessionStore's Plan C entry point: managed-key write → credential
+	/// SessionStore's credential entry point: managed-key write → credential
 	/// update (+ passphrase Keychain write) → dirty=true → notification,
 	/// so credential sync picks the new key up on its next cycle.
 	public static func provision(
@@ -67,52 +69,65 @@ public enum HostKeyProvisioner {
 		hasPassphrase: Bool,
 		passphrase: String?,
 		hostId: UUID,
-		sessionStore: SessionStore,
-		managedKeys: ManagedKeyStore
+		sessionStore: SessionStore
 	) async throws {
-		let bytes = try keyBytes(from: material)
-		let target = try await managedKeys.write(hostId: hostId, bytes: bytes)
-		try sessionStore.setHostCredentialMaterial(
+		let bytes = try await Task.detached(priority: .userInitiated) {
+			try keyBytes(from: material)
+		}.value
+		try await sessionStore.setHostCredentialMaterial(
 			secrets: HostSecrets(
 				passphrase: passphrase.flatMap { $0.isEmpty ? nil : Data($0.utf8) },
 				privateKeyBytes: bytes
 			),
-			credentialSource: .keyFile(keyPath: target.path, hasPassphrase: hasPassphrase),
+			credentialSource: .keyFile(keyPath: "", hasPassphrase: hasPassphrase),
 			for: hostId
 		)
 	}
 
 	/// One-time launch migration (ADR 0003): copy every `.keyFile` host's
-	/// external key file into managed storage and rewrite `keyPath` via
-	/// `setCredentialOnly` — which touches neither `updatedAt` nor
-	/// `credentialMaterialDirty`, so the relocation triggers no sync push.
+	/// external key file into managed storage through SessionStore's serialized
+	/// material transaction. The relocation touches neither `updatedAt` nor
+	/// `credentialMaterialDirty`, so it triggers no sync push.
 	/// Unreadable sources are left as-is (no data is ever deleted).
 	@discardableResult
 	public static func migrateExternalKeyPaths(
-		sessionStore: SessionStore,
-		managedKeys: ManagedKeyStore
+		sessionStore: SessionStore
 	) async -> KeyMigrationSummary {
 		var summary = KeyMigrationSummary()
 		for host in sessionStore.hosts {
+			guard !Task.isCancelled else { break }
 			guard case let .keyFile(path, hasPassphrase) = host.credential else { continue }
-			let managedPath = managedKeys.path(hostId: host.id).path
+			let managedPath = sessionStore.managedKeyPath(for: host.id)
 			if path == managedPath {
 				summary.alreadyManaged += 1
 				continue
 			}
 			let expanded = (path as NSString).expandingTildeInPath
-			guard let bytes = FileManager.default.contents(atPath: expanded),
+			let bytes = await Task.detached(priority: .utility) {
+				FileManager.default.contents(atPath: expanded)
+			}.value
+			guard !Task.isCancelled else { break }
+			guard let bytes,
 			      !bytes.isEmpty else {
 				summary.skippedUnreadable += 1
 				continue
 			}
 			do {
-				let target = try await managedKeys.write(hostId: host.id, bytes: bytes)
-				try sessionStore.setCredentialOnly(
-					.keyFile(keyPath: target.path, hasPassphrase: hasPassphrase),
+				let migrated = try await sessionStore.migrateExternalPrivateKey(
+					bytes,
+					from: .keyFile(
+						keyPath: path,
+						hasPassphrase: hasPassphrase
+					),
 					for: host.id
 				)
-				summary.migrated += 1
+				if migrated {
+					summary.migrated += 1
+				} else {
+					summary.skippedChanged += 1
+				}
+			} catch is CancellationError {
+				break
 			} catch {
 				summary.skippedUnreadable += 1
 			}

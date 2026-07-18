@@ -1,6 +1,6 @@
 import CredentialSyncStore
 import Foundation
-import ManagedKeyStore
+import SessionStore
 
 /// Wipes per-account credential-sync state when the iCloud account identity
 /// changes. Called by CatermApp after AccountIdentityTracker reports
@@ -11,18 +11,19 @@ import ManagedKeyStore
 @MainActor
 public final class CredentialSyncAccountResetCoordinator {
 	private let prefsStore: CredentialSyncPreferencesStore
-	private let managedKeyStore: ManagedKeyStore
+	private let sessionStore: SessionStore
 
 	public init(
 		prefsStore: CredentialSyncPreferencesStore,
-		managedKeyStore: ManagedKeyStore
+		sessionStore: SessionStore
 	) {
 		self.prefsStore = prefsStore
-		self.managedKeyStore = managedKeyStore
+		self.sessionStore = sessionStore
 	}
 
-	public func resetForAccountChange() async {
-		await managedKeyStore.wipeAll()
+	public func resetForAccountChange() async throws {
+		// Disable sync before suspending so in-flight remote commits roll back
+		// while the material barrier waits for their per-host leases.
 		prefsStore.mutate {
 			$0.state = .disabled
 			$0.lastAppliedRevision = [:]
@@ -32,5 +33,6 @@ public final class CredentialSyncAccountResetCoordinator {
 			$0.cloudCredentialsCleared = false
 			$0.hostsWithCloudPayload = []
 		}
+		try await sessionStore.resetCredentialMaterialForAccountChange()
 	}
 }

@@ -1,4 +1,5 @@
 import Foundation
+import MergeDecision
 import SnippetSyncClient
 
 public enum SnippetSyncReconciler {
@@ -12,7 +13,8 @@ public enum SnippetSyncReconciler {
 		locallyDirty: Set<UUID>
 	) -> [SnippetSyncOperation] {
 		var ops: [SnippetSyncOperation] = []
-		let localById = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+		let localIndex = SnippetMergePolicy.makeIdentityIndex(local)
+		var touchedLocalIDs: Set<UUID> = []
 
 		// Tombstones first — terminal.
 		let tombstoneSet = Set(deletedIDs)
@@ -22,27 +24,27 @@ public enum SnippetSyncReconciler {
 
 		for remote in changedSnippets {
 			if tombstoneSet.contains(remote.id) { continue }
-			guard let l = localById[remote.id] else {
+			guard let l = SnippetMergePolicy.match(remote, in: localIndex) else {
 				ops.append(.applyRemote(remote))
 				continue
 			}
-			switch compare(local: l, remote: remote) {
-			case .remoteWins: ops.append(.applyRemote(remote))
-			case .localWins:
+			touchedLocalIDs.insert(l.id)
+			switch SnippetMergePolicy.decide(local: l, incoming: remote) {
+			case .incoming: ops.append(.applyRemote(remote))
+			case .local:
 				if locallyDirty.contains(l.id) {
 					ops.append(.pushLocal(l))
 				}
 				// not dirty — no push needed.
-			case .parity: break
+			case .equivalent: break
 			}
 		}
 
 		// Locally dirty snippets that the server has not changed in this delta.
-		let touchedRemoteIDs = Set(changedSnippets.map(\.id))
 		for id in locallyDirty {
 			if tombstoneSet.contains(id) { continue }
-			if touchedRemoteIDs.contains(id) { continue }
-			if let l = localById[id] {
+			if touchedLocalIDs.contains(id) { continue }
+			if let l = localIndex.match(localID: id, serverID: nil) {
 				ops.append(.pushLocal(l))
 			}
 		}
@@ -59,24 +61,25 @@ public enum SnippetSyncReconciler {
 		locallyDirty: Set<UUID>
 	) -> [SnippetSyncOperation] {
 		var ops: [SnippetSyncOperation] = []
-		let remoteById = Dictionary(remote.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-		let localById = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+		let localIndex = SnippetMergePolicy.makeIdentityIndex(local)
+		var matchedLocalIDs: Set<UUID> = []
 
 		for r in remote {
-			guard let l = localById[r.id] else {
+			guard let l = SnippetMergePolicy.match(r, in: localIndex) else {
 				ops.append(.applyRemote(r))
 				continue
 			}
-			switch compare(local: l, remote: r) {
-			case .remoteWins: ops.append(.applyRemote(r))
-			case .localWins:
+			matchedLocalIDs.insert(l.id)
+			switch SnippetMergePolicy.decide(local: l, incoming: r) {
+			case .incoming: ops.append(.applyRemote(r))
+			case .local:
 				if locallyDirty.contains(l.id) {
 					ops.append(.pushLocal(l))
 				}
-			case .parity: break
+			case .equivalent: break
 			}
 		}
-		for l in local where remoteById[l.id] == nil {
+		for l in local where !matchedLocalIDs.contains(l.id) {
 			if locallyDirty.contains(l.id) {
 				ops.append(.pushLocal(l))
 			} else {
@@ -84,27 +87,5 @@ public enum SnippetSyncReconciler {
 			}
 		}
 		return ops
-	}
-
-	// MARK: - Internals
-
-	private enum CompareOutcome { case remoteWins, localWins, parity }
-
-	private static func compare(local: Snippet, remote: Snippet) -> CompareOutcome {
-		if remote.revision > local.revision { return .remoteWins }
-		if remote.revision < local.revision { return .localWins }
-		// Equal revision — compare metadataUpdatedAt (server-authoritative).
-		switch (remote.metadataUpdatedAt, local.metadataUpdatedAt) {
-		case let (.some(r), .some(l)):
-			if r > l { return .remoteWins }
-			if r < l { return .localWins }
-		case (.some, nil): return .remoteWins
-		case (nil, .some): return .localWins
-		case (nil, nil): break
-		}
-		// Final tie-break: updatedAt, then cloud wins.
-		if remote.updatedAt > local.updatedAt { return .remoteWins }
-		if remote.updatedAt < local.updatedAt { return .localWins }
-		return .parity
 	}
 }

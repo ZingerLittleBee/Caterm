@@ -5,8 +5,6 @@ import SSHCommandBuilder
 final class SFTPCommandBuilderTests: XCTestCase {
 	func makeCreds(extras: [String: String] = [:]) -> SFTPCredentials {
 		SFTPCredentials(
-			askpassPath: URL(fileURLWithPath: "/tmp/askpass"),
-			identityFiles: [URL(fileURLWithPath: "/tmp/id_ed25519")],
 			knownHostsCaterm: URL(fileURLWithPath: "/tmp/caterm_kh"),
 			knownHostsUser: URL(fileURLWithPath: "/tmp/user_kh"),
 			strictHostKeyChecking: .acceptNew,
@@ -44,6 +42,39 @@ final class SFTPCommandBuilderTests: XCTestCase {
 		)
 		XCTAssertTrue(inv.argv.joined(separator: " ")
 			.contains("-o UserKnownHostsFile=/tmp/caterm_kh /tmp/user_kh"))
+	}
+
+	func testKnownHostsWithSpacesRemainSeparateConfigTokens() throws {
+		let credentials = SFTPCredentials(
+			knownHostsCaterm: URL(fileURLWithPath:
+				"/Users/alice/Library/Application Support/Caterm/known_hosts"),
+			knownHostsUser: URL(fileURLWithPath:
+				"/Users/alice/SSH\\ Files/known_hosts"),
+			strictHostKeyChecking: .acceptNew
+		)
+		let invocation = try SFTPCommandBuilder.invocation(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/tmp/cm/x.sock"),
+			credentials: credentials,
+			operation: .list(remoteDir: "/")
+		)
+
+		XCTAssertTrue(invocation.argv.contains(
+			"UserKnownHostsFile=\"/Users/alice/Library/Application Support/Caterm/known_hosts\" " +
+				"\"/Users/alice/SSH\\\\ Files/known_hosts\""
+		))
+	}
+
+	func testReuseOnlyInvocationCarriesNoFreshAuthenticationMaterial() throws {
+		let invocation = try SFTPCommandBuilder.invocation(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/tmp/cm/x.sock"),
+			credentials: makeCreds(),
+			operation: .list(remoteDir: "/")
+		)
+
+		XCTAssertTrue(invocation.environment.isEmpty)
+		XCTAssertFalse(invocation.argv.contains("-i"))
 	}
 
 	func testNoFallbackOptionsFirst() throws {

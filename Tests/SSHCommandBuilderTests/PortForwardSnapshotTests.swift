@@ -141,4 +141,72 @@ extension PortForwardSnapshotTests {
 		XCTAssertFalse(out.command.contains("LocalForward"))
 		XCTAssertFalse(out.command.contains("ExitOnForwardFailure"))
 	}
+
+	func test_directAndChainRenderRemoteAndDynamicFromSameDirectives() throws {
+		let target = makeHost(forwards: [
+			PortForward(
+				kind: .remote,
+				bindAddress: "127.0.0.1",
+				bindPort: 9090,
+				remoteHost: "service.internal",
+				remotePort: 90
+			),
+			PortForward(
+				kind: .dynamic,
+				bindAddress: "localhost",
+				bindPort: 1080
+			),
+		])
+		let direct = SSHCommandBuilder.build(
+			host: target,
+			askpassPath: "/tmp/a",
+			knownHostsCaterm: "/tmp/k1",
+			knownHostsUser: "/tmp/k2"
+		)
+		let sink = InMemorySSHConfigSink()
+		_ = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [makeHost()],
+			configSink: sink,
+			askpassPath: "/tmp/a",
+			knownHostsCaterm: "/tmp/k1",
+			knownHostsUser: "/tmp/k2"
+		)
+		let config = sink.writes.last?.1 ?? ""
+
+		XCTAssertTrue(direct.command.contains(
+			"RemoteForward=127.0.0.1:9090 service.internal:90"))
+		XCTAssertTrue(direct.command.contains("DynamicForward=localhost:1080"))
+		XCTAssertTrue(config.contains(
+			"RemoteForward 127.0.0.1:9090 service.internal:90"))
+		XCTAssertTrue(config.contains("DynamicForward localhost:1080"))
+	}
+
+	func test_controlCharacterForwardFailsClosedInBothRenderers() throws {
+		let target = makeHost(forwards: [
+			PortForward(
+				kind: .dynamic,
+				bindAddress: "127.0.0.1\nProxyCommand evil",
+				bindPort: 1080
+			),
+		])
+		let direct = SSHCommandBuilder.build(
+			host: target,
+			askpassPath: "/tmp/a",
+			knownHostsCaterm: "/tmp/k1",
+			knownHostsUser: "/tmp/k2"
+		)
+
+		XCTAssertEqual(direct.command, "/usr/bin/false")
+		XCTAssertThrowsError(try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [makeHost()],
+			configSink: InMemorySSHConfigSink(),
+			askpassPath: "/tmp/a",
+			knownHostsCaterm: "/tmp/k1",
+			knownHostsUser: "/tmp/k2"
+		)) { error in
+			XCTAssertEqual(error as? SSHConfigQuoteError, .controlCharacter)
+		}
+	}
 }

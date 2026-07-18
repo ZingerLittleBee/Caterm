@@ -30,7 +30,12 @@ let package = Package(
             path: "Sources/TerminalEngine"
         ),
         .target(
+            name: "SSHCredentialContract",
+            path: "Sources/SSHCredentialContract"
+        ),
+        .target(
             name: "SSHCommandBuilder",
+            dependencies: ["SSHCredentialContract"],
             path: "Sources/SSHCommandBuilder",
             exclude: ["Resources/README.md"],
             resources: [
@@ -39,6 +44,7 @@ let package = Package(
         ),
         .target(
             name: "KeychainStore",
+            dependencies: ["SSHCredentialContract"],
             path: "Sources/KeychainStore"
         ),
         .target(
@@ -47,8 +53,16 @@ let package = Package(
             path: "Sources/ConfigStore"
         ),
         .target(
+            name: "MergeDecision",
+            path: "Sources/MergeDecision"
+        ),
+        .target(
+            name: "SyncScheduler",
+            path: "Sources/SyncScheduler"
+        ),
+        .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "KeychainStore", "ServerSyncClient"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient"],
             path: "Sources/SessionStore"
         ),
         .target(
@@ -58,7 +72,7 @@ let package = Package(
         ),
         .target(
             name: "HostSyncStore",
-            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSyncStore", "CredentialSyncTypes", "KeychainStore", "ManagedKeyStore"],
+            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes", "MergeDecision", "SyncScheduler"],
             path: "Sources/HostSyncStore"
         ),
         .target(
@@ -85,7 +99,7 @@ let package = Package(
         ),
         .target(
             name: "SettingsSyncStore",
-            dependencies: ["SettingsStore"],
+            dependencies: ["SettingsStore", "SyncScheduler"],
             path: "Sources/SettingsSyncStore"
         ),
         .target(
@@ -94,7 +108,7 @@ let package = Package(
         ),
         .target(
             name: "SnippetStore",
-            dependencies: ["SnippetSyncClient"],
+            dependencies: ["SnippetSyncClient", "MergeDecision", "SyncScheduler"],
             path: "Sources/SnippetStore"
         ),
         .target(
@@ -122,17 +136,17 @@ let package = Package(
         ),
         .target(
             name: "BackupService",
-            dependencies: ["BackupArchive", "SessionStore", "ManagedKeyStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "KeychainStore"],
+            dependencies: ["BackupArchive", "SessionStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "MergeDecision"],
             path: "Sources/BackupService"
         ),
         .target(
             name: "HostKeyProvisioning",
-            dependencies: ["SessionStore", "ManagedKeyStore", "SSHCommandBuilder"],
+            dependencies: ["SessionStore", "SSHCommandBuilder"],
             path: "Sources/HostKeyProvisioning"
         ),
         .target(
             name: "CredentialSync",
-            dependencies: ["KeychainStore", "SessionStore", "HostSyncStore", "ManagedKeyStore", "CloudKitSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
+            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Sources/CredentialSync"
         ),
         .target(
@@ -141,7 +155,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore"],
             path: "Sources/CatermMobile"
         ),
         .target(
@@ -171,6 +185,7 @@ let package = Package(
             dependencies: [
                 "TerminalEngine",
                 "SSHCommandBuilder",
+                "SSHCredentialContract",
                 "SessionStore",
                 "KeychainStore",
                 "ConfigStore",
@@ -212,11 +227,17 @@ let package = Package(
             dependencies: [
                 "KeychainStore",
                 "CatermAskpassCore",
+                "SSHCredentialContract",
             ],
             path: "Sources/CatermAskpass"
         ),
 
         // --- Tests ---
+        .testTarget(
+            name: "SSHCredentialContractTests",
+            dependencies: ["SSHCredentialContract"],
+            path: "Tests/SSHCredentialContractTests"
+        ),
         .testTarget(
             name: "SSHCommandBuilderTests",
             dependencies: ["SSHCommandBuilder"],
@@ -229,13 +250,23 @@ let package = Package(
         ),
         .testTarget(
             name: "SessionStoreTests",
-            dependencies: ["SessionStore", "KeychainStore", "SSHCommandBuilder"],
+            dependencies: ["SessionStore", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder"],
             path: "Tests/SessionStoreTests"
         ),
         .testTarget(
             name: "ConfigStoreTests",
             dependencies: ["ConfigStore", "SettingsStore"],
             path: "Tests/ConfigStoreTests"
+        ),
+        .testTarget(
+            name: "MergeDecisionTests",
+            dependencies: ["MergeDecision"],
+            path: "Tests/MergeDecisionTests"
+        ),
+        .testTarget(
+            name: "SyncSchedulerTests",
+            dependencies: ["SyncScheduler"],
+            path: "Tests/SyncSchedulerTests"
         ),
         .testTarget(
             name: "ServerSyncClientTests",
@@ -324,7 +355,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CredentialSyncTests",
-            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "HostSyncStore", "CloudKitSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
+            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Tests/CredentialSyncTests"
         ),
         .testTarget(

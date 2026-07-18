@@ -37,9 +37,12 @@ final class CredentialPushExecutorTests: XCTestCase {
         let keychain = KeychainStore(
             service: "test-\(UUID().uuidString)", accessGroup: nil
         )
+		managedKeyRoot = tmp.appendingPathComponent("managed-keys", isDirectory: true)
+		managedKeyStore = ManagedKeyStore(rootURL: managedKeyRoot)
         sessionStore = SessionStore(
             askpassPath: "/x", knownHostsCaterm: "/A", knownHostsUser: "/B",
-            accessGroup: nil, hostsURL: hostsURL, keychain: keychain
+			accessGroup: nil, hostsURL: hostsURL, keychain: keychain,
+			managedKeyStore: managedKeyStore
         )
         fakeClient = FakeIncrementalHostSyncClient()
         // Empty snapshot — reconciler emits no metadata ops, so the only
@@ -57,8 +60,6 @@ final class CredentialPushExecutorTests: XCTestCase {
             service: "test-\(UUID().uuidString)",
             synchronizable: false
         )
-        managedKeyRoot = tmp.appendingPathComponent("managed-keys", isDirectory: true)
-        managedKeyStore = ManagedKeyStore(rootURL: managedKeyRoot)
     }
 
     override func tearDown() async throws {
@@ -216,7 +217,6 @@ final class CredentialPushExecutorTests: XCTestCase {
             preferences: syncPrefs,
             credentialSync: prefsStore,
             masterKeyStore: masterKeyStore,
-            managedKeyStore: managedKeyStore,
             debounceInterval: 0.05,
             userDefaults: isolatedDefaults
         )
