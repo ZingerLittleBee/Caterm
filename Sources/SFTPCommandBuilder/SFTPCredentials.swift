@@ -1,5 +1,4 @@
 import Foundation
-import SSHCommandBuilder
 
 public struct SFTPCredentials {
 	public let askpassPath: URL?
@@ -9,10 +8,26 @@ public struct SFTPCredentials {
 	public let strictHostKeyChecking: StrictHostKeyChecking
 	public let extraSSHOptions: [String: String]
 
-	public init(askpassPath: URL?, identityFiles: [URL],
-	            knownHostsCaterm: URL, knownHostsUser: URL,
+	public init(knownHostsCaterm: URL, knownHostsUser: URL,
 	            strictHostKeyChecking: StrictHostKeyChecking,
 	            extraSSHOptions: [String: String] = [:]) {
+		askpassPath = nil
+		identityFiles = []
+		self.knownHostsCaterm = knownHostsCaterm
+		self.knownHostsUser = knownHostsUser
+		self.strictHostKeyChecking = strictHostKeyChecking
+		self.extraSSHOptions = extraSSHOptions
+	}
+
+	@available(*, deprecated, message: "SFTP ignores fresh-auth material and only reuses ControlMaster")
+	public init(
+		askpassPath: URL?,
+		identityFiles: [URL],
+		knownHostsCaterm: URL,
+		knownHostsUser: URL,
+		strictHostKeyChecking: StrictHostKeyChecking,
+		extraSSHOptions: [String: String] = [:]
+	) {
 		self.askpassPath = askpassPath
 		self.identityFiles = identityFiles
 		self.knownHostsCaterm = knownHostsCaterm

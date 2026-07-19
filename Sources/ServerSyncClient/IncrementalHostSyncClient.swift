@@ -38,7 +38,17 @@ public struct HostChangeBatch: Sendable {
 	}
 }
 
-public protocol IncrementalHostSyncClient: ServerSyncClient {
+/// Narrow transport seam for credential-only record updates.
+public protocol CredentialBlobPushing: Sendable {
+	/// Implementations must seed missing metadata timestamps before applying
+	/// the credential blob, then persist both changes in one remote mutation.
+	func pushHostCredentialBlob(
+		serverId: String,
+		blob: CredentialBlob
+	) async throws -> Int64
+}
+
+public protocol IncrementalHostSyncClient: ServerSyncClient, CredentialBlobPushing {
 	func preferredHostSyncMode() async -> HostSyncMode
 	func fetchHostChanges() async throws -> HostChangeBatch
 	func fetchHostSnapshotAndCheckpoint() async throws -> HostChangeBatch
@@ -46,19 +56,6 @@ public protocol IncrementalHostSyncClient: ServerSyncClient {
 	func resetHostSyncState() async
 	func ensureHostSubscription() async throws
 	func deleteHostSubscription() async throws
-
-	/// Plan C — partial-update credential push.
-	///
-	/// Implementations must honor the §Seed-before-credential-save invariant:
-	/// if the existing record has no `metadataUpdatedAt`, seed it from
-	/// modificationDate/creationDate (falling back to `.distantPast`)
-	/// BEFORE applying the credential blob, in the same client-side
-	/// mutation, then save the record exactly once. Returns
-	/// `blob.revision` on success.
-	func pushHostCredentialBlob(
-		serverId: String,
-		blob: CredentialBlob
-	) async throws -> Int64
 }
 
 /// Default-throwing implementation provided so existing fakes that don't

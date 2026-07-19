@@ -23,8 +23,6 @@ enum TestHosts {
 
 	static var credentials: SFTPCredentials {
 		SFTPCredentials(
-			askpassPath: nil,
-			identityFiles: [],
 			knownHostsCaterm: URL(fileURLWithPath: "/tmp/caterm_kh"),
 			knownHostsUser: URL(fileURLWithPath: NSString("~/.ssh/known_hosts").expandingTildeInPath),
 			strictHostKeyChecking: .acceptNew

@@ -37,15 +37,16 @@ struct HostFormView: View {
 	@State private var existingKeyPath: String? = nil
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
-	@State private var jumpHostId: UUID? = nil
+	@State private var jumpHostSelection = JumpHostSelection.none
 	@State private var forwards: [PortForward] = []
 	@State private var icon: String? = nil
 
 	var body: some View {
-		VStack(spacing: 0) {
+		let validation = formValidation
+		return VStack(spacing: 0) {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 16) {
-					connectionCard
+					connectionCard(preview: validation.chainPreview)
 					authenticationCard
 					portForwardingCard
 					// Theme override only makes sense for an existing host —
@@ -72,7 +73,7 @@ struct HostFormView: View {
 				Spacer()
 				Button("Save") { submit() }
 					.keyboardShortcut(.defaultAction)
-					.disabled(!isValid)
+					.disabled(!validation.isValid)
 			}
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
@@ -81,8 +82,12 @@ struct HostFormView: View {
 		.onAppear { populate() }
 	}
 
-	private var connectionCard: some View {
-		FormCard("Connection") {
+	private func connectionCard(preview: ChainPreviewState) -> some View {
+		let eligibleHosts = eligibleJumpHosts
+		let displayedSelection = jumpHostSelection.normalized(
+			among: sessionStore.hosts
+		)
+		return FormCard("Connection") {
 			HStack(alignment: .top, spacing: 12) {
 				VStack(alignment: .leading, spacing: 5) {
 					FieldLabel("Label (optional)")
@@ -113,21 +118,27 @@ struct HostFormView: View {
 			}
 			VStack(alignment: .leading, spacing: 5) {
 				FieldLabel("Via host (jump host)")
-				Picker("Via host", selection: $jumpHostId) {
-					Text("(none)").tag(UUID?.none)
-					ForEach(eligibleJumpHosts, id: \.id) { host in
+				Picker("Via host", selection: jumpHostSelectionBinding) {
+					Text("(none)").tag(JumpHostSelection.none)
+					if displayedSelection.needsPlaceholder(
+						among: eligibleHosts
+					) {
+						Text(displayedSelection.placeholderLabel)
+							.tag(displayedSelection)
+					}
+					ForEach(eligibleHosts, id: \.id) { host in
 						Text("\(host.name) (\(host.username)@\(host.hostname))")
-							.tag(UUID?.some(host.id))
+							.tag(JumpHostSelection.resolved(localID: host.id))
 					}
 				}
 				.pickerStyle(.menu)
 				.labelsHidden()
 				.frame(maxWidth: 320, alignment: .leading)
 			}
-			if !chainPreviewText.isEmpty {
-				Text(chainPreviewText)
+			if let previewText = preview.text {
+				Text(previewText)
 					.font(.caption)
-					.foregroundStyle(chainHasMissingHost ? .red : .secondary)
+					.foregroundStyle(preview.isInvalid ? .red : .secondary)
 			}
 		}
 	}
@@ -175,38 +186,127 @@ struct HostFormView: View {
 		}
 	}
 
-	private var isValid: Bool {
-		guard !hostname.isEmpty,
-		      !username.isEmpty,
-		      credKind != .keyFile || pendingKey != nil || existingKeyPath != nil,
-		      Int(port).map({ (1...65535).contains($0) }) ?? false
-		else { return false }
-		// Chain must resolve — reject broken/cyclic jump references.
-		let cred = formCredentialSource
-		var draft = HostFormView.buildHost(
-			mode: mode,
-			name: resolvedName,
-			hostname: hostname,
-			port: Int(port) ?? 22,
-			username: username,
-			credential: cred
+	private struct FormValidation {
+		let chainPreview: ChainPreviewState
+		let isValid: Bool
+	}
+
+	private var formValidation: FormValidation {
+		let resolution = selectedChainResolution
+		let fieldsAreValid = !hostname.isEmpty
+			&& !username.isEmpty
+			&& (credKind != .keyFile || pendingKey != nil || existingKeyPath != nil)
+			&& (Int(port).map { (1...65535).contains($0) } ?? false)
+		let forwardsAreValid = (try? PortForward.validateCollection(forwards)) != nil
+		return FormValidation(
+			chainPreview: chainPreview(for: resolution),
+			isValid: fieldsAreValid && resolution.isComplete && forwardsAreValid
 		)
-		draft.jumpHostId = jumpHostId
-		draft.jumpHostServerId = jumpHost.flatMap(\.serverId)
-		do {
-			_ = try draft.resolvedChain(in: sessionStore.hosts)
-		} catch {
-			return false
+	}
+
+	enum UnresolvedJumpHostReference: Hashable {
+		case localID(UUID)
+		case serverID(String)
+		case localAndServer(localID: UUID, serverID: String)
+	}
+
+	enum JumpHostSelection: Hashable {
+		case none
+		case resolved(localID: UUID)
+		case unresolved(UnresolvedJumpHostReference)
+
+		struct Reference: Equatable {
+			let localID: UUID?
+			let serverID: String?
 		}
-		guard (try? PortForward.validateCollection(forwards)) != nil else { return false }
-		return true
+
+		func normalized(among hosts: [SSHHost]) -> JumpHostSelection {
+			switch self {
+			case .none, .resolved:
+				return self
+			case .unresolved(.localID(let localID)):
+				guard hosts.contains(where: { $0.id == localID }) else { return self }
+				return .resolved(localID: localID)
+			case .unresolved(.serverID(let serverID)):
+				guard let parent = hosts.first(where: { $0.serverId == serverID }) else {
+					return self
+				}
+				return .resolved(localID: parent.id)
+			case .unresolved(.localAndServer(let localID, let serverID)):
+				if hosts.contains(where: { $0.id == localID }) {
+					return .resolved(localID: localID)
+				}
+				guard let parent = hosts.first(where: { $0.serverId == serverID }) else {
+					return self
+				}
+				return .resolved(localID: parent.id)
+			}
+		}
+
+		func reference(among hosts: [SSHHost]) -> Reference {
+			switch normalized(among: hosts) {
+			case .none:
+				return Reference(localID: nil, serverID: nil)
+			case .resolved(let localID):
+				let serverID = hosts.first(where: { $0.id == localID })?.serverId
+				return Reference(localID: localID, serverID: serverID)
+			case .unresolved(.localID(let localID)):
+				return Reference(localID: localID, serverID: nil)
+			case .unresolved(.serverID(let serverID)):
+				return Reference(localID: nil, serverID: serverID)
+			case .unresolved(.localAndServer(let localID, let serverID)):
+				return Reference(localID: localID, serverID: serverID)
+			}
+		}
+
+		func needsPlaceholder(among hosts: [SSHHost]) -> Bool {
+			switch self {
+			case .none:
+				return false
+			case .unresolved:
+				return true
+			case .resolved(let localID):
+				return !hosts.contains(where: { $0.id == localID })
+			}
+		}
+
+		var placeholderLabel: String {
+			switch self {
+			case .unresolved:
+				return "(deleted host)"
+			case .resolved:
+				return "(invalid jump host)"
+			case .none:
+				return "(none)"
+			}
+		}
+	}
+
+	private var jumpHostSelectionBinding: Binding<JumpHostSelection> {
+		Binding(
+			get: { jumpHostSelection.normalized(among: sessionStore.hosts) },
+			set: { jumpHostSelection = $0 }
+		)
 	}
 
 	private enum ChainPreviewState {
 		case none
-		case ok(names: [String])
-		case missing(names: [String])     // "(deleted)" or "(cycle)" reached
-		case cycle(names: [String])
+		case valid(names: [String])
+		case invalid(names: [String])
+
+		var text: String? {
+			switch self {
+			case .none:
+				return nil
+			case .valid(let names), .invalid(let names):
+				return "Will connect via \(names.joined(separator: " → "))"
+			}
+		}
+
+		var isInvalid: Bool {
+			if case .invalid = self { return true }
+			return false
+		}
 	}
 
 	/// Hosts eligible for use as the jump host for this form's target.
@@ -222,59 +322,34 @@ struct HostFormView: View {
 		return sessionStore.hosts
 	}
 
-	private var chainPreview: ChainPreviewState {
-		guard let jumpHost else { return .none }
-		var names: [String] = []
-		var cursor: SSHHost? = jumpHost
-		var visited: Set<UUID> = []
-		while let nextHost = cursor {
-			if visited.contains(nextHost.id) {
-				names.append("(cycle)")
-				return .cycle(names: names)
-			}
-			visited.insert(nextHost.id)
-			names.append(nextHost.name)
-			if let nextId = nextHost.jumpHostId {
-				cursor = sessionStore.hosts.first(where: { $0.id == nextId })
-				if cursor == nil {
-					names.append("(deleted)")
-					return .missing(names: names)
-				}
-				continue
-			}
-			if let nextSid = nextHost.jumpHostServerId {
-				cursor = sessionStore.hosts.first(where: { $0.serverId == nextSid })
-				if cursor == nil {
-					names.append("(deleted)")
-					return .missing(names: names)
-				}
-				continue
-			}
-			cursor = nil
-		}
-		return .ok(names: names)
-	}
-
-	private var jumpHost: SSHHost? {
-		guard let jumpHostId else { return nil }
-		return sessionStore.hosts.first(where: { $0.id == jumpHostId })
-	}
-
-	/// Human-readable chain preview, e.g. "Will connect via bastion → target".
-	/// Returns an empty string when no jump host is selected.
-	private var chainPreviewText: String {
-		switch chainPreview {
-		case .none: return ""
-		case .ok(let n), .missing(let n), .cycle(let n):
-			return "Will connect via \(n.joined(separator: " → "))"
+	private func chainPreview(for resolution: ChainResolution) -> ChainPreviewState {
+		guard jumpHostSelection != .none else { return .none }
+		var names = resolution.ancestors.map(\.name)
+		switch resolution.diagnostic {
+		case .none:
+			return .valid(names: names)
+		case .missing:
+			names.append("(deleted)")
+			return .invalid(names: names)
+		case .cycle:
+			names.append("(cycle)")
+			return .invalid(names: names)
 		}
 	}
 
-	private var chainHasMissingHost: Bool {
-		switch chainPreview {
-		case .missing, .cycle: return true
-		case .none, .ok: return false
-		}
+	private var selectedChainResolution: ChainResolution {
+		let reference = jumpHostSelection.reference(among: sessionStore.hosts)
+		var draft = HostFormView.buildHost(
+			mode: mode,
+			name: resolvedName,
+			hostname: hostname,
+			port: Int(port) ?? 22,
+			username: username,
+			credential: formCredentialSource
+		)
+		draft.jumpHostId = reference.localID
+		draft.jumpHostServerId = reference.serverID
+		return ChainResolver(hosts: sessionStore.hosts).resolve(draft)
 	}
 
 	/// The credential-derived default icon for the currently selected auth
@@ -335,7 +410,10 @@ struct HostFormView: View {
 			// so the user can reconfigure with a method that works.
 			credKind = .password
 		}
-		jumpHostId = Self.jumpHostIdForForm(host: host, allHosts: sessionStore.hosts)
+		jumpHostSelection = Self.jumpHostSelectionForForm(
+			host: host,
+			allHosts: sessionStore.hosts
+		)
 		forwards = host.forwards
 		icon = host.icon
 	}
@@ -354,6 +432,7 @@ struct HostFormView: View {
 
 	private func submit() {
 		let cred = formCredentialSource
+		let jumpHostReference = jumpHostSelection.reference(among: sessionStore.hosts)
 		var host = HostFormView.buildHost(
 			mode: mode,
 			name: resolvedName,
@@ -362,8 +441,8 @@ struct HostFormView: View {
 			username: username,
 			credential: cred
 		)
-		host.jumpHostId = jumpHostId
-		host.jumpHostServerId = jumpHost.flatMap(\.serverId)
+		host.jumpHostId = jumpHostReference.localID
+		host.jumpHostServerId = jumpHostReference.serverID
 		host.forwards = forwards
 		host.icon = icon
 		let secret: String? = {
@@ -413,12 +492,31 @@ struct HostFormView: View {
 		)
 	}
 
-	static func jumpHostIdForForm(host: SSHHost, allHosts: [SSHHost]) -> UUID? {
-		if let jumpHostId = host.jumpHostId {
-			return jumpHostId
+	static func jumpHostSelectionForForm(
+		host: SSHHost,
+		allHosts: [SSHHost]
+	) -> JumpHostSelection {
+		if let jumpHostId = host.jumpHostId,
+		   let localParent = allHosts.first(where: { $0.id == jumpHostId }) {
+			return .resolved(localID: localParent.id)
 		}
-		guard let jumpHostServerId = host.jumpHostServerId else { return nil }
-		return allHosts.first(where: { $0.serverId == jumpHostServerId })?.id
+		if let jumpHostServerId = host.jumpHostServerId,
+		   let serverParent = allHosts.first(where: { $0.serverId == jumpHostServerId }) {
+			return .resolved(localID: serverParent.id)
+		}
+		switch (host.jumpHostId, host.jumpHostServerId) {
+		case (.none, .none):
+			return .none
+		case (.some(let localID), .none):
+			return .unresolved(.localID(localID))
+		case (.none, .some(let serverID)):
+			return .unresolved(.serverID(serverID))
+		case (.some(let localID), .some(let serverID)):
+			return .unresolved(.localAndServer(
+				localID: localID,
+				serverID: serverID
+			))
+		}
 	}
 }
 

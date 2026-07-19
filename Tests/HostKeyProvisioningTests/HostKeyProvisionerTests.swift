@@ -25,12 +25,13 @@ final class HostKeyProvisionerTests: XCTestCase {
 			service: "com.caterm.test.host-key-provisioner.\(UUID())",
 			accessGroup: nil
 		)
+		managedKeys = ManagedKeyStore(rootURL: keysRoot)
 		store = SessionStore(
 			askpassPath: "/x", knownHostsCaterm: "/A",
 			knownHostsUser: "/B", accessGroup: nil,
-			hostsURL: hostsURL, keychain: keychain
+			hostsURL: hostsURL, keychain: keychain,
+			managedKeyStore: managedKeys
 		)
-		managedKeys = ManagedKeyStore(rootURL: keysRoot)
 	}
 
 	override func tearDown() async throws {
@@ -93,7 +94,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 		try await HostKeyProvisioner.provision(
 			material: .pasted(content: "PASTED_KEY"),
 			hasPassphrase: false, passphrase: nil,
-			hostId: host.id, sessionStore: store, managedKeys: managedKeys
+			hostId: host.id, sessionStore: store
 		)
 		let managedPath = managedKeys.path(hostId: host.id).path
 		XCTAssertEqual(try managedKeys.read(hostId: host.id), Data("PASTED_KEY\n".utf8))
@@ -110,7 +111,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 		try await HostKeyProvisioner.provision(
 			material: .file(path: path),
 			hasPassphrase: true, passphrase: "pp",
-			hostId: host.id, sessionStore: store, managedKeys: managedKeys
+			hostId: host.id, sessionStore: store
 		)
 		XCTAssertEqual(try keychain.get(account: "\(host.id.uuidString).keyPassphrase"), "pp")
 		let updated = store.hosts.first { $0.id == host.id }!
@@ -127,7 +128,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 		let updatedAtBefore = host.updatedAt
 
 		let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
-			sessionStore: store, managedKeys: managedKeys
+			sessionStore: store
 		)
 
 		XCTAssertEqual(summary, {
@@ -150,7 +151,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 		let host = try addHost(credential: .keyFile(keyPath: "/nonexistent/id_gone",
 		                                            hasPassphrase: false))
 		let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
-			sessionStore: store, managedKeys: managedKeys
+			sessionStore: store
 		)
 		XCTAssertEqual(summary.skippedUnreadable, 1)
 		XCTAssertEqual(summary.migrated, 0)
@@ -163,10 +164,10 @@ final class HostKeyProvisionerTests: XCTestCase {
 		let host = try addHost(credential: .password)
 		try await HostKeyProvisioner.provision(
 			material: .pasted(content: "K"), hasPassphrase: false, passphrase: nil,
-			hostId: host.id, sessionStore: store, managedKeys: managedKeys
+			hostId: host.id, sessionStore: store
 		)
 		let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
-			sessionStore: store, managedKeys: managedKeys
+			sessionStore: store
 		)
 		XCTAssertEqual(summary.alreadyManaged, 1)
 		XCTAssertEqual(summary.migrated, 0)
@@ -175,8 +176,31 @@ final class HostKeyProvisionerTests: XCTestCase {
 	func test_migrate_passwordHosts_ignored() async throws {
 		_ = try addHost(credential: .password)
 		let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
-			sessionStore: store, managedKeys: managedKeys
+			sessionStore: store
 		)
 		XCTAssertEqual(summary, KeyMigrationSummary())
+	}
+
+	func test_migrate_cancelledTask_stopsBeforeReadingHosts() async throws {
+		let path = try writeExternalKey("EXTERNAL")
+		let host = try addHost(
+			credential: .keyFile(keyPath: path, hasPassphrase: false)
+		)
+
+		let summary = await Task { @MainActor in
+			withUnsafeCurrentTask { task in
+				task?.cancel()
+			}
+			return await HostKeyProvisioner.migrateExternalKeyPaths(
+				sessionStore: store
+			)
+		}.value
+
+		XCTAssertEqual(summary, KeyMigrationSummary())
+		let untouched = try XCTUnwrap(store.hosts.first { $0.id == host.id })
+		XCTAssertEqual(
+			untouched.credential,
+			.keyFile(keyPath: path, hasPassphrase: false)
+		)
 	}
 }

@@ -36,13 +36,14 @@ final class QuarantineAndApplyFailureTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-A") }
+			currentTokenProvider: { TestToken("user-A") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .zero
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		XCTAssertEqual(sync.syncState, .quarantined,
 			"v3 cloud against v2 local must quarantine")
@@ -79,13 +80,14 @@ final class QuarantineAndApplyFailureTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-Y") }
+			currentTokenProvider: { TestToken("user-Y") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .zero
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		XCTAssertEqual(sync.syncState, .quarantined,
 			"unreadable Y on a cross-identity boot must quarantine, not suspendUntilFirstEdit")
@@ -131,13 +133,14 @@ final class QuarantineAndApplyFailureTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-Y") }
+			currentTokenProvider: { TestToken("user-Y") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .zero
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		// The decision was forceApply(Y) + acceptIdentity=true + finalState=active.
 		// But replaceFromSync threw, so:
@@ -172,13 +175,14 @@ final class QuarantineAndApplyFailureTests: XCTestCase {
 		let session = AlwaysSignedInSession()
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session, tokenStore: tokenStore,
-			currentTokenProvider: { TestToken("user-A") }
+			currentTokenProvider: { TestToken("user-A") },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(10),
+				initialSyncGrace: .zero
+			)
 		)
-		sync.testInitialSyncTimeout = .milliseconds(10)
-		sync.testInitialSyncGrace = .milliseconds(0)
 		sync.installLifecycleObservers()
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 
 		XCTAssertEqual(sync.syncState, .active,
 			"boot with absent cloud + real local → pushLocal → .active")

@@ -205,6 +205,105 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 			"with .sortedKeys, 'alias' must come before 'hostId' alphabetically; json=\(json)")
 	}
 
+	func testPasswordJumpActivatesAskpassForAgentTarget() throws {
+		let jump = host("jump", "rh-jump", cred: .password)
+		let target = host("target", "rh-target", jump: "rh-jump", cred: .agent)
+		let out = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [jump],
+			configSink: InMemorySSHConfigSink(),
+			askpassPath: "/tmp/caterm-askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			terminfoDump: ""
+		)
+		let environment = Dictionary(uniqueKeysWithValues: out.env)
+
+		XCTAssertEqual(environment["SSH_ASKPASS"], "/tmp/caterm-askpass")
+		XCTAssertEqual(environment["SSH_ASKPASS_REQUIRE"], "force")
+		XCTAssertNil(environment["CATERM_HOST_ID"])
+		XCTAssertNil(environment["CATERM_ASKPASS_KIND"])
+	}
+
+	func testPassphrasedKeyJumpActivatesAskpassForPasswordlessKeyTarget() throws {
+		let jump = host(
+			"jump",
+			"rh-jump",
+			cred: .keyFile(keyPath: "/jump-key", hasPassphrase: true)
+		)
+		let target = host(
+			"target",
+			"rh-target",
+			jump: "rh-jump",
+			cred: .keyFile(keyPath: "/target-key", hasPassphrase: false)
+		)
+		let out = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [jump],
+			configSink: InMemorySSHConfigSink(),
+			askpassPath: "/tmp/caterm-askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			terminfoDump: ""
+		)
+		let environment = Dictionary(uniqueKeysWithValues: out.env)
+
+		XCTAssertEqual(environment["SSH_ASKPASS"], "/tmp/caterm-askpass")
+		XCTAssertEqual(environment["SSH_ASKPASS_REQUIRE"], "force")
+	}
+
+	func testAllAgentChainDoesNotActivateAskpass() throws {
+		let jump = host("jump", "rh-jump", cred: .agent)
+		let target = host("target", "rh-target", jump: "rh-jump", cred: .agent)
+		let out = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [jump],
+			configSink: InMemorySSHConfigSink(),
+			askpassPath: "/tmp/caterm-askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			terminfoDump: ""
+		)
+		let environment = Dictionary(uniqueKeysWithValues: out.env)
+
+		XCTAssertNil(environment["SSH_ASKPASS"])
+		XCTAssertNil(environment["SSH_ASKPASS_REQUIRE"])
+		XCTAssertNotNil(environment["CATERM_CHAIN"])
+	}
+
+	func testDirectAndChainShareTerminfoBootstrap() throws {
+		let dump = "xterm-ghostty|test terminal,\n\tam, cols#80,"
+		let target = host("target", "rh-target", jump: "rh-jump", cred: .agent)
+		let direct = SSHCommandBuilder._build(
+			host: target,
+			askpassPath: "/tmp/caterm-askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			installTerminfo: true,
+			sshPath: "/usr/bin/ssh",
+			terminfoDump: dump
+		)
+		let chain = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [host("jump", "rh-jump", cred: .agent)],
+			configSink: InMemorySSHConfigSink(),
+			askpassPath: "/tmp/caterm-askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			installTerminfo: true,
+			terminfoDump: dump
+		)
+		let marker = "if ! infocmp xterm-ghostty"
+		guard let directStart = direct.command.range(of: marker)?.lowerBound,
+		      let chainStart = chain.command.range(of: marker)?.lowerBound else {
+			return XCTFail("missing terminfo bootstrap")
+		}
+
+		XCTAssertEqual(String(direct.command[directStart...]), String(chain.command[chainStart...]))
+		XCTAssertEqual(direct.env.first(where: { $0.0 == "TERM" })?.1, "xterm-ghostty")
+		XCTAssertEqual(chain.env.first(where: { $0.0 == "TERM" })?.1, "xterm-ghostty")
+	}
+
 	private func blockFor(_ alias: String, in config: String) -> String {
 		let lines = config.split(separator: "\n").map(String.init)
 		guard let start = lines.firstIndex(where: { $0.hasPrefix("Host \(alias)") })

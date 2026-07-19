@@ -47,4 +47,29 @@ final class HostFormCycleFilterTests: XCTestCase {
 			editingHost: a, allHosts: [a, b, c])
 		XCTAssertEqual(Set(filtered.map(\.name)), Set(["b", "c"]))
 	}
+
+	func testFilterExcludesCandidateWithServerReferenceCycle() {
+		let editing = host("editing", "rh-editing")
+		let b = host("b", "rh-b", jump: "rh-c")
+		let c = host("c", "rh-c", jump: "rh-b")
+
+		let filtered = HostFormCycleFilter.eligibleJumpHosts(
+			editingHost: editing,
+			allHosts: [editing, b, c]
+		)
+
+		XCTAssertTrue(filtered.isEmpty)
+	}
+
+	func testFilterKeepsCandidateWithMissingAncestorForFormDiagnostic() {
+		let editing = host("editing", "rh-editing")
+		let broken = host("broken", "rh-broken", jump: "rh-deleted")
+
+		let filtered = HostFormCycleFilter.eligibleJumpHosts(
+			editingHost: editing,
+			allHosts: [editing, broken]
+		)
+
+		XCTAssertEqual(filtered.map(\.name), ["broken"])
+	}
 }

@@ -35,22 +35,24 @@ final class DebugMenuSupportTests: XCTestCase {
 		}
 	}
 
-	func testEmptyHostListReturnsNil() {
-		XCTAssertNil(debugPickConnectTarget(in: sut))
+	func testEmptyHostListReturnsNil() async {
+		let target = await debugPickConnectTarget(in: sut)
+		XCTAssertNil(target)
 	}
 
-	func testSingleUnlockedHostIsPicked() throws {
+	func testSingleUnlockedHostIsPicked() async throws {
 		let h = SSHHost(name: "unlocked", hostname: "a", port: 22,
 		                username: "u", credential: .agent)
 		try sut.addHost(h)
 
-		XCTAssertEqual(debugPickConnectTarget(in: sut)?.id, h.id)
+		let target = await debugPickConnectTarget(in: sut)
+		XCTAssertEqual(target?.id, h.id)
 	}
 
 	/// When all hosts need credential setup we still return the first one,
 	/// so testers see the credential sheet pop instead of getting silent
 	/// no-op. This makes the menu hook diagnostic on its own.
-	func testAllLockedHostsReturnsFirstOverall() throws {
+	func testAllLockedHostsReturnsFirstOverall() async throws {
 		let locked1 = SSHHost(
 			id: UUID(), serverId: "srv-1",
 			name: "remote-1", hostname: "h", port: 22, username: "u",
@@ -64,13 +66,14 @@ final class DebugMenuSupportTests: XCTestCase {
 		try sut.addHost(locked1)
 		try sut.addHost(locked2)
 
-		XCTAssertEqual(debugPickConnectTarget(in: sut)?.id, locked1.id)
+		let target = await debugPickConnectTarget(in: sut)
+		XCTAssertEqual(target?.id, locked1.id)
 	}
 
 	/// Mixed list: prefer the first unlocked host even if a locked host
 	/// appears earlier. This is the common Computer Use scenario — a synced
 	/// host without local secrets sitting next to a fully provisioned one.
-	func testMixedListPrefersFirstUnlocked() throws {
+	func testMixedListPrefersFirstUnlocked() async throws {
 		let locked = SSHHost(
 			id: UUID(), serverId: "srv-1",
 			name: "locked", hostname: "h", port: 22, username: "u",
@@ -81,7 +84,8 @@ final class DebugMenuSupportTests: XCTestCase {
 		try sut.addHost(locked)
 		try sut.addHost(unlocked)
 
-		XCTAssertEqual(debugPickConnectTarget(in: sut)?.id, unlocked.id)
+		let target = await debugPickConnectTarget(in: sut)
+		XCTAssertEqual(target?.id, unlocked.id)
 	}
 }
 #endif

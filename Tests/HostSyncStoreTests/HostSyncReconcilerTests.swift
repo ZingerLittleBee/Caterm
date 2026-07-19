@@ -96,6 +96,84 @@ final class HostSyncReconcilerTests: XCTestCase {
         XCTAssertEqual(ops, [.updateLocal(localHostId: local.id, remote: r)])
     }
 
+    func testEqualUpdatedAtMetadataDivergencePullsRemote() {
+        let t = Date(timeIntervalSince1970: 1000)
+        let local = makeLocalHost(
+            name: "same-name",
+            serverId: "srv-1",
+            updatedAt: t
+        )
+        let variants = [
+            RemoteHost(
+                id: "srv-1", name: "remote-name", hostname: "h",
+                port: 22, username: "u", authType: "key",
+                createdAt: t, updatedAt: t
+            ),
+            RemoteHost(
+                id: "srv-1", name: "same-name", hostname: "remote.example",
+                port: 22, username: "u", authType: "key",
+                createdAt: t, updatedAt: t
+            ),
+            RemoteHost(
+                id: "srv-1", name: "same-name", hostname: "h",
+                port: 2200, username: "u", authType: "key",
+                createdAt: t, updatedAt: t
+            ),
+            RemoteHost(
+                id: "srv-1", name: "same-name", hostname: "h",
+                port: 22, username: "remote-user", authType: "key",
+                createdAt: t, updatedAt: t
+            ),
+            RemoteHost(
+                id: "srv-1", name: "same-name", hostname: "h",
+                port: 22, username: "u", authType: "key",
+                createdAt: t, updatedAt: t,
+                jumpHostServerId: "jump-server"
+            ),
+        ]
+
+        for remote in variants {
+            let full = HostSyncReconciler.reconcileFullSnapshot(
+                local: [local],
+                remote: [remote]
+            )
+            let delta = HostSyncReconciler.reconcileDelta(
+                local: [local],
+                changedHosts: [remote],
+                deletedHostIDs: []
+            )
+            let expected = SyncOperation.updateLocal(
+                localHostId: local.id,
+                remote: remote
+            )
+            XCTAssertEqual(full, [expected])
+            XCTAssertEqual(delta, [expected])
+        }
+    }
+
+    func testLocalUUIDDoesNotMatchRemoteServerID() {
+        let local = SSHHost(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            name: "local",
+            hostname: "local.example",
+            username: "root",
+            credential: .agent
+        )
+        let remote = makeRemoteHost(
+            id: local.id.uuidString,
+            name: "remote"
+        )
+
+        let ops = HostSyncReconciler.reconcileFullSnapshot(
+            local: [local],
+            remote: [remote]
+        )
+
+        XCTAssertEqual(ops.count, 2)
+        XCTAssertTrue(ops.contains(.createRemote(localHostId: local.id)))
+        XCTAssertTrue(ops.contains(.createLocal(remote: remote)))
+    }
+
     func testDeltaMachineBPullsIconFromNewerRemote() {
         let oldT = Date(timeIntervalSince1970: 1000)
         let newT = Date(timeIntervalSince1970: 2000)
@@ -278,6 +356,27 @@ final class HostSyncReconcilerDeltaTests: XCTestCase {
             local: [local], changedHosts: [r], deletedHostIDs: []
         )
         XCTAssertEqual(ops, [.updateLocal(localHostId: local.id, remote: r)])
+    }
+
+    func testDeltaUpsertPushesNewerLocal() {
+        let local = makeLocalSynced(serverId: "S1", updatedAt: 200)
+        let remote = RemoteHost(
+            id: "S1", name: "x", hostname: "h", port: 22,
+            username: "u", authType: "password",
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+
+        let ops = HostSyncReconciler.reconcileDelta(
+            local: [local],
+            changedHosts: [remote],
+            deletedHostIDs: []
+        )
+
+        XCTAssertEqual(
+            ops,
+            [.updateRemote(localHostId: local.id, serverId: "S1")]
+        )
     }
 
     func testDeltaDeleteRemovesLocal() {

@@ -8,30 +8,18 @@ public enum HostFormCycleFilter {
 		editingHost: SSHHost,
 		allHosts: [SSHHost]
 	) -> [SSHHost] {
-		allHosts.filter { candidate in
-			// Rule 1: cannot pick self.
+		let resolver = ChainResolver(hosts: allHosts)
+		return allHosts.filter { candidate in
 			guard candidate.id != editingHost.id else { return false }
-			// Rule 2: candidate's transitive chain must not pass through
-			// editingHost. Walk up via local jumpHostId when available,
-			// otherwise fall back to jumpHostServerId.
-			var visited: Set<UUID> = []
-			var cursor: SSHHost? = candidate
-			while let cur = cursor {
-				if let nextId = cur.jumpHostId {
-					if nextId == editingHost.id { return false }
-					if visited.contains(nextId) { return false }
-					visited.insert(nextId)
-					cursor = allHosts.first { $0.id == nextId }
-					continue
-				}
-				if let nextSid = cur.jumpHostServerId {
-					if nextSid == editingHost.serverId { return false }
-					cursor = allHosts.first { $0.serverId == nextSid }
-					continue
-				}
-				cursor = nil
+			var proposedHost = editingHost
+			proposedHost.jumpHostId = candidate.id
+			proposedHost.jumpHostServerId = candidate.serverId
+			switch resolver.resolve(proposedHost).diagnostic {
+			case .cycle:
+				return false
+			case .missing, .none:
+				return true
 			}
-			return true
 		}
 	}
 }

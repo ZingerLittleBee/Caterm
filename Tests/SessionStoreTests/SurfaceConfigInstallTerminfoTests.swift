@@ -22,11 +22,11 @@ final class SurfaceConfigInstallTerminfoTests: XCTestCase {
 		        username: "alice", credential: .agent)
 	}
 
-	func testSurfaceConfigInstallTerminfoFalseHasNoTermEnvAndNoDashT() throws {
+	func testOpenTimeDisabledIgnoresLaterEnabledPreference() throws {
 		let store = makeStore()
-		let tabId = store.openTab(host: sampleHost())
+		let tabId = store.openTab(host: sampleHost(), installTerminfo: false)
 
-		guard let cfg = store.surfaceConfig(for: tabId, installTerminfo: false) else {
+		guard let cfg = store.surfaceConfig(for: tabId, installTerminfo: true) else {
 			XCTFail("surfaceConfig returned nil for a tab we just opened")
 			return
 		}
@@ -34,11 +34,11 @@ final class SurfaceConfigInstallTerminfoTests: XCTestCase {
 		XCTAssertFalse(cfg.env.contains(where: { $0.0 == "TERM" }), "no TERM override when installTerminfo: false")
 	}
 
-	func testSurfaceConfigInstallTerminfoTrueAddsDashTAndTermEnv() throws {
+	func testOpenTimeEnabledIgnoresLaterDisabledPreference() throws {
 		let store = makeStore()
-		let tabId = store.openTab(host: sampleHost())
+		let tabId = store.openTab(host: sampleHost(), installTerminfo: true)
 
-		guard let cfg = store.surfaceConfig(for: tabId, installTerminfo: true) else {
+		guard let cfg = store.surfaceConfig(for: tabId, installTerminfo: false) else {
 			XCTFail("surfaceConfig returned nil for a tab we just opened")
 			return
 		}

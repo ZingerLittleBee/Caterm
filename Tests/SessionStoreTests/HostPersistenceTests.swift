@@ -1,4 +1,5 @@
 import XCTest
+import ManagedKeyStore
 @testable import KeychainStore
 @testable import SessionStore
 @testable import SSHCommandBuilder
@@ -55,11 +56,21 @@ final class HostPersistenceTests: XCTestCase {
 	}
 
 	@MainActor
-	func testSessionStoreCRUDPersists() throws {
+	func testSessionStoreCRUDPersists() async throws {
 		let kc = KeychainStore(service: "com.caterm.test.\(UUID())", accessGroup: nil)
+		let managedKeys = ManagedKeyStore(
+			rootURL: tmpURL.deletingLastPathComponent()
+				.appendingPathComponent("host-persistence-keys-\(UUID())")
+		)
+		let materialStore = SessionCredentialMaterialStore(
+			secrets: InMemoryCredentialSecretStore(),
+			managedKeyStore: managedKeys
+		)
 		let store = SessionStore(
 			askpassPath: "/x", knownHostsCaterm: "/A", knownHostsUser: "/B",
-			accessGroup: nil, hostsURL: tmpURL, keychain: kc
+			accessGroup: nil, hostsURL: tmpURL, keychain: kc,
+			managedKeyStore: managedKeys,
+			credentialMaterialStore: materialStore
 		)
 		let host = SSHHost(name: "x", hostname: "h", port: 22, username: "u", credential: .agent)
 		try store.addHost(host)
@@ -67,15 +78,18 @@ final class HostPersistenceTests: XCTestCase {
 		// Re-load fresh store, verify host present
 		let store2 = SessionStore(
 			askpassPath: "/x", knownHostsCaterm: "/A", knownHostsUser: "/B",
-			accessGroup: nil, hostsURL: tmpURL, keychain: kc
+			accessGroup: nil, hostsURL: tmpURL, keychain: kc,
+			managedKeyStore: managedKeys,
+			credentialMaterialStore: materialStore
 		)
 		XCTAssertEqual(store2.hosts.count, 1)
 		XCTAssertEqual(store2.hosts.first?.name, "x")
 
-		try store2.deleteHost(id: host.id)
+		try await store2.deleteHost(id: host.id)
 		let store3 = SessionStore(
 			askpassPath: "/x", knownHostsCaterm: "/A", knownHostsUser: "/B",
-			accessGroup: nil, hostsURL: tmpURL, keychain: kc
+			accessGroup: nil, hostsURL: tmpURL, keychain: kc,
+			managedKeyStore: managedKeys
 		)
 		XCTAssertEqual(store3.hosts.count, 0)
 	}

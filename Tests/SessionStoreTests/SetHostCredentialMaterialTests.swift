@@ -34,19 +34,20 @@ final class SetHostCredentialMaterialTests: XCTestCase {
 		var host = Host(name: "Box", hostname: "h", port: 22, username: "u", credential: .password)
 		try store.addHost(host)
 		host = store.hosts.first { $0.id == host.id }!
+		let hostId = host.id
 
 		let exp = expectation(forNotification: .catermHostCredentialMaterialChanged, object: nil) { note in
-			(note.userInfo?[CatermHostCredentialMaterialChangedKeys.hostId] as? UUID) == host.id
+			(note.userInfo?[CatermHostCredentialMaterialChangedKeys.hostId] as? UUID) == hostId
 		}
 
-		try store.setHostCredentialMaterial(
+		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(password: Data("p".utf8)),
 			credentialSource: .password,
-			for: host.id
+			for: hostId
 		)
 
 		await fulfillment(of: [exp], timeout: 1.0)
-		let stored = try keychain.get(account: "\(host.id.uuidString).password")
+		let stored = try keychain.get(account: "\(hostId.uuidString).password")
 		XCTAssertEqual(stored, "p")
 		XCTAssertTrue(store.hosts.first { $0.id == host.id }!.credentialMaterialDirty)
 	}

@@ -150,6 +150,37 @@ extension SnippetStoreTests {
 		XCTAssertEqual(store.snippets.first?.name, "local")
 	}
 
+	func test_applyRemote_cloudWinsEqualVersionContentTie() throws {
+		let store = SnippetStore(directory: tempDir())
+		try store.load()
+		let id = UUID()
+		let timestamp = Date(timeIntervalSince1970: 100)
+		let local = Snippet(
+			id: id,
+			name: "local",
+			content: "local-content",
+			createdAt: timestamp,
+			updatedAt: timestamp,
+			revision: 2,
+			metadataUpdatedAt: timestamp
+		)
+		_ = try store.applyRemote(local)
+		let remote = Snippet(
+			id: id,
+			name: "remote",
+			content: "remote-content",
+			createdAt: timestamp,
+			updatedAt: timestamp,
+			revision: 2,
+			metadataUpdatedAt: timestamp
+		)
+
+		let applied = try store.applyRemote(remote)
+
+		XCTAssertTrue(applied)
+		XCTAssertEqual(store.snippets.first?.name, "remote")
+	}
+
 	func test_applyRemoteTombstone_removesEvenIfDirty() throws {
 		let store = SnippetStore(directory: tempDir())
 		try store.load()

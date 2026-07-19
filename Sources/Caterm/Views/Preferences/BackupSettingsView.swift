@@ -1,4 +1,3 @@
-import ManagedKeyStore
 import SessionStore
 import SnippetStore
 import SwiftUI
@@ -9,7 +8,6 @@ import SwiftUI
 /// this page adds an at-a-glance summary of what an export would contain.
 struct BackupSettingsView: View {
     @ObservedObject var sessionStore: SessionStore
-    let managedKeys: ManagedKeyStore
     let snippetStore: SnippetStore?
     let bookmarkStore: RemoteBookmarkStore?
 
@@ -17,7 +15,6 @@ struct BackupSettingsView: View {
         Form {
             BackupSettingsSection(
                 sessionStore: sessionStore,
-                managedKeys: managedKeys,
                 snippetStore: snippetStore,
                 bookmarkStore: bookmarkStore
             )

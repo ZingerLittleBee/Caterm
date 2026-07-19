@@ -93,6 +93,10 @@ public struct PortForward: Codable, Hashable, Identifiable, Sendable {
 	/// for prepending any indentation. Values that contain whitespace or
 	/// control characters are encoded via `SSHConfigQuote.encode`.
 	public func sshConfigLine() throws -> String {
+		try sshOption.configLine()
+	}
+
+	package var sshOption: SSHOption {
 		let bindPart: String
 		if let addr = bindAddress, !addr.isEmpty {
 			bindPart = "\(addr):\(bindPort)"
@@ -102,12 +106,12 @@ public struct PortForward: Codable, Hashable, Identifiable, Sendable {
 		switch kind {
 		case .local:
 			let target = "\(remoteHost ?? ""):\(remotePort ?? 0)"
-			return "LocalForward \(try SSHConfigQuote.encode(bindPart)) \(try SSHConfigQuote.encode(target))"
+			return .option("LocalForward", bindPart, target)
 		case .remote:
 			let target = "\(remoteHost ?? ""):\(remotePort ?? 0)"
-			return "RemoteForward \(try SSHConfigQuote.encode(bindPart)) \(try SSHConfigQuote.encode(target))"
+			return .option("RemoteForward", bindPart, target)
 		case .dynamic:
-			return "DynamicForward \(try SSHConfigQuote.encode(bindPart))"
+			return .option("DynamicForward", bindPart)
 		}
 	}
 }

@@ -16,6 +16,9 @@ final class FileTransferStoreTests: XCTestCase {
 	final class AlwaysAlive: ControlMasterLiveness, @unchecked Sendable {
 		func isAlive(hostId: UUID) async -> Bool { true }
 	}
+	final class NeverAlive: ControlMasterLiveness, @unchecked Sendable {
+		func isAlive(hostId: UUID) async -> Bool { false }
+	}
 
 	func makeHost(_ id: UUID = UUID()) -> SSHHost {
 		SSHHost(id: id, name: "x", hostname: "h", port: 22, username: "u", credential: .agent)
@@ -99,11 +102,31 @@ final class FileTransferStoreTests: XCTestCase {
 		XCTAssertEqual(store.task(id: ids[1])?.status, .completed)
 		XCTAssertEqual(store.task(id: ids[2])?.status, .cancelled)
 	}
+
+	func testDeadControlMasterFailsBeforeInvokingSFTP() async throws {
+		let runner = ScriptedRunner()
+		let store = FileTransferStore(
+			controlPathFor: { _ in URL(fileURLWithPath: "/sock") },
+			credentialsFor: { _ in defaultCreds() },
+			runner: runner,
+			liveness: NeverAlive()
+		)
+		let ids = store.enqueueDownload(
+			remotePaths: ["/remote/file"],
+			localDir: URL(fileURLWithPath: "/local"),
+			host: makeHost()
+		)
+
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: ids[0])?.status, .failed)
+		XCTAssertEqual(store.task(id: ids[0])?.error, "SSH session is no longer available")
+		XCTAssertTrue(runner.calls.isEmpty)
+	}
 }
 
 private func defaultCreds() -> SFTPCredentials {
-	SFTPCredentials(askpassPath: nil, identityFiles: [],
-	                knownHostsCaterm: URL(fileURLWithPath: "/k1"),
+	SFTPCredentials(knownHostsCaterm: URL(fileURLWithPath: "/k1"),
 	                knownHostsUser: URL(fileURLWithPath: "/k2"),
 	                strictHostKeyChecking: .acceptNew)
 }

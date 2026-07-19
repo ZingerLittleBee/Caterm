@@ -96,4 +96,51 @@ final class HostFormBuildHostTests: XCTestCase {
 		XCTAssertEqual(result.name, "fresh")
 		XCTAssertEqual(result.credential, .agent)
 	}
+
+	func testCredentialRoutingTransactsForSourceOnlyChange() {
+		let result = HostCredentialEditRouting.route(
+			initial: .keyFile(keyPath: "/managed/key", hasPassphrase: false),
+			current: .keyFile(keyPath: "/managed/key", hasPassphrase: false),
+			updated: .password,
+			hasSecret: false,
+			hasKeyMaterial: false
+		)
+
+		XCTAssertEqual(result, .transact(forceSourceCommit: true))
+	}
+
+	func testCredentialRoutingPreservesConcurrentSourceForMetadataOnlyEdit() {
+		let result = HostCredentialEditRouting.route(
+			initial: .agent,
+			current: .password,
+			updated: .agent,
+			hasSecret: false,
+			hasKeyMaterial: false
+		)
+
+		XCTAssertEqual(result, .preserveCurrent)
+	}
+
+	func testCredentialRoutingTransactsForNewMaterial() {
+		XCTAssertEqual(
+			HostCredentialEditRouting.route(
+				initial: .password,
+				current: .password,
+				updated: .password,
+				hasSecret: true,
+				hasKeyMaterial: false
+			),
+			.transact(forceSourceCommit: false)
+		)
+		XCTAssertEqual(
+			HostCredentialEditRouting.route(
+				initial: .keyFile(keyPath: "/managed/key", hasPassphrase: false),
+				current: .agent,
+				updated: .keyFile(keyPath: "/managed/key", hasPassphrase: false),
+				hasSecret: false,
+				hasKeyMaterial: true
+			),
+			.transact(forceSourceCommit: true)
+		)
+	}
 }

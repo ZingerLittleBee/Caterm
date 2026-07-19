@@ -1,10 +1,32 @@
 import AppKit
 import HostKeyProvisioning
 import HostSyncStore
-import ManagedKeyStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+
+enum HostCredentialEditRoute: Equatable {
+	case preserveCurrent
+	case transact(forceSourceCommit: Bool)
+}
+
+enum HostCredentialEditRouting {
+	static func route(
+		initial: CredentialSource,
+		current: CredentialSource,
+		updated: CredentialSource,
+		hasSecret: Bool,
+		hasKeyMaterial: Bool
+	) -> HostCredentialEditRoute {
+		if hasSecret || hasKeyMaterial {
+			return .transact(forceSourceCommit: current != updated)
+		}
+		guard updated != initial, updated != current else {
+			return .preserveCurrent
+		}
+		return .transact(forceSourceCommit: true)
+	}
+}
 
 /// Sidebar listing the user's saved hosts. Provides:
 /// - Add (toolbar + ⌘T notification)
@@ -20,7 +42,6 @@ struct HostListSidebar: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
-	@Environment(\.managedKeyStore) private var managedKeys
 	let onOpenTab: (UUID) -> Void
 	@State var selectedHostId: UUID?
 	@State var showingAddSheet = false
@@ -36,10 +57,14 @@ struct HostListSidebar: View {
 	}
 
 	var body: some View {
-		VStack(spacing: 0) {
+		let chainResolver = ChainResolver(hosts: store.hosts)
+		return VStack(spacing: 0) {
 			List(selection: $selectedHostId) {
 				ForEach(store.hosts) { host in
-					HostRow(host: host)
+					HostRow(
+						host: host,
+						chainResolution: chainResolver.resolve(host)
+					)
 						.tag(host.id)
 						.contextMenu {
 							Button("Connect") { connect(host) }
@@ -109,38 +134,67 @@ struct HostListSidebar: View {
 			}
 			.sheet(isPresented: $showingAddSheet) {
 				HostFormView(mode: .add) { host, secret, keyMaterial in
-					do {
-						try store.addHost(host)
-						try applyCredentialChange(
-							hostId: host.id, credential: host.credential,
-							secret: secret, keyMaterial: keyMaterial,
-							forceSecretWrite: true
-						)
-						showingAddSheet = false
-					} catch {
-						errorMessage = error.localizedDescription
+					Task { @MainActor in
+						do {
+							try store.addHost(host)
+							try await applyCredentialChange(
+								hostId: host.id, credential: host.credential,
+								secret: secret, keyMaterial: keyMaterial,
+								forceTransaction: true
+							)
+							showingAddSheet = false
+						} catch {
+							errorMessage = error.localizedDescription
+						}
 					}
 				}
 				.environmentObject(store)
 			}
 			.sheet(item: $editingHost) { host in
 				HostFormView(mode: .edit(host)) { updated, secret, keyMaterial in
-					do {
-						try store.updateHost(updated)
-						// Only route through the Plan C credential entry point
-						// when the user supplied a new secret or new key
-						// material. A pure metadata edit (rename / hostname /
-						// port / username) must not flip
-						// `credentialMaterialDirty` or fire the credential
-						// changed notification.
-						try applyCredentialChange(
-							hostId: updated.id, credential: updated.credential,
-							secret: secret, keyMaterial: keyMaterial,
-							forceSecretWrite: false
-						)
-						editingHost = nil
-					} catch {
-						errorMessage = error.localizedDescription
+					Task { @MainActor in
+						do {
+							guard let current = store.hosts.first(where: {
+								$0.id == updated.id
+							}) else {
+								editingHost = nil
+								return
+							}
+							let route = HostCredentialEditRouting.route(
+								initial: host.credential,
+								current: current.credential,
+								updated: updated.credential,
+								hasSecret: secret != nil,
+								hasKeyMaterial: keyMaterial != nil
+							)
+							switch route {
+							case .preserveCurrent:
+								break
+							case let .transact(forceSourceCommit):
+								// Commit material and its source first, then merge the
+								// remaining form fields without replacing the resolved
+								// managed-key path or dirty bit.
+								try await applyCredentialChange(
+									hostId: updated.id,
+									credential: updated.credential,
+									secret: secret,
+									keyMaterial: keyMaterial,
+									forceTransaction: forceSourceCommit
+								)
+							}
+							if let committed = store.hosts.first(where: {
+								$0.id == updated.id
+							}) {
+								var metadataUpdate = updated
+								metadataUpdate.credential = committed.credential
+								metadataUpdate.credentialMaterialDirty =
+									committed.credentialMaterialDirty
+								try store.updateHost(metadataUpdate)
+							}
+							editingHost = nil
+						} catch {
+							errorMessage = error.localizedDescription
+						}
 					}
 				}
 				.environmentObject(store)
@@ -160,11 +214,10 @@ struct HostListSidebar: View {
 							hasPassphrase: credHasPassphrase(cred),
 							passphrase: secret,
 							hostId: host.id,
-							sessionStore: store,
-							managedKeys: managedKeys
+							sessionStore: store
 						)
 					} else {
-						try store.setHostCredentialMaterial(
+						try await store.setHostCredentialMaterial(
 							secrets: makeSecrets(for: cred, secret: secret),
 							credentialSource: cred,
 							for: host.id
@@ -203,8 +256,10 @@ struct HostListSidebar: View {
 				presenting: pendingFanoutDelete
 			) { pending in
 				Button("Delete anyway", role: .destructive) {
-					do { try store.deleteHost(id: pending.host.id) }
-					catch { errorMessage = error.localizedDescription }
+					Task { @MainActor in
+						do { try await store.deleteHost(id: pending.host.id) }
+						catch { errorMessage = error.localizedDescription }
+					}
 				}
 				Button("Cancel", role: .cancel) { }
 			} message: { pending in
@@ -215,8 +270,10 @@ struct HostListSidebar: View {
 			}
 			#if DEBUG
 			.onReceive(NotificationCenter.default.publisher(for: .catermDebugOpenFirstHost)) { _ in
-				if let target = debugPickConnectTarget(in: store) {
-					connect(target)
+				Task { @MainActor in
+					if let target = await debugPickConnectTarget(in: store) {
+						connect(target)
+					}
 				}
 			}
 			#endif
@@ -248,37 +305,26 @@ struct HostListSidebar: View {
 
 	/// Route a form submission's credential outcome. New key material is
 	/// imported into managed storage (ADR 0003) via the Plan C entry point;
-	/// otherwise fall back to the direct secret write. `forceSecretWrite`
-	/// distinguishes the add flow (always establish credential state, even
-	/// with an empty secret) from the edit flow (only touch credential
-	/// state when the user actually supplied something new).
+	/// otherwise commit a source/secret transaction. `forceTransaction`
+	/// establishes credential state for a new host or a source-only edit even
+	/// when the user has not supplied a new secret.
 	private func applyCredentialChange(
 		hostId: UUID, credential: CredentialSource,
 		secret: String?, keyMaterial: PendingKeyMaterial?,
-		forceSecretWrite: Bool
-	) throws {
+		forceTransaction: Bool
+	) async throws {
 		if let keyMaterial {
-			// Managed-key write is an actor hop — provision asynchronously;
-			// failures surface through the sidebar's error alert and the
-			// host falls back to needsCredentialSetup on next connect.
-			Task {
-				do {
-					try await HostKeyProvisioner.provision(
-						material: keyMaterial,
-						hasPassphrase: credHasPassphrase(credential),
-						passphrase: secret,
-						hostId: hostId,
-						sessionStore: store,
-						managedKeys: managedKeys
-					)
-				} catch {
-					errorMessage = error.localizedDescription
-				}
-			}
+			try await HostKeyProvisioner.provision(
+				material: keyMaterial,
+				hasPassphrase: credHasPassphrase(credential),
+				passphrase: secret,
+				hostId: hostId,
+				sessionStore: store
+			)
 			return
 		}
-		guard forceSecretWrite || secret != nil else { return }
-		try store.setHostCredentialMaterial(
+		guard forceTransaction || secret != nil else { return }
+		try await store.setHostCredentialMaterial(
 			secrets: makeSecrets(for: credential, secret: secret),
 			credentialSource: credential,
 			for: hostId
@@ -291,13 +337,20 @@ struct HostListSidebar: View {
 	}
 
 	private func connect(_ host: SSHHost) {
-		switch resolveConnectIntent(for: host, in: store) {
-		case .promptCredentials:
-			pendingCredentialHost = host
-		case .openTab:
-			let tabId = store.openTab(host: host,
-			                          installTerminfo: preferences.installTerminfoEnabled)
-			onOpenTab(tabId)
+		Task { @MainActor in
+			guard let current = store.hosts.first(where: { $0.id == host.id }) else {
+				return
+			}
+			switch await resolveConnectIntent(for: current, in: store) {
+			case .promptCredentials:
+				pendingCredentialHost = current
+			case .openTab:
+				let tabId = store.openTab(
+					host: current,
+					installTerminfo: preferences.installTerminfoEnabled
+				)
+				onOpenTab(tabId)
+			}
 		}
 	}
 
@@ -307,8 +360,10 @@ struct HostListSidebar: View {
 			($0.jumpHostId == host.id || (host.serverId != nil && $0.jumpHostServerId == host.serverId))
 		}
 		if dependents.isEmpty {
-			do { try store.deleteHost(id: host.id) }
-			catch { errorMessage = error.localizedDescription }
+			Task { @MainActor in
+				do { try await store.deleteHost(id: host.id) }
+				catch { errorMessage = error.localizedDescription }
+			}
 			return
 		}
 		pendingFanoutDelete = PendingFanoutDelete(host: host, dependents: dependents)
@@ -439,6 +494,8 @@ private extension NSView {
 struct HostRow: View {
 	@EnvironmentObject var store: SessionStore
 	let host: SSHHost
+	let chainResolution: ChainResolution
+	@State private var needsCredentialSetup = false
 
 	var body: some View {
 		// Truncation strategy: three rounds of pure-SwiftUI defensive layout
@@ -475,10 +532,10 @@ struct HostRow: View {
 				Image(systemName: "arrow.triangle.branch")
 					.font(.caption2)
 					.foregroundStyle(.secondary)
-					.help(chainTooltip(for: host))
+					.help(chainTooltip)
 					.layoutPriority(1)
 			}
-			if store.needsCredentialSetup(host) {
+			if needsCredentialSetup {
 				Image(systemName: "lock")
 					.foregroundColor(.orange)
 					.help("Credentials not configured on this device")
@@ -492,35 +549,33 @@ struct HostRow: View {
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.padding(.vertical, 2)
+		.task(id: CredentialAvailabilityProbe(
+			hostId: host.id,
+			source: host.credential,
+			revision: store.credentialAvailabilityRevision
+		)) {
+			let required = await store.needsCredentialSetup(host)
+			guard !Task.isCancelled else { return }
+			needsCredentialSetup = required
+		}
 	}
 
-	private func chainTooltip(for host: SSHHost) -> String {
-		var names: [String] = []
-		var cursor: SSHHost? = host
-		var visited: Set<UUID> = []
-		while let current = cursor {
-			if let nextId = current.jumpHostId {
-				if visited.contains(nextId) { names.append("(cycle)"); break }
-				visited.insert(nextId)
-				guard let parent = store.hosts.first(where: { $0.id == nextId }) else {
-					names.append("(deleted)")
-					break
-				}
-				names.append(parent.name)
-				cursor = parent
-				continue
-			}
-			if let nextSid = current.jumpHostServerId {
-				guard let parent = store.hosts.first(where: { $0.serverId == nextSid }) else {
-					names.append("(deleted)")
-					break
-				}
-				names.append(parent.name)
-				cursor = parent
-				continue
-			}
+	private var chainTooltip: String {
+		var names = chainResolution.ancestors.map(\.name)
+		switch chainResolution.diagnostic {
+		case .missing:
+			names.append("(deleted)")
+		case .cycle:
+			names.append("(cycle)")
+		case .none:
 			break
 		}
 		return "via \(names.joined(separator: " → "))"
 	}
+}
+
+private struct CredentialAvailabilityProbe: Equatable {
+	let hostId: UUID
+	let source: CredentialSource
+	let revision: UInt64
 }

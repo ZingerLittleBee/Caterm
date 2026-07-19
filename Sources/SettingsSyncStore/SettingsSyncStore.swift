@@ -1,5 +1,6 @@
 import Foundation
 import SettingsStore
+import SyncScheduler
 
 /// Minimal surface of CloudKit's iCloudAccountSession we depend on, so this
 /// module doesn't link CloudKit directly — the concrete iCloudAccountSession
@@ -14,8 +15,28 @@ public extension Notification.Name {
 		Notification.Name("catermICloudAccountChanged")
 }
 
+package struct SettingsSyncConfiguration: Sendable {
+	package static let live = SettingsSyncConfiguration(
+		bootTimeout: .seconds(3),
+		initialSyncGrace: .milliseconds(500)
+	)
+
+	package let bootTimeout: Duration
+	package let initialSyncGrace: Duration
+
+	package init(bootTimeout: Duration, initialSyncGrace: Duration) {
+		self.bootTimeout = bootTimeout
+		self.initialSyncGrace = initialSyncGrace
+	}
+}
+
 @MainActor
 public final class SettingsSyncStore {
+	private struct PullRequest {
+		let reason: KVSChangeReason
+		let lifecycleGeneration: UInt64
+	}
+
 	public static let kvsKey = "caterm.settings.v1"
 
 	private let store: SettingsStore
@@ -23,6 +44,7 @@ public final class SettingsSyncStore {
 	private let accountSession: AccountSessionProviding
 	private let tokenStore: IdentityTokenStore
 	private let currentTokenProvider: () -> (NSObject & NSCoding & NSCopying)?
+	private let configuration: SettingsSyncConfiguration
 
 	// Lifecycle observer (app-lifetime)
 	private var accountChangeObserver: NSObjectProtocol?
@@ -43,48 +65,69 @@ public final class SettingsSyncStore {
 	/// to the post-grace classifier regardless of `syncState`.
 	private var inInitialSyncGrace: Bool = false
 	private var isSyncRunning: Bool = false
+	private var lifecycleGeneration: UInt64 = 0
 
-	// Test counters
-	public private(set) var startSyncCallCount = 0
-	public private(set) var observersRegisteredCount = 0
+	package var isPushSuspended: Bool {
+		syncState != .active || inInitialSyncGrace
+	}
 
-	// MARK: - Test hooks
-	public var testInitialSyncTimeout: Duration = .seconds(3)
-	public var testInitialSyncGrace: Duration = .milliseconds(500)
-	public var testPushSuspended: Bool { syncState != .active || inInitialSyncGrace }
-	public func testForceSyncState(_ s: SyncStateOutcome) { syncState = s }
-	/// Back-compat shim: maps the legacy boolean to the two-valued slice of
-	/// `SyncStateOutcome` it used to represent. New tests should call
-	/// `testForceSyncState` directly so quarantine is reachable.
-	public func testForcePushSuspended(_ v: Bool) {
-		syncState = v ? .suspendUntilFirstEdit : .active
-	}
-	public func testPostExternalChange(reason: Int) {
-		NotificationCenter.default.post(
-			name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-			object: nil,
-			userInfo: [NSUbiquitousKeyValueStoreChangeReasonKey: reason]
-		)
-	}
 	private var bootDecisionTask: Task<Void, Never>?
-	private var pullTask: Task<Void, Never>?
+	private lazy var pullScheduler = SyncScheduler<PullRequest>(
+		strategy: .latest,
+		operation: { [weak self] request in
+			await self?.dispatchPull(request)
+		}
+	)
 
-	public func testWaitForBootDecision() async {
-		_ = await bootDecisionTask?.value
-	}
-
-	public init(
+	private init(
 		store: SettingsStore,
 		kvs: KVSProtocol,
 		accountSession: AccountSessionProviding,
 		tokenStore: IdentityTokenStore,
-		currentTokenProvider: @escaping () -> (NSObject & NSCoding & NSCopying)?
+		currentTokenProvider: @escaping () -> (NSObject & NSCoding & NSCopying)?,
+		resolvedConfiguration: SettingsSyncConfiguration
 	) {
 		self.store = store
 		self.kvs = kvs
 		self.accountSession = accountSession
 		self.tokenStore = tokenStore
 		self.currentTokenProvider = currentTokenProvider
+		self.configuration = resolvedConfiguration
+	}
+
+	public convenience init(
+		store: SettingsStore,
+		kvs: KVSProtocol,
+		accountSession: AccountSessionProviding,
+		tokenStore: IdentityTokenStore,
+		currentTokenProvider: @escaping () -> (NSObject & NSCoding & NSCopying)?
+	) {
+		self.init(
+			store: store,
+			kvs: kvs,
+			accountSession: accountSession,
+			tokenStore: tokenStore,
+			currentTokenProvider: currentTokenProvider,
+			resolvedConfiguration: .live
+		)
+	}
+
+	package convenience init(
+		store: SettingsStore,
+		kvs: KVSProtocol,
+		accountSession: AccountSessionProviding,
+		tokenStore: IdentityTokenStore,
+		currentTokenProvider: @escaping () -> (NSObject & NSCoding & NSCopying)?,
+		configuration: SettingsSyncConfiguration
+	) {
+		self.init(
+			store: store,
+			kvs: kvs,
+			accountSession: accountSession,
+			tokenStore: tokenStore,
+			currentTokenProvider: currentTokenProvider,
+			resolvedConfiguration: configuration
+		)
 	}
 
 	/// App-lifetime observer for sign-in transitions. Called once at app
@@ -106,19 +149,25 @@ public final class SettingsSyncStore {
 	}
 
 	public func startSync() async {
-		startSyncCallCount += 1
-		if isSyncRunning { return }
+		if isSyncRunning {
+			_ = await bootDecisionTask?.value
+			return
+		}
 		guard accountSession.isSignedIn else { return }
+		lifecycleGeneration &+= 1
+		let generation = lifecycleGeneration
 		isSyncRunning = true
-		observersRegisteredCount += 1
 		syncState = .suspendUntilFirstEdit  // initial barrier; bootSequence overrides
 
 		let task = Task { @MainActor [weak self] in
-			await self?.runBootSequence()
-			guard let self = self, !Task.isCancelled, self.isSyncRunning else { return }
+			await self?.runBootSequence(lifecycleGeneration: generation)
+			guard let self,
+			      !Task.isCancelled,
+			      self.ownsLifecycle(generation) else { return }
 			self.registerSyncObservers()
 		}
 		bootDecisionTask = task
+		await task.value
 	}
 
 	private func registerSyncObservers() {
@@ -126,8 +175,15 @@ public final class SettingsSyncStore {
 			settingsChangeObserver = NotificationCenter.default.addObserver(
 				forName: SettingsStore.changeNotification, object: store, queue: .main
 			) { [weak self] note in
-				Task { @MainActor [weak self] in
-					self?.handleLocalSettingsChange(note: note)
+				MainActor.assumeIsolated {
+					guard let self else { return }
+					let generation = self.lifecycleGeneration
+					Task { @MainActor [weak self] in
+						self?.handleLocalSettingsChange(
+							note: note,
+							lifecycleGeneration: generation
+						)
+					}
 				}
 			}
 		}
@@ -152,9 +208,8 @@ public final class SettingsSyncStore {
 		// task's grace window is still open — re-opening the C1 leak (a user
 		// edit in that gap takes the unfreeze branch and pushes pre-grace
 		// local state).
-		pullTask?.cancel()
 		// Update the grace barrier synchronously based on the *new* reason so
-		// callers observing `testPushSuspended` immediately after a post see
+		// callers observing `isPushSuspended` immediately after a post see
 		// the correct state without yielding. Setting / clearing here also
 		// means the cancellation guard inside dispatchPull never has to touch
 		// the flag (so a cancelled grace task can't clobber a newer one).
@@ -167,13 +222,16 @@ public final class SettingsSyncStore {
 			// older grace task naturally completed.
 			inInitialSyncGrace = false
 		}
-		pullTask = Task { @MainActor [weak self] in
-			await self?.dispatchPull(reason: reason)
-		}
+		_ = pullScheduler.submit(PullRequest(
+			reason: reason,
+			lifecycleGeneration: lifecycleGeneration
+		))
 	}
 
-	private func dispatchPull(reason: KVSChangeReason) async {
-		switch reason {
+	private func dispatchPull(_ request: PullRequest) async {
+		guard !Task.isCancelled,
+		      ownsLifecycle(request.lifecycleGeneration) else { return }
+		switch request.reason {
 		case .quotaViolationChange:
 			NSLog("[SettingsSyncStore] quota violation; key present? \(kvs.data(forKey: Self.kvsKey) != nil)")
 			return
@@ -182,19 +240,23 @@ public final class SettingsSyncStore {
 			// handleKVSExternalChange so observers see the barrier without
 			// having to yield. Don't touch it here on the cancellation path —
 			// supersede semantics in handleKVSExternalChange own the flag.
-			try? await Task.sleep(for: testInitialSyncGrace)
-			guard !Task.isCancelled, isSyncRunning else { return }
+			try? await Task.sleep(for: configuration.initialSyncGrace)
+			guard !Task.isCancelled,
+			      ownsLifecycle(request.lifecycleGeneration) else { return }
 			// Clear the grace flag BEFORE classifyAndApply so the decision's
 			// finalState is the sole source of truth for whether subsequent
 			// user edits should take the unfreeze path.
 			inInitialSyncGrace = false
-			await classifyAndApply()
+			classifyAndApply(lifecycleGeneration: request.lifecycleGeneration)
 		case .serverChange, .accountChange, .unknown:
-			await classifyAndApply()
+			guard !Task.isCancelled,
+			      ownsLifecycle(request.lifecycleGeneration) else { return }
+			classifyAndApply(lifecycleGeneration: request.lifecycleGeneration)
 		}
 	}
 
-	private func classifyAndApply() async {
+	private func classifyAndApply(lifecycleGeneration generation: UInt64) {
+		guard ownsLifecycle(generation) else { return }
 		let bootStartedAt = Date()
 		let persisted = tokenStore.loadPersisted()
 		let current = currentTokenProvider()
@@ -215,10 +277,18 @@ public final class SettingsSyncStore {
 		case .identityChanged, .unknownPrevious:
 			decision = AccountSwitchHandler.handle(local: store.settings, cloudY: cloud)
 		}
-		await applyDecision(decision, currentToken: current)
+		applyDecision(
+			decision,
+			currentToken: current,
+			lifecycleGeneration: generation
+		)
 	}
 
-	private func handleLocalSettingsChange(note: Notification) {
+	private func handleLocalSettingsChange(
+		note: Notification,
+		lifecycleGeneration generation: UInt64
+	) {
+		guard ownsLifecycle(generation) else { return }
 		let source = note.userInfo?[SettingsStore.sourceUserInfoKey] as? String ?? "local"
 		if source == "sync" { return }
 
@@ -255,6 +325,7 @@ public final class SettingsSyncStore {
 
 	public func stopSync() {
 		guard isSyncRunning else { return }
+		lifecycleGeneration &+= 1
 		isSyncRunning = false
 		// Cancel any in-flight boot or pull task. Without this, a sleeping
 		// task wakes up after stopSync, calls applyDecision, persists a
@@ -262,8 +333,7 @@ public final class SettingsSyncStore {
 		// observers we just removed.
 		bootDecisionTask?.cancel()
 		bootDecisionTask = nil
-		pullTask?.cancel()
-		pullTask = nil
+		pullScheduler.cancel()
 		inInitialSyncGrace = false
 		if let token = kvsExternalObserver {
 			NotificationCenter.default.removeObserver(token)
@@ -276,15 +346,15 @@ public final class SettingsSyncStore {
 		syncState = .suspendUntilFirstEdit
 	}
 
-	private func runBootSequence() async {
+	private func runBootSequence(lifecycleGeneration generation: UInt64) async {
 		// Trigger initial pull and wait briefly. We don't yet subscribe to
 		// didChangeExternallyNotification — production wiring lands in Task 16.
 		_ = kvs.synchronize()
-		try? await Task.sleep(for: testInitialSyncTimeout)
+		try? await Task.sleep(for: configuration.bootTimeout)
 		// stopSync may have run while we were sleeping. Bail out before we
 		// touch state — applyDecision would otherwise persist a token and
 		// transition syncState out from under stopSync.
-		guard !Task.isCancelled, isSyncRunning else { return }
+		guard !Task.isCancelled, ownsLifecycle(generation) else { return }
 
 		let bootStartedAt = Date()
 		let persisted = tokenStore.loadPersisted()
@@ -312,7 +382,11 @@ public final class SettingsSyncStore {
 			return
 		}
 
-		await applyDecision(decision, currentToken: current)
+		applyDecision(
+			decision,
+			currentToken: current,
+			lifecycleGeneration: generation
+		)
 	}
 
 	private func decodeCloud() -> CloudReadResult {
@@ -326,8 +400,10 @@ public final class SettingsSyncStore {
 
 	private func applyDecision(
 		_ decision: Decision,
-		currentToken: (NSObject & NSCoding & NSCopying)?
-	) async {
+		currentToken: (NSObject & NSCoding & NSCopying)?,
+		lifecycleGeneration generation: UInt64
+	) {
+		guard ownsLifecycle(generation) else { return }
 		var applyFailed = false
 		switch decision.action {
 		case .noOp:
@@ -361,10 +437,15 @@ public final class SettingsSyncStore {
 			return
 		}
 
+		guard ownsLifecycle(generation) else { return }
 		if decision.acceptIdentity, let token = currentToken {
 			tokenStore.persist(token)
 		}
 		syncState = decision.finalState
+	}
+
+	private func ownsLifecycle(_ generation: UInt64) -> Bool {
+		isSyncRunning && lifecycleGeneration == generation
 	}
 
 	private func pushLocalToKVS() {

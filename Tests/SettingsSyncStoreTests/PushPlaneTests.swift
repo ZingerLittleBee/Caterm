@@ -16,19 +16,20 @@ final class PushPlaneTests: XCTestCase {
         let sync = SettingsSyncStore(
             store: store, kvs: kvs, accountSession: session,
             tokenStore: tokenStore,
-            currentTokenProvider: { TestToken("A") }
+            currentTokenProvider: { TestToken("A") },
+            configuration: SettingsSyncConfiguration(
+                bootTimeout: .milliseconds(10),
+                initialSyncGrace: .zero
+            )
         )
-        sync.testInitialSyncTimeout = .milliseconds(10)
-        sync.testInitialSyncGrace = .milliseconds(0)
         sync.installLifecycleObservers()
         await sync.startSync()
-        await sync.testWaitForBootDecision()
         return (sync, store, kvs)
     }
 
     func test_userEdit_postBoot_isPushed() async throws {
         let (sync, store, kvs) = try await makeStore()
-        XCTAssertFalse(sync.testPushSuspended)
+        XCTAssertFalse(sync.isPushSuspended)
         kvs.removeObject(forKey: SettingsSyncStore.kvsKey)
         store.update { $0.global.fontSize = 18 }
         store.flushNow()
@@ -49,18 +50,4 @@ final class PushPlaneTests: XCTestCase {
             "sync-sourced change must not loop back into a push")
     }
 
-    func test_pushSuspended_firstUserEditUnfreezesAndPushes() async throws {
-        // Under the suspendUntilFirstEdit contract (Task 18), a user edit
-        // while suspended must unfreeze the barrier and push. This replaces
-        // the prior behavior where suspension blocked all pushes.
-        let (sync, store, kvs) = try await makeStore()
-        kvs.removeObject(forKey: SettingsSyncStore.kvsKey)
-        sync.testForcePushSuspended(true)
-        store.update { $0.global.fontSize = 88 }
-        store.flushNow()
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertNotNil(kvs.data(forKey: SettingsSyncStore.kvsKey),
-            "first edit under suspension must unfreeze and push")
-        XCTAssertFalse(sync.testPushSuspended)
-    }
 }

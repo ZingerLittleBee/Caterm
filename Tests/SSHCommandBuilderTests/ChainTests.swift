@@ -18,62 +18,150 @@ final class ChainTests: XCTestCase {
 		return h
 	}
 
-	func testNoChainReturnsEmpty() throws {
+	func testNoChainReturnsEmpty() {
 		let target = host("target", "rh-target")
-		XCTAssertEqual(try target.resolvedChain(in: [target]), [])
+		let resolution = target.chainResolution(in: [target])
+		XCTAssertEqual(resolution.connectionOrder, [])
+		XCTAssertNil(resolution.diagnostic)
 	}
 
-	func testSingleHopReturnsAncestor() throws {
+	func testSingleHopReturnsAncestor() {
 		let bastion = host("bastion", "rh-bastion")
 		let target = host("target", "rh-target", jump: "rh-bastion")
-		let chain = try target.resolvedChain(in: [bastion, target])
+		let chain = target.chainResolution(in: [bastion, target]).connectionOrder
 		XCTAssertEqual(chain.map(\.name), ["bastion"])
 	}
 
-	func testSingleHopResolvesUnsyncedAncestorByLocalId() throws {
+	func testSingleHopResolvesUnsyncedAncestorByLocalId() {
 		let bastion = localHost("bastion")
 		var target = localHost("target")
 		target.jumpHostId = bastion.id
 
-		let chain = try target.resolvedChain(in: [bastion, target])
+		let chain = target.chainResolution(in: [bastion, target]).connectionOrder
 		XCTAssertEqual(chain.map(\.name), ["bastion"])
 	}
 
-	func testMultiHopReturnsAncestorsInDialOrder() throws {
+	func testMissingLocalReferenceReturnsTypedDiagnostic() {
+		let missingID = UUID()
+		let target = localHost("target", jumpId: missingID)
+
+		XCTAssertEqual(
+			target.chainResolution(in: [target]).diagnostic,
+			.missing(reference: .localID(missingID))
+		)
+	}
+
+	func testMissingLocalReferenceFallsBackToStableServerReference() {
+		let bastion = host("bastion", "rh-bastion")
+		var target = localHost("target", jumpId: UUID())
+		target.jumpHostServerId = bastion.serverId
+
+		let resolution = target.chainResolution(in: [bastion, target])
+
+		XCTAssertEqual(resolution.connectionOrder.map(\.name), ["bastion"])
+		XCTAssertNil(resolution.diagnostic)
+	}
+
+	func testValidLocalReferenceWinsOverDifferentServerReference() {
+		let localParent = localHost("local-parent")
+		let serverParent = host("server-parent", "rh-server-parent")
+		var target = localHost("target", jumpId: localParent.id)
+		target.jumpHostServerId = serverParent.serverId
+
+		let resolution = target.chainResolution(
+			in: [localParent, serverParent, target]
+		)
+
+		XCTAssertEqual(resolution.ancestors.map(\.id), [localParent.id])
+		XCTAssertNil(resolution.diagnostic)
+	}
+
+	func testMultiHopChainSupportsMixedLocalAndServerReferences() {
+		let deep = localHost("deep")
+		var mid = host("mid", "rh-mid")
+		mid.jumpHostId = deep.id
+		let target = host("target", "rh-target", jump: "rh-mid")
+
+		let resolution = target.chainResolution(in: [deep, mid, target])
+
+		XCTAssertEqual(resolution.ancestors.map(\.name), ["mid", "deep"])
+		XCTAssertEqual(resolution.connectionOrder.map(\.name), ["deep", "mid"])
+		XCTAssertNil(resolution.diagnostic)
+	}
+
+	func testMultiHopReturnsAncestorsInDialOrder() {
 		// Connect order: deep → mid → target.
 		// Chain config: target.jump = mid; mid.jump = deep.
-		// resolvedChain returns [deep, mid] (target is excluded).
+		// connectionOrder returns [deep, mid] (target is excluded).
 		let deep = host("deep", "rh-deep")
 		let mid = host("mid", "rh-mid", jump: "rh-deep")
 		let target = host("target", "rh-target", jump: "rh-mid")
-		let chain = try target.resolvedChain(in: [deep, mid, target])
+		let chain = target.chainResolution(in: [deep, mid, target]).connectionOrder
 		XCTAssertEqual(chain.map(\.name), ["deep", "mid"])
 	}
 
-	func testMissingHostThrows() {
+	func testResolutionExposesTraversalAndConnectionOrder() {
+		let deep = host("deep", "rh-deep")
+		let mid = host("mid", "rh-mid", jump: "rh-deep")
+		let target = host("target", "rh-target", jump: "rh-mid")
+
+		let resolution = target.chainResolution(in: [deep, mid, target])
+
+		XCTAssertEqual(resolution.ancestors.map(\.name), ["mid", "deep"])
+		XCTAssertEqual(resolution.connectionOrder.map(\.name), ["deep", "mid"])
+		XCTAssertNil(resolution.diagnostic)
+	}
+
+	func testResolutionReturnsPrefixAndMissingReferenceDiagnostic() {
+		let mid = host("mid", "rh-mid", jump: "rh-ghost")
+		let target = host("target", "rh-target", jump: "rh-mid")
+
+		let resolution = target.chainResolution(in: [mid, target])
+
+		XCTAssertEqual(resolution.ancestors.map(\.name), ["mid"])
+		XCTAssertEqual(
+			resolution.diagnostic,
+			.missing(reference: .serverID("rh-ghost"))
+		)
+	}
+
+	func testResolutionReturnsPrefixAndCycleDiagnosticWithoutRepeatingNode() {
+		let b = host("b", "rh-b", jump: "rh-c")
+		let c = host("c", "rh-c", jump: "rh-b")
+		let target = host("target", "rh-target", jump: "rh-b")
+
+		let resolution = target.chainResolution(in: [b, c, target])
+
+		XCTAssertEqual(resolution.ancestors.map(\.name), ["b", "c"])
+		XCTAssertEqual(
+			resolution.diagnostic,
+			.cycle(reference: .serverID("rh-b"))
+		)
+	}
+
+	func testMissingHostReturnsDiagnostic() {
 		let target = host("target", "rh-target", jump: "rh-ghost")
-		XCTAssertThrowsError(try target.resolvedChain(in: [target])) { error in
-			guard case ChainResolutionError.missingHost(let id) =
-				error as? ChainResolutionError ?? .missingHost(serverId: "")
-			else { return XCTFail("wrong error: \(error)") }
-			XCTAssertEqual(id, "rh-ghost")
-		}
+		XCTAssertEqual(
+			target.chainResolution(in: [target]).diagnostic,
+			.missing(reference: .serverID("rh-ghost"))
+		)
 	}
 
-	func testSelfLoopThrows() {
+	func testSelfLoopReturnsCycleDiagnostic() {
 		let target = host("target", "rh-target", jump: "rh-target")
-		XCTAssertThrowsError(try target.resolvedChain(in: [target])) { error in
-			guard case ChainResolutionError.cycle(let id) =
-				error as? ChainResolutionError ?? .cycle(involvingServerId: "")
-			else { return XCTFail("wrong error: \(error)") }
-			XCTAssertEqual(id, "rh-target")
-		}
+		XCTAssertEqual(
+			target.chainResolution(in: [target]).diagnostic,
+			.cycle(reference: .serverID("rh-target"))
+		)
 	}
 
-	func testTwoHostCycleThrows() {
+	func testTwoHostCycleReturnsDiagnostic() {
 		let a = host("a", "rh-a", jump: "rh-b")
 		let b = host("b", "rh-b", jump: "rh-a")
-		XCTAssertThrowsError(try a.resolvedChain(in: [a, b]))
+		XCTAssertEqual(
+			a.chainResolution(in: [a, b]).diagnostic,
+			.cycle(reference: .serverID("rh-a"))
+		)
 	}
 
 	func testFirstHopAddressOnDirectHostReturnsSelf() {

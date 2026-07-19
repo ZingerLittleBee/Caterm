@@ -1,7 +1,5 @@
 import BackupArchive
 import Foundation
-import KeychainStore
-import ManagedKeyStore
 import SessionStore
 import SettingsStore
 import SnippetStore
@@ -9,10 +7,9 @@ import SnippetSyncClient
 import SSHCommandBuilder
 
 public enum BackupExportError: Error {
-	/// A Keychain read failed for a reason other than "item not found"
-	/// (e.g. keychain locked). The export aborts rather than silently
-	/// producing an archive with missing secrets.
-	case keychainUnavailable(hostName: String, underlying: String)
+	/// A credential-material read failed. The export aborts rather than
+	/// silently producing an archive with missing secrets.
+	case credentialMaterialUnavailable(hostName: String, underlying: String)
 }
 
 /// Gathers user configuration from the live stores into a `BackupPayload`.
@@ -21,63 +18,152 @@ public enum BackupExportError: Error {
 /// collected (see BackupPayload).
 @MainActor
 public enum BackupExporter {
+	private struct HostSnapshotChanged: Error {}
 
 	public static func makePayload(
 		includeSecrets: Bool,
 		appVersion: String? = nil,
 		sessionStore: SessionStore,
-		managedKeys: ManagedKeyStore,
 		snippets: [Snippet],
 		settings: CatermSettings?,
 		bookmarks: (UUID) -> [RemoteBookmark],
 		now: Date = Date()
-	) throws -> BackupPayload {
-		let hosts = try sessionStore.hosts.map { host in
-			try backupHost(host, includeSecrets: includeSecrets,
-			               sessionStore: sessionStore, managedKeys: managedKeys)
-		}
+	) async throws -> BackupPayload {
+		while true {
+			try Task.checkCancellation()
+			let barrier = includeSecrets
+				? try await sessionStore.credentialMaterialStore.beginReadBarrier()
+				: nil
+			let payload: BackupPayload
+			do {
+				try Task.checkCancellation()
+				let hostSnapshot = sessionStore.hosts
+				let bookmarkSnapshot = hostSnapshot.flatMap { host in
+					bookmarks(host.id).map { bookmark in
+						BackupBookmark(
+							id: bookmark.id,
+							hostId: host.id,
+							label: bookmark.label,
+							path: bookmark.path,
+							createdAt: bookmark.createdAt
+						)
+					}
+				}
+				let knownHostsSnapshot = knownHostsLines(
+					path: sessionStore.knownHostsCaterm
+				)
+				var hosts: [BackupHost] = []
+				for host in hostSnapshot {
+					if let barrier {
+						hosts.append(try await backupHost(
+							host,
+							under: barrier,
+							allHosts: hostSnapshot,
+							sessionStore: sessionStore
+						))
+					} else {
+						hosts.append(makeBackupHost(
+							host,
+							material: nil,
+							allHosts: hostSnapshot
+						))
+					}
+				}
+				guard sessionStore.hosts == hostSnapshot else {
+					throw HostSnapshotChanged()
+				}
 
-		let backupSnippets = snippets.map { s in
-			BackupSnippet(id: s.id, name: s.name, content: s.content,
-			              placeholders: s.placeholders,
-			              createdAt: s.createdAt, updatedAt: s.updatedAt)
-		}
+				let backupSnippets = snippets.map { snippet in
+					BackupSnippet(
+						id: snippet.id,
+						name: snippet.name,
+						content: snippet.content,
+						placeholders: snippet.placeholders,
+						createdAt: snippet.createdAt,
+						updatedAt: snippet.updatedAt
+					)
+				}
 
-		let backupSettings = settings.map { s in
-			BackupSettings(
-				revision: s.revision,
-				global: s.global,
-				hostOverrides: Dictionary(uniqueKeysWithValues:
-					s.hostOverrides.map { ($0.key.rawValue, $0.value) })
-			)
-		}
+				let backupSettings = settings.map { settings in
+					BackupSettings(
+						revision: settings.revision,
+						global: settings.global,
+						hostOverrides: Dictionary(uniqueKeysWithValues:
+							settings.hostOverrides.map {
+								($0.key.rawValue, $0.value)
+							})
+					)
+				}
 
-		let backupBookmarks = sessionStore.hosts.flatMap { host in
-			bookmarks(host.id).map { b in
-				BackupBookmark(id: b.id, hostId: host.id, label: b.label,
-				               path: b.path, createdAt: b.createdAt)
+				payload = BackupPayload(
+					exportedAt: now,
+					appVersion: appVersion,
+					hosts: hosts,
+					snippets: backupSnippets,
+					settings: backupSettings,
+					bookmarks: bookmarkSnapshot,
+					knownHosts: knownHostsSnapshot
+				)
+			} catch is HostSnapshotChanged {
+				if let barrier {
+					await sessionStore.credentialMaterialStore
+						.finishReadBarrier(barrier)
+				}
+				continue
+			} catch {
+				if let barrier {
+					await sessionStore.credentialMaterialStore
+						.finishReadBarrier(barrier)
+				}
+				throw error
 			}
+			if let barrier {
+				await sessionStore.credentialMaterialStore
+					.finishReadBarrier(barrier)
+			}
+			return payload
 		}
-
-		return BackupPayload(
-			exportedAt: now,
-			appVersion: appVersion,
-			hosts: hosts,
-			snippets: backupSnippets,
-			settings: backupSettings,
-			bookmarks: backupBookmarks,
-			knownHosts: knownHostsLines(path: sessionStore.knownHostsCaterm)
-		)
 	}
 
 	// MARK: Hosts
 
 	private static func backupHost(
 		_ host: SSHHost,
-		includeSecrets: Bool,
-		sessionStore: SessionStore,
-		managedKeys: ManagedKeyStore
-	) throws -> BackupHost {
+		under barrier: CredentialMaterialReadBarrier,
+		allHosts: [SSHHost],
+		sessionStore: SessionStore
+	) async throws -> BackupHost {
+		try Task.checkCancellation()
+		let snapshot: StoredCredentialMaterialSnapshot
+		do {
+			snapshot = try await sessionStore.credentialMaterialStore.snapshot(
+				for: host.id,
+				under: barrier
+			)
+		} catch is CancellationError {
+			throw CancellationError()
+		} catch {
+			throw BackupExportError.credentialMaterialUnavailable(
+				hostName: host.name,
+				underlying: String(describing: error)
+			)
+		}
+		try Task.checkCancellation()
+		guard sessionStore.hosts.first(where: { $0.id == host.id }) == host else {
+			throw HostSnapshotChanged()
+		}
+		return makeBackupHost(
+			host,
+			material: snapshot,
+			allHosts: allHosts
+		)
+	}
+
+	private static func makeBackupHost(
+		_ host: SSHHost,
+		material: StoredCredentialMaterialSnapshot?,
+		allHosts: [SSHHost]
+	) -> BackupHost {
 		let kind: String
 		let hasPassphrase: Bool
 		switch host.credential {
@@ -92,17 +178,17 @@ public enum BackupExporter {
 		var password: String?
 		var passphrase: String?
 		var privateKey: Data?
-		if includeSecrets {
-			password = try optionalSecret(
-				account: "\(host.id.uuidString).password",
-				keychain: sessionStore.keychain, hostName: host.name)
-			passphrase = try optionalSecret(
-				account: "\(host.id.uuidString).keyPassphrase",
-				keychain: sessionStore.keychain, hostName: host.name)
+		if let material {
+			password = material.password.flatMap {
+				String(data: $0, encoding: .utf8)
+			}
+			passphrase = material.passphrase.flatMap {
+				String(data: $0, encoding: .utf8)
+			}
 			if case let .keyFile(path, _) = host.credential {
 				// Managed copy first, on-disk path as a legacy fallback —
 				// same resolution order the credential sync push uses.
-				privateKey = (try? managedKeys.read(hostId: host.id))
+				privateKey = material.managedPrivateKey
 					?? FileManager.default.contents(atPath: path)
 			}
 		}
@@ -118,7 +204,7 @@ public enum BackupExporter {
 			hasPassphrase: hasPassphrase,
 			createdAt: host.createdAt,
 			updatedAt: host.updatedAt,
-			jumpHostId: resolvedJumpHostId(host, in: sessionStore.hosts),
+			jumpHostId: resolvedJumpHostId(host, in: allHosts),
 			forwards: host.forwards.map { f in
 				BackupPortForward(kind: f.kind.rawValue,
 				                  bindAddress: f.bindAddress,
@@ -139,22 +225,11 @@ public enum BackupExporter {
 	/// `id`. Hosts that only carry a `jumpHostServerId` (pulled before the
 	/// local backfill ran) resolve through it.
 	private static func resolvedJumpHostId(_ host: SSHHost, in hosts: [SSHHost]) -> UUID? {
-		if let id = host.jumpHostId { return id }
+		if let id = host.jumpHostId {
+			return hosts.contains(where: { $0.id == id }) ? id : nil
+		}
 		guard let sid = host.jumpHostServerId else { return nil }
 		return hosts.first { $0.serverId == sid }?.id
-	}
-
-	private static func optionalSecret(
-		account: String, keychain: KeychainStore, hostName: String
-	) throws -> String? {
-		do {
-			return try keychain.get(account: account)
-		} catch KeychainError.notFound {
-			return nil
-		} catch {
-			throw BackupExportError.keychainUnavailable(
-				hostName: hostName, underlying: String(describing: error))
-		}
 	}
 
 	private static func knownHostsLines(path: String) -> [String] {

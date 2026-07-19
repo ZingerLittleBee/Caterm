@@ -1,4 +1,5 @@
 import Foundation
+import MergeDecision
 import ServerSyncClient
 import SSHCommandBuilder
 
@@ -17,18 +18,15 @@ public enum HostSyncReconciler {
             if let serverId = localHost.serverId {
                 if let r = remoteById[serverId] {
                     matchedRemoteIds.insert(serverId)
-                    if localHost.updatedAt < r.updatedAt {
+                    switch decision(local: localHost, incoming: r) {
+                    case .incoming:
                         ops.append(.updateLocal(localHostId: localHost.id, remote: r))
-                    } else if localHost.updatedAt > r.updatedAt {
+                    case .local:
                         ops.append(.updateRemote(localHostId: localHost.id,
                                                   serverId: serverId))
-                    } else if localHost.forwards != r.forwards || localHost.icon != r.icon {
-                        // Equal updatedAt but forwards/icon diverge — defensive
-                        // catch for callers that mutated metadata without
-                        // bumping updatedAt. Prefer the remote copy.
-                        ops.append(.updateLocal(localHostId: localHost.id, remote: r))
+                    case .equivalent:
+                        break
                     }
-                    // otherwise equal updatedAt → no-op
                 } else {
                     // Local thinks it's synced but server doesn't have it.
                     // Per spec: other device deleted it → delete locally.
@@ -54,33 +52,58 @@ public enum HostSyncReconciler {
         deletedHostIDs: [String]
     ) -> [SyncOperation] {
         var ops: [SyncOperation] = []
-        let localByServerId = Dictionary(uniqueKeysWithValues:
-            local.compactMap { h -> (String, SSHHost)? in
-                guard let s = h.serverId else { return nil }
-                return (s, h)
-            }
+        let localIndex = MergeIdentityIndex(
+            local,
+            localID: { $0.id },
+            serverID: { $0.serverId }
         )
         for r in changedHosts {
-            if let existing = localByServerId[r.id] {
-                if existing.updatedAt < r.updatedAt {
+            if let existing = localIndex.match(
+                localID: nil,
+                serverID: r.id
+            ) {
+                switch decision(local: existing, incoming: r) {
+                case .incoming:
                     ops.append(.updateLocal(localHostId: existing.id, remote: r))
-                } else if existing.updatedAt > r.updatedAt {
+                case .local:
                     ops.append(.updateRemote(localHostId: existing.id, serverId: r.id))
-                } else if existing.forwards != r.forwards || existing.icon != r.icon {
-                    // Equal updatedAt but forwards/icon diverge — defensive
-                    // catch for callers that mutated metadata without
-                    // bumping updatedAt. Prefer the remote copy.
-                    ops.append(.updateLocal(localHostId: existing.id, remote: r))
+                case .equivalent:
+                    break
                 }
             } else {
                 ops.append(.createLocal(remote: r))
             }
         }
         for id in deletedHostIDs {
-            if let existing = localByServerId[id] {
+            if let existing = localIndex.match(
+                localID: nil,
+                serverID: id
+            ) {
                 ops.append(.deleteLocal(localHostId: existing.id))
             }
         }
         return ops
+    }
+
+    private static func decision(
+        local: SSHHost,
+        incoming: RemoteHost
+    ) -> MergeDecision {
+        MergePolicy<SSHHost, RemoteHost>(
+            local: { $0.updatedAt },
+            incoming: { $0.updatedAt }
+        )
+        .resolvingTies { local, incoming in
+            local.name != incoming.name
+                || local.hostname != incoming.hostname
+                || local.port != incoming.port
+                || local.username != incoming.username
+                || local.jumpHostServerId != incoming.jumpHostServerId
+                || local.forwards != incoming.forwards
+                || local.icon != incoming.icon
+                ? .incoming
+                : .equivalent
+        }
+        .decide(local: local, incoming: incoming)
     }
 }

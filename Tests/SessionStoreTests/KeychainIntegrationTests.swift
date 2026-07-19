@@ -29,14 +29,14 @@ final class KeychainIntegrationTests: XCTestCase {
         }
     }
 
-    func testDeleteHostWipesKeychain() throws {
+    func testDeleteHostWipesKeychain() async throws {
         let host = SSHHost(name: "t", hostname: "h", port: 22, username: "u",
                            credential: .password)
         try sut.addHost(host)
         try sut.setHostSecret("p", hostId: host.id, kind: .password)
         XCTAssertEqual(try sut.keychain.get(account: "\(host.id.uuidString).password"), "p")
 
-        try sut.deleteHost(id: host.id)
+        try await sut.deleteHost(id: host.id)
         XCTAssertThrowsError(try sut.keychain.get(account: "\(host.id.uuidString).password"))
     }
 
@@ -52,13 +52,13 @@ final class KeychainIntegrationTests: XCTestCase {
         XCTAssertEqual(try sut.keychain.get(account: "\(id.uuidString).keyPassphrase"), "phrase!")
     }
 
-    func testDeleteHostWipesBothPasswordAndPassphrase() throws {
+    func testDeleteHostWipesBothPasswordAndPassphrase() async throws {
         let host = SSHHost(name: "t", hostname: "h", port: 22, username: "u",
                            credential: .keyFile(keyPath: "/x", hasPassphrase: true))
         try sut.addHost(host)
         try sut.setHostSecret("p1", hostId: host.id, kind: .password)
         try sut.setHostSecret("p2", hostId: host.id, kind: .keyPassphrase)
-        try sut.deleteHost(id: host.id)
+        try await sut.deleteHost(id: host.id)
         XCTAssertThrowsError(try sut.keychain.get(account: "\(host.id.uuidString).password"))
         XCTAssertThrowsError(try sut.keychain.get(account: "\(host.id.uuidString).keyPassphrase"))
     }

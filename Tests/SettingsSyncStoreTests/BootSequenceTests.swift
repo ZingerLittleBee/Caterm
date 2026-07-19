@@ -27,11 +27,13 @@ final class BootSequenceTests: XCTestCase {
 		let sync = SettingsSyncStore(
 			store: store, kvs: kvs, accountSession: session,
 			tokenStore: tokenStore,
-			currentTokenProvider: { currentToken }
+			currentTokenProvider: { currentToken },
+			configuration: SettingsSyncConfiguration(
+				bootTimeout: .milliseconds(50),
+				initialSyncGrace: .milliseconds(10)
+			)
 		)
 		sync.installLifecycleObservers()
-		sync.testInitialSyncTimeout = .milliseconds(50)
-		sync.testInitialSyncGrace = .milliseconds(10)
 		return (sync, store, kvs, tokenStore)
 	}
 
@@ -53,14 +55,13 @@ final class BootSequenceTests: XCTestCase {
 			local: local, kvsBlob: nil, currentToken: curr, persistedToken: .none
 		)
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 		let blob = kvs.data(forKey: SettingsSyncStore.kvsKey)
 		XCTAssertNotNil(blob)
 		guard case .token(let t) = tokenStore.loadPersisted() else {
 			XCTFail("token not persisted"); return
 		}
 		XCTAssertTrue(t.isEqual(curr))
-		XCTAssertFalse(sync.testPushSuspended)
+		XCTAssertFalse(sync.isPushSuspended)
 	}
 
 	func test_boot_identityChanged_yEmpty_doesNotPersistToken_staysSuspended() async throws {
@@ -75,14 +76,13 @@ final class BootSequenceTests: XCTestCase {
 			currentToken: currToken, persistedToken: .token(prevToken)
 		)
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 		XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey))
 		guard case .token(let stored) = tokenStore.loadPersisted() else {
 			XCTFail("token missing"); return
 		}
 		XCTAssertTrue(stored.isEqual(prevToken),
 			"token must NOT advance until user accepts identity Y by editing")
-		XCTAssertTrue(sync.testPushSuspended)
+		XCTAssertTrue(sync.isPushSuspended)
 	}
 
 	func test_boot_identityChanged_yHasData_forceApplies_persistsNewToken() async throws {
@@ -98,14 +98,13 @@ final class BootSequenceTests: XCTestCase {
 			currentToken: currToken, persistedToken: .token(prevToken)
 		)
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 		XCTAssertEqual(store.settings.global.fontSize, 21)
 		XCTAssertEqual(store.settings.revision, "y-rev")
 		guard case .token(let stored) = tokenStore.loadPersisted() else {
 			XCTFail("token missing"); return
 		}
 		XCTAssertTrue(stored.isEqual(currToken))
-		XCTAssertFalse(sync.testPushSuspended)
+		XCTAssertFalse(sync.isPushSuspended)
 	}
 
 	func test_boot_unknownPrevious_routesViaAccountSwitchHandler() async throws {
@@ -119,10 +118,9 @@ final class BootSequenceTests: XCTestCase {
 			persistedToken: .archiveFailed
 		)
 		await sync.startSync()
-		await sync.testWaitForBootDecision()
 		XCTAssertNil(kvs.data(forKey: SettingsSyncStore.kvsKey))
 		XCTAssertEqual(tokenStore.loadPersisted(), .archiveFailed,
 			"sentinel preserved; token not advanced under unknownPrevious + Y empty")
-		XCTAssertTrue(sync.testPushSuspended)
+		XCTAssertTrue(sync.isPushSuspended)
 	}
 }

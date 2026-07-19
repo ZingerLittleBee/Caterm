@@ -12,6 +12,7 @@ import KeychainStore
 import ManagedKeyStore
 import SFTPCommandBuilder
 import SSHCommandBuilder
+import SSHCredentialContract
 import ServerSyncClient
 import SessionStore
 import SettingsStore
@@ -42,43 +43,40 @@ struct CatermApp: App {
 
   let cloudKitClient: CloudKitSyncClient?
   let icloudSession: any AuthSessionProtocol & AccountSessionProviding
-  private let accountIdentityTracker: AccountIdentityTracker?
+  private let accountChangeSyncCoordinator: AccountChangeSyncCoordinator
   private let settingsSync: SettingsSyncStore
   private let masterKeyStore: KeychainSyncMasterKeyStore
-  private let managedKeyStore: ManagedKeyStore
   private let credentialSyncCoordinator: CredentialSyncCoordinator
-  private let credentialSyncAccountReset: CredentialSyncAccountResetCoordinator
   private let cloudSyncDisabled: Bool
 
   init() {
     let cloudSyncDisabled = CloudSyncRuntimeOptions.cloudSyncDisabled()
     self.cloudSyncDisabled = cloudSyncDisabled
     try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
-    let session = makeStore()
+    let mngs = ManagedKeyStore()
+    let session = makeStore(managedKeyStore: mngs)
     let surfaceRegistry = SurfaceRegistry()
     _surfaceRegistry = StateObject(wrappedValue: surfaceRegistry)
     let cloudSync = CloudSyncBootstrap.make(disabled: cloudSyncDisabled)
     let icloudSession = cloudSync.accountSession
     self.icloudSession = icloudSession
     self.cloudKitClient = cloudSync.cloudKitClient
-    self.accountIdentityTracker = cloudSync.accountIdentityTracker
+    let accountIdentityTracker = cloudSync.accountIdentityTracker
     let prefs = SyncPreferences()
     // Single instances shared across HostSyncStore + Coordinator + UI so
     // toggle/reset state stays consistent.
     let credentialSyncPrefs = CredentialSyncPreferencesStore()
     let mks = KeychainSyncMasterKeyStore()
-    let mngs = ManagedKeyStore()
     self.masterKeyStore = mks
-    self.managedKeyStore = mngs
     let credentialCoordinator = CredentialSyncCoordinator(
       prefsStore: credentialSyncPrefs,
       masterKeyStore: mks,
       iCloudKeychainAvailable: { true }
     )
     self.credentialSyncCoordinator = credentialCoordinator
-    self.credentialSyncAccountReset = CredentialSyncAccountResetCoordinator(
+    let credentialSyncAccountReset = CredentialSyncAccountResetCoordinator(
       prefsStore: credentialSyncPrefs,
-      managedKeyStore: mngs
+      sessionStore: session
     )
     _credentialSync = StateObject(wrappedValue: credentialSyncPrefs)
     // `_store = StateObject(wrappedValue:)` is the underscore-prefixed
@@ -92,8 +90,7 @@ struct CatermApp: App {
       authSession: icloudSession,
       preferences: prefs,
       credentialSync: credentialSyncPrefs,
-      masterKeyStore: mks,
-      managedKeyStore: mngs
+      masterKeyStore: mks
     )
     _syncStore = StateObject(wrappedValue: hostSyncStore)
     // Refresh CloudKit account status asynchronously. HostSyncStore.syncIfSignedIn
@@ -119,7 +116,6 @@ struct CatermApp: App {
     let cmDir =
       (try? CacheDirectories.controlMasterDir())
       ?? URL(fileURLWithPath: NSTemporaryDirectory())
-    let askpass = URL(fileURLWithPath: session.askpassPath)
     let knownCaterm = URL(fileURLWithPath: session.knownHostsCaterm)
     let knownUser = URL(fileURLWithPath: session.knownHostsUser)
     // SettingsStore: loaded eagerly through `BootSequence.run` so the
@@ -166,6 +162,46 @@ struct CatermApp: App {
     let snippetSyncInstance = SnippetSyncStore(
       store: snippetStoreInstance, client: cloudSync.snippetClient)
     _snippetSync = StateObject(wrappedValue: snippetSyncInstance)
+    self.accountChangeSyncCoordinator = AccountChangeSyncCoordinator(
+      dependencies: AccountChangeSyncCoordinator.Dependencies(
+        beginHostSuspension: {
+          hostSyncStore.beginAccountChangeSuspension()
+        },
+        beginSnippetSuspension: {
+          snippetSyncInstance.beginAccountChangeSuspension()
+        },
+        drainHost: {
+          await hostSyncStore.drainForAccountChange()
+        },
+        drainSnippets: {
+          await snippetSyncInstance.drainForAccountChange()
+        },
+        identityChanged: {
+          guard let accountIdentityTracker, let cloudKitClient = cloudSync.cloudKitClient
+          else { return false }
+          return await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
+            == .identityChanged
+        },
+        resetCredentials: {
+          try await credentialSyncAccountReset.resetForAccountChange()
+        },
+        wipeSnippets: {
+          try snippetStoreInstance.wipeLocal()
+        },
+        acknowledgeIdentityChange: {
+          await accountIdentityTracker?.acknowledgeIdentityChange()
+        },
+        resumeHost: {
+          hostSyncStore.resumeAfterAccountChange()
+        },
+        resumeSnippets: { identityChanged in
+          snippetSyncInstance.resumeAfterAccountChange(identityChanged: identityChanged)
+        },
+        reportFailure: { error in
+          NSLog("[CatermApp] Account-scoped reset failed: %@", String(describing: error))
+        }
+      )
+    )
     _fileTransferStore = StateObject(
       wrappedValue: FileTransferStore(
         controlPathFor: { hostId in
@@ -173,8 +209,6 @@ struct CatermApp: App {
         },
         credentialsFor: { _ in
           SFTPCredentials(
-            askpassPath: askpass,
-            identityFiles: [],
             knownHostsCaterm: knownCaterm,
             knownHostsUser: knownUser,
             strictHostKeyChecking: .acceptNew
@@ -228,7 +262,6 @@ struct CatermApp: App {
           credentialSync: credentialSyncPrefs,
           credentialSyncCoordinator: credentialCoordinator,
           sessionStore: session,
-          managedKeyStore: mngs,
           snippetStore: snippetStoreInstance,
           bookmarkStore: remoteBookmarkStore
         )
@@ -239,18 +272,20 @@ struct CatermApp: App {
       }
     }
     // One-time managed-key migration (ADR 0003): relocate external
-    // .keyFile paths into ManagedKeyStore. Uses setCredentialOnly, so
-    // it never dirties credentials or bumps updatedAt — safe to run
-    // before/alongside the first sync cycle. Idempotent (already-
-    // managed paths are skipped), so running every launch is fine.
+    // .keyFile paths through the credential transaction actor. It never
+    // dirties credentials or bumps updatedAt and cannot race sync writes.
+    // Idempotent (already-managed paths are skipped), so every launch is fine.
     Task { @MainActor in
       let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
-        sessionStore: session, managedKeys: mngs
+        sessionStore: session
       )
-      if summary.migrated > 0 || summary.skippedUnreadable > 0 {
+      if summary.migrated > 0 || summary.skippedUnreadable > 0
+        || summary.skippedChanged > 0
+      {
         NSLog(
-          "[CatermApp] Managed-key migration: %d migrated, %d unreadable (left as-is), %d already managed",
-          summary.migrated, summary.skippedUnreadable, summary.alreadyManaged)
+          "[CatermApp] Managed-key migration: %d migrated, %d unreadable, %d changed concurrently, %d already managed",
+          summary.migrated, summary.skippedUnreadable,
+          summary.skippedChanged, summary.alreadyManaged)
       }
     }
   }
@@ -283,11 +318,10 @@ struct CatermApp: App {
       .environmentObject(surfaceRegistry)
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
-      .environment(\.managedKeyStore, managedKeyStore)
       .background(OpenTabBridge(store: store))
       // .task closure is sync — syncIfSignedIn() returns immediately;
       // the actual sync work runs as an unstructured Task owned by
-      // HostSyncStore.inFlight (NOT by this .task modifier). View
+      // HostSyncStore's scheduler (NOT by this .task modifier). View
       // disappearance does not cancel the sync — that's intentional;
       // cancellation lives in the chain (spec §3.5).
       .task {
@@ -324,24 +358,8 @@ struct CatermApp: App {
         NotificationCenter.default
           .publisher(for: .catermICloudAccountChanged)
       ) { _ in
-        if !cloudSyncDisabled {
-          syncStore.syncIfSignedIn()
-        }
-      }
-      .onReceive(
-        NotificationCenter.default
-          .publisher(for: .catermICloudAccountChanged)
-      ) { _ in
         guard !cloudSyncDisabled else { return }
-        Task {
-          guard let accountIdentityTracker, let cloudKitClient else { return }
-          let outcome = await accountIdentityTracker.handleAccountChange(client: cloudKitClient)
-          if outcome == .identityChanged {
-            await credentialSyncAccountReset.resetForAccountChange()
-            try? snippetStore.wipeLocal()
-            snippetSync.scheduleSyncPass(mode: .forceFull)
-          }
-        }
+        accountChangeSyncCoordinator.enqueue()
       }
       .onReceive(
         NotificationCenter.default
@@ -360,7 +378,6 @@ struct CatermApp: App {
           credentialSync: credentialSync,
           credentialSyncCoordinator: credentialSyncCoordinator,
           sessionStore: store,
-          managedKeyStore: managedKeyStore,
           snippetStore: snippetStore,
           bookmarkStore: remoteBookmarks
         )
@@ -404,7 +421,6 @@ struct CatermApp: App {
             credentialSync: credentialSync,
             credentialSyncCoordinator: credentialSyncCoordinator,
             sessionStore: store,
-            managedKeyStore: managedKeyStore,
             snippetStore: snippetStore,
             bookmarkStore: remoteBookmarks
           )
@@ -605,7 +621,7 @@ struct LandingView: View {
 }
 
 @MainActor
-private func makeStore() -> SessionStore {
+private func makeStore(managedKeyStore: ManagedKeyStore) -> SessionStore {
   let supportDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     .appendingPathComponent("Caterm", isDirectory: true)
@@ -631,7 +647,9 @@ private func makeStore() -> SessionStore {
   let teamId = ProcessInfo.processInfo.environment["CATERM_TEAM_ID"] ?? ""
   let accessGroup = teamId.isEmpty ? nil : "\(teamId).caterm.shared"
 
-  let keychain = KeychainStore(service: "com.caterm.host", accessGroup: accessGroup)
+  let keychain = KeychainStore(
+    service: SSHCredentialContract.keychainService,
+    accessGroup: accessGroup)
 
   return SessionStore(
     askpassPath: askpassPath,
@@ -640,5 +658,6 @@ private func makeStore() -> SessionStore {
     accessGroup: accessGroup,
     hostsURL: hostsURL,
     keychain: keychain,
-    controlMasterManager: ControlMasterManager.shared)
+    controlMasterManager: ControlMasterManager.shared,
+    managedKeyStore: managedKeyStore)
 }

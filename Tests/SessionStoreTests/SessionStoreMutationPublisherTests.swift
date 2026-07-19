@@ -1,4 +1,5 @@
 import Combine
+import ManagedKeyStore
 import XCTest
 @testable import SessionStore
 @testable import SSHCommandBuilder
@@ -17,9 +18,19 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
             .appendingPathComponent("caterm-pub-\(UUID()).json")
         let kc = KeychainStore(service: "com.caterm.test.\(UUID().uuidString)",
                                accessGroup: nil)
+		let managedKeys = ManagedKeyStore(
+			rootURL: tmpHostsURL.deletingLastPathComponent()
+				.appendingPathComponent("caterm-pub-keys-\(UUID())")
+		)
+        let materialStore = SessionCredentialMaterialStore(
+			secrets: InMemoryCredentialSecretStore(),
+			managedKeyStore: managedKeys
+        )
         sut = SessionStore(askpassPath: "/x", knownHostsCaterm: "/A",
                            knownHostsUser: "/B", accessGroup: nil,
-                           hostsURL: tmpHostsURL, keychain: kc)
+                           hostsURL: tmpHostsURL, keychain: kc,
+						   managedKeyStore: managedKeys,
+                           credentialMaterialStore: materialStore)
     }
 
     override func tearDown() async throws {
@@ -52,7 +63,7 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
         XCTAssertEqual(received, 1)
     }
 
-    func testDeleteHostEmits() throws {
+    func testDeleteHostEmits() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
         try sut.addHost(h)  // baseline
 
@@ -60,7 +71,7 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
         sut.mutationsForSync.sink { _ in received += 1 }
             .store(in: &cancellables)
 
-        try sut.deleteHost(id: h.id)
+        try await sut.deleteHost(id: h.id)
 
         XCTAssertEqual(received, 1)
     }

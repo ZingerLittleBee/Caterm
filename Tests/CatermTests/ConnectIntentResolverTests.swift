@@ -32,7 +32,7 @@ final class ConnectIntentResolverTests: XCTestCase {
     /// Synced-down host with `.password` credential and no Keychain entry
     /// must gate to `.promptCredentials`. Mirrors what `addRemoteHost`
     /// produces during a Sync Now pull.
-    func testLockedHostResolvesToPromptCredentials() throws {
+	func testLockedHostResolvesToPromptCredentials() async throws {
         let host = SSHHost(
             id: UUID(),
             serverId: "srv-1",
@@ -41,22 +41,23 @@ final class ConnectIntentResolverTests: XCTestCase {
         )
         try sut.addHost(host)
 
-        XCTAssertEqual(resolveConnectIntent(for: host, in: sut),
-                       .promptCredentials)
+		let intent = await resolveConnectIntent(for: host, in: sut)
+		XCTAssertEqual(intent, .promptCredentials)
     }
 
-    func testUnlockedAgentHostResolvesToOpenTab() throws {
+	func testUnlockedAgentHostResolvesToOpenTab() async throws {
         let host = SSHHost(name: "agent-host", hostname: "h", port: 22,
                            username: "u", credential: .agent)
         try sut.addHost(host)
 
-        XCTAssertEqual(resolveConnectIntent(for: host, in: sut), .openTab)
+		let intent = await resolveConnectIntent(for: host, in: sut)
+		XCTAssertEqual(intent, .openTab)
     }
 
     /// End-to-end pinning: starting from a locked host, performing the
     /// Save sequence (Keychain first, setCredentialOnly second) must
     /// transition the resolver from .promptCredentials to .openTab.
-    func testCredentialSetupTransitionsLockedToUnlocked() throws {
+	func testCredentialSetupTransitionsLockedToUnlocked() async throws {
         let host = SSHHost(
             id: UUID(),
             serverId: "srv-2",
@@ -64,14 +65,14 @@ final class ConnectIntentResolverTests: XCTestCase {
             credential: .password
         )
         try sut.addHost(host)
-        XCTAssertEqual(resolveConnectIntent(for: host, in: sut),
-                       .promptCredentials)
+		let lockedIntent = await resolveConnectIntent(for: host, in: sut)
+		XCTAssertEqual(lockedIntent, .promptCredentials)
 
         try sut.setHostSecret("p@ss", hostId: host.id, kind: .password)
         try sut.setCredentialOnly(.password, for: host.id)
 
         let refreshed = sut.hosts.first { $0.id == host.id }!
-        XCTAssertEqual(resolveConnectIntent(for: refreshed, in: sut),
-                       .openTab)
+		let unlockedIntent = await resolveConnectIntent(for: refreshed, in: sut)
+		XCTAssertEqual(unlockedIntent, .openTab)
     }
 }

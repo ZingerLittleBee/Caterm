@@ -23,7 +23,11 @@ extension Notification.Name {
 /// host overall so testers still see the credential sheet — a diagnostic, not
 /// a silent no-op — when every host is locked.
 @MainActor
-func debugPickConnectTarget(in store: SessionStore) -> SSHHost? {
-	store.hosts.first { !store.needsCredentialSetup($0) } ?? store.hosts.first
+func debugPickConnectTarget(in store: SessionStore) async -> SSHHost? {
+	for host in store.hosts {
+		let requiresSetup = await store.needsCredentialSetup(host)
+		if !requiresSetup { return host }
+	}
+	return store.hosts.first
 }
 #endif

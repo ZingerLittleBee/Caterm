@@ -62,6 +62,44 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
         XCTAssertEqual(fakeClient.listCallCount, 1)
     }
 
+    func testAccountChangeSuspensionCancelsAndGatesSyncUntilResume() async throws {
+        fakeClient.listHostsDelay = 5
+        sut.syncIfSignedIn()
+        try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount == 1 }
+
+        await sut.suspendForAccountChange()
+
+        XCTAssertTrue(fakeClient.listHostsTaskWasCancelled)
+        fakeClient.listHostsDelay = 0
+        sut.syncIfSignedIn()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(fakeClient.listCallCount, 1)
+        do {
+            try await sut.sync()
+            XCTFail("manual sync must remain gated during an account transition")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        sut.resumeAfterAccountChange()
+        try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount == 2 }
+    }
+
+    func testAccountChangeGateRejectsManualTaskCancelledBeforeItStarts() async {
+        let manual = Task { try await sut.sync() }
+        sut.beginAccountChangeSuspension()
+        await sut.drainForAccountChange()
+
+        switch await manual.result {
+        case .success:
+            XCTFail("manual sync must not cross an account-change gate")
+        case .failure(let error):
+            XCTAssertTrue(error is CancellationError)
+        }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(fakeClient.listCallCount, 0)
+    }
+
     // MARK: - Task 2.10.3b: debounce subscription
 
     func testMutationTriggersDebouncedSync() async throws {

@@ -20,9 +20,9 @@ final class ManagedKeyStoreTests: XCTestCase {
         let id = UUID()
         let bytes = Data((0..<400).map { UInt8($0 % 256) })
         let url = try await store.write(hostId: id, bytes: bytes)
-        let readBack = try await store.read(hostId: id)
+        let readBack = try store.read(hostId: id)
         XCTAssertEqual(readBack, bytes)
-        let pathResult = await store.path(hostId: id)
+        let pathResult = store.path(hostId: id)
         XCTAssertEqual(url.path, pathResult.path)
     }
 
@@ -31,7 +31,7 @@ final class ManagedKeyStoreTests: XCTestCase {
         let id = UUID()
         _ = try await store.write(hostId: id, bytes: Data("v1".utf8))
         _ = try await store.write(hostId: id, bytes: Data("v2".utf8))
-        let readBack = try await store.read(hostId: id)
+        let readBack = try store.read(hostId: id)
         XCTAssertEqual(readBack, Data("v2".utf8))
     }
 
@@ -63,12 +63,23 @@ final class ManagedKeyStoreTests: XCTestCase {
     func test_delete_idempotent() async throws {
         let store = ManagedKeyStore(rootURL: tmpRoot)
         let id = UUID()
-        await store.delete(hostId: id)  // not yet written; must not throw
+        try await store.delete(hostId: id)  // not yet written; must not throw
         _ = try await store.write(hostId: id, bytes: Data("x".utf8))
-        await store.delete(hostId: id)
-        let read = try await store.read(hostId: id)
+        try await store.delete(hostId: id)
+        let read = try store.read(hostId: id)
         XCTAssertNil(read)
     }
+
+	func test_wipeAll_isIdempotent() async throws {
+		let store = ManagedKeyStore(rootURL: tmpRoot)
+		let id = UUID()
+		_ = try await store.write(hostId: id, bytes: Data("x".utf8))
+
+		try await store.wipeAll()
+		try await store.wipeAll()
+
+		XCTAssertNil(try store.read(hostId: id))
+	}
 
     func test_write_rejectsSymlinkAtTarget() async throws {
         let store = ManagedKeyStore(rootURL: tmpRoot)
@@ -76,7 +87,7 @@ final class ManagedKeyStoreTests: XCTestCase {
         // First, ensure the directory exists by writing once.
         _ = try await store.write(hostId: UUID(), bytes: Data("seed".utf8))
         // Replace the would-be target path with a symlink to /tmp/some-other.
-        let target = await store.path(hostId: id)
+        let target = store.path(hostId: id)
         let elsewhere = tmpRoot.appendingPathComponent("elsewhere")
         try Data("decoy".utf8).write(to: elsewhere)
         try FileManager.default.createSymbolicLink(at: target, withDestinationURL: elsewhere)

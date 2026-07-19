@@ -21,12 +21,18 @@ public enum AccountChangeOutcome: Sendable, Equatable {
 }
 
 public actor AccountIdentityTracker {
+	private enum PendingIdentity {
+		case signedIn(String)
+		case signedOut
+	}
+
 	private static let storageKey = "cloudkit.lastKnownUserRecordName"
 	private static let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-account")
 
 	private let defaults: UserDefaults
 	private let currentUserRecordIDProvider: @Sendable () async -> CKRecord.ID?
 	private let tokensExistProvider: @Sendable () async -> Bool
+	private var pendingIdentity: PendingIdentity?
 
 	public init(defaults: UserDefaults = .standard,
 	            currentUserRecordID: @escaping @Sendable () async -> CKRecord.ID?,
@@ -65,12 +71,27 @@ public actor AccountIdentityTracker {
 			try? await client.deleteHostSubscription()
 			try? await client.deleteSnippetSubscription()
 			if let new = current {
-				defaults.set(new, forKey: Self.storageKey)
+				pendingIdentity = .signedIn(new)
 			} else {
-				defaults.removeObject(forKey: Self.storageKey)
+				pendingIdentity = .signedOut
 			}
 			return .identityChanged
 		}
+	}
+
+	/// Commits the identity observed by the most recent `.identityChanged`
+	/// result. Call only after every account-scoped local reset succeeds. Until
+	/// then the previous identity remains durable, so a later notification or
+	/// app launch detects the same transition and retries it.
+	public func acknowledgeIdentityChange() {
+		guard let pendingIdentity else { return }
+		switch pendingIdentity {
+		case .signedIn(let recordName):
+			defaults.set(recordName, forKey: Self.storageKey)
+		case .signedOut:
+			defaults.removeObject(forKey: Self.storageKey)
+		}
+		self.pendingIdentity = nil
 	}
 }
 

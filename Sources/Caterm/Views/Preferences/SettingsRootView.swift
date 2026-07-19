@@ -63,12 +63,10 @@ struct SettingsRootView: View {
       }
     case .backup:
       if let env = model.syncEnvironment,
-        let sessionStore = env.sessionStore,
-        let managedKeyStore = env.managedKeyStore
+        let sessionStore = env.sessionStore
       {
         BackupSettingsView(
           sessionStore: sessionStore,
-          managedKeys: managedKeyStore,
           snippetStore: env.snippetStore,
           bookmarkStore: env.bookmarkStore
         )
