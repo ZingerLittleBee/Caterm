@@ -59,6 +59,9 @@ public final class SessionStore: ObservableObject {
         /// at `openTab` time so `runConnection` passes the correct value to
         /// `SSHCommandBuilder.build` when building chain commands.
         public var installTerminfo: Bool = false
+		/// Authentication behavior captured when the tab opens. Saved hosts use
+		/// their configured credential; one-time connections let OpenSSH prompt.
+		public var authenticationMode: SSHAuthenticationMode = .configuredCredential
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
@@ -72,12 +75,19 @@ public final class SessionStore: ObservableObject {
             self.state = .failed(kind)
         }
         /// Convenience initialiser for happy-path tabs that carry a pre-resolved chain.
-        init(id: UUID, host: SSHHost, resolvedChain: [SSHHost], installTerminfo: Bool = false) {
+        init(
+			id: UUID,
+			host: SSHHost,
+			resolvedChain: [SSHHost],
+			installTerminfo: Bool = false,
+			authenticationMode: SSHAuthenticationMode = .configuredCredential
+		) {
             self.id = id
             self.host = host
             self.state = .idle
             self.resolvedChain = resolvedChain
             self.installTerminfo = installTerminfo
+			self.authenticationMode = authenticationMode
         }
     }
 
@@ -305,7 +315,11 @@ public final class SessionStore: ObservableObject {
     // MARK: - Tabs
 
     @discardableResult
-    public func openTab(host: SSHHost, installTerminfo: Bool = false) -> UUID {
+    public func openTab(
+		host: SSHHost,
+		installTerminfo: Bool = false,
+		authenticationMode: SSHAuthenticationMode = .configuredCredential
+	) -> UUID {
         // 1. Resolve the jump-host chain. Fail-fast if broken or cyclic.
         let chainResolution = ChainResolver(hosts: hosts).resolve(host)
         guard chainResolution.isComplete else {
@@ -332,7 +346,8 @@ public final class SessionStore: ObservableObject {
         controlMasterManager?.register(hostId: host.id, destination: destination)
         let id = UUID()
         tabs.append(Tab(id: id, host: host, resolvedChain: chain,
-                        installTerminfo: installTerminfo))
+						installTerminfo: installTerminfo,
+						authenticationMode: authenticationMode))
         startConnection(tabId: id)
         return id
     }
@@ -427,7 +442,8 @@ public final class SessionStore: ObservableObject {
             askpassPath: askpassPath,
             knownHostsCaterm: knownHostsCaterm,
             knownHostsUser: knownHostsUser,
-            installTerminfo: tab.installTerminfo
+			installTerminfo: tab.installTerminfo,
+			authenticationMode: tab.authenticationMode
         )
         var env = cmd.env
         if let accessGroup {

@@ -60,9 +60,15 @@ struct HostListSidebar: View {
 	var body: some View {
 		let chainResolver = ChainResolver(hosts: store.hosts)
 		let visibleHosts = HostSearch.filter(store.hosts, query: hostQuery)
+		let quickDestination = visibleHosts.isEmpty
+			? QuickConnectParser.parse(hostQuery)
+			: nil
 		return VStack(spacing: 0) {
 			HostSearchField(text: $hostQuery) {
-				connectSelectedOrFirst(in: visibleHosts)
+				submitSearch(
+					visibleHosts: visibleHosts,
+					quickDestination: quickDestination
+				)
 			}
 			.frame(height: 22)
 			.padding(.horizontal, 8)
@@ -70,6 +76,11 @@ struct HostListSidebar: View {
 			.padding(.bottom, 6)
 
 			List(selection: $selectedHostId) {
+				if let quickDestination {
+					QuickConnectRow(destination: quickDestination) {
+						connectOnce(quickDestination)
+					}
+				}
 				ForEach(visibleHosts) { host in
 					HostRow(
 						host: host,
@@ -95,7 +106,7 @@ struct HostListSidebar: View {
 				}
 			}
 			.overlay {
-				if store.hosts.isEmpty {
+				if store.hosts.isEmpty, quickDestination == nil {
 					VStack(spacing: 8) {
 						Image(systemName: "server.rack")
 							.font(.system(size: 32))
@@ -110,7 +121,7 @@ struct HostListSidebar: View {
 							.foregroundColor(.secondary)
 					}
 					.padding()
-				} else if visibleHosts.isEmpty {
+				} else if visibleHosts.isEmpty, quickDestination == nil {
 					ContentUnavailableView.search(text: hostQuery)
 				}
 			}
@@ -372,12 +383,27 @@ struct HostListSidebar: View {
 		}
 	}
 
-	private func connectSelectedOrFirst(in visibleHosts: [SSHHost]) {
+	private func submitSearch(
+		visibleHosts: [SSHHost],
+		quickDestination: QuickConnectDestination?
+	) {
 		let selected = selectedHostId.flatMap { selectedHostId in
 			visibleHosts.first { $0.id == selectedHostId }
 		}
-		guard let host = selected ?? visibleHosts.first else { return }
-		connect(host)
+		if let host = selected ?? visibleHosts.first {
+			connect(host)
+		} else if let quickDestination {
+			connectOnce(quickDestination)
+		}
+	}
+
+	private func connectOnce(_ destination: QuickConnectDestination) {
+		let tabId = store.openTab(
+			host: destination.makeHost(),
+			installTerminfo: preferences.installTerminfoEnabled,
+			authenticationMode: .interactive
+		)
+		onOpenTab(tabId)
 	}
 
 	private func deleteHost(_ host: SSHHost) {
@@ -393,6 +419,38 @@ struct HostListSidebar: View {
 			return
 		}
 		pendingFanoutDelete = PendingFanoutDelete(host: host, dependents: dependents)
+	}
+}
+
+private struct QuickConnectRow: View {
+	let destination: QuickConnectDestination
+	let onConnect: () -> Void
+
+	var body: some View {
+		Button(action: onConnect) {
+			HStack(spacing: 8) {
+				Image(systemName: "bolt.horizontal.circle")
+					.foregroundStyle(.secondary)
+					.frame(width: 20)
+				VStack(alignment: .leading, spacing: 2) {
+					Text("Connect Once")
+						.font(.headline)
+					Text(destination.displayAddress)
+						.font(.caption)
+						.foregroundStyle(.secondary)
+						.lineLimit(1)
+						.truncationMode(.middle)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+			}
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.contentShape(Rectangle())
+			.padding(.vertical, 2)
+		}
+		.buttonStyle(.plain)
+		.help("Connect without saving. OpenSSH will request authentication in the terminal.")
+		.accessibilityLabel("Connect once to \(destination.displayAddress)")
+		.accessibilityHint("Does not save this host")
 	}
 }
 
@@ -514,13 +572,13 @@ private struct HostSearchField: NSViewRepresentable {
 
 	func makeNSView(context: Context) -> NSSearchField {
 		let field = NSSearchField()
-		field.placeholderString = "Search hosts"
+		field.placeholderString = "Search hosts or ssh user@host"
 		field.sendsWholeSearchString = true
 		field.target = context.coordinator
 		field.action = #selector(Coordinator.submit(_:))
 		field.delegate = context.coordinator
 		field.identifier = NSUserInterfaceItemIdentifier("hostSearchField")
-		field.setAccessibilityLabel("Search hosts")
+		field.setAccessibilityLabel("Search hosts or connect once")
 		return field
 	}
 

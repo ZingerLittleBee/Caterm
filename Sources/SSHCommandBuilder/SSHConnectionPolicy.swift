@@ -1,6 +1,11 @@
 import Foundation
 import SSHCredentialContract
 
+public enum SSHAuthenticationMode: Sendable, Equatable {
+	case configuredCredential
+	case interactive
+}
+
 package enum SSHOptionKind: Equatable {
 	case option(keyword: String)
 	case identityFile(path: String)
@@ -59,7 +64,8 @@ package enum SSHConnectionPolicy {
 	package static func interactiveHostPlan(
 		for host: SSHHost,
 		role: SSHHopRole,
-		knownHostsFiles: [String]
+		knownHostsFiles: [String],
+		authenticationMode: SSHAuthenticationMode = .configuredCredential
 	) -> SSHHostPlan {
 		var options: [SSHOption] = [
 			.option("StrictHostKeyChecking", "accept-new"),
@@ -73,28 +79,32 @@ package enum SSHConnectionPolicy {
 		]
 
 		let credentialKind: SSHCredentialKind?
-		switch host.credential {
-		case .password:
-			options += [
-				.option("PreferredAuthentications", "password,keyboard-interactive"),
-				.option("PubkeyAuthentication", "no"),
-				.option("NumberOfPasswordPrompts", "1"),
-			]
-			credentialKind = .password
-
-		case let .keyFile(keyPath, hasPassphrase):
-			options += [
-				.option("IdentitiesOnly", "yes"),
-				.option("PreferredAuthentications", "publickey"),
-				.option("PasswordAuthentication", "no"),
-				.option("KbdInteractiveAuthentication", "no"),
-				.identityFile(keyPath),
-			]
-			credentialKind = hasPassphrase ? .keyPassphrase : nil
-
-		case .agent:
-			options.append(.option("BatchMode", "yes"))
+		if authenticationMode == .interactive {
 			credentialKind = nil
+		} else {
+			switch host.credential {
+			case .password:
+				options += [
+					.option("PreferredAuthentications", "password,keyboard-interactive"),
+					.option("PubkeyAuthentication", "no"),
+					.option("NumberOfPasswordPrompts", "1"),
+				]
+				credentialKind = .password
+
+			case let .keyFile(keyPath, hasPassphrase):
+				options += [
+					.option("IdentitiesOnly", "yes"),
+					.option("PreferredAuthentications", "publickey"),
+					.option("PasswordAuthentication", "no"),
+					.option("KbdInteractiveAuthentication", "no"),
+					.identityFile(keyPath),
+				]
+				credentialKind = hasPassphrase ? .keyPassphrase : nil
+
+			case .agent:
+				options.append(.option("BatchMode", "yes"))
+				credentialKind = nil
+			}
 		}
 
 		if role == .target, !host.forwards.isEmpty {
