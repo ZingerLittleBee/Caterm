@@ -504,6 +504,12 @@ struct CatermApp: App {
             object: nil
           )
         }
+        Button("Known Hosts") {
+          NotificationCenter.default.post(
+            name: .catermOpenKnownHosts,
+            object: nil
+          )
+        }
       }
       // Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
       // These post notifications that `SnippetCommandObserver` picks up
@@ -559,6 +565,13 @@ struct CatermApp: App {
         .environmentObject(preferences)
     }
     .defaultSize(width: 860, height: 520)
+    Window("Known Hosts", id: KnownHostsWindow.id) {
+      KnownHostsManagerView(
+        catermURL: URL(fileURLWithPath: store.knownHostsCaterm),
+        userURL: URL(fileURLWithPath: store.knownHostsUser)
+      )
+    }
+    .defaultSize(width: 920, height: 520)
   }
 }
 
@@ -570,6 +583,9 @@ extension Notification.Name {
   )
   static let catermOpenPortForwarding = Notification.Name(
     "CatermOpenPortForwardingNotification"
+  )
+  static let catermOpenKnownHosts = Notification.Name(
+    "CatermOpenKnownHostsNotification"
   )
 }
 
@@ -605,6 +621,11 @@ struct OpenTabBridge: View {
         NotificationCenter.default.publisher(for: .catermOpenPortForwarding)
       ) { _ in
         openWindow(id: PortForwardWorkspaceWindow.id)
+      }
+      .onReceive(
+        NotificationCenter.default.publisher(for: .catermOpenKnownHosts)
+      ) { _ in
+        openWindow(id: KnownHostsWindow.id)
       }
   }
 }
@@ -683,9 +704,12 @@ private func makeStore(
   try? FileManager.default.createDirectory(
     at: supportDir,
     withIntermediateDirectories: true)
-  let knownCaterm = supportDir.appendingPathComponent("known_hosts").path
-  let knownUser = ("~/.ssh/known_hosts" as NSString).expandingTildeInPath
-  let hostsURL = ProcessInfo.processInfo.environment["CATERM_HOSTS_PATH"]
+  let environment = ProcessInfo.processInfo.environment
+  let knownCaterm = environment["CATERM_KNOWN_HOSTS_PATH"]
+    ?? supportDir.appendingPathComponent("known_hosts").path
+  let knownUser = environment["CATERM_USER_KNOWN_HOSTS_PATH"]
+    ?? ("~/.ssh/known_hosts" as NSString).expandingTildeInPath
+  let hostsURL = environment["CATERM_HOSTS_PATH"]
     .map(URL.init(fileURLWithPath:))
     ?? supportDir.appendingPathComponent("hosts.json")
 

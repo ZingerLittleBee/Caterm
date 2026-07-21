@@ -65,6 +65,13 @@ let package = Package(
             path: "Sources/SessionHistory"
         ),
         .target(
+            name: "KnownHostsStore",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/KnownHostsStore"
+        ),
+        .target(
             name: "SessionStore",
             dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory"],
             path: "Sources/SessionStore"
@@ -192,6 +199,7 @@ let package = Package(
                 "SSHCredentialContract",
                 "SessionStore",
                 "SessionHistory",
+                "KnownHostsStore",
                 "KeychainStore",
                 "ConfigStore",
                 "ServerSyncClient",
@@ -362,6 +370,11 @@ let package = Package(
             name: "HostKeyProvisioningTests",
             dependencies: ["HostKeyProvisioning", "SessionStore", "ManagedKeyStore", "KeychainStore", "SSHCommandBuilder"],
             path: "Tests/HostKeyProvisioningTests"
+        ),
+        .testTarget(
+            name: "KnownHostsStoreTests",
+            dependencies: ["KnownHostsStore"],
+            path: "Tests/KnownHostsStoreTests"
         ),
         .testTarget(
             name: "CredentialSyncTests",

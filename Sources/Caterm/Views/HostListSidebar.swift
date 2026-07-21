@@ -346,6 +346,24 @@ struct HostListSidebar: View {
 			}
 			.buttonStyle(.plain)
 			.accessibilityHint("Opens forwarding rules for saved hosts")
+			Button {
+				NotificationCenter.default.post(
+					name: .catermOpenKnownHosts,
+					object: nil
+				)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "checkmark.shield")
+					Text("Known Hosts")
+					Spacer()
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Audits trusted SSH host keys")
 			Divider()
 			SyncStatusRow()
 		}
