@@ -251,11 +251,17 @@ struct MainWindow: View {
 			}
 		}
 		.onReceive(NotificationCenter.default
-			.publisher(for: .toggleFileDrawer)) { _ in
+			.publisher(for: .toggleFileDrawer)) { notification in
+			guard WindowCommandScope.shouldHandle(notification, in: hostWindow) else {
+				return
+			}
 			fileDrawerOpen.toggle()
 		}
 		.onReceive(NotificationCenter.default
 			.publisher(for: .catermOptionDragUpload)) { note in
+			guard WindowCommandScope.shouldHandle(note, in: hostWindow) else {
+				return
+			}
 			guard let urls = note.userInfo?["urls"] as? [URL], !urls.isEmpty else { return }
 			pendingUploadURLs = urls
 			showUploadSheet = true

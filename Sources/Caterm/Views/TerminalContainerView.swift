@@ -1,3 +1,4 @@
+import AppKit
 import SessionStore
 import SettingsStore
 import SSHCommandBuilder
@@ -66,7 +67,7 @@ struct TerminalContainerView: View {
 				onEditHost: canEditHost ? {
 					NotificationCenter.default.post(
 						name: .catermEditHostRequested,
-						object: nil,
+						object: NSApp.keyWindow,
 						userInfo: [CatermEditHostRequestedKeys.hostId: host.id]
 					)
 				} : nil

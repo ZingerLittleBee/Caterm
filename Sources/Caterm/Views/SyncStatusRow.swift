@@ -1,3 +1,4 @@
+import AppKit
 import HostSyncStore
 import SwiftUI
 
@@ -63,7 +64,7 @@ struct SyncStatusRow: View {
         case .openSettings:
             popoverPresented = false
             NotificationCenter.default.post(
-                name: .catermOpenSyncSettings, object: nil)
+                name: .catermOpenSyncSettings, object: NSApp.keyWindow)
         case .togglePopover:
             popoverPresented.toggle()
         }
@@ -166,7 +167,7 @@ struct SyncStatusRow: View {
                 Button("Open Settings") {
                     popoverPresented = false
                     NotificationCenter.default.post(
-                        name: .catermOpenSyncSettings, object: nil)
+                        name: .catermOpenSyncSettings, object: NSApp.keyWindow)
                 }
 
             case .syncing:
@@ -258,9 +259,8 @@ public func describe(errorKind: SyncErrorKind) -> String {
 // MARK: - Notification name
 
 extension Notification.Name {
-    /// Posted by `SyncStatusRow` (and any future caller) to ask `CatermApp` to
-    /// flip its `@State showSyncSettings = true`. Matches the existing
-    /// `.catermAddHost` / `.catermNewWindow` pattern.
+    /// Posted by `SyncStatusRow` to open the Cloud Sync preferences tab for
+    /// the row's owning window.
     static let catermOpenSyncSettings =
         Notification.Name("CatermOpenSyncSettingsNotification")
 }

@@ -42,6 +42,7 @@ struct HostListSidebar: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
+	@Environment(\.openWindow) private var openWindow
 	let onOpenTab: (UUID) -> Void
 	@State private var selectedHostId: UUID?
 	@State private var showingAddSheet = false
@@ -50,6 +51,7 @@ struct HostListSidebar: View {
 	@State private var pendingCredentialHost: SSHHost?
 	@State private var pendingFanoutDelete: PendingFanoutDelete?
 	@State private var hostQuery = ""
+	@State private var hostWindow: NSWindow?
 
 	private struct PendingFanoutDelete: Identifiable {
 		let host: SSHHost
@@ -229,6 +231,9 @@ struct HostListSidebar: View {
 				.environmentObject(store)
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .catermEditHostRequested)) { note in
+				guard WindowCommandScope.shouldHandle(note, in: hostWindow) else {
+					return
+				}
 				guard let hostId = note.userInfo?[CatermEditHostRequestedKeys.hostId] as? UUID,
 				      let host = store.hosts.first(where: { $0.id == hostId }) else {
 					return
@@ -294,11 +299,17 @@ struct HostListSidebar: View {
 			} message: { pending in
 				Text("\(pending.host.name) is used by \(pending.dependents.count) host(s) as their jump host. Deleting will leave their chain references dangling.")
 			}
-			.onReceive(NotificationCenter.default.publisher(for: .catermAddHost)) { _ in
+			.onReceive(NotificationCenter.default.publisher(for: .catermAddHost)) { note in
+				guard WindowCommandScope.shouldHandle(note, in: hostWindow) else {
+					return
+				}
 				showingAddSheet = true
 			}
 			#if DEBUG
-			.onReceive(NotificationCenter.default.publisher(for: .catermDebugOpenFirstHost)) { _ in
+			.onReceive(NotificationCenter.default.publisher(for: .catermDebugOpenFirstHost)) { note in
+				guard WindowCommandScope.shouldHandle(note, in: hostWindow) else {
+					return
+				}
 				Task { @MainActor in
 					if let target = await debugPickConnectTarget(in: store) {
 						connect(target)
@@ -309,10 +320,7 @@ struct HostListSidebar: View {
 
 			Divider()
 			Button {
-				NotificationCenter.default.post(
-					name: .catermOpenHostManager,
-					object: nil
-				)
+				openWindow(id: HostManagerWindow.id)
 			} label: {
 				HStack(spacing: 8) {
 					Image(systemName: "folder")
@@ -327,10 +335,7 @@ struct HostListSidebar: View {
 			.buttonStyle(.plain)
 			.accessibilityHint("Organizes hosts with groups and tags")
 			Button {
-				NotificationCenter.default.post(
-					name: .catermOpenSessionHistory,
-					object: nil
-				)
+				openWindow(id: SessionHistoryWindow.id)
 			} label: {
 				HStack(spacing: 8) {
 					Image(systemName: "clock.arrow.circlepath")
@@ -347,10 +352,7 @@ struct HostListSidebar: View {
 			.buttonStyle(.plain)
 			.accessibilityHint("Opens locally stored connection metadata")
 			Button {
-				NotificationCenter.default.post(
-					name: .catermOpenPortForwarding,
-					object: nil
-				)
+				openWindow(id: PortForwardWorkspaceWindow.id)
 			} label: {
 				HStack(spacing: 8) {
 					Image(systemName: "arrow.left.arrow.right")
@@ -365,10 +367,7 @@ struct HostListSidebar: View {
 			.buttonStyle(.plain)
 			.accessibilityHint("Opens forwarding rules for saved hosts")
 			Button {
-				NotificationCenter.default.post(
-					name: .catermOpenKnownHosts,
-					object: nil
-				)
+				openWindow(id: KnownHostsWindow.id)
 			} label: {
 				HStack(spacing: 8) {
 					Image(systemName: "checkmark.shield")
@@ -385,6 +384,7 @@ struct HostListSidebar: View {
 			Divider()
 			SyncStatusRow()
 		}
+		.background(WindowAccessor(window: $hostWindow))
 	}
 
 	/// Build a `HostSecrets` payload from the optional plain-text secret

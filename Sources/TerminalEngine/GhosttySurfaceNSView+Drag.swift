@@ -34,7 +34,7 @@ extension GhosttySurfaceNSView {
 		if optionHeld, !urls.isEmpty {
 			NotificationCenter.default.post(
 				name: .catermOptionDragUpload,
-				object: nil,
+				object: window,
 				userInfo: ["urls": urls]
 			)
 			return true

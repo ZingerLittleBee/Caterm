@@ -326,7 +326,24 @@ struct CatermApp: App {
       .environmentObject(surfaceRegistry)
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
-      .background(OpenTabBridge(store: store))
+      .background(
+        SyncSettingsCommandBridge {
+          let preferencesWindow = PreferencesWindowController.shared
+          preferencesWindow.use(settingsStore: settingsStore)
+          preferencesWindow.syncEnvironment = SyncEnvironment(
+            authSession: icloudSession,
+            syncStore: syncStore,
+            preferences: preferences,
+            credentialSync: credentialSync,
+            credentialSyncCoordinator: credentialSyncCoordinator,
+            sessionStore: store,
+            snippetStore: snippetStore,
+            bookmarkStore: remoteBookmarks
+          )
+          preferencesWindow.activate(.cloudSync)
+          preferencesWindow.showAndActivate()
+        }
+      )
       // .task closure is sync — syncIfSignedIn() returns immediately;
       // the actual sync work runs as an unstructured Task owned by
       // HostSyncStore's scheduler (NOT by this .task modifier). View
@@ -369,52 +386,9 @@ struct CatermApp: App {
         guard !cloudSyncDisabled else { return }
         accountChangeSyncCoordinator.enqueue()
       }
-      .onReceive(
-        NotificationCenter.default
-          .publisher(for: .catermOpenSyncSettings)
-      ) { _ in
-        // Sync settings now live as a tab inside the Preferences
-        // window (Task 25). SyncStatusRow still posts this
-        // notification when the user clicks the indicator; route
-        // it through to the unified Preferences surface.
-        let preferencesWindow = PreferencesWindowController.shared
-        preferencesWindow.use(settingsStore: settingsStore)
-        preferencesWindow.syncEnvironment = SyncEnvironment(
-          authSession: icloudSession,
-          syncStore: syncStore,
-          preferences: preferences,
-          credentialSync: credentialSync,
-          credentialSyncCoordinator: credentialSyncCoordinator,
-          sessionStore: store,
-          snippetStore: snippetStore,
-          bookmarkStore: remoteBookmarks
-        )
-        preferencesWindow.activate(.cloudSync)
-        preferencesWindow.showAndActivate()
-      }
     }
     .commands {
-      // ⌘N opens a fresh LandingView window; ⌘T opens a fresh
-      // LandingView as a new *tab* (macOS auto-tabs new windows when
-      // `allowsAutomaticWindowTabbing` is on — AppDelegate). Both route
-      // through `.catermNewWindow` → `OpenTabBridge` →
-      // `openWindow(value: UUID())`, which renders LandingView (the
-      // host-selection sidebar). "New Host…" keeps the explicit
-      // add-host sheet but no longer owns ⌘T.
-      CommandGroup(replacing: .newItem) {
-        Button("New Window") {
-          NotificationCenter.default.post(name: .catermNewWindow, object: nil)
-        }
-        .keyboardShortcut("n", modifiers: .command)
-        Button("New Tab") {
-          NotificationCenter.default.post(name: .catermNewWindow, object: nil)
-        }
-        .keyboardShortcut("t", modifiers: .command)
-        Button("New Host…") {
-          NotificationCenter.default.post(name: .catermAddHost, object: nil)
-        }
-        .keyboardShortcut("t", modifiers: [.command, .shift])
-      }
+      CatermWindowCommands()
       // ⌘, opens the unified Preferences window (Task 25).
       // "Edit Advanced Config…" inside General still reveals the TOML
       // config in Finder for power users, so no functionality is lost.
@@ -481,41 +455,16 @@ struct CatermApp: App {
         }
         .keyboardShortcut("b", modifiers: .command)
       }
-      // ⌘⇧F toggles the per-window Files drawer. The notification is
-      // observed by `MainWindow`; broadcasting via NotificationCenter
-      // avoids threading window-local @State through App scene.
+      // ⌘⇧F toggles the key window's Files drawer. The target window travels
+      // with the notification so background tabs ignore the command.
       CommandGroup(after: .toolbar) {
         Button("Toggle Files Drawer") {
-          NotificationCenter.default.post(name: .toggleFileDrawer, object: nil)
+          NotificationCenter.default.post(
+            name: .toggleFileDrawer,
+            object: NSApp.keyWindow
+          )
         }
         .keyboardShortcut("f", modifiers: [.command, .shift])
-      }
-      CommandGroup(after: .toolbar) {
-        Button("Connection History") {
-          NotificationCenter.default.post(
-            name: .catermOpenSessionHistory,
-            object: nil
-          )
-        }
-        .keyboardShortcut("y", modifiers: [.command, .shift])
-        Button("Manage Hosts") {
-          NotificationCenter.default.post(
-            name: .catermOpenHostManager,
-            object: nil
-          )
-        }
-        Button("Port Forwarding") {
-          NotificationCenter.default.post(
-            name: .catermOpenPortForwarding,
-            object: nil
-          )
-        }
-        Button("Known Hosts") {
-          NotificationCenter.default.post(
-            name: .catermOpenKnownHosts,
-            object: nil
-          )
-        }
       }
       // Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
       // These post notifications that `SnippetCommandObserver` picks up
@@ -551,7 +500,8 @@ struct CatermApp: App {
         CommandMenu("Debug") {
           Button("Open Tab for First Host") {
             NotificationCenter.default.post(
-              name: .catermDebugOpenFirstHost, object: nil
+              name: .catermDebugOpenFirstHost,
+              object: NSApp.keyWindow
             )
           }
           .keyboardShortcut("o", modifiers: [.control, .option, .command])
@@ -589,64 +539,47 @@ struct CatermApp: App {
 
 extension Notification.Name {
   static let catermAddHost = Notification.Name("CatermAddHostNotification")
-  static let catermNewWindow = Notification.Name("CatermNewWindowNotification")
-  static let catermOpenSessionHistory = Notification.Name(
-    "CatermOpenSessionHistoryNotification"
-  )
-  static let catermOpenHostManager = Notification.Name(
-    "CatermOpenHostManagerNotification"
-  )
-  static let catermOpenPortForwarding = Notification.Name(
-    "CatermOpenPortForwardingNotification"
-  )
-  static let catermOpenKnownHosts = Notification.Name(
-    "CatermOpenKnownHostsNotification"
-  )
 }
 
-/// Invisible bridge view that lets us call `openWindow(value:)` (which needs
-/// `@Environment(\.openWindow)` from inside a SwiftUI View) in response to
-/// the `.catermNewWindow` notification (⌘N).
-///
-/// Tab opening from the host list is NOT routed through here — it goes
-/// through `HostListSidebar.onOpenTab`, so the owning window can decide
-/// whether to swap its own tab identity (Landing case) or spawn a sibling
-/// (MainWindow case). Routing it through a global notification used to
-/// always spawn a sibling, which left the Landing window around as a blank
-/// tab next to the new SSH terminal tab.
-struct OpenTabBridge: View {
-  @Environment(\.openWindow) var openWindow
-  let store: SessionStore
+/// App-wide window commands use SwiftUI's scene action directly. A
+/// NotificationCenter bridge here would be mounted once per WindowGroup
+/// scene, so one menu action would be multiplied by the number of live tabs.
+struct CatermWindowCommands: Commands {
+  @Environment(\.openWindow) private var openWindow
 
-  var body: some View {
-    Color.clear
-      .frame(width: 0, height: 0)
-      .onReceive(NotificationCenter.default.publisher(for: .catermNewWindow)) { _ in
-        // A fresh UUID that is not in store.tabs causes WindowGroup to
-        // render LandingView rather than MainWindow — effectively a new
-        // blank window in the tab bar.
+  var body: some Commands {
+    CommandGroup(replacing: .newItem) {
+      Button("New Window") {
         openWindow(value: UUID())
       }
-      .onReceive(
-        NotificationCenter.default.publisher(for: .catermOpenSessionHistory)
-      ) { _ in
+      .keyboardShortcut("n", modifiers: .command)
+      Button("New Tab") {
+        openWindow(value: UUID())
+      }
+      .keyboardShortcut("t", modifiers: .command)
+      Button("New Host…") {
+        NotificationCenter.default.post(
+          name: .catermAddHost,
+          object: NSApp.keyWindow
+        )
+      }
+      .keyboardShortcut("t", modifiers: [.command, .shift])
+    }
+    CommandGroup(after: .toolbar) {
+      Button("Connection History") {
         openWindow(id: SessionHistoryWindow.id)
       }
-      .onReceive(
-        NotificationCenter.default.publisher(for: .catermOpenHostManager)
-      ) { _ in
+      .keyboardShortcut("y", modifiers: [.command, .shift])
+      Button("Manage Hosts") {
         openWindow(id: HostManagerWindow.id)
       }
-      .onReceive(
-        NotificationCenter.default.publisher(for: .catermOpenPortForwarding)
-      ) { _ in
+      Button("Port Forwarding") {
         openWindow(id: PortForwardWorkspaceWindow.id)
       }
-      .onReceive(
-        NotificationCenter.default.publisher(for: .catermOpenKnownHosts)
-      ) { _ in
+      Button("Known Hosts") {
         openWindow(id: KnownHostsWindow.id)
       }
+    }
   }
 }
 
