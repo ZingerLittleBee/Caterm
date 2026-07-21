@@ -63,6 +63,51 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
         XCTAssertEqual(received, 1)
     }
 
+    func testUpdateHostsPersistsBatchAndEmitsOnce() throws {
+        let originalCredential = CredentialSource.keyFile(
+            keyPath: "/tmp/id_ed25519",
+            hasPassphrase: true
+        )
+        var alpha = SSHHost(
+            name: "alpha",
+            hostname: "alpha.example.com",
+            username: "root",
+            credential: originalCredential
+        )
+        var beta = SSHHost(
+            name: "beta",
+            hostname: "beta.example.com",
+            username: "root",
+            credential: .agent
+        )
+        try sut.addHost(alpha)
+        try sut.addHost(beta)
+
+        var received = 0
+        sut.mutationsForSync.sink { _ in received += 1 }
+            .store(in: &cancellables)
+
+        alpha.organization = HostOrganization(
+            groupPath: ["Production", "API"],
+            tags: ["Critical"]
+        )
+        alpha.credential = .password
+        beta.organization = HostOrganization(
+            groupPath: ["Production", "Data"],
+            tags: ["Database"]
+        )
+
+        try sut.updateHosts([alpha, beta])
+
+        let persisted = try HostPersistence.load(from: tmpHostsURL)
+        XCTAssertEqual(persisted.count, 2)
+        XCTAssertEqual(persisted[0].organization, alpha.organization)
+        XCTAssertEqual(persisted[1].organization, beta.organization)
+        XCTAssertEqual(persisted[0].credential, originalCredential)
+        XCTAssertEqual(persisted[0].updatedAt, persisted[1].updatedAt)
+        XCTAssertEqual(received, 1)
+    }
+
     func testDeleteHostEmits() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
         try sut.addHost(h)  // baseline

@@ -92,6 +92,9 @@ public struct BackupHost: Codable, Equatable {
 	public var jumpHostId: UUID?
 	public var forwards: [BackupPortForward]
 	public var icon: String?
+	/// Optional for backward compatibility with content-version 1 archives.
+	public var groupPath: [String]?
+	public var tags: [String]?
 
 	// Secret material (present only when exported with secrets).
 	public var password: String?
@@ -104,6 +107,7 @@ public struct BackupHost: Codable, Equatable {
 		port: Int, username: String, credentialKind: String,
 		hasPassphrase: Bool, createdAt: Date, updatedAt: Date,
 		jumpHostId: UUID?, forwards: [BackupPortForward], icon: String?,
+		groupPath: [String]? = nil, tags: [String]? = nil,
 		password: String? = nil, passphrase: String? = nil,
 		privateKey: Data? = nil
 	) {
@@ -120,6 +124,8 @@ public struct BackupHost: Codable, Equatable {
 		self.jumpHostId = jumpHostId
 		self.forwards = forwards
 		self.icon = icon
+		self.groupPath = groupPath
+		self.tags = tags
 		self.password = password
 		self.passphrase = passphrase
 		self.privateKey = privateKey

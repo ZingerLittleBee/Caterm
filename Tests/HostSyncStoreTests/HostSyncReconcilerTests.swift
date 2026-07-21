@@ -96,6 +96,33 @@ final class HostSyncReconcilerTests: XCTestCase {
         XCTAssertEqual(ops, [.updateLocal(localHostId: local.id, remote: r)])
     }
 
+	func testEqualUpdatedAtOrganizationDivergencePullsRemote() {
+		let timestamp = Date(timeIntervalSince1970: 1_000)
+		var local = makeLocalHost(
+			name: "alpha", serverId: "srv-1", updatedAt: timestamp
+		)
+		local.organization = HostOrganization(
+			groupPath: ["Local"], tags: ["Linux"]
+		)
+		let remote = RemoteHost(
+			id: "srv-1", name: "alpha", hostname: "h", port: 22,
+			username: "u", authType: "key",
+			createdAt: timestamp, updatedAt: timestamp,
+			organization: HostOrganization(
+				groupPath: ["Remote"], tags: ["Critical"]
+			)
+		)
+
+		let operations = HostSyncReconciler.reconcileFullSnapshot(
+			local: [local], remote: [remote]
+		)
+
+		XCTAssertEqual(
+			operations,
+			[.updateLocal(localHostId: local.id, remote: remote)]
+		)
+	}
+
     func testEqualUpdatedAtMetadataDivergencePullsRemote() {
         let t = Date(timeIntervalSince1970: 1000)
         let local = makeLocalHost(

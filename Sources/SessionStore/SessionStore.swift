@@ -138,8 +138,9 @@ public final class SessionStore: ObservableObject {
 
     /// Combine signal for "user-driven local hosts mutation just persisted".
     /// `HostSyncStore` debounces this to drive auto-sync. Only `addHost`,
-    /// `updateHost`, and `deleteHost` emit — credential-only changes and
-    /// the apply ops from a sync pass deliberately do NOT (spec §3.2).
+    /// `updateHost`, `updateHosts`, and `deleteHost` emit — credential-only
+    /// changes and the apply ops from a sync pass deliberately do NOT
+    /// (spec §3.2).
     private let mutationsForSyncSubject = PassthroughSubject<Void, Never>()
     public var mutationsForSync: AnyPublisher<Void, Never> {
         mutationsForSyncSubject.eraseToAnyPublisher()
@@ -287,6 +288,33 @@ public final class SessionStore: ObservableObject {
         updated.updatedAt = Date()
         hosts[idx] = updated
         try HostPersistence.save(hosts, to: hostsURL)
+        mutationsForSyncSubject.send()
+    }
+
+    /// Persists a user-driven batch as one atomic hosts.json replacement and
+    /// emits one sync mutation. Device-local credential state is preserved.
+    public func updateHosts(_ updatedHosts: [SSHHost]) throws {
+        guard !updatedHosts.isEmpty else { return }
+        var updatesByID: [UUID: SSHHost] = [:]
+        for host in updatedHosts {
+            updatesByID[host.id] = host
+        }
+
+        let timestamp = Date()
+        var didUpdate = false
+        var next = hosts
+        for index in next.indices {
+            guard var updated = updatesByID[next[index].id] else { continue }
+            updated.credential = next[index].credential
+            updated.credentialMaterialDirty = next[index].credentialMaterialDirty
+            updated.updatedAt = timestamp
+            next[index] = updated
+            didUpdate = true
+        }
+        guard didUpdate else { return }
+
+        try HostPersistence.save(next, to: hostsURL)
+        hosts = next
         mutationsForSyncSubject.send()
     }
 
@@ -869,8 +897,8 @@ public final class SessionStore: ObservableObject {
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
-    /// Replace metadata fields (name/hostname/port/username/updatedAt/jumpHostServerId)
-    /// without touching credential or serverId. Used when a remote update lands.
+    /// Replaces synced metadata without touching credential or serverId. Used
+    /// when a remote update lands.
     public func applyRemoteMetadata(localHostId: UUID, remote: RemoteHost) throws {
         guard let idx = hosts.firstIndex(where: { $0.id == localHostId }) else { return }
         hosts[idx].name = remote.name
@@ -882,6 +910,7 @@ public final class SessionStore: ObservableObject {
         hosts[idx].jumpHostServerId = remote.jumpHostServerId
         hosts[idx].forwards = remote.forwards
         hosts[idx].icon = remote.icon
+        hosts[idx].organization = remote.organization
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -899,7 +928,8 @@ public final class SessionStore: ObservableObject {
             jumpHostId: hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id,
             jumpHostServerId: remote.jumpHostServerId,
             forwards: remote.forwards,
-            icon: remote.icon
+            icon: remote.icon,
+            organization: remote.organization
         )
         hosts.append(h)
         backfillJumpHostIds(serverId: remote.id, in: &hosts)

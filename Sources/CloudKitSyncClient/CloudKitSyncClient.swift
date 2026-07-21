@@ -130,11 +130,7 @@ public final class CloudKitSyncClient: ServerSyncClient {
         let recID = CKRecord.ID(recordName: input.id, zoneID: zoneID)
         do {
             let rec = try await database.record(for: recID)
-            if let v = input.name { rec["name"] = v as CKRecordValue }
-            if let v = input.hostname { rec["hostname"] = v as CKRecordValue }
-            if let v = input.port { rec["port"] = v as CKRecordValue }
-            if let v = input.username { rec["username"] = v as CKRecordValue }
-            if let v = input.authType { rec["authType"] = v as CKRecordValue }
+            CKRecordHostMapping.applyMetadata(into: rec, from: input)
             _ = try await database.save(rec)
         // Two-catch pattern: pass through any ServerSyncError thrown by
         // pre-condition validation that may be added inside the do block

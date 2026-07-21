@@ -165,6 +165,59 @@ final class BackupServiceTests: XCTestCase {
 		XCTAssertNil(payload.hosts[0].privateKey)
 	}
 
+	func test_hostOrganizationRoundTripsThroughBackup() async throws {
+		let organization = HostOrganization(
+			groupPath: ["Production", "API"], tags: ["Linux", "Critical"]
+		)
+		let host = Host(
+			name: "web", hostname: "web.example", username: "deploy",
+			credential: .agent, organization: organization
+		)
+		try store.addHost(host)
+
+		let payload = try await BackupExporter.makePayload(
+			includeSecrets: false,
+			sessionStore: store,
+			snippets: [],
+			settings: nil,
+			bookmarks: { _ in [] }
+		)
+		let archived = try XCTUnwrap(payload.hosts.first)
+		XCTAssertEqual(archived.groupPath, organization.groupPath)
+		XCTAssertEqual(archived.tags, organization.tags)
+
+		let destination = SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: root.appendingPathComponent("known_hosts-2").path,
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: root.appendingPathComponent("hosts-2.json"),
+			keychain: KeychainStore(
+				service: "com.caterm.test.backup-destination.\(UUID())",
+				accessGroup: nil
+			)
+		)
+		let plan = BackupMergePlanner.plan(
+			payload: payload,
+			localHosts: [],
+			needsCredentialSetup: { _ in false },
+			localSnippets: [],
+			localSettingsRevision: nil,
+			localBookmarks: { _ in [] },
+			localKnownHostsLines: []
+		)
+		_ = try await BackupImporter.apply(
+			plan: plan,
+			sessionStore: destination,
+			snippetStore: snippetStore,
+			settingsStore: settingsStore,
+			archiveSettings: nil,
+			bookmarkStore: bookmarkStore
+		)
+
+		XCTAssertEqual(destination.hosts.first?.organization, organization)
+	}
+
 	func test_export_retriesWhenHostGraphChangesDuringCredentialRead() async throws {
 		var target = Host(
 			name: "target",

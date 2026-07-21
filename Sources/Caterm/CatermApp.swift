@@ -498,6 +498,12 @@ struct CatermApp: App {
           )
         }
         .keyboardShortcut("y", modifiers: [.command, .shift])
+        Button("Manage Hosts") {
+          NotificationCenter.default.post(
+            name: .catermOpenHostManager,
+            object: nil
+          )
+        }
         Button("Port Forwarding") {
           NotificationCenter.default.post(
             name: .catermOpenPortForwarding,
@@ -559,6 +565,12 @@ struct CatermApp: App {
         .environmentObject(preferences)
     }
     .defaultSize(width: 840, height: 520)
+    Window("Hosts", id: HostManagerWindow.id) {
+      HostManagerView()
+        .environmentObject(store)
+        .environmentObject(preferences)
+    }
+    .defaultSize(width: 1040, height: 620)
     Window("Port Forwarding", id: PortForwardWorkspaceWindow.id) {
       PortForwardWorkspaceView()
         .environmentObject(store)
@@ -580,6 +592,9 @@ extension Notification.Name {
   static let catermNewWindow = Notification.Name("CatermNewWindowNotification")
   static let catermOpenSessionHistory = Notification.Name(
     "CatermOpenSessionHistoryNotification"
+  )
+  static let catermOpenHostManager = Notification.Name(
+    "CatermOpenHostManagerNotification"
   )
   static let catermOpenPortForwarding = Notification.Name(
     "CatermOpenPortForwardingNotification"
@@ -616,6 +631,11 @@ struct OpenTabBridge: View {
         NotificationCenter.default.publisher(for: .catermOpenSessionHistory)
       ) { _ in
         openWindow(id: SessionHistoryWindow.id)
+      }
+      .onReceive(
+        NotificationCenter.default.publisher(for: .catermOpenHostManager)
+      ) { _ in
+        openWindow(id: HostManagerWindow.id)
       }
       .onReceive(
         NotificationCenter.default.publisher(for: .catermOpenPortForwarding)

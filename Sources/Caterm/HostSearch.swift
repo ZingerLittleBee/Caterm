@@ -7,7 +7,7 @@ enum HostSearch {
 		guard !query.isEmpty else { return hosts }
 		return hosts.filter { host in
 			let destination = "\(host.username)@\(host.hostname)"
-			return [
+			let searchableValues = [
 				host.name,
 				host.hostname,
 				host.username,
@@ -15,7 +15,11 @@ enum HostSearch {
 				destination,
 				"\(host.hostname):\(host.port)",
 				"\(destination):\(host.port)",
-			].contains { $0.localizedCaseInsensitiveContains(query) }
+				host.organization.groupPath.joined(separator: " "),
+			] + host.organization.tags
+			return searchableValues.contains {
+				$0.localizedCaseInsensitiveContains(query)
+			}
 		}
 	}
 }

@@ -61,6 +61,8 @@ public enum MobileBackupService {
 					                  label: f.label)
 				},
 				icon: host.icon,
+				groupPath: host.organization.groupPath,
+				tags: host.organization.tags,
 				password: password, passphrase: passphrase, privateKey: privateKey
 			)
 		}
@@ -148,7 +150,10 @@ public enum MobileBackupService {
 					port: a.port, username: a.username,
 					credential: placeholderCredential(for: a),
 					createdAt: a.createdAt, updatedAt: a.updatedAt,
-					forwards: a.forwards.map(portForward(from:)), icon: a.icon
+					forwards: a.forwards.map(portForward(from:)), icon: a.icon,
+					organization: HostOrganization(
+						groupPath: a.groupPath ?? [], tags: a.tags ?? []
+					)
 				))
 				result.summary.hostsAdded += 1
 			case .update:
@@ -160,6 +165,9 @@ public enum MobileBackupService {
 				result.hosts[idx].username = a.username
 				result.hosts[idx].forwards = a.forwards.map(portForward(from:))
 				result.hosts[idx].icon = a.icon
+				result.hosts[idx].organization = HostOrganization(
+					groupPath: a.groupPath ?? [], tags: a.tags ?? []
+				)
 				result.hosts[idx].updatedAt = now
 				result.summary.hostsUpdated += 1
 			case .credentialsOnly:

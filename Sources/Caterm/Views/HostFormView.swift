@@ -40,6 +40,8 @@ struct HostFormView: View {
 	@State private var jumpHostSelection = JumpHostSelection.none
 	@State private var forwards: [PortForward] = []
 	@State private var icon: String? = nil
+	@State private var groupText = ""
+	@State private var tagsText = ""
 
 	var body: some View {
 		let validation = formValidation
@@ -47,6 +49,7 @@ struct HostFormView: View {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 16) {
 					connectionCard(preview: validation.chainPreview)
+					organizationCard
 					authenticationCard
 					portForwardingCard
 					// Theme override only makes sense for an existing host —
@@ -78,8 +81,35 @@ struct HostFormView: View {
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
-		.frame(width: 560, height: 680)
+		.frame(width: 560, height: 720)
 		.onAppear { populate() }
+	}
+
+	private var organizationCard: some View {
+		FormCard("Organization") {
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Group")
+				TextField(
+					"",
+					text: $groupText,
+					prompt: Text("e.g. Production / API")
+				)
+				Text("Use / to create a nested group path.")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+			}
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Tags")
+				TextField(
+					"",
+					text: $tagsText,
+					prompt: Text("e.g. Linux, Critical, On-call")
+				)
+				Text("Separate tags with commas.")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+			}
+		}
 	}
 
 	private func connectionCard(preview: ChainPreviewState) -> some View {
@@ -416,6 +446,8 @@ struct HostFormView: View {
 		)
 		forwards = host.forwards
 		icon = host.icon
+		groupText = HostOrganizationText.groupText(host.organization)
+		tagsText = HostOrganizationText.tagsText(host.organization)
 	}
 
 	/// Credential as it should be persisted on the host. For a brand-new
@@ -445,6 +477,9 @@ struct HostFormView: View {
 		host.jumpHostServerId = jumpHostReference.serverID
 		host.forwards = forwards
 		host.icon = icon
+		host.organization = HostOrganizationText.makeOrganization(
+			group: groupText, tags: tagsText
+		)
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {

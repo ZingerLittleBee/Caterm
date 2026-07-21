@@ -47,4 +47,17 @@ final class HostSearchTests: XCTestCase {
 			["Production API"]
 		)
 	}
+
+	func testFilterMatchesGroupAndTags() {
+		let host = SSHHost(
+			name: "Worker", hostname: "worker.example", username: "deploy",
+			credential: .agent,
+			organization: HostOrganization(
+				groupPath: ["Production", "Edge"], tags: ["On-call"]
+			)
+		)
+
+		XCTAssertEqual(HostSearch.filter([host], query: "production").map(\.id), [host.id])
+		XCTAssertEqual(HostSearch.filter([host], query: "ON-CALL").map(\.id), [host.id])
+	}
 }

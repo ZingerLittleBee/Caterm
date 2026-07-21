@@ -310,6 +310,24 @@ struct HostListSidebar: View {
 			Divider()
 			Button {
 				NotificationCenter.default.post(
+					name: .catermOpenHostManager,
+					object: nil
+				)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "folder")
+					Text("Manage Hosts")
+					Spacer()
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Organizes hosts with groups and tags")
+			Button {
+				NotificationCenter.default.post(
 					name: .catermOpenSessionHistory,
 					object: nil
 				)

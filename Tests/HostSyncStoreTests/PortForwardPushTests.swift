@@ -64,7 +64,10 @@ final class PortForwardPushTests: XCTestCase {
         ]
         let host = SSHHost(
             name: "alpha", hostname: "x", username: "u",
-            credential: .agent, forwards: forwards
+            credential: .agent, forwards: forwards,
+            organization: HostOrganization(
+                groupPath: ["Production"], tags: ["Linux"]
+            )
         )
         try sessionStore.addHost(host)
         // Server empty -> reconciler emits .createRemote for this host.
@@ -78,6 +81,8 @@ final class PortForwardPushTests: XCTestCase {
         XCTAssertEqual(pushed.forwards.count, 2)
         XCTAssertEqual(Set(pushed.forwards.map(\.bindPort)), [15_432, 16_379])
         XCTAssertEqual(Set(pushed.forwards.compactMap(\.label)), ["pg", "redis"])
+        XCTAssertEqual(pushed.organization, host.organization)
+        XCTAssertEqual(pushed.metadataUpdatedAt, host.updatedAt)
     }
 
     func testUpdateRemotePushesForwards() async throws {
@@ -88,7 +93,10 @@ final class PortForwardPushTests: XCTestCase {
             name: "alpha", hostname: "x", username: "u",
             credential: .agent,
             updatedAt: localUpdatedAt,
-            forwards: forwards
+            forwards: forwards,
+            organization: HostOrganization(
+                groupPath: ["Staging"], tags: ["On-call"]
+            )
         )
         host.serverId = "srv-1"
         try sessionStore.addHost(host)
@@ -110,5 +118,7 @@ final class PortForwardPushTests: XCTestCase {
         XCTAssertEqual(pushed.forwards?.count, 1)
         XCTAssertEqual(pushed.forwards?.first?.bindPort, 18_080)
         XCTAssertEqual(pushed.forwards?.first?.label, "http")
+        XCTAssertEqual(pushed.organization, host.organization)
+        XCTAssertEqual(pushed.metadataUpdatedAt, host.updatedAt)
     }
 }
