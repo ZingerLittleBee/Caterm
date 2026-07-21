@@ -6,6 +6,7 @@ import os
 import SSHCommandBuilder
 import SSHCredentialContract
 import ServerSyncClient
+import SessionHistory
 
 // We deliberately import Combine (not SwiftUI/AppKit) here so the public `Host`
 // from SSHCommandBuilder doesn't collide with Foundation.NSHost. ObservableObject
@@ -62,6 +63,7 @@ public final class SessionStore: ObservableObject {
 		/// Authentication behavior captured when the tab opens. Saved hosts use
 		/// their configured credential; one-time connections let OpenSSH prompt.
 		public var authenticationMode: SSHAuthenticationMode = .configuredCredential
+		public var historyEntryID: UUID?
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
@@ -69,10 +71,16 @@ public final class SessionStore: ObservableObject {
         }
         /// Convenience initialiser for pre-failed tabs created synchronously
         /// in `openTab` when chain resolution or credential pre-check fails.
-        init(id: UUID, host: SSHHost, failedWith kind: FailureKind) {
+        init(
+			id: UUID,
+			host: SSHHost,
+			failedWith kind: FailureKind,
+			historyEntryID: UUID? = nil
+		) {
             self.id = id
             self.host = host
             self.state = .failed(kind)
+			self.historyEntryID = historyEntryID
         }
         /// Convenience initialiser for happy-path tabs that carry a pre-resolved chain.
         init(
@@ -80,7 +88,8 @@ public final class SessionStore: ObservableObject {
 			host: SSHHost,
 			resolvedChain: [SSHHost],
 			installTerminfo: Bool = false,
-			authenticationMode: SSHAuthenticationMode = .configuredCredential
+			authenticationMode: SSHAuthenticationMode = .configuredCredential,
+			historyEntryID: UUID? = nil
 		) {
             self.id = id
             self.host = host
@@ -88,6 +97,7 @@ public final class SessionStore: ObservableObject {
             self.resolvedChain = resolvedChain
             self.installTerminfo = installTerminfo
 			self.authenticationMode = authenticationMode
+			self.historyEntryID = historyEntryID
         }
     }
 
@@ -157,6 +167,7 @@ public final class SessionStore: ObservableObject {
 
 	private let preflight: PreflightProbing
 	private let configSink: SSHConfigSink
+	private let historyRecorder: SessionHistoryRecording?
 
 	/// Per-tab attempt token — bumped on every `startConnection` invocation
 	/// so a stale async probe outcome from a cancelled retry cannot mutate
@@ -196,7 +207,8 @@ public final class SessionStore: ObservableObject {
 		controlMasterManager: ControlMasterTearDowning? = nil,
 		preflight: PreflightProbing = Preflight(),
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
-		managedKeyStore: ManagedKeyStore = ManagedKeyStore()
+		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
+		historyRecorder: SessionHistoryRecording? = nil
 	) {
 		self.init(
 			askpassPath: askpassPath,
@@ -209,7 +221,8 @@ public final class SessionStore: ObservableObject {
 			preflight: preflight,
 			configSink: configSink,
 			managedKeyStore: managedKeyStore,
-			credentialMaterialStore: nil
+			credentialMaterialStore: nil,
+			historyRecorder: historyRecorder
 		)
 	}
 
@@ -224,7 +237,8 @@ public final class SessionStore: ObservableObject {
 		preflight: PreflightProbing = Preflight(),
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
 		managedKeyStore: ManagedKeyStore,
-		credentialMaterialStore: SessionCredentialMaterialStore?
+		credentialMaterialStore: SessionCredentialMaterialStore?,
+		historyRecorder: SessionHistoryRecording? = nil
 	) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
@@ -249,6 +263,7 @@ public final class SessionStore: ObservableObject {
         self.controlMasterManager = controlMasterManager
         self.preflight = preflight
         self.configSink = configSink
+		self.historyRecorder = historyRecorder
         do {
             self.hosts = try HostPersistence.load(from: hostsURL)
         } catch {
@@ -320,13 +335,22 @@ public final class SessionStore: ObservableObject {
 		installTerminfo: Bool = false,
 		authenticationMode: SSHAuthenticationMode = .configuredCredential
 	) -> UUID {
+		let historyEntryID = beginHistory(for: host)
         // 1. Resolve the jump-host chain. Fail-fast if broken or cyclic.
         let chainResolution = ChainResolver(hosts: hosts).resolve(host)
         guard chainResolution.isComplete else {
             let id = UUID()
             let msg = "Jump host chain is broken — edit host to fix"
-            tabs.append(Tab(id: id, host: host,
-                            failedWith: .networkUnreachable(.other(code: 0, message: msg))))
+			let failure = FailureKind.networkUnreachable(
+				.other(code: 0, message: msg)
+			)
+            tabs.append(Tab(
+				id: id,
+				host: host,
+				failedWith: failure,
+				historyEntryID: historyEntryID
+			))
+			finishHistory(id: historyEntryID, outcome: .failed)
             return id
         }
         let chain = chainResolution.connectionOrder
@@ -347,7 +371,8 @@ public final class SessionStore: ObservableObject {
         let id = UUID()
         tabs.append(Tab(id: id, host: host, resolvedChain: chain,
 						installTerminfo: installTerminfo,
-						authenticationMode: authenticationMode))
+						authenticationMode: authenticationMode,
+						historyEntryID: historyEntryID))
         startConnection(tabId: id)
         return id
     }
@@ -365,6 +390,10 @@ public final class SessionStore: ObservableObject {
     /// full SSH handshake cost again.
     public func closeTab(tabId: UUID) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+		let historyOutcome: SessionHistoryOutcome = tabs[idx].hadConnected
+			? .completed
+			: .cancelled
+		finishHistory(id: tabs[idx].historyEntryID, outcome: historyOutcome)
         // Cancel any in-flight startConnection probe for this tab so we don't
         // leak the underlying NWConnection while the user moves on.
         pendingStartTasks.removeValue(forKey: tabId)?.cancel()
@@ -640,8 +669,14 @@ public final class SessionStore: ObservableObject {
 		// Clean any ssh_config written by the previous attempt before starting
 		// a fresh connection. Without this the old URL would be leaked when
 		// `startConnection` overwrites `sshConfigURL` with a new value.
-		if let idx = tabs.firstIndex(where: { $0.id == tabId }),
-		   let oldURL = tabs[idx].sshConfigURL {
+		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+		let previous = tabs[idx]
+		let previousOutcome: SessionHistoryOutcome = previous.hadConnected
+			? .completed
+			: .cancelled
+		finishHistory(id: previous.historyEntryID, outcome: previousOutcome)
+		let historyEntryID = beginHistory(for: previous.host)
+		if let oldURL = previous.sshConfigURL {
 			configSink.cleanup(oldURL)
 			tabs[idx].sshConfigURL = nil
 			tabs[idx].chainOutput = nil
@@ -649,6 +684,8 @@ public final class SessionStore: ObservableObject {
 		update(tabId) {
 			$0.lastFailure = nil
 			$0.state = .idle
+			$0.hadConnected = false
+			$0.historyEntryID = historyEntryID
 		}
 		startConnection(tabId: tabId)
 	}
@@ -731,10 +768,65 @@ public final class SessionStore: ObservableObject {
 
     private func update(_ tabId: UUID, _ mutate: (inout Tab) -> Void) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
-        var tab = tabs[idx]
+		let previous = tabs[idx]
+		var tab = previous
         mutate(&tab)
         tabs[idx] = tab
+		if !previous.hadConnected, tab.hadConnected {
+			markHistoryConnected(id: tab.historyEntryID)
+		}
+		if case let .failed(failure) = tab.state {
+			if case .failed = previous.state {
+				return
+			}
+			let outcome: SessionHistoryOutcome = failure == .cleanExit
+				? .completed
+				: .failed
+			finishHistory(id: tab.historyEntryID, outcome: outcome)
+		}
     }
+
+	private func beginHistory(for host: SSHHost) -> UUID? {
+		guard let historyRecorder else { return nil }
+		let isSavedHost = hosts.contains(where: { $0.id == host.id })
+		do {
+			return try historyRecorder.begin(
+				host: SessionHistoryHost(
+					savedHostID: isSavedHost ? host.id : nil,
+					displayName: host.name,
+					hostname: host.hostname,
+					port: host.port,
+					username: host.username
+				),
+				connectionKind: isSavedHost ? .savedHost : .oneTime,
+				at: Date()
+			)
+		} catch {
+			Self.log.error("failed to begin session history: \(String(describing: error), privacy: .public)")
+			return nil
+		}
+	}
+
+	private func markHistoryConnected(id: UUID?) {
+		guard let id, let historyRecorder else { return }
+		do {
+			try historyRecorder.markConnected(id: id, at: Date())
+		} catch {
+			Self.log.error("failed to update session history: \(String(describing: error), privacy: .public)")
+		}
+	}
+
+	private func finishHistory(
+		id: UUID?,
+		outcome: SessionHistoryOutcome
+	) {
+		guard let id, let historyRecorder else { return }
+		do {
+			try historyRecorder.finish(id: id, outcome: outcome, at: Date())
+		} catch {
+			Self.log.error("failed to finish session history: \(String(describing: error), privacy: .public)")
+		}
+	}
 
     // MARK: - Sync support (v1.1)
 

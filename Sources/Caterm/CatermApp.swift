@@ -14,6 +14,7 @@ import SFTPCommandBuilder
 import SSHCommandBuilder
 import SSHCredentialContract
 import ServerSyncClient
+import SessionHistory
 import SessionStore
 import SettingsStore
 import SettingsSyncStore
@@ -26,6 +27,7 @@ import TerminalEngine
 struct CatermApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
   @StateObject var store: SessionStore
+  @StateObject private var historyStore: SessionHistoryStore
   @StateObject var syncStore: HostSyncStore
   @StateObject var preferences: SyncPreferences
   @StateObject var fileTransferStore: FileTransferStore
@@ -54,7 +56,12 @@ struct CatermApp: App {
     self.cloudSyncDisabled = cloudSyncDisabled
     try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
     let mngs = ManagedKeyStore()
-    let session = makeStore(managedKeyStore: mngs)
+    let history = makeSessionHistoryStore()
+    let session = makeStore(
+      managedKeyStore: mngs,
+      historyRecorder: history
+    )
+    _historyStore = StateObject(wrappedValue: history)
     let surfaceRegistry = SurfaceRegistry()
     _surfaceRegistry = StateObject(wrappedValue: surfaceRegistry)
     let cloudSync = CloudSyncBootstrap.make(disabled: cloudSyncDisabled)
@@ -310,6 +317,7 @@ struct CatermApp: App {
         }
       }
       .environmentObject(store)
+      .environmentObject(historyStore)
       .environmentObject(syncStore)  // NEW (v1.4)
       .environmentObject(preferences)  // NEW (v1.4)
       .environmentObject(fileTransferStore)
@@ -482,6 +490,15 @@ struct CatermApp: App {
         }
         .keyboardShortcut("f", modifiers: [.command, .shift])
       }
+      CommandGroup(after: .toolbar) {
+        Button("Connection History") {
+          NotificationCenter.default.post(
+            name: .catermOpenSessionHistory,
+            object: nil
+          )
+        }
+        .keyboardShortcut("y", modifiers: [.command, .shift])
+      }
       // Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
       // These post notifications that `SnippetCommandObserver` picks up
       // in the key window only, avoiding multi-window broadcast.
@@ -523,12 +540,22 @@ struct CatermApp: App {
         }
       #endif
     }
+    Window("Connection History", id: SessionHistoryWindow.id) {
+      SessionHistoryView()
+        .environmentObject(store)
+        .environmentObject(historyStore)
+        .environmentObject(preferences)
+    }
+    .defaultSize(width: 840, height: 520)
   }
 }
 
 extension Notification.Name {
   static let catermAddHost = Notification.Name("CatermAddHostNotification")
   static let catermNewWindow = Notification.Name("CatermNewWindowNotification")
+  static let catermOpenSessionHistory = Notification.Name(
+    "CatermOpenSessionHistoryNotification"
+  )
 }
 
 /// Invisible bridge view that lets us call `openWindow(value:)` (which needs
@@ -553,6 +580,11 @@ struct OpenTabBridge: View {
         // render LandingView rather than MainWindow — effectively a new
         // blank window in the tab bar.
         openWindow(value: UUID())
+      }
+      .onReceive(
+        NotificationCenter.default.publisher(for: .catermOpenSessionHistory)
+      ) { _ in
+        openWindow(id: SessionHistoryWindow.id)
       }
   }
 }
@@ -621,7 +653,10 @@ struct LandingView: View {
 }
 
 @MainActor
-private func makeStore(managedKeyStore: ManagedKeyStore) -> SessionStore {
+private func makeStore(
+  managedKeyStore: ManagedKeyStore,
+  historyRecorder: SessionHistoryRecording
+) -> SessionStore {
   let supportDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     .appendingPathComponent("Caterm", isDirectory: true)
@@ -659,5 +694,30 @@ private func makeStore(managedKeyStore: ManagedKeyStore) -> SessionStore {
     hostsURL: hostsURL,
     keychain: keychain,
     controlMasterManager: ControlMasterManager.shared,
-    managedKeyStore: managedKeyStore)
+    managedKeyStore: managedKeyStore,
+    historyRecorder: historyRecorder)
+}
+
+@MainActor
+private func makeSessionHistoryStore() -> SessionHistoryStore {
+  let environment = ProcessInfo.processInfo.environment
+  let fileURL: URL
+  if let overridePath = environment["CATERM_SESSION_HISTORY_PATH"] {
+    fileURL = URL(fileURLWithPath: overridePath)
+  } else {
+    let supportDirectory = FileManager.default
+      .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+      .first
+      ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    fileURL = supportDirectory
+      .appendingPathComponent("Caterm", isDirectory: true)
+      .appendingPathComponent("session-history.json")
+  }
+  let store = SessionHistoryStore(fileURL: fileURL)
+  do {
+    try store.load(recoveringAt: Date())
+  } catch {
+    NSLog("[CatermApp] Session history load failed: %@", String(describing: error))
+  }
+  return store
 }

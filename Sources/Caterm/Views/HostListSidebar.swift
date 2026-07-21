@@ -308,6 +308,27 @@ struct HostListSidebar: View {
 			#endif
 
 			Divider()
+			Button {
+				NotificationCenter.default.post(
+					name: .catermOpenSessionHistory,
+					object: nil
+				)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "clock.arrow.circlepath")
+					Text("Connection History")
+					Spacer()
+					Text("⇧⌘Y")
+						.foregroundStyle(.tertiary)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Opens locally stored connection metadata")
+			Divider()
 			SyncStatusRow()
 		}
 	}

@@ -61,8 +61,12 @@ let package = Package(
             path: "Sources/SyncScheduler"
         ),
         .target(
+            name: "SessionHistory",
+            path: "Sources/SessionHistory"
+        ),
+        .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory"],
             path: "Sources/SessionStore"
         ),
         .target(
@@ -187,6 +191,7 @@ let package = Package(
                 "SSHCommandBuilder",
                 "SSHCredentialContract",
                 "SessionStore",
+                "SessionHistory",
                 "KeychainStore",
                 "ConfigStore",
                 "ServerSyncClient",
@@ -250,8 +255,13 @@ let package = Package(
         ),
         .testTarget(
             name: "SessionStoreTests",
-            dependencies: ["SessionStore", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder"],
+            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder"],
             path: "Tests/SessionStoreTests"
+        ),
+        .testTarget(
+            name: "SessionHistoryTests",
+            dependencies: ["SessionHistory"],
+            path: "Tests/SessionHistoryTests"
         ),
         .testTarget(
             name: "ConfigStoreTests",
