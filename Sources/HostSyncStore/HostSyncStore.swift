@@ -423,6 +423,7 @@ public final class HostSyncStore: ObservableObject {
             case .incremental: effectiveMode = .incremental
             }
 
+            try await drainPendingRemoteHostDeletions()
             var batch = try await fetch(effectiveMode)
             if batch.tokenExpired {
                 // Single retry as forceFull. Token clearing already happened
@@ -494,6 +495,16 @@ public final class HostSyncStore: ObservableObject {
         switch mode {
         case .incremental: return try await client.fetchHostChanges()
         case .forceFull:   return try await client.fetchHostSnapshotAndCheckpoint()
+        }
+    }
+
+    private func drainPendingRemoteHostDeletions() async throws {
+        let pendingServerIDs = try sessionStore.pendingRemoteHostDeletionIDs()
+        for serverID in pendingServerIDs {
+            try Task.checkCancellation()
+            try await client.deleteHost(id: serverID)
+            try Task.checkCancellation()
+            try sessionStore.clearPendingRemoteHostDeletion(serverID: serverID)
         }
     }
 
@@ -590,7 +601,7 @@ public final class HostSyncStore: ObservableObject {
             }
 
         case let .deleteLocal(localHostId):
-            try await sessionStore.deleteHost(id: localHostId)
+            try await sessionStore.applyRemoteHostDeletion(id: localHostId)
 
         case let .updateRemoteCredentials(localHostId):
             try await credentialEngine.pushLocalCredential(hostId: localHostId)

@@ -154,6 +154,7 @@ public final class SessionStore: ObservableObject {
 	let keychain: KeychainStore
 	public let credentialMaterialStore: SessionCredentialMaterialStore
 	let managedKeyStore: ManagedKeyStore
+	private var hostDeletionOutbox: HostDeletionOutbox
 
     /// Optional ControlMaster manager used to tear down per-host shared SSH
     /// connections when the last tab for a host closes (after a grace
@@ -248,6 +249,7 @@ public final class SessionStore: ObservableObject {
         self.hostsURL = hostsURL
         self.keychain = keychain
 		self.managedKeyStore = managedKeyStore
+		self.hostDeletionOutbox = HostDeletionOutbox(hostsURL: hostsURL)
 		if let credentialMaterialStore {
 			precondition(
 				credentialMaterialStore.managedKeyStore === managedKeyStore,
@@ -318,15 +320,62 @@ public final class SessionStore: ObservableObject {
         mutationsForSyncSubject.send()
     }
 
+    public func pendingRemoteHostDeletionIDs() throws -> [String] {
+        try hostDeletionOutbox.pendingIDs()
+    }
+
+    public func clearPendingRemoteHostDeletion(serverID: String) throws {
+        try hostDeletionOutbox.remove(serverID)
+    }
+
     public func deleteHost(id: UUID) async throws {
-        guard hosts.contains(where: { $0.id == id }) else { return }
-		let commit = try await credentialMaterialStore.beginDeletion(for: id)
+        try await deleteHost(id: id, enqueueRemoteDeletion: true)
+    }
+
+    public func applyRemoteHostDeletion(id: UUID) async throws {
+        try await deleteHost(id: id, enqueueRemoteDeletion: false)
+    }
+
+    private func deleteHost(
+        id: UUID,
+        enqueueRemoteDeletion: Bool
+    ) async throws {
+        guard let host = hosts.first(where: { $0.id == id }) else { return }
+        let serverID = enqueueRemoteDeletion ? host.serverId : nil
+        let commit = try await credentialMaterialStore.beginDeletion(for: id)
+        var insertedDeletionIntent = false
+        if let serverID {
+            do {
+                insertedDeletionIntent = try hostDeletionOutbox.insert(serverID)
+            } catch {
+                let outboxError = error
+                do {
+                    try await credentialMaterialStore.rollbackDeletion(commit)
+                } catch {
+                    let rollbackDescription = String(describing: error)
+                    Self.log.error(
+                        "credential deletion rollback failed: \(id, privacy: .public): \(rollbackDescription, privacy: .public)"
+                    )
+                }
+                throw outboxError
+            }
+        }
         var updated = hosts
         updated.removeAll { $0.id == id }
         do {
             try HostPersistence.save(updated, to: hostsURL)
         } catch {
             let persistenceError = error
+            if insertedDeletionIntent, let serverID {
+                do {
+                    try hostDeletionOutbox.remove(serverID)
+                } catch {
+                    let rollbackDescription = String(describing: error)
+                    Self.log.error(
+                        "host deletion outbox rollback failed: \(serverID, privacy: .public): \(rollbackDescription, privacy: .public)"
+                    )
+                }
+            }
             do {
                 try await credentialMaterialStore.rollbackDeletion(commit)
             } catch {
@@ -339,8 +388,10 @@ public final class SessionStore: ObservableObject {
         }
         hosts = updated
         await credentialMaterialStore.finalizeDeletion(commit)
-		credentialAvailabilityRevision &+= 1
-        mutationsForSyncSubject.send()
+        credentialAvailabilityRevision &+= 1
+        if enqueueRemoteDeletion {
+            mutationsForSyncSubject.send()
+        }
     }
 
 	/// Test seam for seeding Keychain-backed connection fixtures. Production

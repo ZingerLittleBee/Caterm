@@ -6,6 +6,10 @@ import XCTest
 @testable import ServerSyncClient
 @testable import KeychainStore
 
+private enum TestFailure: Error, Equatable {
+	case deleteFailed
+}
+
 @MainActor
 final class HostSyncStoreIntegrationTests: XCTestCase {
     var sut: HostSyncStore!
@@ -35,6 +39,10 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 
     override func tearDown() async throws {
         try? FileManager.default.removeItem(at: tmpHostsURL)
+		try? FileManager.default.removeItem(
+			at: tmpHostsURL.deletingPathExtension()
+				.appendingPathExtension("deletions.json")
+		)
     }
 
     func testFirstSyncUploadsLocalUnsyncedHosts() async throws {
@@ -87,7 +95,66 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
         try await sut.sync()
 
         XCTAssertTrue(sessionStore.hosts.isEmpty)
+		XCTAssertTrue(try sessionStore.pendingRemoteHostDeletionIDs().isEmpty)
+		XCTAssertTrue(fakeClient.deleteHostIDs.isEmpty)
     }
+
+	func testLocalDeleteRemovesRemoteInsteadOfRecreatingHost() async throws {
+		var host = SSHHost(
+			name: "alpha", hostname: "x", username: "u", credential: .agent
+		)
+		host.serverId = "srv-1"
+		try sessionStore.addHost(host)
+		fakeClient.listResult = [
+			RemoteHost(
+				id: "srv-1", name: host.name, hostname: host.hostname,
+				port: host.port, username: host.username, authType: "key",
+				createdAt: host.createdAt, updatedAt: host.updatedAt
+			)
+		]
+
+		try await sessionStore.deleteHost(id: host.id)
+		try await sut.sync()
+
+		XCTAssertEqual(fakeClient.deleteHostIDs, ["srv-1"])
+		XCTAssertTrue(sessionStore.hosts.isEmpty)
+	}
+
+	func testFailedRemoteDeleteStaysPendingAndRetriesBeforeFetch() async throws {
+		var host = SSHHost(
+			name: "alpha", hostname: "x", username: "u", credential: .agent
+		)
+		host.serverId = "srv-1"
+		try sessionStore.addHost(host)
+		fakeClient.listResult = [
+			RemoteHost(
+				id: "srv-1", name: host.name, hostname: host.hostname,
+				port: host.port, username: host.username, authType: "key",
+				createdAt: host.createdAt, updatedAt: host.updatedAt
+			)
+		]
+		fakeClient.deleteHostError = TestFailure.deleteFailed
+
+		try await sessionStore.deleteHost(id: host.id)
+		do {
+			try await sut.sync()
+			XCTFail("Expected remote deletion failure")
+		} catch {
+			XCTAssertEqual(error as? TestFailure, .deleteFailed)
+		}
+
+		XCTAssertEqual(try sessionStore.pendingRemoteHostDeletionIDs(), ["srv-1"])
+		XCTAssertEqual(fakeClient.deleteHostAttempts, ["srv-1"])
+		XCTAssertEqual(fakeClient.listCallCount, 0)
+
+		fakeClient.deleteHostError = nil
+		try await sut.sync()
+
+		XCTAssertEqual(fakeClient.deleteHostAttempts, ["srv-1", "srv-1"])
+		XCTAssertEqual(fakeClient.deleteHostIDs, ["srv-1"])
+		XCTAssertTrue(try sessionStore.pendingRemoteHostDeletionIDs().isEmpty)
+		XCTAssertTrue(sessionStore.hosts.isEmpty)
+	}
 
 	func testLocalOnlyAgentHostDoesNotNeedCredentialSetup() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
@@ -114,6 +181,8 @@ final class FakeServerSyncClient: IncrementalHostSyncClient, @unchecked Sendable
     var createCallCount = 0
     var updateCallCount = 0
     var deleteCallCount = 0
+	var deleteHostIDs: [String] = []
+	var deleteHostAttempts: [String] = []
 
     /// Captured inputs for assertions about what got pushed to the
     /// self-hosted server path (notably `forwards`, which the CloudKit
@@ -179,7 +248,10 @@ final class FakeServerSyncClient: IncrementalHostSyncClient, @unchecked Sendable
     }
     func deleteHost(id: String) async throws {
         deleteCallCount += 1
+		deleteHostAttempts.append(id)
         if let err = deleteHostError { throw err }
+		deleteHostIDs.append(id)
+		listResult.removeAll { $0.id == id }
     }
 
     func preferredHostSyncMode() async -> HostSyncMode {
