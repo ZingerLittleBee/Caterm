@@ -43,12 +43,13 @@ struct HostListSidebar: View {
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
 	let onOpenTab: (UUID) -> Void
-	@State var selectedHostId: UUID?
-	@State var showingAddSheet = false
-	@State var editingHost: SSHHost?
-	@State var errorMessage: String?
-	@State var pendingCredentialHost: SSHHost?
+	@State private var selectedHostId: UUID?
+	@State private var showingAddSheet = false
+	@State private var editingHost: SSHHost?
+	@State private var errorMessage: String?
+	@State private var pendingCredentialHost: SSHHost?
 	@State private var pendingFanoutDelete: PendingFanoutDelete?
+	@State private var hostQuery = ""
 
 	private struct PendingFanoutDelete: Identifiable {
 		let host: SSHHost
@@ -58,9 +59,18 @@ struct HostListSidebar: View {
 
 	var body: some View {
 		let chainResolver = ChainResolver(hosts: store.hosts)
+		let visibleHosts = HostSearch.filter(store.hosts, query: hostQuery)
 		return VStack(spacing: 0) {
+			HostSearchField(text: $hostQuery) {
+				connectSelectedOrFirst(in: visibleHosts)
+			}
+			.frame(height: 22)
+			.padding(.horizontal, 8)
+			.padding(.top, 8)
+			.padding(.bottom, 6)
+
 			List(selection: $selectedHostId) {
-				ForEach(store.hosts) { host in
+				ForEach(visibleHosts) { host in
 					HostRow(
 						host: host,
 						chainResolution: chainResolver.resolve(host)
@@ -78,7 +88,7 @@ struct HostListSidebar: View {
 			}
 			.overlay {
 				GeometryReader { proxy in
-					HostListDoubleClickConnector(hosts: store.hosts) { host in
+					HostListDoubleClickConnector(hosts: visibleHosts) { host in
 						connect(host)
 					}
 					.frame(width: proxy.size.width, height: proxy.size.height)
@@ -100,7 +110,15 @@ struct HostListSidebar: View {
 							.foregroundColor(.secondary)
 					}
 					.padding()
+				} else if visibleHosts.isEmpty {
+					ContentUnavailableView.search(text: hostQuery)
 				}
+			}
+			.onChange(of: visibleHosts.map(\.id)) { _, visibleHostIds in
+				guard !visibleHostIds.isEmpty,
+				      selectedHostId.map({ visibleHostIds.contains($0) }) != true
+				else { return }
+				selectedHostId = visibleHostIds.first
 			}
 			.toolbar {
 				ToolbarItem(placement: .primaryAction) {
@@ -354,6 +372,14 @@ struct HostListSidebar: View {
 		}
 	}
 
+	private func connectSelectedOrFirst(in visibleHosts: [SSHHost]) {
+		let selected = selectedHostId.flatMap { selectedHostId in
+			visibleHosts.first { $0.id == selectedHostId }
+		}
+		guard let host = selected ?? visibleHosts.first else { return }
+		connect(host)
+	}
+
 	private func deleteHost(_ host: SSHHost) {
 		let dependents = store.hosts.filter {
 			$0.id != host.id &&
@@ -474,6 +500,53 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 			// anyway, but this avoids a transient dead double-click).
 			let rowMatched = tables.filter { $0.numberOfRows == hosts.count }
 			return leftmost(rowMatched) ?? leftmost(tables)
+		}
+	}
+}
+
+private struct HostSearchField: NSViewRepresentable {
+	@Binding var text: String
+	let onSubmit: () -> Void
+
+	func makeCoordinator() -> Coordinator {
+		Coordinator(parent: self)
+	}
+
+	func makeNSView(context: Context) -> NSSearchField {
+		let field = NSSearchField()
+		field.placeholderString = "Search hosts"
+		field.sendsWholeSearchString = true
+		field.target = context.coordinator
+		field.action = #selector(Coordinator.submit(_:))
+		field.delegate = context.coordinator
+		field.identifier = NSUserInterfaceItemIdentifier("hostSearchField")
+		field.setAccessibilityLabel("Search hosts")
+		return field
+	}
+
+	func updateNSView(_ field: NSSearchField, context: Context) {
+		context.coordinator.parent = self
+		if field.stringValue != text {
+			field.stringValue = text
+		}
+		field.isEnabled = context.environment.isEnabled
+	}
+
+	final class Coordinator: NSObject, NSSearchFieldDelegate {
+		var parent: HostSearchField
+
+		init(parent: HostSearchField) {
+			self.parent = parent
+		}
+
+		func controlTextDidChange(_ notification: Notification) {
+			guard let field = notification.object as? NSSearchField else { return }
+			parent.text = field.stringValue
+		}
+
+		@objc func submit(_ field: NSSearchField) {
+			parent.text = field.stringValue
+			parent.onSubmit()
 		}
 	}
 }
