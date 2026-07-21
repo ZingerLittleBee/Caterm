@@ -105,10 +105,9 @@ public final class SnippetStore: ObservableObject {
 
 	/// Apply a server-authoritative snippet using LWW precedence.
 	///
-	/// Returns `true` when the remote snippet was written (remote wins or new),
-	/// `false` when the local copy is newer under the shared precedence and the
-	/// write was skipped. The caller can use the return value to decide whether to clear
-	/// a dirty flag — it should only clear when `true` (remote was applied).
+	/// Returns `true` when the remote snippet and its clean acknowledgement were
+	/// persisted (remote wins or new), or `false` when the local copy is newer
+	/// under the shared precedence and remains dirty.
 	///
 	/// Precedence order (owned by `SnippetMergePolicy`):
 	///   1. revision (higher wins)
