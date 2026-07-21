@@ -50,6 +50,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 
 		await sync.runSyncPass(mode: .incremental)
 		XCTAssertEqual(store.snippets.first?.name, "remote")
+		XCTAssertTrue(store.locallyDirtySnippetIDs.isEmpty)
 		XCTAssertTrue(client.pushed.isEmpty,
 		              "Remote revision 5 > local 1; local must NOT be pushed")
 	}
@@ -67,7 +68,6 @@ final class SnippetSyncStoreTests: XCTestCase {
 			checkpoint: nil, tokenExpired: false, mode: .incremental
 		)
 		let sync = SnippetSyncStore(store: store, client: client)
-		sync.markDirty(id)
 		await sync.runSyncPass(mode: .incremental)
 
 		XCTAssertTrue(store.snippets.isEmpty)
@@ -103,12 +103,75 @@ final class SnippetSyncStoreTests: XCTestCase {
 		let client = FakeSnippetSyncClient()
 		client.pushResult = saved
 		let sync = SnippetSyncStore(store: store, client: client)
-		sync.markDirty(id)
 
 		await sync.runSyncPass(mode: .incremental)
 		await sync.runSyncPass(mode: .incremental)
 
 		XCTAssertEqual(client.pushed.count, 1)
+		XCTAssertTrue(store.locallyDirtySnippetIDs.isEmpty)
+	}
+
+	func testLocalEditSurvivesRestartAndForceFullMissingRemote() async throws {
+		let directory = tempDir()
+		let beforeRestart = SnippetStore(directory: directory)
+		try beforeRestart.load()
+		let snippet = Snippet(
+			id: UUID(),
+			name: "Deploy",
+			content: "make deploy",
+			createdAt: .distantPast,
+			updatedAt: .distantPast
+		)
+		try beforeRestart.upsert(snippet)
+
+		let afterRestart = SnippetStore(directory: directory)
+		try afterRestart.load()
+		let client = FakeSnippetSyncClient()
+		let sync = SnippetSyncStore(store: afterRestart, client: client)
+
+		await sync.runSyncPass(mode: .forceFull)
+
+		XCTAssertEqual(client.pushed.map(\.id), [snippet.id])
+		XCTAssertEqual(afterRestart.snippets.map(\.id), [snippet.id])
+		XCTAssertTrue(afterRestart.locallyDirtySnippetIDs.isEmpty)
+		let confirmed = SnippetStore(directory: directory)
+		try confirmed.load()
+		XCTAssertTrue(confirmed.locallyDirtySnippetIDs.isEmpty)
+	}
+
+	func testFailedPushKeepsDirtyAcrossRestartForRetry() async throws {
+		let directory = tempDir()
+		let beforeFailure = SnippetStore(directory: directory)
+		try beforeFailure.load()
+		let snippet = Snippet(
+			id: UUID(), name: "Deploy", content: "make deploy",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		try beforeFailure.upsert(snippet)
+		let failingClient = FakeSnippetSyncClient()
+		failingClient.pushError = TestSnippetSyncError.pushFailed
+		let failingSync = SnippetSyncStore(
+			store: beforeFailure, client: failingClient
+		)
+
+		await failingSync.runSyncPass(mode: .incremental)
+		XCTAssertEqual(failingClient.pushAttempts, [snippet.id])
+		XCTAssertEqual(beforeFailure.locallyDirtySnippetIDs, [snippet.id])
+
+		let afterRestart = SnippetStore(directory: directory)
+		try afterRestart.load()
+		let recoveryClient = FakeSnippetSyncClient()
+		let recoverySync = SnippetSyncStore(
+			store: afterRestart, client: recoveryClient
+		)
+
+		await recoverySync.runSyncPass(mode: .forceFull)
+
+		XCTAssertEqual(recoveryClient.pushed.map(\.id), [snippet.id])
+		XCTAssertTrue(afterRestart.locallyDirtySnippetIDs.isEmpty)
+		let confirmed = SnippetStore(directory: directory)
+		try confirmed.load()
+		XCTAssertTrue(confirmed.locallyDirtySnippetIDs.isEmpty)
 	}
 
 	func test_concurrentTriggers_serializeIntoOnePassAndOneFollowup() async throws {
@@ -240,7 +303,6 @@ final class SnippetSyncStoreTests: XCTestCase {
 		)
 		client.suspendNextFetch = true
 		let sync = SnippetSyncStore(store: store, client: client)
-		sync.markDirty(localID)
 
 		let active = Task { await sync.runSyncPass(mode: .incremental) }
 		await waitUntil { client.fetchCallCount == 1 }
@@ -268,11 +330,17 @@ private struct StubCheckpoint: SnippetSyncCheckpoint {
 	let id = UUID()
 }
 
+private enum TestSnippetSyncError: Error {
+	case pushFailed
+}
+
 @MainActor
 private final class FakeSnippetSyncClient: IncrementalSnippetSyncClient {
 	var queuedFetch: SnippetChangeBatch?
 	var pushed: [Snippet] = []
+	var pushAttempts: [UUID] = []
 	var pushResult: Snippet?
+	var pushError: Error?
 	var deleted: [UUID] = []
 	var committedCheckpoints: [any SnippetSyncCheckpoint] = []
 	var fetchCallCount = 0
@@ -331,6 +399,8 @@ private final class FakeSnippetSyncClient: IncrementalSnippetSyncClient {
 		subscriptions.remove("snippet")
 	}
 	func pushSnippet(_ s: Snippet) async throws -> Snippet {
+		pushAttempts.append(s.id)
+		if let pushError { throw pushError }
 		pushed.append(s)
 		if let pushResult { return pushResult }
 		var copy = s

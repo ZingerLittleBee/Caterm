@@ -72,13 +72,11 @@ struct SnippetEditorSheet: View {
 					createdAt: Date(), updatedAt: Date()
 				)
 				try store.upsert(s)
-				sync.markDirty(s.id)
 			case .edit(let original):
 				var copy = original
 				copy.name = trimmedName
 				copy.content = trimmedContent
 				try store.upsert(copy)
-				sync.markDirty(copy.id)
 			}
 			sync.scheduleSyncPass(debounceMs: 500)
 			dismiss()

@@ -9,7 +9,6 @@ public final class SnippetSyncStore: ObservableObject {
 	private let store: SnippetStore
 	private let client: any IncrementalSnippetSyncClient
 
-	private var locallyDirty: Set<UUID> = []
 	private var debounce: Task<Void, Never>?
 	private var debouncedMode: SnippetSyncMode?
 	private var isSuspendedForAccountChange = false
@@ -24,10 +23,6 @@ public final class SnippetSyncStore: ObservableObject {
 	public init(store: SnippetStore, client: any IncrementalSnippetSyncClient) {
 		self.store = store
 		self.client = client
-	}
-
-	public func markDirty(_ id: UUID) {
-		locallyDirty.insert(id)
 	}
 
 	/// Fire-and-forget trigger with single in-flight + at-most-one queued
@@ -106,7 +101,6 @@ public final class SnippetSyncStore: ObservableObject {
 		let suspendedMode = pendingWhileSuspended
 		pendingWhileSuspended = nil
 		if identityChanged {
-			locallyDirty.removeAll()
 			scheduleSyncPass(mode: .forceFull)
 		} else {
 			scheduleSyncPass(mode: suspendedMode ?? .incremental)
@@ -201,42 +195,32 @@ public final class SnippetSyncStore: ObservableObject {
 			ops = SnippetSyncReconciler.reconcileFullSnapshot(
 				local: store.snippets,
 				remote: batch.changedSnippets,
-				locallyDirty: locallyDirty
+				locallyDirty: store.locallyDirtySnippetIDs
 			)
 		case .incremental:
 			ops = SnippetSyncReconciler.reconcileDelta(
 				local: store.snippets,
 				changedSnippets: batch.changedSnippets,
 				deletedIDs: batch.deletedSnippetIDs,
-				locallyDirty: locallyDirty
+				locallyDirty: store.locallyDirtySnippetIDs
 			)
 		}
 		for op in ops {
 			try Task.checkCancellation()
 			switch op {
 			case .applyRemote(let s):
-				let applied = (try? store.applyRemote(s)) ?? false
-				if applied {
-					locallyDirty.remove(s.id)
-				}
+				_ = try store.applyRemote(s)
 			case .applyTombstone(let id):
-				try? store.applyRemoteTombstone(id: id)
-				locallyDirty.remove(id)
+				try store.applyRemoteTombstone(id: id)
 			case .pushLocal(let s):
 				do {
 					let saved = try await client.pushSnippet(s)
 					try Task.checkCancellation()
 					do {
-						let applied = try store.applyRemote(saved)
-						// Only clear the dirty flag when the pushed copy was
-						// actually stored.  If the user edited the snippet
-						// between the push start and its completion, the local
-						// revision is now higher than `saved`, applyRemote
-						// returned false, and we must keep the dirty flag so
-						// the next pass re-pushes the newer edit.
-						if applied {
-							locallyDirty.remove(s.id)
-						}
+						// SnippetStore clears the durable dirty flag only when
+						// this acknowledgement actually wins the merge. A newer
+						// concurrent local edit therefore stays pending.
+						_ = try store.applyRemote(saved)
 					} catch {
 						if error is CancellationError || Task.isCancelled {
 							throw CancellationError()

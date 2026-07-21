@@ -2,6 +2,11 @@ import XCTest
 import SnippetSyncClient
 @testable import SnippetStore
 
+private struct LegacySnippetsEnvelope: Encodable {
+	let schemaVersion: Int
+	let snippets: [Snippet]
+}
+
 @MainActor
 final class SnippetStoreTests: XCTestCase {
 	private func tempDir() -> URL {
@@ -29,6 +34,7 @@ final class SnippetStoreTests: XCTestCase {
 		try store2.load()
 		XCTAssertEqual(store2.snippets.count, 1)
 		XCTAssertEqual(store2.snippets.first?.name, "ls")
+		XCTAssertEqual(store2.locallyDirtySnippetIDs, [s.id])
 	}
 
 	func test_upsertExisting_bumpsRevisionAndUpdatedAt() throws {
@@ -46,6 +52,24 @@ final class SnippetStoreTests: XCTestCase {
 		XCTAssertEqual(store.snippets.first?.name, "b")
 		XCTAssertGreaterThan(store.snippets.first!.revision, 0)
 		XCTAssertGreaterThan(store.snippets.first!.updatedAt, original.updatedAt)
+	}
+
+	func testLegacyEnvelopeWithoutDirtyIDsLoadsAsClean() throws {
+		let directory = tempDir()
+		let snippet = Snippet(
+			id: UUID(), name: "Legacy", content: "echo legacy",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		let data = try JSONEncoder().encode(
+			LegacySnippetsEnvelope(schemaVersion: 1, snippets: [snippet])
+		)
+		try data.write(to: directory.appendingPathComponent("snippets.json"))
+
+		let store = SnippetStore(directory: directory)
+		try store.load()
+
+		XCTAssertEqual(store.snippets.map(\.id), [snippet.id])
+		XCTAssertTrue(store.locallyDirtySnippetIDs.isEmpty)
 	}
 
 	func test_delete_removesSnippetAndAddsToOutbox() throws {
