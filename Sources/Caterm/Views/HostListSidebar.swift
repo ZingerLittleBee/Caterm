@@ -328,6 +328,24 @@ struct HostListSidebar: View {
 			}
 			.buttonStyle(.plain)
 			.accessibilityHint("Opens locally stored connection metadata")
+			Button {
+				NotificationCenter.default.post(
+					name: .catermOpenPortForwarding,
+					object: nil
+				)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "arrow.left.arrow.right")
+					Text("Port Forwarding")
+					Spacer()
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Opens forwarding rules for saved hosts")
 			Divider()
 			SyncStatusRow()
 		}

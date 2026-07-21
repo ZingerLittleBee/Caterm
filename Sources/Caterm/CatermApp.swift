@@ -498,6 +498,12 @@ struct CatermApp: App {
           )
         }
         .keyboardShortcut("y", modifiers: [.command, .shift])
+        Button("Port Forwarding") {
+          NotificationCenter.default.post(
+            name: .catermOpenPortForwarding,
+            object: nil
+          )
+        }
       }
       // Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
       // These post notifications that `SnippetCommandObserver` picks up
@@ -547,6 +553,12 @@ struct CatermApp: App {
         .environmentObject(preferences)
     }
     .defaultSize(width: 840, height: 520)
+    Window("Port Forwarding", id: PortForwardWorkspaceWindow.id) {
+      PortForwardWorkspaceView()
+        .environmentObject(store)
+        .environmentObject(preferences)
+    }
+    .defaultSize(width: 860, height: 520)
   }
 }
 
@@ -555,6 +567,9 @@ extension Notification.Name {
   static let catermNewWindow = Notification.Name("CatermNewWindowNotification")
   static let catermOpenSessionHistory = Notification.Name(
     "CatermOpenSessionHistoryNotification"
+  )
+  static let catermOpenPortForwarding = Notification.Name(
+    "CatermOpenPortForwardingNotification"
   )
 }
 
@@ -585,6 +600,11 @@ struct OpenTabBridge: View {
         NotificationCenter.default.publisher(for: .catermOpenSessionHistory)
       ) { _ in
         openWindow(id: SessionHistoryWindow.id)
+      }
+      .onReceive(
+        NotificationCenter.default.publisher(for: .catermOpenPortForwarding)
+      ) { _ in
+        openWindow(id: PortForwardWorkspaceWindow.id)
       }
   }
 }
@@ -665,7 +685,9 @@ private func makeStore(
     withIntermediateDirectories: true)
   let knownCaterm = supportDir.appendingPathComponent("known_hosts").path
   let knownUser = ("~/.ssh/known_hosts" as NSString).expandingTildeInPath
-  let hostsURL = supportDir.appendingPathComponent("hosts.json")
+  let hostsURL = ProcessInfo.processInfo.environment["CATERM_HOSTS_PATH"]
+    .map(URL.init(fileURLWithPath:))
+    ?? supportDir.appendingPathComponent("hosts.json")
 
   // Dev: askpass binary path can be overridden via env. In a packaged .app
   // it would sit alongside the main binary in Contents/MacOS/.
