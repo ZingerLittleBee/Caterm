@@ -96,6 +96,74 @@ final class SnippetStoreTests: XCTestCase {
 		try store2.load()
 		XCTAssertTrue(store2.pendingDeletedSnippetIDs.contains(id))
 	}
+
+	func test_move_persistsOrderAcrossInstances() throws {
+		let dir = tempDir()
+		let store = SnippetStore(directory: dir)
+		try store.load()
+		for name in ["one", "two", "three"] {
+			try store.upsert(Snippet(
+				id: UUID(),
+				name: name,
+				content: name,
+				createdAt: .now,
+				updatedAt: .now
+			))
+		}
+
+		try store.move(fromOffsets: IndexSet(integer: 0), toOffset: 3)
+
+		let reloaded = SnippetStore(directory: dir)
+		try reloaded.load()
+		XCTAssertEqual(reloaded.snippets.map(\.name), ["two", "three", "one"])
+	}
+
+	func test_load_quarantinesCorruptSnippetFileWithoutReplacingMemory() throws {
+		let dir = tempDir()
+		let store = SnippetStore(directory: dir)
+		let snippet = Snippet(
+			id: UUID(),
+			name: "safe",
+			content: "echo safe",
+			createdAt: .now,
+			updatedAt: .now
+		)
+		try store.upsert(snippet)
+		try Data("not-json".utf8).write(
+			to: dir.appendingPathComponent("snippets.json"),
+			options: .atomic
+		)
+
+		try store.load()
+
+		XCTAssertEqual(store.snippets.map(\.id), [snippet.id])
+		let quarantined = try FileManager.default.contentsOfDirectory(
+			atPath: dir.path
+		).filter { $0.hasPrefix("snippets.json.broken-") }
+		XCTAssertEqual(quarantined.count, 1)
+		XCTAssertFalse(FileManager.default.fileExists(
+			atPath: dir.appendingPathComponent("snippets.json").path
+		))
+	}
+
+	func test_load_quarantinesUnsupportedSchema() throws {
+		let dir = tempDir()
+		let data = try JSONSerialization.data(withJSONObject: [
+			"schemaVersion": 99,
+			"snippets": [],
+			"locallyDirtySnippetIDs": [],
+		])
+		try data.write(to: dir.appendingPathComponent("snippets.json"))
+		let store = SnippetStore(directory: dir)
+
+		try store.load()
+
+		XCTAssertTrue(store.snippets.isEmpty)
+		let quarantined = try FileManager.default.contentsOfDirectory(
+			atPath: dir.path
+		).filter { $0.hasPrefix("snippets.json.broken-") }
+		XCTAssertEqual(quarantined.count, 1)
+	}
 }
 
 extension SnippetStoreTests {

@@ -6,6 +6,7 @@ import SnippetSyncClient
 public enum SnippetStoreError: Error, Equatable {
 	case writeFailed(String)
 	case readFailed(String)
+	case unsupportedSchema(found: Int, supported: Int)
 }
 
 private struct SnippetsEnvelope: Codable {
@@ -38,15 +39,8 @@ public final class SnippetStore: ObservableObject {
 	}
 
 	public func load() throws {
-		if let data = try? Data(contentsOf: snippetsURL) {
-			let env = try JSONDecoder().decode(SnippetsEnvelope.self, from: data)
-			self.snippets = env.snippets
-			self.locallyDirtySnippetIDs = Set(env.locallyDirtySnippetIDs ?? [])
-		}
-		if let data = try? Data(contentsOf: outboxURL) {
-			let env = try JSONDecoder().decode(OutboxEnvelope.self, from: data)
-			self.pendingDeletedSnippetIDs = Set(env.pendingDeletedSnippetIDs)
-		}
+		try loadSnippets()
+		try loadOutbox()
 	}
 
 	public func upsert(_ s: Snippet) throws {
@@ -78,6 +72,32 @@ public final class SnippetStore: ObservableObject {
 		pendingDeletedSnippetIDs.insert(id)
 		try writeSnippets()
 		try writeOutbox()
+	}
+
+	/// Reorders the local presentation without changing snippet content or
+	/// CloudKit revision metadata. Ordering is device-local because the shared
+	/// Snippet record schema has no ordering field.
+	public func move(fromOffsets: IndexSet, toOffset: Int) throws {
+		guard !fromOffsets.isEmpty else { return }
+		let validOffsets = fromOffsets.filter { snippets.indices.contains($0) }
+		guard !validOffsets.isEmpty else { return }
+		let original = snippets
+		let moved = validOffsets.map { snippets[$0] }
+		for index in validOffsets.sorted(by: >) {
+			snippets.remove(at: index)
+		}
+		let removedBeforeDestination = validOffsets.filter { $0 < toOffset }.count
+		let insertionIndex = min(
+			max(0, toOffset - removedBeforeDestination),
+			snippets.count
+		)
+		snippets.insert(contentsOf: moved, at: insertionIndex)
+		do {
+			try writeSnippets()
+		} catch {
+			snippets = original
+			throw error
+		}
 	}
 
 	public func clearOutboxEntry(_ id: UUID) throws {
@@ -150,6 +170,53 @@ public final class SnippetStore: ObservableObject {
 	}
 
 	// MARK: - Persistence
+
+	private func loadSnippets() throws {
+		guard FileManager.default.fileExists(atPath: snippetsURL.path) else { return }
+		do {
+			let data = try Data(contentsOf: snippetsURL)
+			let envelope = try JSONDecoder().decode(SnippetsEnvelope.self, from: data)
+			guard envelope.schemaVersion == Self.schemaVersion else {
+				throw SnippetStoreError.unsupportedSchema(
+					found: envelope.schemaVersion,
+					supported: Self.schemaVersion
+				)
+			}
+			snippets = envelope.snippets
+			locallyDirtySnippetIDs = Set(envelope.locallyDirtySnippetIDs ?? [])
+		} catch {
+			try quarantine(snippetsURL)
+		}
+	}
+
+	private func loadOutbox() throws {
+		guard FileManager.default.fileExists(atPath: outboxURL.path) else { return }
+		do {
+			let data = try Data(contentsOf: outboxURL)
+			let envelope = try JSONDecoder().decode(OutboxEnvelope.self, from: data)
+			guard envelope.schemaVersion == Self.schemaVersion else {
+				throw SnippetStoreError.unsupportedSchema(
+					found: envelope.schemaVersion,
+					supported: Self.schemaVersion
+				)
+			}
+			pendingDeletedSnippetIDs = Set(envelope.pendingDeletedSnippetIDs)
+		} catch {
+			try quarantine(outboxURL)
+		}
+	}
+
+	private func quarantine(_ url: URL) throws {
+		let stamp = ISO8601DateFormatter().string(from: Date())
+			.replacingOccurrences(of: ":", with: "-")
+		let destination = url.deletingLastPathComponent()
+			.appendingPathComponent("\(url.lastPathComponent).broken-\(stamp)")
+		do {
+			try FileManager.default.moveItem(at: url, to: destination)
+		} catch {
+			throw SnippetStoreError.readFailed(error.localizedDescription)
+		}
+	}
 
 	private func writeSnippets() throws {
 		let env = SnippetsEnvelope(
