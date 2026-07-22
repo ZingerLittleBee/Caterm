@@ -104,4 +104,36 @@ final class CloseTabTeardownTests: XCTestCase {
 		XCTAssertEqual(rec.tornDown, [host.id],
 		               "last tab closing should teardown the master")
 	}
+
+	func test_repeatedClose_tearsDownExactlyOnce() async {
+		let rec = RecordingTearDowner()
+		let store = makeStore(rec: rec, grace: 0.02)
+		let host = makeHost(forwards: [])
+		let tab = store.openTab(host: host)
+
+		store.closeTab(tabId: tab)
+		store.closeTab(tabId: tab)
+		try? await Task.sleep(nanoseconds: 100_000_000)
+
+		XCTAssertEqual(rec.tornDown, [host.id])
+	}
+
+	func test_closeDuringScheduledReconnect_cancelsRestartAndTearsDownOnce() async {
+		let rec = RecordingTearDowner()
+		let store = makeStore(rec: rec, grace: 999)
+		let host = makeHost(forwards: [
+			PortForward(kind: .local, bindPort: 5432,
+			            remoteHost: "db", remotePort: 5432),
+		])
+		let tab = store.openTab(host: host)
+		store.markConnected(tabId: tab)
+		store.markChildExited(tabId: tab, exitCode: 255)
+
+		store.closeTab(tabId: tab)
+		store.closeTab(tabId: tab)
+		try? await Task.sleep(nanoseconds: 1_200_000_000)
+
+		XCTAssertFalse(store.tabs.contains(where: { $0.id == tab }))
+		XCTAssertEqual(rec.tornDown, [host.id])
+	}
 }

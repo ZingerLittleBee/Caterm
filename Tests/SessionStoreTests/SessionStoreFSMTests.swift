@@ -120,6 +120,21 @@ final class SessionStoreFSMTests: XCTestCase {
         XCTAssertEqual(after.reconnectAttempts, 0)
     }
 
+	func testStopReconnectCancelsScheduleAndLeavesContextualFailure() {
+		let tabId = sut.openTab(host: makeHost())
+		sut.markConnected(tabId: tabId)
+		sut.markChildExited(tabId: tabId, exitCode: 255)
+
+		sut.stopReconnect(tabId: tabId)
+		sut.stopReconnect(tabId: tabId)
+
+		guard let stopped = tab(id: tabId) else {
+			return XCTFail("tab missing")
+		}
+		XCTAssertEqual(stopped.state, .failed(.connectionDropped))
+		XCTAssertEqual(stopped.lastFailure, .connectionDropped)
+	}
+
     // MARK: - markConnectedProvisional
 
     /// Provisional connect dismisses the overlay (enters `.connected`) but does

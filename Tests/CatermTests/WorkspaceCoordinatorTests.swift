@@ -259,6 +259,41 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertNotEqual(firstSessionID, secondSessionID)
 	}
 
+	func testSiblingFailureDoesNotReplaceHealthyPaneState() throws {
+		let store = makeStore()
+		let firstHost = makeHost(name: "healthy")
+		let secondHost = makeHost(name: "exited")
+		try store.addHost(firstHost)
+		try store.addHost(secondHost)
+		let coordinator = WorkspaceCoordinator(sessionStore: store)
+		let original = try coordinator.openSavedHost(firstHost, installTerminfo: false)
+		let split = try original.splittingActivePane(.right)
+		let connected = try coordinator.connectSavedHost(
+			secondHost,
+			to: split.activePaneID,
+			in: split,
+			installTerminfo: false
+		)
+		let firstSessionID = try XCTUnwrap(
+			coordinator.sessionID(for: original.activePaneID, in: connected)
+		)
+		let secondSessionID = try XCTUnwrap(coordinator.sessionID(for: connected))
+		store.markConnected(tabId: firstSessionID)
+		store.markConnected(tabId: secondSessionID)
+
+		store.markChildExited(tabId: secondSessionID, exitCode: 0)
+
+		guard let first = store.tabs.first(where: { $0.id == firstSessionID }),
+		      let second = store.tabs.first(where: { $0.id == secondSessionID }) else {
+			return XCTFail("Expected both Pane sessions to remain registered")
+		}
+		guard case .connected = first.state else {
+			return XCTFail("Healthy sibling state changed to \(first.state)")
+		}
+		XCTAssertEqual(second.state, .failed(.cleanExit))
+		XCTAssertEqual(coordinator.sessionID(for: original.activePaneID, in: connected), firstSessionID)
+	}
+
 	private func makeStore() -> SessionStore {
 		let hostsURL = FileManager.default.temporaryDirectory
 			.appendingPathComponent("workspace-coordinator-\(UUID()).json")

@@ -60,8 +60,9 @@ struct MainWindow: View {
 	@StateObject private var bannerState = SettingsBannerState()
 	@State private var fileDrawerOpen = false
 	@State private var drawerWidth: CGFloat = 320
-	@State private var pendingUploadURLs: [URL] = []
+	@State private var pendingUpload: PendingPaneUpload?
 	@State private var showUploadSheet = false
+	@State private var fileToolMessage: String?
 	@State private var presentingPalette = false
 	@State private var presentingEditor = false
 	@State private var presentingManager = false
@@ -83,9 +84,34 @@ struct MainWindow: View {
 		return store.tabs.first(where: { $0.id == activeSessionID })?.host
 	}
 
+	private var activeFileContext: ActivePaneFileContext {
+		let sessionID = workspaceCoordinator.sessionID(for: workspace)
+		let tab = sessionID.flatMap { sessionID in
+			store.tabs.first(where: { $0.id == sessionID })
+		}
+		let savedHostExists: Bool
+		if let hostReference = workspace.topology.pane(id: workspace.activePaneID)?.host,
+		   case .saved(let hostID) = hostReference {
+			savedHostExists = store.hosts.contains(where: { $0.id == hostID })
+		} else {
+			savedHostExists = false
+		}
+		return ActivePaneFileContextResolver.resolve(
+			workspace: workspace,
+			sessionID: sessionID,
+			tab: tab,
+			savedHostExists: savedHostExists
+		)
+	}
+
+	private var activeFileHost: SSHHost? {
+		guard case .ready(let target) = activeFileContext else { return nil }
+		return store.tabs.first(where: { $0.id == target.sessionID })?.host
+	}
+
 	private var skippedForwardBannerText: String {
 		let scoped = store.skippedForwardNotices.filter {
-			$0.hostId == activeHost?.id
+			$0.tabId == activeSessionID
 		}
 		guard !scoped.isEmpty else { return "" }
 		let descs = scoped.map { n -> String in
@@ -106,10 +132,11 @@ struct MainWindow: View {
 	/// fresh actor identity on every unrelated `MainWindow` re-render
 	/// (drawer drag, banner toggle, palette state); in-flight
 	/// rename/delete/mkdir tasks then captured a now-orphaned instance.
-	/// `RemoteFsCache` keeps a stable instance keyed by `host.id`.
+	/// `RemoteFsCache` keeps a stable instance keyed by the exact active file target.
 	private var activeRemoteFs: RemoteFileSystem? {
-		guard let host = activeHost else { return nil }
-		return remoteFsCache.fileSystem(for: host) {
+		guard case .ready(let target) = activeFileContext,
+		      let host = activeFileHost else { return nil }
+		return remoteFsCache.fileSystem(for: target) {
 			let cm = ControlMasterManager.shared
 			return RemoteFileSystem(
 				host: host,
@@ -140,7 +167,7 @@ struct MainWindow: View {
 			if !skippedForwardBannerText.isEmpty {
 				Banner(
 					text: skippedForwardBannerText,
-					onDismiss: { store.clearSkippedForwardNotices(forHost: activeHost?.id) }
+					onDismiss: { store.clearSkippedForwardNotices(forTab: activeSessionID) }
 				)
 			}
 			if !bannerState.diagnosticMessages.isEmpty {
@@ -206,9 +233,12 @@ struct MainWindow: View {
 								maxWidth: Self.drawerMaxWidth
 							)
 							FileDrawerView(
-								host: activeHost,
+								paneID: workspace.activePaneID,
+								context: activeFileContext,
+								host: activeFileHost,
 								fs: activeRemoteFs,
-								fileTransferStore: fileTransferStore
+								fileTransferStore: fileTransferStore,
+								currentContext: { activeFileContext }
 							)
 							.frame(width: drawerWidth)
 						}
@@ -273,7 +303,13 @@ struct MainWindow: View {
 				return
 			}
 			guard let urls = note.userInfo?["urls"] as? [URL], !urls.isEmpty else { return }
-			pendingUploadURLs = urls
+			guard case .ready(let target) = activeFileContext else {
+				if case .unavailable(let unavailable) = activeFileContext {
+					fileToolMessage = unavailable.message
+				}
+				return
+			}
+			pendingUpload = PendingPaneUpload(urls: urls, target: target)
 			showUploadSheet = true
 		}
 		.onReceive(NotificationCenter.default
@@ -292,18 +328,22 @@ struct MainWindow: View {
 				initialValue: "~",
 				onSubmit: { remoteDir in
 					showUploadSheet = false
-					if let host = activeHost, !pendingUploadURLs.isEmpty {
+					if let pendingUpload,
+					   pendingUpload.canSubmit(in: activeFileContext),
+					   let host = activeFileHost {
 						_ = fileTransferStore.enqueueUpload(
-							localPaths: pendingUploadURLs,
+							localPaths: pendingUpload.urls,
 							remoteDir: remoteDir,
 							host: host
 						)
+					} else if pendingUpload != nil {
+						fileToolMessage = "The active Pane changed before the upload was confirmed. Start the upload again."
 					}
-					pendingUploadURLs = []
+					pendingUpload = nil
 				},
 				onCancel: {
 					showUploadSheet = false
-					pendingUploadURLs = []
+					pendingUpload = nil
 				}
 			)
 		}
@@ -320,6 +360,18 @@ struct MainWindow: View {
 				workspaceCoordinator.closeWorkspace(workspace.id)
 			}
 		)
+		.alert(
+			"Files Unavailable",
+			isPresented: Binding(
+				get: { fileToolMessage != nil },
+				set: { if !$0 { fileToolMessage = nil } }
+			),
+			presenting: fileToolMessage
+		) { _ in
+			Button("OK") { fileToolMessage = nil }
+		} message: { message in
+			Text(message)
+		}
 		.modifier(SnippetCommandObserver(
 			presentingPalette: $presentingPalette,
 			presentingEditor: $presentingEditor,
@@ -438,19 +490,31 @@ private enum WorkspaceRestorationStatus: Equatable {
 	case failed(String)
 }
 
-/// Caches one `RemoteFileSystem` per `host.id` so a stable instance
+/// Caches one `RemoteFileSystem` per active Pane/session/Host target so a stable instance
 /// survives unrelated `MainWindow` re-renders. Reference type held via
 /// `@State`, so SwiftUI keeps the same cache across the view's lifetime.
-/// The cached instance is replaced only when the active host changes.
+/// The cached instance is replaced whenever the active file target changes.
 @MainActor
 final class RemoteFsCache {
-	private var cached: (hostId: UUID, fs: RemoteFileSystem)?
+	private var cached: (target: ActivePaneFileTarget, fs: RemoteFileSystem)?
 
-	func fileSystem(for host: SSHHost, make: () -> RemoteFileSystem) -> RemoteFileSystem {
-		if let cached, cached.hostId == host.id { return cached.fs }
+	func fileSystem(
+		for target: ActivePaneFileTarget,
+		make: () -> RemoteFileSystem
+	) -> RemoteFileSystem {
+		if let cached, cached.target == target { return cached.fs }
 		let fs = make()
-		cached = (host.id, fs)
+		cached = (target, fs)
 		return fs
+	}
+}
+
+struct PendingPaneUpload: Equatable {
+	let urls: [URL]
+	let target: ActivePaneFileTarget
+
+	func canSubmit(in context: ActivePaneFileContext) -> Bool {
+		context == .ready(target)
 	}
 }
 

@@ -70,7 +70,11 @@ struct WorkspacePaneTreeView: View {
 						TerminalContainerView(
 							tabId: sessionID,
 							isFocused: isActive,
-							onFocus: { activate(pane.id) }
+							onFocus: { activate(pane.id) },
+							onClosePane: {
+								activate(pane.id)
+								WorkspaceCommandDispatcher.post(.closePane)
+							}
 						)
 					} else {
 						missingSessionView

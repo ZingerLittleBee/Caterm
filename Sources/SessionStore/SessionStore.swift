@@ -111,15 +111,17 @@ public final class SessionStore: ObservableObject {
 
 	public struct SkippedForwardNotice: Identifiable, Equatable, Sendable {
 		public let id: UUID
+		public let tabId: UUID
 		public let hostId: UUID
 		public let forward: PortForward
 		public let reason: PortForward.BindFailureReason
 		public let timestamp: Date
 
-		public init(hostId: UUID, forward: PortForward,
+		public init(tabId: UUID, hostId: UUID, forward: PortForward,
 		            reason: PortForward.BindFailureReason,
 		            id: UUID = UUID(), timestamp: Date = Date()) {
 			self.id = id
+			self.tabId = tabId
 			self.hostId = hostId
 			self.forward = forward
 			self.reason = reason
@@ -129,9 +131,9 @@ public final class SessionStore: ObservableObject {
 
 	@Published public private(set) var skippedForwardNotices: [SkippedForwardNotice] = []
 
-	public func clearSkippedForwardNotices(forHost: UUID? = nil) {
-		if let target = forHost {
-			skippedForwardNotices.removeAll { $0.hostId == target }
+	public func clearSkippedForwardNotices(forTab tabId: UUID? = nil) {
+		if let tabId {
+			skippedForwardNotices.removeAll { $0.tabId == tabId }
 		} else {
 			skippedForwardNotices.removeAll()
 		}
@@ -180,6 +182,8 @@ public final class SessionStore: ObservableObject {
 	/// In-flight `startConnection` Tasks per tab. Tests use
 	/// `awaitConnectionAttempt(tabId:)` to await them deterministically.
 	private var pendingStartTasks: [UUID: Task<Void, Never>] = [:]
+	private var pendingReconnectTasks: [UUID: Task<Void, Never>] = [:]
+	private var reconnectScheduleTokens: [UUID: UInt64] = [:]
 
     /// Grace period in seconds before tearing down ControlMaster after the
     /// last tab for a host closes. Internal/mutable so tests can override
@@ -481,7 +485,10 @@ public final class SessionStore: ObservableObject {
         // Cancel any in-flight startConnection probe for this tab so we don't
         // leak the underlying NWConnection while the user moves on.
         pendingStartTasks.removeValue(forKey: tabId)?.cancel()
+		pendingReconnectTasks.removeValue(forKey: tabId)?.cancel()
+		reconnectScheduleTokens.removeValue(forKey: tabId)
         connectionAttempts.removeValue(forKey: tabId)
+		clearSkippedForwardNotices(forTab: tabId)
         // Clean up any per-session ssh_config written for a chained connection.
         if let configURL = tabs[idx].sshConfigURL {
             configSink.cleanup(configURL)
@@ -662,7 +669,7 @@ public final class SessionStore: ObservableObject {
 			return
 		}
 		// Clear any stale notices from a prior attempt before re-populating.
-		clearSkippedForwardNotices(forHost: host.id)
+		clearSkippedForwardNotices(forTab: tabId)
 		if let failure = await probeForwards(host.forwards, host: host,
 		                                     tabId: tabId, token: token) {
 			applyIfCurrent(tabId: tabId, token: token) { t in
@@ -741,7 +748,7 @@ public final class SessionStore: ObservableObject {
 				return .portForwardBindFailed(forward: forward, reason: reason)
 			} else {
 				skippedForwardNotices.append(
-					SkippedForwardNotice(hostId: host.id,
+					SkippedForwardNotice(tabId: tabId, hostId: host.id,
 					                     forward: forward, reason: reason)
 				)
 			}
@@ -750,6 +757,7 @@ public final class SessionStore: ObservableObject {
 	}
 
 	public func retryTab(tabId: UUID) {
+		cancelScheduledReconnect(tabId: tabId)
 		// Clean any ssh_config written by the previous attempt before starting
 		// a fresh connection. Without this the old URL would be leaked when
 		// `startConnection` overwrites `sshConfigURL` with a new value.
@@ -772,6 +780,18 @@ public final class SessionStore: ObservableObject {
 			$0.historyEntryID = historyEntryID
 		}
 		startConnection(tabId: tabId)
+	}
+
+	public func stopReconnect(tabId: UUID) {
+		guard let tab = tabs.first(where: { $0.id == tabId }),
+		      case .reconnecting = tab.state else {
+			return
+		}
+		cancelScheduledReconnect(tabId: tabId)
+		update(tabId) { current in
+			current.lastFailure = .connectionDropped
+			current.state = .failed(.connectionDropped)
+		}
 	}
 
 	/// Test-only: await the most recent in-flight `startConnection` Task.
@@ -809,6 +829,7 @@ public final class SessionStore: ObservableObject {
     }
 
     public func markChildExited(tabId: UUID, exitCode: Int32) {
+		cancelScheduledReconnect(tabId: tabId)
         // Clean up any per-session ssh_config before state transition.
         if let idx = tabs.firstIndex(where: { $0.id == tabId }),
            let configURL = tabs[idx].sshConfigURL {
@@ -834,21 +855,36 @@ public final class SessionStore: ObservableObject {
     }
 
     private func scheduleReconnect(tabId: UUID, after seconds: TimeInterval) {
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard let self else { return }
-            // Bump surfaceGeneration synchronously here so SwiftUI tears down
-            // the dead libghostty surface immediately, even on unhealthy
-            // networks where the probe in startConnection will fail. The
-            // success-path bump inside runConnection is harmless — the id
-            // changes either way.
-            self.update(tabId) { $0.surfaceGeneration += 1 }
-            // Route through startConnection so the reconnect attempt also gets
+		let token = (reconnectScheduleTokens[tabId] ?? 0) &+ 1
+		reconnectScheduleTokens[tabId] = token
+		pendingReconnectTasks.removeValue(forKey: tabId)?.cancel()
+		let task = Task { @MainActor [weak self] in
+			do {
+				try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+			} catch {
+				return
+			}
+			guard let self,
+			      self.reconnectScheduleTokens[tabId] == token,
+			      let tab = self.tabs.first(where: { $0.id == tabId }),
+			      case .reconnecting = tab.state else { return }
+			self.pendingReconnectTasks.removeValue(forKey: tabId)
+			self.reconnectScheduleTokens.removeValue(forKey: tabId)
+			// Keep the previous terminal surface until preflight succeeds. The
+			// success path bumps surfaceGeneration immediately before starting
+			// the replacement SSH process, so a failed probe preserves output.
+			// Route through startConnection so the reconnect attempt also gets
             // TCP preflight + typed networkUnreachable failure if the network
             // is still down.
-            self.startConnection(tabId: tabId)
-        }
+			self.startConnection(tabId: tabId)
+		}
+		pendingReconnectTasks[tabId] = task
     }
+
+	private func cancelScheduledReconnect(tabId: UUID) {
+		pendingReconnectTasks.removeValue(forKey: tabId)?.cancel()
+		reconnectScheduleTokens.removeValue(forKey: tabId)
+	}
 
     private func update(_ tabId: UUID, _ mutate: (inout Tab) -> Void) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }

@@ -18,15 +18,18 @@ struct TerminalContainerView: View {
 	let tabId: UUID
 	let isFocused: Bool
 	let onFocus: () -> Void
+	let onClosePane: () -> Void
 
 	init(
 		tabId: UUID,
 		isFocused: Bool = true,
-		onFocus: @escaping () -> Void = {}
+		onFocus: @escaping () -> Void = {},
+		onClosePane: @escaping () -> Void = {}
 	) {
 		self.tabId = tabId
 		self.isFocused = isFocused
 		self.onFocus = onFocus
+		self.onClosePane = onClosePane
 	}
 
 	private var backgroundTransparencyEnabled: Bool {
@@ -46,8 +49,7 @@ struct TerminalContainerView: View {
 
 	@ViewBuilder
 	private func surfaceOrPlaceholder(for tab: SessionStore.Tab) -> some View {
-		switch tab.state {
-		case .authenticating, .connected, .reconnecting:
+		if TerminalPaneSurfacePolicy.retainsSurface(for: tab) {
 				TerminalSurfaceRepresentable(
 					tabId: tabId,
 					backgroundTransparencyEnabled: backgroundTransparencyEnabled,
@@ -55,8 +57,7 @@ struct TerminalContainerView: View {
 					onFocus: onFocus
 				)
 			.id("\(tabId)-\(tab.surfaceGeneration)")
-
-		case .idle, .preflight, .failed:
+		} else {
 			// Inert SwiftUI background — no NSView, no $SHELL fork.
 			Color.black.opacity(0.95).ignoresSafeArea()
 		}
@@ -70,32 +71,52 @@ struct TerminalContainerView: View {
 		case .authenticating(let startedAt):
 			ConnectingOverlay(stage: .authenticating, host: host, startedAt: startedAt, chain: chain)
 		case .reconnecting(let attempt, let nextRetryAt):
-			ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt, host: host, chain: chain)
-		case .failed(let kind) where shouldShowFailureOverlay(kind):
-			let canEditHost = store.hosts.contains { $0.id == host.id }
+			ReconnectOverlay(
+				attempt: attempt,
+				nextRetryAt: nextRetryAt,
+				host: host,
+				chain: chain,
+				onRetry: { store.retryTab(tabId: tabId) },
+				onStop: { store.stopReconnect(tabId: tabId) },
+				onClosePane: onClosePane
+			)
+		case .failed(let kind) where kind == .cleanExit || kind == .connectionDropped:
+			DisconnectedPaneOverlay(
+				failure: kind,
+				host: host,
+				onRetry: { store.retryTab(tabId: tabId) },
+				onEditHost: editHostAction(for: host),
+				onClosePane: onClosePane
+			)
+		case .failed(let kind):
 			FailureOverlay(
 				failure: kind,
 				host: host,
 				chain: chain,
 				onRetry: { store.retryTab(tabId: tabId) },
-				onEditHost: canEditHost ? {
-					NotificationCenter.default.post(
-						name: .catermEditHostRequested,
-						object: NSApp.keyWindow,
-						userInfo: [CatermEditHostRequestedKeys.hostId: host.id]
-					)
-				} : nil
+				onEditHost: editHostAction(for: host),
+				onClosePane: onClosePane
 			)
-		case .idle, .connected, .failed:
+		case .idle, .connected:
 			EmptyView()
 		}
 	}
 
-	private func shouldShowFailureOverlay(_ kind: FailureKind) -> Bool {
-		switch kind {
-		case .cleanExit, .connectionDropped: return false
-		case .authOrSetupFail, .networkUnreachable, .portForwardBindFailed: return true
+	private func editHostAction(for host: SSHHost) -> (() -> Void)? {
+		guard store.hosts.contains(where: { $0.id == host.id }) else { return nil }
+		return {
+			NotificationCenter.default.post(
+				name: .catermEditHostRequested,
+				object: NSApp.keyWindow,
+				userInfo: [CatermEditHostRequestedKeys.hostId: host.id]
+			)
 		}
+	}
+}
+
+enum TerminalPaneSurfacePolicy {
+	static func retainsSurface(for tab: SessionStore.Tab) -> Bool {
+		tab.surfaceGeneration > 0
 	}
 }
 
