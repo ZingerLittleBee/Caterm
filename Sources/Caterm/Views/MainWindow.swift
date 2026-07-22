@@ -9,6 +9,7 @@ import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
 import WorkspaceCore
+import WorkspaceTemplateStore
 
 enum MainWindowToolbarAction: CaseIterable {
 	case snippets
@@ -56,6 +57,7 @@ struct MainWindow: View {
 	@EnvironmentObject var snippetStore: SnippetStore
 	@EnvironmentObject var snippetSync: SnippetSyncStore
 	@EnvironmentObject var workspaceCoordinator: WorkspaceCoordinator
+	@EnvironmentObject var workspaceTemplateStore: WorkspaceTemplateStore
 	@Environment(\.openWindow) private var openWindow
 	@StateObject private var bannerState = SettingsBannerState()
 	@State private var fileDrawerOpen = false
@@ -66,6 +68,8 @@ struct MainWindow: View {
 	@State private var presentingPalette = false
 	@State private var presentingEditor = false
 	@State private var presentingManager = false
+	@State private var presentingTemplateManager = false
+	@State private var presentingTemplateName = false
 	@State private var hostWindow: NSWindow?
 	@State private var remoteFsCache = RemoteFsCache()
 	@State private var restorationStatus = WorkspaceRestorationStatus.pending
@@ -279,6 +283,20 @@ struct MainWindow: View {
 		}
 		.frame(minWidth: 1000, minHeight: 600)
 		.toolbar {
+			ToolbarItem(placement: .primaryAction) {
+				Menu {
+					Button("Save Workspace as Template…") {
+						presentingTemplateName = true
+					}
+					Divider()
+					Button("Manage Workspace Templates…") {
+						presentingTemplateManager = true
+					}
+				} label: {
+					Image(systemName: "rectangle.stack")
+				}
+				.help("Workspace Templates")
+			}
 			ToolbarItemGroup(placement: .primaryAction) {
 				ForEach(MainWindowToolbarAction.allCases, id: \.self) { action in
 					Button {
@@ -320,6 +338,16 @@ struct MainWindow: View {
 				return
 			}
 			handleWorkspaceCommand(command)
+		}
+		.onReceive(NotificationCenter.default
+			.publisher(for: .catermSaveWorkspaceTemplate)) { note in
+			guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+			presentingTemplateName = true
+		}
+		.onReceive(NotificationCenter.default
+			.publisher(for: .catermManageWorkspaceTemplates)) { note in
+			guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+			presentingTemplateManager = true
 		}
 		.sheet(isPresented: $showUploadSheet) {
 			SimpleTextSheet(
@@ -387,6 +415,17 @@ struct MainWindow: View {
 			SnippetManagerSheet()
 				.environmentObject(snippetStore)
 				.environmentObject(snippetSync)
+		}
+		.sheet(isPresented: $presentingTemplateName) {
+			WorkspaceTemplateSaveSheet(workspace: workspace)
+		}
+		.sheet(isPresented: $presentingTemplateManager) {
+			WorkspaceTemplateManagerSheet(
+				currentWorkspace: workspace,
+				onOpen: { newWorkspace in
+					openWindow(value: WorkspaceWindowState.workspace(newWorkspace))
+				}
+			)
 		}
 		.task(id: workspace.id) {
 			do {

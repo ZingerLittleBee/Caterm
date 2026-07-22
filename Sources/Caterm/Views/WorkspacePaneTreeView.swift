@@ -62,8 +62,15 @@ struct WorkspacePaneTreeView: View {
 						workspace: $workspace,
 						onActivate: activate
 					)
-				case .host:
-					if let sessionID = workspaceCoordinator.sessionID(
+				case .host(let hostReference):
+					if case .saved(let hostID) = hostReference,
+					   !store.hosts.contains(where: { $0.id == hostID }) {
+						WorkspaceMissingHostView(
+							paneID: pane.id,
+							workspace: $workspace,
+							onActivate: activate
+						)
+					} else if let sessionID = workspaceCoordinator.sessionID(
 						for: pane.id,
 						in: workspace
 					) {
@@ -182,6 +189,8 @@ private struct WorkspaceHostPickerView: View {
 	let paneID: PaneID
 	@Binding var workspace: Workspace
 	let onActivate: (PaneID) -> Void
+	var replacesExistingHost = false
+	var onConnected: () -> Void = {}
 	@State private var query = ""
 	@State private var pendingCredentialHost: SSHHost?
 	@State private var errorMessage: String?
@@ -314,12 +323,170 @@ private struct WorkspaceHostPickerView: View {
 
 	private func connect(_ host: SSHHost) {
 		do {
-			workspace = try workspaceCoordinator.connectSavedHost(
-				host,
-				to: paneID,
-				in: workspace,
-				installTerminfo: preferences.installTerminfoEnabled
+			if replacesExistingHost {
+				workspace = try workspaceCoordinator.replaceSavedHost(
+					host,
+					in: paneID,
+					workspace: workspace,
+					installTerminfo: preferences.installTerminfoEnabled
+				)
+			} else {
+				workspace = try workspaceCoordinator.connectSavedHost(
+					host,
+					to: paneID,
+					in: workspace,
+					installTerminfo: preferences.installTerminfoEnabled
+				)
+			}
+			onConnected()
+		} catch {
+			errorMessage = error.localizedDescription
+		}
+	}
+}
+
+private struct WorkspaceMissingHostView: View {
+	@EnvironmentObject private var store: SessionStore
+	@EnvironmentObject private var preferences: SyncPreferences
+	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
+	let paneID: PaneID
+	@Binding var workspace: Workspace
+	let onActivate: (PaneID) -> Void
+
+	@State private var showingReplacement = false
+	@State private var showingCreateHost = false
+	@State private var errorMessage: String?
+	@StateObject private var recoverySubmission = SingleFlightSubmission()
+
+	var body: some View {
+		VStack(spacing: 14) {
+			Image(systemName: "questionmark.square.dashed")
+				.font(.system(size: 36))
+				.foregroundStyle(.secondary)
+			Text("Host Unavailable")
+				.font(.title3.weight(.semibold))
+			Text("The saved Host for this Pane no longer exists. Caterm will not substitute another Host.")
+				.font(.callout)
+				.foregroundStyle(.secondary)
+				.multilineTextAlignment(.center)
+				.frame(maxWidth: 420)
+			HStack(spacing: 10) {
+				Button("Replace…") {
+					onActivate(paneID)
+					showingReplacement = true
+				}
+				.buttonStyle(.borderedProminent)
+				Button("Create Host…") {
+					onActivate(paneID)
+					showingCreateHost = true
+				}
+				Button("Remove Pane", role: .destructive) {
+					onActivate(paneID)
+					WorkspaceCommandDispatcher.post(.closePane)
+				}
+			}
+		}
+		.padding(24)
+		.frame(maxWidth: .infinity, maxHeight: .infinity)
+		.background(Color(NSColor.windowBackgroundColor))
+		.accessibilityElement(children: .contain)
+		.accessibilityLabel("Missing Host Pane")
+		.accessibilityValue("Saved Host reference is unavailable")
+		.sheet(isPresented: $showingReplacement) {
+			VStack(spacing: 0) {
+				WorkspaceHostPickerView(
+					paneID: paneID,
+					workspace: $workspace,
+					onActivate: onActivate,
+					replacesExistingHost: true,
+					onConnected: { showingReplacement = false }
+				)
+				Divider()
+				HStack {
+					Spacer()
+					Button("Cancel") { showingReplacement = false }
+				}
+				.padding(14)
+			}
+			.frame(width: 560, height: 560)
+		}
+		.sheet(isPresented: $showingCreateHost) {
+			HostFormView(
+				mode: .add,
+				isSubmitting: recoverySubmission.isSubmitting
+			) { host, secret, keyMaterial in
+				recoverySubmission.submit {
+					await createAndConnect(host, secret: secret, keyMaterial: keyMaterial)
+				}
+			}
+			.environmentObject(store)
+		}
+		.onDisappear { recoverySubmission.cancel() }
+		.alert(
+			"Host Recovery Failed",
+			isPresented: Binding(
+				get: { errorMessage != nil },
+				set: { if !$0 { errorMessage = nil } }
+			),
+			presenting: errorMessage
+		) { _ in
+			Button("OK") { errorMessage = nil }
+		} message: { message in
+			Text(message)
+		}
+	}
+
+	@MainActor
+	private func createAndConnect(
+		_ host: SSHHost,
+		secret: String?,
+		keyMaterial: PendingKeyMaterial?
+	) async {
+		do {
+			let transaction = WorkspaceMissingHostRecoveryTransaction(
+				dependencies: .init(
+					addHost: { try store.addHost($0) },
+					commitCredential: { savedHost, secret, keyMaterial in
+						if let keyMaterial {
+							try await HostKeyProvisioner.provision(
+								material: keyMaterial,
+								hasPassphrase: savedHost.credential.hasPassphrase,
+								passphrase: secret,
+								hostId: savedHost.id,
+								sessionStore: store
+							)
+						} else {
+							try await store.setHostCredentialMaterial(
+								secrets: HostSecrets(
+									credential: savedHost.credential,
+									secret: secret
+								),
+								credentialSource: savedHost.credential,
+								for: savedHost.id
+							)
+						}
+					},
+					replacePane: { savedHost, paneID, workspace in
+						try workspaceCoordinator.replaceSavedHost(
+							savedHost,
+							in: paneID,
+							workspace: workspace,
+							installTerminfo: preferences.installTerminfoEnabled
+						)
+					},
+					rollbackHost: { hostID in
+						try await store.deleteHost(id: hostID)
+					}
+				)
 			)
+			workspace = try await transaction.run(
+				host: host,
+				secret: secret,
+				keyMaterial: keyMaterial,
+				paneID: paneID,
+				workspace: workspace
+			)
+			showingCreateHost = false
 		} catch {
 			errorMessage = error.localizedDescription
 		}

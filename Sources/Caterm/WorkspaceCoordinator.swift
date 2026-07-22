@@ -125,6 +125,24 @@ final class WorkspaceCoordinator: ObservableObject {
 		return updated
 	}
 
+	func replaceSavedHost(
+		_ host: SSHHost,
+		in paneID: PaneID,
+		workspace: Workspace,
+		installTerminfo: Bool
+	) throws -> Workspace {
+		let updated = try workspace.replacingHost(.saved(id: host.id), in: paneID)
+		closePane(paneID, in: workspace.id)
+		_ = try openSession(
+			for: updated,
+			paneID: paneID,
+			host: host,
+			installTerminfo: installTerminfo,
+			authenticationMode: .configuredCredential
+		)
+		return updated
+	}
+
 	func sessionID(for paneID: PaneID, in workspace: Workspace) -> UUID? {
 		guard let sessionID = runtime.sessionID(for: paneID, in: workspace.id) else {
 			return nil

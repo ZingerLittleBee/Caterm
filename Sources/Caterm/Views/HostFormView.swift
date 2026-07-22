@@ -23,6 +23,7 @@ enum HostFormMode {
 struct HostFormView: View {
 	let mode: HostFormMode
 	let onSubmit: (SSHHost, String?, PendingKeyMaterial?) -> Void
+	let isSubmitting: Bool
 	@Environment(\.dismiss) private var dismiss
 	@EnvironmentObject private var sessionStore: SessionStore
 
@@ -42,6 +43,16 @@ struct HostFormView: View {
 	@State private var icon: String? = nil
 	@State private var groupText = ""
 	@State private var tagsText = ""
+
+	init(
+		mode: HostFormMode,
+		isSubmitting: Bool = false,
+		onSubmit: @escaping (SSHHost, String?, PendingKeyMaterial?) -> Void
+	) {
+		self.mode = mode
+		self.isSubmitting = isSubmitting
+		self.onSubmit = onSubmit
+	}
 
 	var body: some View {
 		let validation = formValidation
@@ -73,15 +84,21 @@ struct HostFormView: View {
 			HStack {
 				Button("Cancel") { dismiss() }
 					.keyboardShortcut(.cancelAction)
+					.disabled(isSubmitting)
 				Spacer()
+				if isSubmitting {
+					ProgressView()
+						.controlSize(.small)
+				}
 				Button("Save") { submit() }
 					.keyboardShortcut(.defaultAction)
-					.disabled(!validation.isValid)
+					.disabled(!validation.isValid || isSubmitting)
 			}
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
 		.frame(width: 560, height: 720)
+		.interactiveDismissDisabled(isSubmitting)
 		.onAppear { populate() }
 	}
 

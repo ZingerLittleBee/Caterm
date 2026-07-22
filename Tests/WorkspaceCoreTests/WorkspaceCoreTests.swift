@@ -306,6 +306,20 @@ final class WorkspaceCoreTests: XCTestCase {
 		XCTAssertThrowsError(try connected.assigningHost(selectedHost, to: pickerID))
 	}
 
+	func testReplacingHostPreservesPaneAndWorkspaceIdentity() throws {
+		let paneID = PaneID(rawValue: UUID())
+		let originalHost = WorkspaceHostReference.saved(id: UUID())
+		let replacementHost = WorkspaceHostReference.saved(id: UUID())
+		let workspace = Workspace.onePane(paneID: paneID, host: originalHost)
+
+		let replaced = try workspace.replacingHost(replacementHost, in: paneID)
+
+		XCTAssertEqual(replaced.id, workspace.id)
+		XCTAssertEqual(replaced.activePaneID, paneID)
+		XCTAssertEqual(replaced.topology.pane(id: paneID)?.host, replacementHost)
+		XCTAssertThrowsError(try workspace.replacingHost(replacementHost, in: PaneID()))
+	}
+
 	func testDirectionalAndCyclicFocusUseTopologyGeometry() throws {
 		let topLeft = PaneID(rawValue: UUID())
 		let topRight = PaneID(rawValue: UUID())

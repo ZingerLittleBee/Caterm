@@ -108,6 +108,28 @@ public extension Workspace {
 		)
 	}
 
+	func replacingHost(
+		_ host: WorkspaceHostReference,
+		in paneID: PaneID
+	) throws -> Workspace {
+		guard topology.pane(id: paneID) != nil else {
+			throw OperationError.paneNotFound
+		}
+		guard let updatedTopology = topology.replacingPane(
+			paneID,
+			with: { _ in .pane(WorkspacePane(id: paneID, host: host)) }
+		) else {
+			throw OperationError.paneNotFound
+		}
+		return Workspace(
+			validatedVersion: Workspace.currentVersion,
+			id: id,
+			topology: updatedTopology,
+			activePaneID: activePaneID,
+			presentation: presentation
+		)
+	}
+
 	func activatingPane(_ paneID: PaneID) throws -> Workspace {
 		guard topology.contains(paneID) else {
 			throw OperationError.paneNotFound

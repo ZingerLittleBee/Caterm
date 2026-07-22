@@ -4,6 +4,7 @@ import KeychainStore
 import SessionStore
 import SSHCommandBuilder
 import WorkspaceCore
+import WorkspaceTemplateStore
 @testable import Caterm
 
 @MainActor
@@ -76,6 +77,28 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.tabs.first?.installTerminfo, true)
 	}
 
+	func testTemplateOpeningsCreateFreshRuntimeSessionIdentities() throws {
+		let store = makeStore()
+		let host = makeHost(name: "template")
+		try store.addHost(host)
+		let template = try WorkspaceTemplate(
+			workspace: Workspace.onePane(host: .saved(id: host.id)),
+			name: "Template"
+		)
+		let first = try template.instantiate(availableHostIDs: [host.id]).workspace
+		let second = try template.instantiate(availableHostIDs: [host.id]).workspace
+		let coordinator = WorkspaceCoordinator(sessionStore: store)
+
+		try coordinator.ensureSessions(for: first, installTerminfo: false)
+		try coordinator.ensureSessions(for: second, installTerminfo: false)
+
+		let firstSessionID = try XCTUnwrap(coordinator.sessionID(for: first))
+		let secondSessionID = try XCTUnwrap(coordinator.sessionID(for: second))
+		XCTAssertNotEqual(firstSessionID, secondSessionID)
+		XCTAssertNotEqual(first.id, second.id)
+		XCTAssertEqual(store.tabs.map(\.id), [firstSessionID, secondSessionID])
+	}
+
 	func testEnsuringSessionIsIdempotentWhileRuntimeSessionExists() throws {
 		let store = makeStore()
 		let host = makeHost()
@@ -125,6 +148,26 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertNil(sessionID)
 		XCTAssertTrue(store.tabs.isEmpty)
 		XCTAssertNil(coordinator.sessionID(for: workspace))
+	}
+
+	func testReplacingMissingHostCreatesSessionForExactPane() throws {
+		let store = makeStore()
+		let replacement = makeHost(name: "replacement")
+		try store.addHost(replacement)
+		let coordinator = WorkspaceCoordinator(sessionStore: store)
+		let workspace = Workspace.onePane(host: .saved(id: UUID()))
+
+		let updated = try coordinator.replaceSavedHost(
+			replacement,
+			in: workspace.activePaneID,
+			workspace: workspace,
+			installTerminfo: true
+		)
+
+		XCTAssertEqual(updated.topology.panes.first?.host, .saved(id: replacement.id))
+		let sessionID = try XCTUnwrap(coordinator.sessionID(for: updated))
+		XCTAssertEqual(store.tabs.map(\.id), [sessionID])
+		XCTAssertEqual(store.tabs.first?.host.id, replacement.id)
 	}
 
 	func testRestoredOneTimeWorkspaceUsesInteractiveAuthentication() throws {

@@ -49,6 +49,27 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
         XCTAssertEqual(received, 1)
     }
 
+	func testAddHostPersistenceFailureDoesNotPublishInMemoryHost() throws {
+		try FileManager.default.createDirectory(
+			at: tmpHostsURL,
+			withIntermediateDirectories: false
+		)
+		var received = 0
+		sut.mutationsForSync.sink { _ in received += 1 }
+			.store(in: &cancellables)
+		let host = SSHHost(
+			name: "unpersisted",
+			hostname: "example.invalid",
+			username: "tester",
+			credential: .agent
+		)
+
+		XCTAssertThrowsError(try sut.addHost(host))
+
+		XCTAssertTrue(sut.hosts.isEmpty)
+		XCTAssertEqual(received, 0)
+	}
+
     func testUpdateHostEmits() throws {
         var h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
         try sut.addHost(h)  // baseline (before subscribe — not counted)

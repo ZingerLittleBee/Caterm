@@ -23,6 +23,7 @@ import SnippetSyncClient
 import SwiftUI
 import TerminalEngine
 import WorkspaceCore
+import WorkspaceTemplateStore
 
 @main
 struct CatermApp: App {
@@ -39,6 +40,7 @@ struct CatermApp: App {
   @StateObject private var snippetStore: SnippetStore
   @StateObject private var snippetSync: SnippetSyncStore
   @StateObject private var workspaceCoordinator: WorkspaceCoordinator
+  @StateObject private var workspaceTemplateStore: WorkspaceTemplateStore
   private let updaterController = UpdaterController()
 
   /// Holds the live-reload dispatcher and its NotificationCenter
@@ -171,6 +173,15 @@ struct CatermApp: App {
     let snippetStoreInstance = SnippetStore(directory: snippetsDir)
     try? snippetStoreInstance.load()
     _snippetStore = StateObject(wrappedValue: snippetStoreInstance)
+    let workspaceTemplateStoreInstance = WorkspaceTemplateStore(directory: snippetsDir)
+    _workspaceTemplateStore = StateObject(wrappedValue: workspaceTemplateStoreInstance)
+    Task { @MainActor in
+      do {
+        try await workspaceTemplateStoreInstance.load()
+      } catch {
+        NSLog("[CatermApp] Workspace templates failed to load: %@", error.localizedDescription)
+      }
+    }
     let snippetSyncInstance = SnippetSyncStore(
       store: snippetStoreInstance, client: cloudSync.snippetClient)
     _snippetSync = StateObject(wrappedValue: snippetSyncInstance)
@@ -323,6 +334,7 @@ struct CatermApp: App {
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
       .environmentObject(workspaceCoordinator)
+      .environmentObject(workspaceTemplateStore)
       .background(
         SyncSettingsCommandBridge {
           let preferencesWindow = PreferencesWindowController.shared
@@ -464,6 +476,22 @@ struct CatermApp: App {
           )
         }
         .keyboardShortcut("f", modifiers: [.command, .shift])
+
+        Divider()
+
+        Button("Save Workspace as Template…") {
+          NotificationCenter.default.post(
+            name: .catermSaveWorkspaceTemplate,
+            object: NSApp.keyWindow
+          )
+        }
+
+        Button("Manage Workspace Templates…") {
+          NotificationCenter.default.post(
+            name: .catermManageWorkspaceTemplates,
+            object: NSApp.keyWindow
+          )
+        }
       }
       CommandMenu("Pane") {
         Button("Split Right") {
@@ -596,6 +624,10 @@ struct CatermApp: App {
 
 extension Notification.Name {
   static let catermAddHost = Notification.Name("CatermAddHostNotification")
+  static let catermSaveWorkspaceTemplate = Notification.Name(
+    "CatermSaveWorkspaceTemplateNotification")
+  static let catermManageWorkspaceTemplates = Notification.Name(
+    "CatermManageWorkspaceTemplatesNotification")
 }
 
 /// App-wide window commands use SwiftUI's scene action directly. A
@@ -670,6 +702,8 @@ struct LandingView: View {
   @State private var presentingPalette = false
   @State private var presentingEditor = false
   @State private var presentingManager = false
+  @State private var presentingTemplateManager = false
+  @State private var workspaceTemplateMessage: String?
   @State private var hostWindow: NSWindow?
 
   var body: some View {
@@ -689,6 +723,16 @@ struct LandingView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .frame(minWidth: 1000, minHeight: 600)
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button {
+          presentingTemplateManager = true
+        } label: {
+          Image(systemName: "rectangle.stack")
+        }
+        .help("Workspace Templates")
+      }
+    }
     .background(WindowAccessor(window: $hostWindow))
     .modifier(
       SnippetCommandObserver(
@@ -719,6 +763,38 @@ struct LandingView: View {
       SnippetManagerSheet()
         .environmentObject(snippetStore)
         .environmentObject(snippetSync)
+    }
+    .sheet(isPresented: $presentingTemplateManager) {
+      WorkspaceTemplateManagerSheet(
+        currentWorkspace: nil,
+        onOpen: { workspace in
+          windowState = .workspace(workspace)
+        }
+      )
+    }
+    .onReceive(NotificationCenter.default.publisher(
+      for: .catermManageWorkspaceTemplates
+    )) { note in
+      guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+      presentingTemplateManager = true
+    }
+    .onReceive(NotificationCenter.default.publisher(
+      for: .catermSaveWorkspaceTemplate
+    )) { note in
+      guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+      workspaceTemplateMessage = "Open a Host before saving a Workspace template."
+    }
+    .alert(
+      "No Active Workspace",
+      isPresented: Binding(
+        get: { workspaceTemplateMessage != nil },
+        set: { if !$0 { workspaceTemplateMessage = nil } }
+      ),
+      presenting: workspaceTemplateMessage
+    ) { _ in
+      Button("OK") { workspaceTemplateMessage = nil }
+    } message: { message in
+      Text(message)
     }
   }
 }

@@ -282,8 +282,10 @@ public final class SessionStore: ObservableObject {
     // MARK: - Host CRUD
 
     public func addHost(_ host: SSHHost) throws {
-        hosts.append(host)
-        try HostPersistence.save(hosts, to: hostsURL)
+        var updated = hosts
+        updated.append(host)
+        try HostPersistence.save(updated, to: hostsURL)
+        hosts = updated
         mutationsForSyncSubject.send()
     }
 
