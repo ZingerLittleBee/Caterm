@@ -234,7 +234,7 @@ public final class FileTransferStore: ObservableObject {
 		do {
 			isDirectory = try await localFiles.isDirectory(at: source)
 		} catch {
-			throw RemoteFileError.localIO(message: String(describing: error))
+			throw RemoteFileError.localIO(message: error.localizedDescription)
 		}
 		guard let index = index(of: id) else { return }
 		tasks[index].isDirectory = isDirectory
@@ -273,7 +273,7 @@ public final class FileTransferStore: ObservableObject {
 				policy: task.conflictPolicy
 			)
 		} catch {
-			throw RemoteFileError.localIO(message: String(describing: error))
+			throw RemoteFileError.localIO(message: error.localizedDescription)
 		}
 		guard let destination = apply(preparation, to: id) else { return }
 
@@ -281,7 +281,7 @@ public final class FileTransferStore: ObservableObject {
 		do {
 			temporary = try await localFiles.temporaryDestination(for: destination)
 		} catch {
-			throw RemoteFileError.localIO(message: String(describing: error))
+			throw RemoteFileError.localIO(message: error.localizedDescription)
 		}
 
 		do {
@@ -309,7 +309,7 @@ public final class FileTransferStore: ObservableObject {
 					replacing: task.conflictPolicy == .replace
 				)
 			} catch {
-				throw RemoteFileError.localIO(message: String(describing: error))
+				throw RemoteFileError.localIO(message: error.localizedDescription)
 			}
 			advanceProgress(
 				id: id,
@@ -465,7 +465,7 @@ actor LocalTransferFileCoordinator: LocalTransferFileCoordinating {
 	private let fileManager = FileManager.default
 
 	func isDirectory(at url: URL) throws -> Bool {
-		(try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+		try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory ?? false
 	}
 
 	func prepareDestination(

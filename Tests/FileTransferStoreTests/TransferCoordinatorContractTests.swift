@@ -149,6 +149,30 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertEqual(destinationsAfterResolution, ["/remote/upload 2.txt"])
 	}
 
+	func testUploadMetadataFailureMapsToLocalIO() async throws {
+		let local = temporaryDirectory.appendingPathComponent("upload.txt")
+		try Data("upload".utf8).write(to: local)
+		let client = RecordingRemoteFileClient(downloadData: Data())
+		let store = FileTransferStore(
+			clientForHost: { _ in client },
+			localFiles: MetadataFailingLocalFiles()
+		)
+
+		let id = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [local],
+			remoteDir: "/remote",
+			host: makeHost()
+		).first)
+		try await store.waitIdle()
+
+		XCTAssertEqual(
+			store.task(id: id)?.failure,
+			.localIO(message: "fixture metadata failure")
+		)
+		let destinations = await client.uploadDestinations()
+		XCTAssertTrue(destinations.isEmpty)
+	}
+
 	func testCancellingRunningDownloadRemovesPartialAndAdvancesQueue() async throws {
 		let client = SuspendingRemoteFileClient()
 		let store = makeStore(client: client)
@@ -266,6 +290,47 @@ private actor CleanupFailingLocalFiles: LocalTransferFileCoordinating {
 		case fixture
 
 		var errorDescription: String? { "fixture cleanup failure" }
+	}
+}
+
+private actor MetadataFailingLocalFiles: LocalTransferFileCoordinating {
+	private let base = LocalTransferFileCoordinator()
+
+	func isDirectory(at url: URL) async throws -> Bool {
+		throw MetadataFailure.fixture
+	}
+
+	func prepareDestination(
+		_ requested: URL,
+		policy: TransferConflictPolicy?
+	) async throws -> DestinationPreparation<URL> {
+		try await base.prepareDestination(requested, policy: policy)
+	}
+
+	func temporaryDestination(for destination: URL) async throws -> URL {
+		try await base.temporaryDestination(for: destination)
+	}
+
+	func publish(
+		temporary: URL,
+		to destination: URL,
+		replacing: Bool
+	) async throws {
+		try await base.publish(
+			temporary: temporary,
+			to: destination,
+			replacing: replacing
+		)
+	}
+
+	func remove(_ url: URL) async throws {
+		try await base.remove(url)
+	}
+
+	private enum MetadataFailure: LocalizedError {
+		case fixture
+
+		var errorDescription: String? { "fixture metadata failure" }
 	}
 }
 

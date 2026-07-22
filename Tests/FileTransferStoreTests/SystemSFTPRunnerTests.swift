@@ -101,5 +101,41 @@ final class SystemSFTPRunnerTests: XCTestCase {
 		XCTAssertEqual(result.exit, 0)
 		XCTAssertEqual(result.stdout.utf8.count, 2 * 1_048_576)
 	}
+
+	func testInputWriteFailureReapsProcessGroup() async throws {
+		let sentinel = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-sftp-write-failure-\(UUID().uuidString)")
+		defer { try? FileManager.default.removeItem(at: sentinel) }
+		let invocation = SFTPInvocation(
+			argv: [
+				"/bin/sh",
+				"-c",
+				"trap '' TERM; (sleep 1; printf child > \"$1\") & cat",
+				"caterm-sftp-fixture",
+				sentinel.path,
+			],
+			environment: [:],
+			scriptStdin: "trigger write"
+		)
+		let runner = SystemSFTPRunner(inputWriter: { _, _ in
+			throw InputFailure.fixture
+		})
+
+		do {
+			_ = try await runner.run(invocation)
+			XCTFail("Expected input failure")
+		} catch InputFailure.fixture {
+			// Expected.
+		}
+		try await Task.sleep(for: .milliseconds(1_200))
+
+		XCTAssertFalse(FileManager.default.fileExists(atPath: sentinel.path))
+	}
+}
+
+private enum InputFailure: LocalizedError {
+	case fixture
+
+	var errorDescription: String? { "fixture input failure" }
 }
 #endif
