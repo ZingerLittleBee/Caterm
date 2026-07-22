@@ -10,6 +10,7 @@ public final class MobilePushDelegate: NSObject, UIApplicationDelegate {
 		category: "cloudkit-push"
 	)
 	public var hostPushHandler: (@MainActor () async -> MobileHostSyncExecutionResult)?
+	public var snippetPushHandler: (@MainActor () async -> MobileHostSyncExecutionResult)?
 
 	public func application(
 		_ application: UIApplication,
@@ -34,16 +35,23 @@ public final class MobilePushDelegate: NSObject, UIApplicationDelegate {
 			return (key, $0.value)
 			}
 		)
-		guard parsePushUserInfo(payload) else {
+		guard let pushKind = cloudKitPushKind(payload) else {
 			completionHandler(.noData)
 			return
 		}
-		guard let hostPushHandler else {
+		let handler: (@MainActor () async -> MobileHostSyncExecutionResult)?
+		switch pushKind {
+		case .host:
+			handler = hostPushHandler
+		case .snippet:
+			handler = snippetPushHandler
+		}
+		guard let handler else {
 			completionHandler(.failed)
 			return
 		}
 		Task { @MainActor in
-			switch await hostPushHandler() {
+			switch await handler() {
 			case .newData:
 				completionHandler(.newData)
 			case .noData:

@@ -17,11 +17,6 @@ public struct TerminalSnippet: Identifiable, Equatable, Sendable {
 	}
 }
 
-public enum TerminalKeyboardMode: Equatable {
-	case custom
-	case native
-}
-
 /// Owns one SSH session **and its retained SwiftTerm view**, so a tab can
 /// scroll off-screen without dropping the connection or scrollback.
 @MainActor
@@ -45,6 +40,7 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 
 	public init(
 		host: SSHHost,
+		preferences: MobileTerminalPreferences = .storedDefaults,
 		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
 	) {
 		self.host = host
@@ -53,7 +49,7 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		let tv = TerminalView(frame: .init(x: 0, y: 0, width: 400, height: 600))
 		tv.backgroundColor = .black
 		tv.font = UIFont.monospacedSystemFont(
-			ofSize: MobileTerminalSettings.fontSize, weight: .regular)
+			ofSize: preferences.fontSize, weight: .regular)
 		// SwiftTerm installs its own input-accessory key bar; suppress it
 		// so native-keyboard mode shows only our TerminalAccessoryRow
 		// (otherwise two near-identical esc/ctrl/tab/arrow rows stack).
@@ -62,7 +58,7 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		coordinator.model = self
 		coordinator.terminalView = tv
 		tv.terminalDelegate = coordinator
-		applyTheme(MobileTerminalSettings.defaultTheme)
+		applyTheme(preferences.theme)
 	}
 
 	public func start() {
@@ -191,11 +187,12 @@ public final class TerminalSessionsModel: ObservableObject {
 
 	public init(
 		initialHost: SSHHost,
+		preferences: MobileTerminalPreferences = .storedDefaults,
 		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
 	) {
 		self.makeSession = makeSession
-		self.keyboardMode = MobileTerminalSettings.defaultKeyboardMode
-		addTab(host: initialHost)
+		self.keyboardMode = preferences.keyboardMode
+		addTab(host: initialHost, preferences: preferences)
 	}
 
 	public var selected: TerminalScreenModel? {
@@ -203,8 +200,15 @@ public final class TerminalSessionsModel: ObservableObject {
 	}
 
 	@discardableResult
-	public func addTab(host: SSHHost) -> TerminalScreenModel {
-		let model = TerminalScreenModel(host: host, makeSession: makeSession)
+	public func addTab(
+		host: SSHHost,
+		preferences: MobileTerminalPreferences = .storedDefaults
+	) -> TerminalScreenModel {
+		let model = TerminalScreenModel(
+			host: host,
+			preferences: preferences,
+			makeSession: makeSession
+		)
 		tabs.append(model)
 		selectedID = model.id
 		model.start()
@@ -257,17 +261,23 @@ public struct MobileTerminalSessionView: View {
 
 	private let hosts: [SSHHost]
 	private let snippets: [TerminalSnippet]
+	private let preferences: MobileTerminalPreferences
 
 	public init(
 		initialHost: SSHHost,
 		hosts: [SSHHost] = [],
 		snippets: [TerminalSnippet] = [],
+		preferences: MobileTerminalPreferences = .storedDefaults,
 		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
 	) {
 		self.hosts = hosts
 		self.snippets = snippets
+		self.preferences = preferences
 		_sessions = StateObject(wrappedValue: TerminalSessionsModel(
-			initialHost: initialHost, makeSession: makeSession))
+			initialHost: initialHost,
+			preferences: preferences,
+			makeSession: makeSession
+		))
 	}
 
 	public var body: some View {
@@ -434,7 +444,7 @@ public struct MobileTerminalSessionView: View {
 		NavigationStack {
 			List(hosts, id: \.id) { h in
 				Button {
-					sessions.addTab(host: h)
+					sessions.addTab(host: h, preferences: preferences)
 					showingHostPicker = false
 				} label: {
 					VStack(alignment: .leading) {

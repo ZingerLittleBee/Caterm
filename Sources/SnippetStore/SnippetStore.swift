@@ -7,6 +7,7 @@ public enum SnippetStoreError: Error, Equatable {
 	case writeFailed(String)
 	case readFailed(String)
 	case unsupportedSchema(found: Int, supported: Int)
+	case duplicateSnippetID(UUID)
 }
 
 private struct SnippetsEnvelope: Codable {
@@ -100,6 +101,36 @@ public final class SnippetStore: ObservableObject {
 		}
 	}
 
+	/// Persists a complete local snapshot supplied by a shared UI binding.
+	/// Changed records become dirty and removed records enter the deletion
+	/// outbox, preserving the same sync semantics as individual mutations.
+	public func replaceLocalSnapshot(_ newSnippets: [Snippet]) throws {
+		try Self.validateUniqueIDs(newSnippets)
+		let originalSnippets = snippets
+		let originalDirtyIDs = locallyDirtySnippetIDs
+		let originalDeletedIDs = pendingDeletedSnippetIDs
+		let oldByID = Dictionary(uniqueKeysWithValues: snippets.map { ($0.id, $0) })
+		let newIDs = Set(newSnippets.map(\.id))
+		let removedIDs = Set(oldByID.keys).subtracting(newIDs)
+		let changedIDs = Set(newSnippets.compactMap { snippet in
+			oldByID[snippet.id] == snippet ? nil : snippet.id
+		})
+
+		snippets = newSnippets
+		locallyDirtySnippetIDs.subtract(removedIDs)
+		locallyDirtySnippetIDs.formUnion(changedIDs)
+		pendingDeletedSnippetIDs.formUnion(removedIDs)
+		do {
+			try writeSnippets()
+			try writeOutbox()
+		} catch {
+			snippets = originalSnippets
+			locallyDirtySnippetIDs = originalDirtyIDs
+			pendingDeletedSnippetIDs = originalDeletedIDs
+			throw error
+		}
+	}
+
 	public func clearOutboxEntry(_ id: UUID) throws {
 		pendingDeletedSnippetIDs.remove(id)
 		try writeOutbox()
@@ -182,6 +213,7 @@ public final class SnippetStore: ObservableObject {
 					supported: Self.schemaVersion
 				)
 			}
+			try Self.validateUniqueIDs(envelope.snippets)
 			snippets = envelope.snippets
 			locallyDirtySnippetIDs = Set(envelope.locallyDirtySnippetIDs ?? [])
 		} catch {
@@ -215,6 +247,13 @@ public final class SnippetStore: ObservableObject {
 			try FileManager.default.moveItem(at: url, to: destination)
 		} catch {
 			throw SnippetStoreError.readFailed(error.localizedDescription)
+		}
+	}
+
+	private static func validateUniqueIDs(_ snippets: [Snippet]) throws {
+		var seen: Set<UUID> = []
+		for snippet in snippets where !seen.insert(snippet.id).inserted {
+			throw SnippetStoreError.duplicateSnippetID(snippet.id)
 		}
 	}
 

@@ -9,6 +9,9 @@ import KeychainStore
 import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
+import SettingsStore
+import SnippetStore
+import SnippetSyncClient
 import SSHCommandBuilder
 import SSHCredentialContract
 @testable import CatermMobile
@@ -189,6 +192,30 @@ private final class MobileSyncFixtureClient: IncrementalHostSyncClient,
 		}
 		continuation?.resume()
 	}
+}
+
+private final class MobileSnippetFixtureClient: IncrementalSnippetSyncClient,
+	@unchecked Sendable {
+	func preferredSnippetSyncMode() async -> SnippetSyncMode { .forceFull }
+	func fetchSnippetChanges() async throws -> SnippetChangeBatch {
+		try await fetchSnippetSnapshotAndCheckpoint()
+	}
+	func fetchSnippetSnapshotAndCheckpoint() async throws -> SnippetChangeBatch {
+		SnippetChangeBatch(
+			changedSnippets: [],
+			deletedSnippetIDs: [],
+			checkpoint: nil,
+			tokenExpired: false,
+			mode: .forceFull
+		)
+	}
+	func commitSnippetCheckpoint(_: any SnippetSyncCheckpoint) async throws {}
+	func resetSnippetSyncState() async {}
+	func ensureSnippetSubscription() async throws {}
+	func deleteSnippetSubscription() async throws {}
+	func pushSnippet(_ snippet: Snippet) async throws -> Snippet { snippet }
+	func deleteSnippet(id _: UUID) async throws {}
+	func hasAnySnippetSyncTokens() async -> Bool { false }
 }
 
 private actor MobileAccountSensitiveSpy: AccountSensitiveClient {
@@ -708,10 +735,31 @@ private func mobileBootCompositionUsesSharedRuntime() throws {
 		service: "com.caterm.test.mobile-writer.\(UUID().uuidString)",
 		accessGroup: nil
 	))
+	let auxiliaryRoot = FileManager.default.temporaryDirectory
+		.appendingPathComponent("mobile-composition-\(UUID().uuidString)")
+	defer { try? FileManager.default.removeItem(at: auxiliaryRoot) }
+	let snippetStore = SnippetStore(directory: auxiliaryRoot)
+	let snippetClient = MobileSnippetFixtureClient()
+	let snippetSync = SnippetSyncStore(store: snippetStore, client: snippetClient)
+	let snippetRuntime = MobileSnippetSyncRuntime(
+		store: snippetStore,
+		sync: snippetSync,
+		client: snippetClient,
+		isSignedIn: { false },
+		refreshAccount: {}
+	)
+	let settingsStore = SettingsStore(
+		settings: CatermSettings(global: CatermSettings.defaultsSeed),
+		path: auxiliaryRoot.appendingPathComponent("settings.plist")
+	)
 	let composition = MobileAppComposition(
 		hostStore: device.store,
 		credentialWriter: writer,
 		syncRuntime: runtime,
+		snippetStore: snippetStore,
+		snippetSyncRuntime: snippetRuntime,
+		settingsStore: settingsStore,
+		settingsSync: nil,
 		terminalSessionFactory: MobileTerminalSessionFactory { _ in
 			throw MobileCredentialUnavailableReason.credentialReadFailed
 		}
@@ -720,6 +768,9 @@ private func mobileBootCompositionUsesSharedRuntime() throws {
 	#expect(composition.hostStore === device.store)
 	#expect(composition.syncRuntime === runtime)
 	#expect(composition.syncRuntime.hostStore === composition.hostStore)
+	#expect(composition.snippetStore === snippetStore)
+	#expect(composition.snippetSyncRuntime.store === composition.snippetStore)
+	#expect(composition.settingsStore === settingsStore)
 }
 
 @Test("Offline mobile composition never constructs CloudKit")

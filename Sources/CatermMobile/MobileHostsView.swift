@@ -1,10 +1,13 @@
 import CatermMobileTerminal
 import Foundation
+import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 
 public struct MobileHostsView: View {
 	@Binding private var hosts: [SSHHost]
+	private let snippets: [Snippet]
+	private let terminalPreferences: MobileTerminalPreferences
 	@Environment(\.mobileHostSave) private var hostSave
 	@Environment(\.mobileHostSyncState) private var syncState
 	@Environment(\.mobileTerminalSessionFactory) private var terminalSessionFactory
@@ -13,8 +16,14 @@ public struct MobileHostsView: View {
 	@State private var pendingDelete: SSHHost?
 	@State private var route: MobileHostRoute?
 
-	public init(hosts: Binding<[SSHHost]>) {
+	public init(
+		hosts: Binding<[SSHHost]>,
+		snippets: [Snippet] = [],
+		terminalPreferences: MobileTerminalPreferences = .storedDefaults
+	) {
 		_hosts = hosts
+		self.snippets = snippets
+		self.terminalPreferences = terminalPreferences
 	}
 
 	public var body: some View {
@@ -182,6 +191,8 @@ public struct MobileHostsView: View {
 			if let host = hosts.first(where: { $0.id == id }) {
 				MobileHostDetailView(
 					host: host,
+					snippets: snippets,
+					terminalPreferences: terminalPreferences,
 					onConnect: nil,
 					onDelete: { deleteHost(id: id) },
 					onUpdate: { updated in
@@ -206,7 +217,14 @@ public struct MobileHostsView: View {
 		case .terminalPlaceholder(let id):
 			if let host = hosts.first(where: { $0.id == id }) {
 				#if canImport(UIKit)
-				MobileTerminalSessionView(initialHost: host, hosts: hosts) {
+				MobileTerminalSessionView(
+					initialHost: host,
+					hosts: hosts,
+					snippets: snippets.map {
+						TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
+					},
+					preferences: terminalPreferences
+				) {
 					try await makeSession(for: $0)
 				}
 				#else
@@ -221,6 +239,8 @@ public struct MobileHostsView: View {
 
 struct MobileHostDetailView: View {
 	let host: SSHHost
+	let snippets: [Snippet]
+	let terminalPreferences: MobileTerminalPreferences
 	let onConnect: ((MobileHostRoute) -> Void)?
 	let onDelete: () -> Void
 	let onUpdate: (SSHHost) -> Void
@@ -327,7 +347,14 @@ struct MobileHostDetailView: View {
 		case .terminalPlaceholder(let id):
 			if id == host.id {
 				#if canImport(UIKit)
-					MobileTerminalSessionView(initialHost: host, hosts: [host]) {
+					MobileTerminalSessionView(
+						initialHost: host,
+						hosts: [host],
+						snippets: snippets.map {
+							TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
+						},
+						preferences: terminalPreferences
+					) {
 						if let terminalSessionFactory {
 							return try await terminalSessionFactory.make($0)
 						}

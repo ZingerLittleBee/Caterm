@@ -171,7 +171,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "CredentialSync", "CredentialSyncStore", "CloudKitSyncClient", "ServerSyncClient", "SettingsSyncStore"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "CredentialSync", "CredentialSyncStore", "CloudKitSyncClient", "ServerSyncClient", "SettingsStore", "SettingsSyncStore"],
             path: "Sources/CatermMobile"
         ),
         .target(

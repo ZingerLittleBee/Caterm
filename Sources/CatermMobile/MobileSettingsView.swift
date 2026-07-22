@@ -1,5 +1,6 @@
 import SnippetSyncClient
 import SSHCommandBuilder
+import SettingsStore
 import SwiftUI
 #if canImport(UIKit)
 import CatermMobileTerminal
@@ -8,18 +9,31 @@ import CatermMobileTerminal
 public struct MobileSettingsView: View {
 	private var hosts: Binding<[SSHHost]>?
 	private var snippets: Binding<[Snippet]>?
+	private var settingsStore: SettingsStore?
 
 	/// Pass the shell's host/snippet bindings to enable the Backup
 	/// (encrypted export/import) section; nil hides it (previews/tests).
-	public init(hosts: Binding<[SSHHost]>? = nil,
-	            snippets: Binding<[Snippet]>? = nil) {
+	public init(
+		hosts: Binding<[SSHHost]>? = nil,
+		snippets: Binding<[Snippet]>? = nil,
+		settingsStore: SettingsStore? = nil
+	) {
 		self.hosts = hosts
 		self.snippets = snippets
+		self.settingsStore = settingsStore
 	}
 
 	public var body: some View {
 		#if canImport(UIKit)
-		MobileSettingsForm(hosts: hosts, snippets: snippets)
+		if let settingsStore {
+			MobileSyncedSettingsForm(
+				store: settingsStore,
+				hosts: hosts,
+				snippets: snippets
+			)
+		} else {
+			MobileLegacySettingsForm(hosts: hosts, snippets: snippets)
+		}
 		#else
 		Form {
 			Section("About") {
@@ -32,7 +46,7 @@ public struct MobileSettingsView: View {
 }
 
 #if canImport(UIKit)
-private struct MobileSettingsForm: View {
+private struct MobileLegacySettingsForm: View {
 	var hosts: Binding<[SSHHost]>?
 	var snippets: Binding<[Snippet]>?
 
@@ -44,9 +58,70 @@ private struct MobileSettingsForm: View {
 	private var keyboardNative: Bool = false
 
 	var body: some View {
+		MobileSettingsContent(
+			themeID: $themeID,
+			fontSize: $fontSize,
+			keyboardNative: $keyboardNative,
+			hosts: hosts,
+			snippets: snippets,
+			isSynced: false
+		)
+	}
+}
+
+private struct MobileSyncedSettingsForm: View {
+	@ObservedObject var store: SettingsStore
+	var hosts: Binding<[SSHHost]>?
+	var snippets: Binding<[Snippet]>?
+
+	var body: some View {
+		MobileSettingsContent(
+			themeID: Binding(
+				get: { store.effectiveSettings.global.theme ?? TerminalTheme.presets[0].id },
+				set: { value in store.update { $0.global.theme = value } }
+			),
+			fontSize: Binding(
+				get: {
+					Double(store.effectiveSettings.global.fontSize
+						?? Int(MobileTerminalSettings.defaultFontSize))
+				},
+				set: { value in store.update { $0.global.fontSize = Int(value) } }
+			),
+			keyboardNative: Binding(
+				get: {
+					store.effectiveSettings.global.prefersNativeMobileKeyboard
+						?? false
+				},
+				set: { value in
+					store.update { $0.global.prefersNativeMobileKeyboard = value }
+				}
+			),
+			hosts: hosts,
+			snippets: snippets,
+			isSynced: true
+		)
+	}
+}
+
+private struct MobileSettingsContent: View {
+	@Binding var themeID: String
+	@Binding var fontSize: Double
+	@Binding var keyboardNative: Bool
+	var hosts: Binding<[SSHHost]>?
+	var snippets: Binding<[Snippet]>?
+	let isSynced: Bool
+
+	private var knownThemeIDs: Set<String> {
+		Set(TerminalTheme.presets.map(\.id))
+	}
+
+	var body: some View {
 		Form {
 			Section {
 				Picker("Theme", selection: $themeID) {
+					if !knownThemeIDs.contains(themeID) {
+						Text("\(themeID) (Mac only)").tag(themeID)
+					}
 					ForEach(TerminalTheme.presets) { theme in
 						Text(theme.name).tag(theme.id)
 					}
@@ -78,12 +153,17 @@ private struct MobileSettingsForm: View {
 			}
 
 			Section("Data") {
-				Label("Hosts persist to this device using the same on-disk format as the Mac app.",
+				Label("Hosts and snippets persist locally for offline use.",
 					systemImage: "externaldrive")
 				Label("Host secrets are saved to the device keychain.",
 					systemImage: "key")
-				Label("iCloud/CloudKit sync across devices is not wired yet in this phase.",
-					systemImage: "icloud")
+				if isSynced {
+					Label("Hosts, snippets, and shared settings sync through iCloud.",
+						systemImage: "icloud")
+				} else {
+					Label("iCloud sync is unavailable in this build.",
+						systemImage: "icloud.slash")
+				}
 			}
 
 			Section("About") {

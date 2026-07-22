@@ -23,9 +23,14 @@ public enum SettingsChangeScope: Equatable {
         .theme: .live,
         .scrollbackBytes: .newSurface,
         .titlebarStyle: .newSurface,
+		.prefersNativeMobileKeyboard: .newSurface,
+		.opaque: .newSurface,
     ]
 
     public static func diff(old: CatermSettings, new: CatermSettings) -> SettingsChangeScope? {
+		if old.unknownFields != new.unknownFields {
+			return .globalNewSurface
+		}
         let changedGlobal = changedKeys(old: old.global, new: new.global)
         if !changedGlobal.isEmpty {
             let anyLive = changedGlobal.contains { (liveReloadable[$0] ?? .newSurface) == .live }
@@ -52,6 +57,10 @@ public enum SettingsChangeScope: Equatable {
         if old.windowPaddingY != new.windowPaddingY { s.insert(.windowPaddingY) }
         if old.titlebarStyle != new.titlebarStyle { s.insert(.titlebarStyle) }
         if old.theme != new.theme { s.insert(.theme) }
+		if old.prefersNativeMobileKeyboard != new.prefersNativeMobileKeyboard {
+			s.insert(.prefersNativeMobileKeyboard)
+		}
+		if old.unknownFields != new.unknownFields { s.insert(.opaque) }
         return s
     }
 }
@@ -64,4 +73,6 @@ public enum PartialFieldKey: Hashable {
     case windowOpacity, windowPaddingX, windowPaddingY
     case titlebarStyle
     case theme
+	case prefersNativeMobileKeyboard
+	case opaque
 }

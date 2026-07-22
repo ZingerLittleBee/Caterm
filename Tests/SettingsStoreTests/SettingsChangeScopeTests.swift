@@ -41,7 +41,7 @@ final class SettingsChangeScopeTests: XCTestCase {
     }
 
     func testHostOverrideChangeProducesHostScope() {
-        var old = CatermSettings.empty
+        let old = CatermSettings.empty
         var new = old
         new.hostOverrides[HostId("h1")] = PartialSettings(theme: "Dracula")
         XCTAssertEqual(
@@ -51,10 +51,34 @@ final class SettingsChangeScopeTests: XCTestCase {
     }
 
     func testMixedGlobalAndHostChangePrioritizesGlobal() {
-        var old = CatermSettings.empty
+        let old = CatermSettings.empty
         var new = old
         new.global.fontSize = 14
         new.hostOverrides[HostId("h1")] = PartialSettings(theme: "Dracula")
         XCTAssertEqual(SettingsChangeScope.diff(old: old, new: new), .globalLive)
+    }
+
+    func testMobileKeyboardPreferenceChangeProducesNewSurfaceScope() {
+        let old = CatermSettings.empty
+        var new = old
+        new.global.prefersNativeMobileKeyboard = true
+
+        XCTAssertEqual(SettingsChangeScope.diff(old: old, new: new), .globalNewSurface)
+    }
+
+    func testUnknownTopLevelFieldChangeProducesNewSurfaceScope() {
+        let old = CatermSettings.empty
+        var new = old
+        new.unknownFields["futurePlatformPolicy"] = .string("retain")
+
+        XCTAssertEqual(SettingsChangeScope.diff(old: old, new: new), .globalNewSurface)
+    }
+
+    func testUnknownNestedFieldChangeProducesNewSurfaceScope() {
+        let old = CatermSettings.empty
+        var new = old
+        new.global.unknownFields["futureTerminalOption"] = .bool(true)
+
+        XCTAssertEqual(SettingsChangeScope.diff(old: old, new: new), .globalNewSurface)
     }
 }

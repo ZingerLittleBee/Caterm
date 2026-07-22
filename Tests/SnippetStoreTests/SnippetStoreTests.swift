@@ -118,6 +118,51 @@ final class SnippetStoreTests: XCTestCase {
 		XCTAssertEqual(reloaded.snippets.map(\.name), ["two", "three", "one"])
 	}
 
+	func test_replaceLocalSnapshotPersistsChangesAndDeletionIntent() throws {
+		let dir = tempDir()
+		let store = SnippetStore(directory: dir)
+		try store.load()
+		let removed = Snippet(
+			id: UUID(), name: "remove", content: "old",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		let retained = Snippet(
+			id: UUID(), name: "retain", content: "old",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		_ = try store.applyRemote(removed)
+		_ = try store.applyRemote(retained)
+		var changed = retained
+		changed.content = "new"
+
+		try store.replaceLocalSnapshot([changed])
+
+		let reloaded = SnippetStore(directory: dir)
+		try reloaded.load()
+		XCTAssertEqual(reloaded.snippets, [changed])
+		XCTAssertEqual(reloaded.locallyDirtySnippetIDs, [retained.id])
+		XCTAssertEqual(reloaded.pendingDeletedSnippetIDs, [removed.id])
+	}
+
+	func test_replaceLocalSnapshotRejectsDuplicateIDsWithoutChangingState() throws {
+		let dir = tempDir()
+		let store = SnippetStore(directory: dir)
+		try store.load()
+		let snippet = Snippet(
+			id: UUID(), name: "safe", content: "echo safe",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		try store.upsert(snippet)
+
+		XCTAssertThrowsError(try store.replaceLocalSnapshot([snippet, snippet])) {
+			XCTAssertEqual($0 as? SnippetStoreError, .duplicateSnippetID(snippet.id))
+		}
+		XCTAssertEqual(store.snippets, [snippet])
+		let reloaded = SnippetStore(directory: dir)
+		try reloaded.load()
+		XCTAssertEqual(reloaded.snippets, [snippet])
+	}
+
 	func test_load_quarantinesCorruptSnippetFileWithoutReplacingMemory() throws {
 		let dir = tempDir()
 		let store = SnippetStore(directory: dir)
@@ -164,6 +209,35 @@ final class SnippetStoreTests: XCTestCase {
 		).filter { $0.hasPrefix("snippets.json.broken-") }
 		XCTAssertEqual(quarantined.count, 1)
 	}
+
+	func test_load_quarantinesDuplicateSnippetIDs() throws {
+		let dir = tempDir()
+		let snippet = Snippet(
+			id: UUID(), name: "duplicate", content: "echo duplicate",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		let data = try JSONEncoder().encode(DuplicateSnippetEnvelope(
+			schemaVersion: 1,
+			snippets: [snippet, snippet],
+			locallyDirtySnippetIDs: []
+		))
+		try data.write(to: dir.appendingPathComponent("snippets.json"))
+		let store = SnippetStore(directory: dir)
+
+		try store.load()
+
+		XCTAssertTrue(store.snippets.isEmpty)
+		let quarantined = try FileManager.default.contentsOfDirectory(
+			atPath: dir.path
+		).filter { $0.hasPrefix("snippets.json.broken-") }
+		XCTAssertEqual(quarantined.count, 1)
+	}
+}
+
+private struct DuplicateSnippetEnvelope: Encodable {
+	let schemaVersion: Int
+	let snippets: [Snippet]
+	let locallyDirtySnippetIDs: [UUID]
 }
 
 extension SnippetStoreTests {

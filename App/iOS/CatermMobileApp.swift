@@ -5,8 +5,8 @@ import SwiftUI
 /// (owned by the `CatermMobile` SwiftPM library) so the macOS app and
 /// AppKit terminal surface stay isolated. Hosts persist to the same
 /// `Application Support/Caterm/hosts.json` layout the macOS app uses
-/// (sandbox-local on iOS; cross-device consistency is via CloudKit in a
-/// later phase, not a shared filesystem).
+/// (sandbox-local on iOS); Hosts, snippets, and shared settings synchronize
+/// through iCloud rather than a shared filesystem.
 @main
 struct CatermMobileApp: App {
 	#if canImport(UIKit)
@@ -25,6 +25,9 @@ struct CatermMobileApp: App {
 		pushDelegate.hostPushHandler = {
 			await composition.syncRuntime.receivedCloudKitPush()
 		}
+		pushDelegate.snippetPushHandler = {
+			await composition.snippetSyncRuntime.receivedCloudKitPush()
+		}
 		#endif
 	}
 
@@ -34,6 +37,10 @@ struct CatermMobileApp: App {
 				hostStore: composition.hostStore,
 				credentialWriter: composition.credentialWriter,
 				syncRuntime: composition.syncRuntime,
+				snippetStore: composition.snippetStore,
+				snippetSyncRuntime: composition.snippetSyncRuntime,
+				settingsStore: composition.settingsStore,
+				settingsSync: composition.settingsSync,
 				terminalSessionFactory: composition.terminalSessionFactory,
 				prepareCredentialSyncForSave: composition.prepareCredentialSyncForSave,
 				startObservingAccountChanges: composition.startObservingAccountChanges

@@ -8,6 +8,10 @@ import KeychainStore
 import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
+import SettingsStore
+import SettingsSyncStore
+import SnippetStore
+import SnippetSyncClient
 import SSHCommandBuilder
 import SSHCredentialContract
 
@@ -16,6 +20,10 @@ public final class MobileAppComposition: ObservableObject {
 	public let hostStore: MobileHostStore
 	public let credentialWriter: MobileCredentialWriter
 	public let syncRuntime: MobileHostSyncRuntime
+	public let snippetStore: SnippetStore
+	public let snippetSyncRuntime: MobileSnippetSyncRuntime
+	public let settingsStore: SettingsStore
+	public let settingsSync: SettingsSyncStore?
 	public let terminalSessionFactory: MobileTerminalSessionFactory
 	public let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
 	public let startObservingAccountChanges: () -> Void
@@ -24,6 +32,10 @@ public final class MobileAppComposition: ObservableObject {
 		hostStore: MobileHostStore,
 		credentialWriter: MobileCredentialWriter,
 		syncRuntime: MobileHostSyncRuntime,
+		snippetStore: SnippetStore,
+		snippetSyncRuntime: MobileSnippetSyncRuntime,
+		settingsStore: SettingsStore,
+		settingsSync: SettingsSyncStore?,
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		startObservingAccountChanges: @escaping () -> Void = {}
@@ -31,6 +43,10 @@ public final class MobileAppComposition: ObservableObject {
 		self.hostStore = hostStore
 		self.credentialWriter = credentialWriter
 		self.syncRuntime = syncRuntime
+		self.snippetStore = snippetStore
+		self.snippetSyncRuntime = snippetSyncRuntime
+		self.settingsStore = settingsStore
+		self.settingsSync = settingsSync
 		self.terminalSessionFactory = terminalSessionFactory
 		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
 		self.startObservingAccountChanges = startObservingAccountChanges
@@ -48,6 +64,25 @@ public final class MobileAppComposition: ObservableObject {
 			CKContainer(identifier: "iCloud.com.caterm.app")
 		}
 	) -> MobileAppComposition {
+		let snippetStore = SnippetStore(directory: applicationSupportURL)
+		do {
+			try snippetStore.load()
+		} catch {
+			NSLog("[MobileAppComposition] Snippet load failed: \(error)")
+		}
+		let settingsURL = applicationSupportURL.appendingPathComponent(
+			"settings.plist"
+		)
+		let settingsStore: SettingsStore
+		do {
+			settingsStore = try SettingsStore.load(from: settingsURL)
+		} catch {
+			NSLog("[MobileAppComposition] Settings load failed: \(error)")
+			settingsStore = SettingsStore(
+				settings: CatermSettings(global: CatermSettings.defaultsSeed),
+				path: settingsURL
+			)
+		}
 		let managedKeyStore = ManagedKeyStore(
 			rootURL: applicationSupportURL.appendingPathComponent(
 				"keys", isDirectory: true
@@ -99,6 +134,18 @@ public final class MobileAppComposition: ObservableObject {
 
 		#if targetEnvironment(simulator)
 		if let client = simulatorBoundaryClientIfRequested() {
+			let snippetClient = OfflineMobileSnippetSyncClient()
+			let snippetSync = SnippetSyncStore(
+				store: snippetStore,
+				client: snippetClient
+			)
+			let snippetRuntime = MobileSnippetSyncRuntime(
+				store: snippetStore,
+				sync: snippetSync,
+				client: snippetClient,
+				isSignedIn: { false },
+				refreshAccount: {}
+			)
 			let syncEngine = SharedHostSyncEngine(
 				client: client,
 				repository: hostStore,
@@ -118,6 +165,10 @@ public final class MobileAppComposition: ObservableObject {
 				hostStore: hostStore,
 				credentialWriter: credentialWriter,
 				syncRuntime: runtime,
+				snippetStore: snippetStore,
+				snippetSyncRuntime: snippetRuntime,
+				settingsStore: settingsStore,
+				settingsSync: nil,
 				terminalSessionFactory: terminalFactory,
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
@@ -130,6 +181,18 @@ public final class MobileAppComposition: ObservableObject {
 
 		guard cloudKitEnabled else {
 			let client = OfflineMobileHostSyncClient()
+			let snippetClient = OfflineMobileSnippetSyncClient()
+			let snippetSync = SnippetSyncStore(
+				store: snippetStore,
+				client: snippetClient
+			)
+			let snippetRuntime = MobileSnippetSyncRuntime(
+				store: snippetStore,
+				sync: snippetSync,
+				client: snippetClient,
+				isSignedIn: { false },
+				refreshAccount: {}
+			)
 			let syncEngine = SharedHostSyncEngine(
 				client: client,
 				repository: hostStore,
@@ -149,6 +212,10 @@ public final class MobileAppComposition: ObservableObject {
 				hostStore: hostStore,
 				credentialWriter: credentialWriter,
 				syncRuntime: runtime,
+				snippetStore: snippetStore,
+				snippetSyncRuntime: snippetRuntime,
+				settingsStore: settingsStore,
+				settingsSync: nil,
 				terminalSessionFactory: terminalFactory,
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
@@ -161,6 +228,24 @@ public final class MobileAppComposition: ObservableObject {
 		let container = containerFactory()
 		let client = CloudKitSyncClient(database: container.privateCloudDatabase)
 		let accountSession = iCloudAccountSession(provider: container)
+		let snippetSync = SnippetSyncStore(store: snippetStore, client: client)
+		let snippetRuntime = MobileSnippetSyncRuntime(
+			store: snippetStore,
+			sync: snippetSync,
+			client: client,
+			isSignedIn: { accountSession.isSignedIn },
+			refreshAccount: { await accountSession.refresh() }
+		)
+		let settingsSync = SettingsSyncStore(
+			store: settingsStore,
+			kvs: NSUbiquitousKeyValueStore.default,
+			accountSession: accountSession,
+			tokenStore: IdentityTokenStore(),
+			currentTokenProvider: {
+				FileManager.default.ubiquityIdentityToken
+					as? (NSObject & NSCoding & NSCopying)
+			}
+		)
 		let syncEngine = SharedHostSyncEngine(
 			client: client,
 			repository: hostStore,
@@ -174,10 +259,17 @@ public final class MobileAppComposition: ObservableObject {
 			},
 			tokensExist: {
 				if await client.hasAnyHostSyncTokens() { return true }
+				if await client.hasAnySnippetSyncTokens() { return true }
 				let hasCredentialState = await MainActor.run {
 					credentialSync.prefs.hasIdentityBoundState
 				}
 				if hasCredentialState { return true }
+				let hasSnippetState = await MainActor.run {
+					!snippetStore.snippets.isEmpty
+						|| !snippetStore.locallyDirtySnippetIDs.isEmpty
+						|| !snippetStore.pendingDeletedSnippetIDs.isEmpty
+				}
+				if hasSnippetState { return true }
 				return await hostStore.hasIdentityBoundState()
 			}
 		)
@@ -187,6 +279,20 @@ public final class MobileAppComposition: ObservableObject {
 			},
 			acknowledge: {
 				await identityTracker.acknowledgeIdentityChange()
+			},
+			beginRelatedSyncSuspension: {
+				snippetSync.beginAccountChangeSuspension()
+			},
+			drainRelatedSync: {
+				await snippetSync.drainForAccountChange()
+			},
+			resetRelatedLocalState: {
+				try snippetStore.wipeLocal()
+			},
+			resumeRelatedSync: { identityChanged in
+				snippetSync.resumeAfterAccountChange(
+					identityChanged: identityChanged
+				)
 			}
 		)
 		let runtime = MobileHostSyncRuntime(
@@ -203,6 +309,10 @@ public final class MobileAppComposition: ObservableObject {
 			hostStore: hostStore,
 			credentialWriter: credentialWriter,
 			syncRuntime: runtime,
+			snippetStore: snippetStore,
+			snippetSyncRuntime: snippetRuntime,
+			settingsStore: settingsStore,
+			settingsSync: settingsSync,
 			terminalSessionFactory: terminalFactory,
 			prepareCredentialSyncForSave: { transactionIsCurrent in
 				try await credentialSyncCoordinator.enable(
@@ -283,13 +393,18 @@ public final class MobileAppComposition: ObservableObject {
 		guard store.hosts.isEmpty,
 			let name = environment["CATERM_SIM_CACHED_HOST_NAME"],
 			!name.isEmpty else { return }
+		let credential: CredentialSource =
+			environment["CATERM_SIM_CACHED_HOST_AUTH"] == "password"
+				? .password
+				: .agent
 		let host = SSHHost(
 				name: name,
 				hostname: environment["CATERM_SIM_CACHED_HOST_ADDRESS"]
 					?? "offline.example.com",
+				port: Int(environment["CATERM_SIM_CACHED_HOST_PORT"] ?? "") ?? 22,
 				username: environment["CATERM_SIM_CACHED_HOST_USER"]
 					?? "offline",
-				credential: .agent,
+				credential: credential,
 				organization: HostOrganization(tags: ["offline"])
 			)
 		Task { @MainActor in
@@ -425,4 +540,37 @@ private final class OfflineMobileHostSyncClient: IncrementalHostSyncClient,
 	func resetHostSyncState() async {}
 	func ensureHostSubscription() async throws {}
 	func deleteHostSubscription() async throws {}
+}
+
+private final class OfflineMobileSnippetSyncClient: IncrementalSnippetSyncClient,
+	@unchecked Sendable {
+	func preferredSnippetSyncMode() async -> SnippetSyncMode { .forceFull }
+
+	func fetchSnippetChanges() async throws -> SnippetChangeBatch {
+		try await fetchSnippetSnapshotAndCheckpoint()
+	}
+
+	func fetchSnippetSnapshotAndCheckpoint() async throws -> SnippetChangeBatch {
+		SnippetChangeBatch(
+			changedSnippets: [],
+			deletedSnippetIDs: [],
+			checkpoint: nil,
+			tokenExpired: false,
+			mode: .forceFull
+		)
+	}
+
+	func commitSnippetCheckpoint(_: any SnippetSyncCheckpoint) async throws {}
+	func resetSnippetSyncState() async {}
+	func ensureSnippetSubscription() async throws {}
+	func deleteSnippetSubscription() async throws {}
+	func hasAnySnippetSyncTokens() async -> Bool { false }
+
+	func pushSnippet(_: Snippet) async throws -> Snippet {
+		throw ServerSyncError.notSignedIn
+	}
+
+	func deleteSnippet(id _: UUID) async throws {
+		throw ServerSyncError.notSignedIn
+	}
 }

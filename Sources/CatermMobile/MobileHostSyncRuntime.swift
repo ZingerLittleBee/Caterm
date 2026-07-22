@@ -38,13 +38,25 @@ public enum MobileHostSyncExecutionResult: Equatable, Sendable {
 public struct MobileAccountIdentityBoundary {
 	let evaluate: () async -> AccountChangeOutcome
 	let acknowledge: () async -> Void
+	let beginRelatedSyncSuspension: @MainActor () -> Void
+	let drainRelatedSync: @MainActor () async -> Void
+	let resetRelatedLocalState: @MainActor () throws -> Void
+	let resumeRelatedSync: @MainActor (_ identityChanged: Bool) -> Void
 
 	public init(
 		evaluate: @escaping () async -> AccountChangeOutcome,
-		acknowledge: @escaping () async -> Void
+		acknowledge: @escaping () async -> Void,
+		beginRelatedSyncSuspension: @escaping @MainActor () -> Void = {},
+		drainRelatedSync: @escaping @MainActor () async -> Void = {},
+		resetRelatedLocalState: @escaping @MainActor () throws -> Void = {},
+		resumeRelatedSync: @escaping @MainActor (_ identityChanged: Bool) -> Void = { _ in }
 	) {
 		self.evaluate = evaluate
 		self.acknowledge = acknowledge
+		self.beginRelatedSyncSuspension = beginRelatedSyncSuspension
+		self.drainRelatedSync = drainRelatedSync
+		self.resetRelatedLocalState = resetRelatedLocalState
+		self.resumeRelatedSync = resumeRelatedSync
 	}
 }
 
@@ -176,6 +188,12 @@ public final class MobileHostSyncRuntime: ObservableObject {
 
 		var resolvedRequest = request
 		if checkIdentity, let identityBoundary {
+			identityBoundary.beginRelatedSyncSuspension()
+			await identityBoundary.drainRelatedSync()
+			var relatedIdentityChanged = false
+			defer {
+				identityBoundary.resumeRelatedSync(relatedIdentityChanged)
+			}
 			let outcome = await identityBoundary.evaluate()
 			guard generationIsCurrent(generation) else { return .cancelled }
 			switch outcome {
@@ -188,6 +206,8 @@ public final class MobileHostSyncRuntime: ObservableObject {
 					try await hostStore.resetForAccountChange()
 					guard generationIsCurrent(generation) else { return .cancelled }
 					resetCredentialSyncPreferences()
+					try identityBoundary.resetRelatedLocalState()
+					relatedIdentityChanged = true
 					await identityBoundary.acknowledge()
 					try hostStore.finishAccountTransition()
 					guard generationIsCurrent(generation) else { return .cancelled }

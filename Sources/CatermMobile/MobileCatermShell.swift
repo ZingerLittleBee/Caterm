@@ -2,7 +2,9 @@ import CatermMobileTerminal
 import Combine
 import FileTransferStore
 import SnippetSyncClient
+import SnippetStore
 import SSHCommandBuilder
+import SettingsStore
 import SettingsSyncStore
 import SwiftUI
 
@@ -32,7 +34,9 @@ public struct MobileCatermShell: View {
 			hosts: $hosts,
 			snippets: $snippets,
 			remoteEntries: $remoteEntries,
-			transfers: $transfers
+			transfers: $transfers,
+			settingsStore: nil,
+			terminalPreferences: .storedDefaults
 		)
 	}
 }
@@ -44,13 +48,16 @@ public struct MobileCatermShell: View {
 public struct MobileRootView: View {
 	@StateObject private var hostStore: MobileHostStore
 	@StateObject private var syncRuntime: MobileHostSyncRuntime
+	@StateObject private var snippetStore: SnippetStore
+	@StateObject private var snippetSyncRuntime: MobileSnippetSyncRuntime
+	@StateObject private var settingsStore: SettingsStore
 	@Environment(\.scenePhase) private var scenePhase
 	private let hostSaveCoordinator: MobileHostSaveCoordinator
 	private let backupImportCoordinator: MobileBackupImportCoordinator
 	private let terminalSessionFactory: MobileTerminalSessionFactory
+	private let settingsSync: SettingsSyncStore?
 	private let startObservingAccountChanges: () -> Void
 	@State private var operationError: MobileHostOperationError?
-	@State private var snippets: [Snippet]
 	@State private var remoteEntries: [RemoteEntry]
 	@State private var transfers: [TransferTask]
 
@@ -58,15 +65,21 @@ public struct MobileRootView: View {
 		hostStore: MobileHostStore,
 		credentialWriter: MobileCredentialWriter,
 		syncRuntime: MobileHostSyncRuntime,
+		snippetStore: SnippetStore,
+		snippetSyncRuntime: MobileSnippetSyncRuntime,
+		settingsStore: SettingsStore,
+		settingsSync: SettingsSyncStore?,
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		startObservingAccountChanges: @escaping () -> Void = {},
-		snippets: [Snippet] = [],
 		remoteEntries: [RemoteEntry] = [],
 		transfers: [TransferTask] = []
 	) {
 		_hostStore = StateObject(wrappedValue: hostStore)
 		_syncRuntime = StateObject(wrappedValue: syncRuntime)
+		_snippetStore = StateObject(wrappedValue: snippetStore)
+		_snippetSyncRuntime = StateObject(wrappedValue: snippetSyncRuntime)
+		_settingsStore = StateObject(wrappedValue: settingsStore)
 		self.hostSaveCoordinator = MobileHostSaveCoordinator(
 			hostStore: hostStore,
 			credentialWriter: credentialWriter,
@@ -76,8 +89,8 @@ public struct MobileRootView: View {
 			hostStore: hostStore
 		)
 		self.terminalSessionFactory = terminalSessionFactory
+		self.settingsSync = settingsSync
 		self.startObservingAccountChanges = startObservingAccountChanges
-		_snippets = State(initialValue: snippets)
 		_remoteEntries = State(initialValue: remoteEntries)
 		_transfers = State(initialValue: transfers)
 	}
@@ -85,9 +98,11 @@ public struct MobileRootView: View {
 	public var body: some View {
 		MobileShellBody(
 			hosts: hostStore.binding,
-			snippets: $snippets,
+			snippets: snippetBinding,
 			remoteEntries: $remoteEntries,
-			transfers: $transfers
+			transfers: $transfers,
+			settingsStore: settingsStore,
+			terminalPreferences: terminalPreferences
 		)
 		.environment(\.mobileHostSave, MobileHostSaveAction(
 			save: { payload in
@@ -116,6 +131,19 @@ public struct MobileRootView: View {
 			}
 		))
 		.environment(\.mobileTerminalSessionFactory, terminalSessionFactory)
+		.environment(\.mobileSnippetMutation, MobileSnippetMutationAction(
+			upsert: { snippet in
+				try snippetStore.upsert(snippet)
+				snippetSyncRuntime.scheduleLocalMutation()
+			},
+			delete: { id in
+				try snippetStore.delete(id: id)
+				snippetSyncRuntime.scheduleLocalMutation(debounceMs: 0)
+			},
+			move: { offsets, destination in
+				try snippetStore.move(fromOffsets: offsets, toOffset: destination)
+			}
+		))
 		.environment(\.mobileBackupImportAction, MobileBackupImportAction(
 			apply: { payload, snippets in
 				try await backupImportCoordinator.apply(
@@ -127,14 +155,21 @@ public struct MobileRootView: View {
 		.environment(\.mobileHostSyncState, syncRuntime.state)
 		.refreshable {
 			await syncRuntime.refresh()
+			await snippetSyncRuntime.refresh()
 		}
 		.task {
 			startObservingAccountChanges()
+			settingsSync?.installLifecycleObservers()
 			await syncRuntime.launch()
+			await snippetSyncRuntime.launch()
+			if let settingsSync { await settingsSync.startSync() }
 		}
 		.onChange(of: scenePhase) { _, phase in
 			guard phase == .active else { return }
-			Task { await syncRuntime.becameActive() }
+			Task {
+				await syncRuntime.becameActive()
+				await snippetSyncRuntime.becameActive()
+			}
 		}
 		.onReceive(
 			NotificationCenter.default.publisher(for: .catermICloudAccountChanged)
@@ -155,6 +190,36 @@ public struct MobileRootView: View {
 			)
 			hostStore.clearPersistenceFailure()
 		}
+	}
+
+	private var snippetBinding: Binding<[Snippet]> {
+		Binding(
+			get: { snippetStore.snippets },
+			set: { newSnippets in
+				do {
+					try snippetStore.replaceLocalSnapshot(newSnippets)
+					snippetSyncRuntime.scheduleLocalMutation(debounceMs: 0)
+				} catch {
+					operationError = MobileHostOperationError(
+						title: "Couldn’t Save Snippets",
+						error: error
+					)
+				}
+			}
+		)
+	}
+
+	private var terminalPreferences: MobileTerminalPreferences {
+		let global = settingsStore.effectiveSettings.global
+		return MobileTerminalPreferences(
+			themeID: global.theme ?? TerminalTheme.presets[0].id,
+			fontSize: Double(
+				global.fontSize ?? Int(MobileTerminalSettings.defaultFontSize)
+			),
+			keyboardMode: global.prefersNativeMobileKeyboard == true
+				? .native
+				: .custom
+		)
 	}
 }
 
@@ -229,6 +294,8 @@ struct MobileShellBody: View {
 	@Binding var snippets: [Snippet]
 	@Binding var remoteEntries: [RemoteEntry]
 	@Binding var transfers: [TransferTask]
+	let settingsStore: SettingsStore?
+	let terminalPreferences: MobileTerminalPreferences
 	@State private var selection: MobileShellSelection?
 	@State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
 	@State private var showingAddHost = false
@@ -240,7 +307,9 @@ struct MobileShellBody: View {
 					hosts: $hosts,
 					snippets: $snippets,
 					remoteEntries: $remoteEntries,
-					transfers: $transfers
+					transfers: $transfers,
+					settingsStore: settingsStore,
+					terminalPreferences: terminalPreferences
 				)
 			} else {
 				NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
@@ -255,7 +324,9 @@ struct MobileShellBody: View {
 						hosts: $hosts,
 						snippets: $snippets,
 						remoteEntries: $remoteEntries,
-						transfers: $transfers
+						transfers: $transfers,
+						settingsStore: settingsStore,
+						terminalPreferences: terminalPreferences
 					)
 				}
 				.sheet(isPresented: $showingAddHost) {
@@ -298,13 +369,19 @@ private struct MobileCompactShell: View {
 	@Binding var snippets: [Snippet]
 	@Binding var remoteEntries: [RemoteEntry]
 	@Binding var transfers: [TransferTask]
+	let settingsStore: SettingsStore?
+	let terminalPreferences: MobileTerminalPreferences
 	@State private var showingAddHost = false
 
 	var body: some View {
 		TabView {
 			NavigationStack {
 				ZStack(alignment: .bottomTrailing) {
-					MobileHostsView(hosts: $hosts)
+					MobileHostsView(
+						hosts: $hosts,
+						snippets: snippets,
+						terminalPreferences: terminalPreferences
+					)
 
 					Button {
 						showingAddHost = true
@@ -329,7 +406,11 @@ private struct MobileCompactShell: View {
 			.tabItem { Label("Files", systemImage: "folder") }
 
 			NavigationStack {
-				MobileSettingsView(hosts: $hosts, snippets: $snippets)
+				MobileSettingsView(
+					hosts: $hosts,
+					snippets: $snippets,
+					settingsStore: settingsStore
+				)
 			}
 			.tabItem { Label("Settings", systemImage: "gearshape") }
 		}
@@ -401,6 +482,8 @@ private struct MobileShellDetail: View {
 	@Binding var snippets: [Snippet]
 	@Binding var remoteEntries: [RemoteEntry]
 	@Binding var transfers: [TransferTask]
+	let settingsStore: SettingsStore?
+	let terminalPreferences: MobileTerminalPreferences
 
 	var body: some View {
 		switch selection {
@@ -408,6 +491,8 @@ private struct MobileShellDetail: View {
 			if let binding = binding(for: id) {
 				MobileHostDetailView(
 					host: binding.wrappedValue,
+					snippets: snippets,
+					terminalPreferences: terminalPreferences,
 					onConnect: { route in
 						switch route {
 						case .credentialSetup(let hostId):
@@ -447,7 +532,8 @@ private struct MobileShellDetail: View {
 					hosts: hosts,
 					snippets: snippets.map {
 						TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
-					}
+					},
+					preferences: terminalPreferences
 					) {
 						if let terminalSessionFactory {
 							return try await terminalSessionFactory.make($0)
@@ -467,9 +553,17 @@ private struct MobileShellDetail: View {
 		case .files:
 			MobileFileBrowserView(entries: remoteEntries, transfers: transfers)
 		case .settings:
-			MobileSettingsView(hosts: $hosts, snippets: $snippets)
+			MobileSettingsView(
+				hosts: $hosts,
+				snippets: $snippets,
+				settingsStore: settingsStore
+			)
 		case nil:
-			MobileHostsView(hosts: $hosts)
+			MobileHostsView(
+				hosts: $hosts,
+				snippets: snippets,
+				terminalPreferences: terminalPreferences
+			)
 		}
 	}
 
