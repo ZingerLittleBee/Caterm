@@ -679,7 +679,7 @@ private func mobileCompositionPreparesCredentialSyncOnProductionPath() async thr
 	#expect(persisted.prefs.state == .enabled)
 	#expect(try await master.lookupAny() == nil)
 
-	try await composition.prepareCredentialSyncForSave()
+	try await composition.prepareCredentialSyncForSave { true }
 	let generated = try #require(try await master.lookupAny())
 	defer { Task { await master.remove(keyID: generated.keyID) } }
 	#expect(CredentialSyncPreferencesStore(defaults: defaults).prefs.state == .enabled)

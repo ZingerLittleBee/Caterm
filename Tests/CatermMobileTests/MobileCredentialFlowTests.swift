@@ -278,7 +278,12 @@ final class MobileCredentialWriterTests: XCTestCase {
 		let coordinator = MobileHostSaveCoordinator(
 			hostStore: store,
 			credentialWriter: writer,
-			prepareCredentialSyncForSave: { await gate.block() }
+			prepareCredentialSyncForSave: { transactionIsCurrent in
+				await gate.block()
+				guard transactionIsCurrent() else {
+					throw MobileCredentialWriter.AccountTransactionError.staleAccount
+				}
+			}
 		)
 		let host = SSHHost(
 			name: "Account A",
@@ -287,6 +292,8 @@ final class MobileCredentialWriterTests: XCTestCase {
 			credential: .password,
 			credentialMaterialDirty: true
 		)
+		let passwordAccount = MobileCredentialPlan.passwordAccount(host.id)
+		storage.values[passwordAccount] = "old-account-a-secret"
 		let staleSave = Task { @MainActor in
 			do {
 				try await coordinator.save(
@@ -300,13 +307,17 @@ final class MobileCredentialWriterTests: XCTestCase {
 
 		await gate.waitUntilEntered()
 		XCTAssertEqual(
-			storage.values[MobileCredentialPlan.passwordAccount(host.id)],
+			storage.values[passwordAccount],
 			"account-a-secret"
 		)
-		try await store.resetForAccountChange()
+		let reset = Task { @MainActor in
+			try await store.resetForAccountChange()
+		}
+		while !store.isAccountTransitionInProgress { await Task.yield() }
 		await gate.release()
 
 		let staleSaveWasRejected = await staleSave.value
+		try await reset.value
 		XCTAssertTrue(staleSaveWasRejected)
 		XCTAssertTrue(storage.values.isEmpty)
 		XCTAssertTrue(store.hosts.isEmpty)

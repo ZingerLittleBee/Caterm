@@ -294,16 +294,20 @@ public actor MobileCredentialWriter {
 	}
 }
 
+public typealias MobileCredentialSyncPreparation = (
+	@escaping @MainActor @Sendable () -> Bool
+) async throws -> Void
+
 @MainActor
 final class MobileHostSaveCoordinator {
 	private let hostStore: MobileHostStore
 	private let credentialWriter: MobileCredentialWriter
-	private let prepareCredentialSyncForSave: () async throws -> Void
+	private let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
 
 	init(
 		hostStore: MobileHostStore,
 		credentialWriter: MobileCredentialWriter,
-		prepareCredentialSyncForSave: @escaping () async throws -> Void
+		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation
 	) {
 		self.hostStore = hostStore
 		self.credentialWriter = credentialWriter
@@ -311,13 +315,16 @@ final class MobileHostSaveCoordinator {
 	}
 
 	func save(_ payload: MobileHostDraftPayload) async throws {
-		let accountContext = hostStore.currentAccountContext
+		let accountContext = try hostStore.beginAccountOperation()
+		defer { hostStore.endAccountOperation() }
 		try await credentialWriter.commitSave(
 			payload,
 			transactionIsCurrent: { self.hostStore.isCurrent(accountContext) }
 		) {
 			if payload.host.credentialMaterialDirty {
-				try await self.prepareCredentialSyncForSave()
+				try await self.prepareCredentialSyncForSave {
+					self.hostStore.isCurrent(accountContext)
+				}
 			}
 			try await self.hostStore.upsert(
 				payload.host,

@@ -43,6 +43,9 @@ public final class MobileHostStore: ObservableObject {
 	private let localMutationsSubject = PassthroughSubject<Void, Never>()
 	private let persistence: MobileHostPersistence
 	private var accountEpoch: UInt64 = 0
+	private var accountTransitionInProgress = false
+	private var activeAccountOperations = 0
+	private var accountOperationDrainWaiters: [CheckedContinuation<Void, Never>] = []
 	private var publishedRevision: UInt64 = 0
 	@Published public private(set) var lastPersistenceFailure: PersistenceFailure?
 
@@ -190,8 +193,27 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	func isCurrent(_ accountContext: AccountContext) -> Bool {
-		accountContext.epoch == accountEpoch
+		accountContext.epoch == accountEpoch && !accountTransitionInProgress
 	}
+
+	func beginAccountOperation() throws -> AccountContext {
+		guard !accountTransitionInProgress else {
+			throw StoreError.accountTransitionInProgress
+		}
+		activeAccountOperations += 1
+		return currentAccountContext
+	}
+
+	func endAccountOperation() {
+		precondition(activeAccountOperations > 0)
+		activeAccountOperations -= 1
+		guard activeAccountOperations == 0 else { return }
+		let waiters = accountOperationDrainWaiters
+		accountOperationDrainWaiters.removeAll()
+		for waiter in waiters { waiter.resume() }
+	}
+
+	var isAccountTransitionInProgress: Bool { accountTransitionInProgress }
 
 	private func requireCurrent(_ accountContext: AccountContext) throws {
 		guard isCurrent(accountContext) else {
@@ -284,17 +306,31 @@ extension MobileHostStore: HostCredentialRepository {
 	/// Clears identity-bound local Host state only after credential material is
 	/// gone. The caller keeps synchronization suspended until this succeeds.
 	public func resetForAccountChange() async throws {
+		guard !accountTransitionInProgress else {
+			throw StoreError.accountTransitionInProgress
+		}
 		accountEpoch &+= 1
+		accountTransitionInProgress = true
 		let epoch = accountEpoch
-		let hostIDs = try await persistence.beginAccountReset(epoch: epoch)
+		await waitForAccountOperationsToDrain()
 		do {
+			let hostIDs = try await persistence.beginAccountReset(epoch: epoch)
 			try await credentialMaterialStore
 				.resetAllCredentialMaterialForAccountChange(hostIDs: hostIDs)
 			let snapshot = try await persistence.completeAccountReset(epoch: epoch)
 			publish(snapshot, expectedEpoch: epoch)
+			accountTransitionInProgress = false
 		} catch {
 			await persistence.abortAccountReset(epoch: epoch)
+			accountTransitionInProgress = false
 			throw error
+		}
+	}
+
+	private func waitForAccountOperationsToDrain() async {
+		guard activeAccountOperations > 0 else { return }
+		await withCheckedContinuation { continuation in
+			accountOperationDrainWaiters.append(continuation)
 		}
 	}
 }
@@ -564,7 +600,11 @@ actor MobileHostPersistence {
 
 	func hasIdentityBoundState() -> Bool {
 		if !hosts.isEmpty { return true }
-		return ((try? deletionOutbox.pendingIDs()) ?? []).isEmpty == false
+		do {
+			return try !deletionOutbox.pendingIDs().isEmpty
+		} catch {
+			return true
+		}
 	}
 
 	func commitDeletion(hosts: [SSHHost], serverID: String?) throws {

@@ -6,6 +6,7 @@ import Foundation
 public final class CredentialSyncCoordinator {
     public enum CoordinatorError: Error {
         case iCloudKeychainUnavailable
+        case accountChanged
     }
 
     private let prefsStore: CredentialSyncPreferencesStore
@@ -23,11 +24,28 @@ public final class CredentialSyncCoordinator {
     }
 
     public func enable() async throws {
+        try await enable(transactionIsCurrent: { true })
+    }
+
+    public func enable(
+        transactionIsCurrent: @escaping @MainActor @Sendable () -> Bool
+    ) async throws {
         guard iCloudKeychainAvailable() else {
             throw CoordinatorError.iCloudKeychainUnavailable
         }
+        guard transactionIsCurrent() else {
+            throw CoordinatorError.accountChanged
+        }
+        var generatedKeyID: String?
         if await masterKeyStore.loadAny() == nil {
-            _ = try await masterKeyStore.generate()
+            let generated = try await masterKeyStore.generate()
+            generatedKeyID = generated.keyID
+        }
+        guard transactionIsCurrent() else {
+            if let generatedKeyID {
+                await masterKeyStore.remove(keyID: generatedKeyID)
+            }
+            throw CoordinatorError.accountChanged
         }
         prefsStore.mutate {
             $0.state = .enabled

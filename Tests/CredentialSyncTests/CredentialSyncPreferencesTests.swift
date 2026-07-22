@@ -113,4 +113,22 @@ final class CredentialSyncPreferencesTests: XCTestCase {
         let reloaded = CredentialSyncPreferences(defaults: defaults)
         XCTAssertEqual(reloaded.state, .waitingForKey(observedKeyID: "key-abc"))
     }
+
+    func test_identityBoundState_ignoresFreshReceivingSetup() {
+        var prefs = CredentialSyncPreferences(defaults: defaults)
+        prefs.state = .enabled
+        prefs.credentialsNeedFullScan = true
+
+        XCTAssertFalse(prefs.hasIdentityBoundState)
+    }
+
+    func test_identityBoundState_detectsAccountScopedProgress() {
+        var prefs = CredentialSyncPreferences(defaults: defaults)
+        prefs.state = .pausedByRemote(seenTombstoneRevision: 3)
+        XCTAssertTrue(prefs.hasIdentityBoundState)
+
+        prefs.state = .enabled
+        prefs.lastAppliedRevision[UUID()] = 9
+        XCTAssertTrue(prefs.hasIdentityBoundState)
+    }
 }

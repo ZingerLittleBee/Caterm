@@ -79,6 +79,56 @@ final class CredentialSyncCoordinatorTests: XCTestCase {
         XCTAssertNil(loaded)
     }
 
+    func test_accountChangeAfterGenerationRemovesOnlyNewKeyAndPreservesPreferences() async {
+        let coord = CredentialSyncCoordinator(
+            prefsStore: prefsStore,
+            masterKeyStore: masterKeyStore,
+            iCloudKeychainAvailable: { true }
+        )
+        var validationCount = 0
+
+        do {
+            try await coord.enable(transactionIsCurrent: {
+                validationCount += 1
+                return validationCount == 1
+            })
+            XCTFail("enable() should reject the stale account transaction")
+        } catch CredentialSyncCoordinator.CoordinatorError.accountChanged {
+            // Expected.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        let generatedKey = await masterKeyStore.loadAny()
+        XCTAssertNil(generatedKey)
+        XCTAssertEqual(prefsStore.prefs.state, .disabled)
+        XCTAssertFalse(prefsStore.prefs.credentialsNeedFullScan)
+    }
+
+    func test_accountChangeDoesNotRemovePreexistingMasterKey() async throws {
+        let staged = try await masterKeyStore.generate()
+        let coord = CredentialSyncCoordinator(
+            prefsStore: prefsStore,
+            masterKeyStore: masterKeyStore,
+            iCloudKeychainAvailable: { true }
+        )
+        var validationCount = 0
+
+        do {
+            try await coord.enable(transactionIsCurrent: {
+                validationCount += 1
+                return validationCount == 1
+            })
+            XCTFail("enable() should reject the stale account transaction")
+        } catch CredentialSyncCoordinator.CoordinatorError.accountChanged {
+            // Expected.
+        }
+
+        let retainedKey = await masterKeyStore.loadAny()
+        XCTAssertEqual(retainedKey?.keyID, staged.keyID)
+        XCTAssertEqual(prefsStore.prefs.state, .disabled)
+    }
+
     func test_toggleOff_setsDisabled_doesNotChangeFullScanFlag() {
         // Pre-set credentialsNeedFullScan=true to prove disable() preserves it.
         prefsStore.mutate {

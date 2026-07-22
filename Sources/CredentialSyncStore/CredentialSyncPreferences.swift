@@ -86,6 +86,21 @@ public struct CredentialSyncPreferences: Codable, Equatable, @unchecked Sendable
     /// across restarts. Persisting it lets the bound survive cold start.
     public var decryptAttemptCounts: [CorruptCredentialKey: Int]
 
+    public var hasIdentityBoundState: Bool {
+        switch state {
+        case .pausedByRemote, .waitingForKey:
+            return true
+        case .disabled, .enabled:
+            break
+        }
+        return !lastAppliedRevision.isEmpty
+            || deleteCredentialsFromCloudInProgress != nil
+            || !corruptCredentials.isEmpty
+            || cloudCredentialsCleared
+            || !hostsWithCloudPayload.isEmpty
+            || !decryptAttemptCounts.isEmpty
+    }
+
     private static let storageKey = "catermCredentialSyncPreferences"
     private let defaults: UserDefaults
 

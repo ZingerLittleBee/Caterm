@@ -58,7 +58,7 @@ public struct MobileRootView: View {
 		credentialWriter: MobileCredentialWriter,
 		syncRuntime: MobileHostSyncRuntime,
 		terminalSessionFactory: MobileTerminalSessionFactory,
-		prepareCredentialSyncForSave: @escaping () async throws -> Void = {},
+		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		startObservingAccountChanges: @escaping () -> Void = {},
 		snippets: [Snippet] = [],
 		remoteEntries: [RemoteEntry] = [],

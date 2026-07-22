@@ -17,7 +17,7 @@ public final class MobileAppComposition: ObservableObject {
 	public let credentialWriter: MobileCredentialWriter
 	public let syncRuntime: MobileHostSyncRuntime
 	public let terminalSessionFactory: MobileTerminalSessionFactory
-	public let prepareCredentialSyncForSave: () async throws -> Void
+	public let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
 	public let startObservingAccountChanges: () -> Void
 
 	public init(
@@ -25,7 +25,7 @@ public final class MobileAppComposition: ObservableObject {
 		credentialWriter: MobileCredentialWriter,
 		syncRuntime: MobileHostSyncRuntime,
 		terminalSessionFactory: MobileTerminalSessionFactory,
-		prepareCredentialSyncForSave: @escaping () async throws -> Void = {},
+		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		startObservingAccountChanges: @escaping () -> Void = {}
 	) {
 		self.hostStore = hostStore
@@ -119,8 +119,10 @@ public final class MobileAppComposition: ObservableObject {
 				credentialWriter: credentialWriter,
 				syncRuntime: runtime,
 				terminalSessionFactory: terminalFactory,
-				prepareCredentialSyncForSave: {
-					try await credentialSyncCoordinator.enable()
+				prepareCredentialSyncForSave: { transactionIsCurrent in
+					try await credentialSyncCoordinator.enable(
+						transactionIsCurrent: transactionIsCurrent
+					)
 				}
 			)
 		}
@@ -148,8 +150,10 @@ public final class MobileAppComposition: ObservableObject {
 				credentialWriter: credentialWriter,
 				syncRuntime: runtime,
 				terminalSessionFactory: terminalFactory,
-				prepareCredentialSyncForSave: {
-					try await credentialSyncCoordinator.enable()
+				prepareCredentialSyncForSave: { transactionIsCurrent in
+					try await credentialSyncCoordinator.enable(
+						transactionIsCurrent: transactionIsCurrent
+					)
 				}
 			)
 		}
@@ -170,6 +174,10 @@ public final class MobileAppComposition: ObservableObject {
 			},
 			tokensExist: {
 				if await client.hasAnyHostSyncTokens() { return true }
+				let hasCredentialState = await MainActor.run {
+					credentialSync.prefs.hasIdentityBoundState
+				}
+				if hasCredentialState { return true }
 				return await hostStore.hasIdentityBoundState()
 			}
 		)
@@ -196,8 +204,10 @@ public final class MobileAppComposition: ObservableObject {
 			credentialWriter: credentialWriter,
 			syncRuntime: runtime,
 			terminalSessionFactory: terminalFactory,
-			prepareCredentialSyncForSave: {
-				try await credentialSyncCoordinator.enable()
+			prepareCredentialSyncForSave: { transactionIsCurrent in
+				try await credentialSyncCoordinator.enable(
+					transactionIsCurrent: transactionIsCurrent
+				)
 			},
 			startObservingAccountChanges: {
 				accountSession.startObservingAccountChanges()

@@ -648,6 +648,19 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertTrue(hasState)
 	}
 
+	func testIdentityBoundStateFailsClosedForUnreadableDeletionOutbox() async throws {
+		let url = tempURL()
+		let outboxURL = url.deletingPathExtension()
+			.appendingPathExtension("deletions.json")
+		try Data("not-json".utf8).write(to: outboxURL)
+		defer { try? FileManager.default.removeItem(at: outboxURL) }
+		let store = MobileHostStore(fileURL: url)
+
+		let hasState = await store.hasIdentityBoundState()
+
+		XCTAssertTrue(hasState)
+	}
+
 	func testLocalDeleteClearsCredentialsAndPersistsTombstone() async throws {
 		let url = tempURL()
 		let storage = RecordingCredentialStore()
