@@ -182,7 +182,7 @@ private func runSharedSyncScenario(
 		updatedAt: old
 	)
 	for host in [localCreate, localPush, localPull, localDelete, tombstone] {
-		try repository.createLocalHost(host)
+		try await repository.createLocalHost(host)
 	}
 	try await repository.deleteLocalHost(id: tombstone.id)
 
@@ -251,7 +251,7 @@ private func runSharedSyncScenario(
 		createdHostNames: client.createdHostNames,
 		updatedHostIDs: client.updatedHostIDs,
 		deletedHostIDs: client.deletedHostIDs,
-		pendingDeletionIDs: try repository.pendingRemoteDeletionIDs(),
+		pendingDeletionIDs: try await repository.pendingRemoteDeletionIDs(),
 		credentialHookHostIDs: credentialHookHostIDs
 	)
 }

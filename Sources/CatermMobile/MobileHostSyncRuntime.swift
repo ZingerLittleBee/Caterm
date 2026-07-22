@@ -28,6 +28,13 @@ public enum MobileHostSyncState: Equatable, Sendable {
 	}
 }
 
+public enum MobileHostSyncExecutionResult: Equatable, Sendable {
+	case noData
+	case newData
+	case failed
+	case cancelled
+}
+
 public struct MobileAccountIdentityBoundary {
 	let evaluate: () async -> AccountChangeOutcome
 	let acknowledge: () async -> Void
@@ -57,7 +64,8 @@ public final class MobileHostSyncRuntime: ObservableObject {
 	private let identityBoundary: MobileAccountIdentityBoundary?
 	private let debounceNanoseconds: UInt64
 	private var cancellables: Set<AnyCancellable> = []
-	private var activeTask: Task<Void, Never>?
+	private var activeTask: Task<MobileHostSyncExecutionResult, Never>?
+	private var activeRunID: UUID?
 	private var debounceTask: Task<Void, Never>?
 	private var lifecycleGeneration: UInt64 = 0
 	private var accountTransitionInProgress = false
@@ -101,37 +109,75 @@ public final class MobileHostSyncRuntime: ObservableObject {
 	public func launch() async {
 		guard !hasLaunched else { return }
 		hasLaunched = true
-		await refreshAndSynchronize(checkIdentity: true, request: .automatic)
+		_ = await replaceActiveRun(checkIdentity: true, request: .automatic)
 	}
 
 	public func becameActive() async {
 		guard hasLaunched else { return }
-		await refreshAndSynchronize(checkIdentity: true, request: .automatic)
+		_ = await replaceActiveRun(checkIdentity: true, request: .automatic)
 	}
 
-	public func receivedCloudKitPush() {
-		scheduleSync(request: .incremental)
+	public func receivedCloudKitPush() async -> MobileHostSyncExecutionResult {
+		await replaceActiveRun(checkIdentity: true, request: .incremental)
 	}
 
 	public func refresh() async {
-		await refreshAndSynchronize(checkIdentity: true, request: .forceFull)
+		_ = await replaceActiveRun(checkIdentity: true, request: .forceFull)
 	}
 
 	public func accountDidChange() async {
-		await refreshAndSynchronize(checkIdentity: true, request: .forceFull)
+		_ = await replaceActiveRun(checkIdentity: true, request: .forceFull)
+	}
+
+	private func replaceActiveRun(
+		checkIdentity: Bool,
+		request: SharedHostSyncRequest
+	) async -> MobileHostSyncExecutionResult {
+		accountTransitionInProgress = true
+		lifecycleGeneration &+= 1
+		let generation = lifecycleGeneration
+		debounceTask?.cancel()
+		debounceTask = nil
+
+		let prior = activeTask
+		activeTask = nil
+		activeRunID = nil
+		prior?.cancel()
+		_ = await prior?.result
+		guard generationIsCurrent(generation) else { return .cancelled }
+
+		let runID = UUID()
+		let task = Task { @MainActor [weak self] in
+			guard let self else { return MobileHostSyncExecutionResult.cancelled }
+			return await refreshAndSynchronize(
+				checkIdentity: checkIdentity,
+				request: request,
+				generation: generation
+			)
+		}
+		activeRunID = runID
+		activeTask = task
+		let result = await task.value
+		if activeRunID == runID {
+			activeTask = nil
+			activeRunID = nil
+		}
+		return result
 	}
 
 	private func refreshAndSynchronize(
 		checkIdentity: Bool,
-		request: SharedHostSyncRequest
-	) async {
-		await suspendCurrentWorkForAccountBoundary()
+		request: SharedHostSyncRequest,
+		generation: UInt64
+	) async -> MobileHostSyncExecutionResult {
 		state = .checkingAccount
 		await refreshAccount()
+		guard generationIsCurrent(generation) else { return .cancelled }
 
 		var resolvedRequest = request
 		if checkIdentity, let identityBoundary {
 			let outcome = await identityBoundary.evaluate()
+			guard generationIsCurrent(generation) else { return .cancelled }
 			switch outcome {
 			case .unchanged:
 				break
@@ -140,42 +186,47 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			case .identityChanged:
 				do {
 					try await hostStore.resetForAccountChange()
+					guard generationIsCurrent(generation) else { return .cancelled }
 					resetCredentialSyncPreferences()
 					await identityBoundary.acknowledge()
+					guard generationIsCurrent(generation) else { return .cancelled }
 					resolvedRequest = .forceFull
 				} catch {
+					guard generationIsCurrent(generation) else { return .cancelled }
 					state = .temporarilyUnavailable(error.localizedDescription)
 					accountTransitionInProgress = false
-					return
+					return .failed
 				}
+			case .temporarilyUnavailable(let message):
+				state = .temporarilyUnavailable(message)
+				accountTransitionInProgress = false
+				return .failed
 			}
 		}
 
 		accountTransitionInProgress = false
 		guard isSignedIn() else {
 			state = .signedOut
-			return
+			return .noData
 		}
-		try? await client.ensureHostSubscription()
-		await runSync(request: resolvedRequest)
-	}
-
-	private func suspendCurrentWorkForAccountBoundary() async {
-		accountTransitionInProgress = true
-		lifecycleGeneration &+= 1
-		debounceTask?.cancel()
-		debounceTask = nil
-		let prior = activeTask
-		activeTask = nil
-		prior?.cancel()
-		_ = await prior?.result
+		do {
+			try await client.ensureHostSubscription()
+			guard generationIsCurrent(generation) else { return .cancelled }
+		} catch is CancellationError {
+			return .cancelled
+		} catch {
+			guard generationIsCurrent(generation) else { return .cancelled }
+			state = .temporarilyUnavailable(error.localizedDescription)
+			return .failed
+		}
+		return await runSync(request: resolvedRequest, generation: generation)
 	}
 
 	private func resetCredentialSyncPreferences() {
 		credentialSync.mutate {
-			$0.state = .disabled
+			$0.state = .enabled
 			$0.lastAppliedRevision = [:]
-			$0.credentialsNeedFullScan = false
+			$0.credentialsNeedFullScan = true
 			$0.deleteCredentialsFromCloudInProgress = nil
 			$0.corruptCredentials = []
 			$0.cloudCredentialsCleared = false
@@ -201,35 +252,42 @@ public final class MobileHostSyncRuntime: ObservableObject {
 
 	private func scheduleSync(request: SharedHostSyncRequest) {
 		guard !accountTransitionInProgress, isSignedIn() else { return }
-		let generation = lifecycleGeneration
-		activeTask?.cancel()
-		activeTask = Task { @MainActor [weak self] in
+		Task { @MainActor [weak self] in
 			guard let self else { return }
-			await runSync(request: request, generation: generation)
+			_ = await replaceActiveRun(checkIdentity: false, request: request)
 		}
 	}
 
 	private func runSync(
 		request: SharedHostSyncRequest,
-		generation: UInt64? = nil
-	) async {
-		let expectedGeneration = generation ?? lifecycleGeneration
-		guard expectedGeneration == lifecycleGeneration,
+		generation: UInt64
+	) async -> MobileHostSyncExecutionResult {
+		guard generationIsCurrent(generation),
 			!accountTransitionInProgress,
-			isSignedIn() else { return }
+			isSignedIn() else { return .cancelled }
 		state = .syncing
 		do {
 			let result = try await syncEngine.synchronize(request: request)
 			try Task.checkCancellation()
-			guard expectedGeneration == lifecycleGeneration else { return }
-			if case .synchronized = result {
+			guard generationIsCurrent(generation) else { return .cancelled }
+			switch result {
+			case .synchronized(_, let operations):
 				state = .upToDate(Date())
+				return operations.isEmpty ? .noData : .newData
+			case .handledDestructiveCredentialDeletion:
+				state = .upToDate(Date())
+				return .newData
 			}
 		} catch is CancellationError {
-			return
+			return .cancelled
 		} catch {
-			guard expectedGeneration == lifecycleGeneration else { return }
+			guard generationIsCurrent(generation) else { return .cancelled }
 			state = .temporarilyUnavailable(error.localizedDescription)
+			return .failed
 		}
+	}
+
+	private func generationIsCurrent(_ generation: UInt64) -> Bool {
+		generation == lifecycleGeneration && !Task.isCancelled
 	}
 }

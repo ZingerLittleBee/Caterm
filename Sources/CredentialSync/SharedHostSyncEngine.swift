@@ -75,8 +75,8 @@ public final class SharedHostSyncEngine {
 		}
 	}
 
-	public func handleLocalCredentialChange(hostID: UUID) -> Bool {
-		credentialEngine.handleLocalCredentialChange(hostId: hostID)
+	public func handleLocalCredentialChange(hostID: UUID) async -> Bool {
+		await credentialEngine.handleLocalCredentialChange(hostId: hostID)
 	}
 
 	private func runPass(mode: HostSyncMode) async throws -> [SyncOperation] {

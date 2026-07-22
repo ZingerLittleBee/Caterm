@@ -85,11 +85,11 @@ public enum HostSynchronization {
 		repository: any HostRepository,
 		client: any IncrementalHostSyncClient
 	) async throws {
-		for serverID in try repository.pendingRemoteDeletionIDs() {
+		for serverID in try await repository.pendingRemoteDeletionIDs() {
 			try Task.checkCancellation()
 			try await client.deleteHost(id: serverID)
 			try Task.checkCancellation()
-			try repository.clearPendingRemoteDeletion(serverID: serverID)
+			try await repository.clearPendingRemoteDeletion(serverID: serverID)
 		}
 	}
 
@@ -119,14 +119,14 @@ public enum HostSynchronization {
 			// Do not insert a cancellation point between remote creation and
 			// persisting its identity. Otherwise a retry duplicates the Host.
 			do {
-				try repository.assignServerID(output.id, to: localHostID)
+				try await repository.assignServerID(output.id, to: localHostID)
 			} catch {
 				let assignmentError = error
 				do {
 					try await client.deleteHost(id: output.id)
 				} catch {
 					do {
-						try repository.recordPendingRemoteDeletion(
+						try await repository.recordPendingRemoteDeletion(
 							serverID: output.id
 						)
 					} catch {
@@ -142,7 +142,7 @@ public enum HostSynchronization {
 			}
 
 		case .createLocal(let remote):
-			_ = try repository.createHostFromRemote(remote)
+			_ = try await repository.createHostFromRemote(remote)
 
 		case .updateRemote(let localHostID, let serverID):
 			guard let host = repository.hostSnapshot.first(where: {
@@ -164,7 +164,7 @@ public enum HostSynchronization {
 			))
 
 		case .updateLocal(let localHostID, let remote):
-			try repository.updateHostFromRemote(localID: localHostID, remote: remote)
+			try await repository.updateHostFromRemote(localID: localHostID, remote: remote)
 
 		case .deleteLocal(let localHostID):
 			try await repository.deleteHostFromRemote(localID: localHostID)

@@ -18,6 +18,15 @@ public enum AccountChangeOutcome: Sendable, Equatable {
 	case firstObservation
 	/// Identity actually changed (prior non-nil, current differs OR is nil).
 	case identityChanged
+	/// CloudKit could not determine the account identity. Cached account data
+	/// must remain untouched until a later observation succeeds.
+	case temporarilyUnavailable(String)
+}
+
+public enum AccountIdentityObservation: Sendable, Equatable {
+	case signedIn(CKRecord.ID)
+	case signedOut
+	case temporarilyUnavailable(String)
 }
 
 public actor AccountIdentityTracker {
@@ -30,7 +39,7 @@ public actor AccountIdentityTracker {
 	private static let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-account")
 
 	private let defaults: UserDefaults
-	private let currentUserRecordIDProvider: @Sendable () async -> CKRecord.ID?
+	private let currentIdentityProvider: @Sendable () async -> AccountIdentityObservation
 	private let tokensExistProvider: @Sendable () async -> Bool
 	private var pendingIdentity: PendingIdentity?
 
@@ -38,14 +47,35 @@ public actor AccountIdentityTracker {
 	            currentUserRecordID: @escaping @Sendable () async -> CKRecord.ID?,
 	            tokensExist: @escaping @Sendable () async -> Bool) {
 		self.defaults = defaults
-		self.currentUserRecordIDProvider = currentUserRecordID
+		self.currentIdentityProvider = {
+			if let identity = await currentUserRecordID() {
+				return .signedIn(identity)
+			}
+			return .signedOut
+		}
+		self.tokensExistProvider = tokensExist
+	}
+
+	public init(defaults: UserDefaults = .standard,
+	            currentIdentity: @escaping @Sendable () async -> AccountIdentityObservation,
+	            tokensExist: @escaping @Sendable () async -> Bool) {
+		self.defaults = defaults
+		self.currentIdentityProvider = currentIdentity
 		self.tokensExistProvider = tokensExist
 	}
 
 	@discardableResult
 	public func handleAccountChange(client: any AccountSensitiveClient) async -> AccountChangeOutcome {
 		let prior = defaults.string(forKey: Self.storageKey)
-		let current = await currentUserRecordIDProvider()?.recordName
+		let current: String?
+		switch await currentIdentityProvider() {
+		case .signedIn(let identity):
+			current = identity.recordName
+		case .signedOut:
+			current = nil
+		case .temporarilyUnavailable(let message):
+			return .temporarilyUnavailable(message)
+		}
 
 		switch (prior, current) {
 		case (nil, nil):

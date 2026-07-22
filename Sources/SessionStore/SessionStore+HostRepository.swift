@@ -8,11 +8,11 @@ extension SessionStore: HostRepository {
 	public var hostSnapshot: [SSHHost] { hosts }
 	public var localMutations: AnyPublisher<Void, Never> { mutationsForSync }
 
-	public func createLocalHost(_ host: SSHHost) throws {
+	public func createLocalHost(_ host: SSHHost) async throws {
 		try addHost(host)
 	}
 
-	public func updateLocalHostMetadata(_ host: SSHHost) throws {
+	public func updateLocalHostMetadata(_ host: SSHHost) async throws {
 		try updateHost(host)
 	}
 
@@ -20,31 +20,31 @@ extension SessionStore: HostRepository {
 		try await deleteHost(id: id)
 	}
 
-	public func pendingRemoteDeletionIDs() throws -> [String] {
+	public func pendingRemoteDeletionIDs() async throws -> [String] {
 		try pendingRemoteHostDeletionIDs()
 	}
 
-	public func recordPendingRemoteDeletion(serverID: String) throws {
+	public func recordPendingRemoteDeletion(serverID: String) async throws {
 		try recordPendingRemoteHostDeletion(serverID: serverID)
 	}
 
-	public func clearPendingRemoteDeletion(serverID: String) throws {
+	public func clearPendingRemoteDeletion(serverID: String) async throws {
 		try clearPendingRemoteHostDeletion(serverID: serverID)
 	}
 
-	public func createHostFromRemote(_ remote: RemoteHost) throws -> UUID {
+	public func createHostFromRemote(_ remote: RemoteHost) async throws -> UUID {
 		try addRemoteHost(remote)
 	}
 
-	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) throws {
+	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) async throws {
 		try applyRemoteMetadata(localHostId: localID, remote: remote)
 	}
 
-	public func assignServerID(_ serverID: String, to localID: UUID) throws {
+	public func assignServerID(_ serverID: String, to localID: UUID) async throws {
 		try setServerId(serverID, for: localID)
 	}
 
-	public func markCredentialMaterialSynced(for localID: UUID) throws {
+	public func markCredentialMaterialSynced(for localID: UUID) async throws {
 		try clearCredentialMaterialDirty(localID)
 	}
 

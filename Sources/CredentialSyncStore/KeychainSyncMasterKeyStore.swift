@@ -28,31 +28,36 @@ public actor KeychainSyncMasterKeyStore {
     private static let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
     private let service: String
     private let synchronizable: Bool
+    private let accessGroup: String?
     private let reader: any SyncMasterKeyReading
 
     public init(
         service: String = "com.caterm.cloudkit-sync.masterKey",
-        synchronizable: Bool = true
+        synchronizable: Bool = true,
+        accessGroup: String? = KeychainAccessGroupResolver.sharedGroup()
     ) {
         self.service = service
         self.synchronizable = synchronizable
+        self.accessGroup = accessGroup
         self.reader = SecuritySyncMasterKeyReader()
     }
 
     init(
         service: String,
         synchronizable: Bool,
-        reader: any SyncMasterKeyReading
+        reader: any SyncMasterKeyReading,
+        accessGroup: String? = nil
     ) {
         self.service = service
         self.synchronizable = synchronizable
+        self.accessGroup = accessGroup
         self.reader = reader
     }
 
     /// Strict lookup used by production synchronization. Absence is the only
     /// nil result; locked Keychain and entitlement failures remain errors.
     public func lookupAny() throws -> (keyID: String, key: SymmetricKey)? {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
@@ -60,6 +65,7 @@ public actor KeychainSyncMasterKeyStore {
             kSecReturnData as String: true,
             kSecReturnAttributes as String: true,
         ]
+        addAccessGroup(to: &query)
         let result = reader.read(query: query)
         if result.status == errSecItemNotFound { return nil }
         guard result.status == errSecSuccess else {
@@ -74,7 +80,7 @@ public actor KeychainSyncMasterKeyStore {
     }
 
     public func lookup(keyID: String) throws -> SymmetricKey? {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: keyID,
@@ -82,6 +88,7 @@ public actor KeychainSyncMasterKeyStore {
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecReturnData as String: true,
         ]
+        addAccessGroup(to: &query)
         let result = reader.read(query: query)
         if result.status == errSecItemNotFound { return nil }
         guard result.status == errSecSuccess else {
@@ -123,7 +130,7 @@ public actor KeychainSyncMasterKeyStore {
         let key = SymmetricKey(size: .bits256)
         let id = UUID().uuidString
         let bytes = key.withUnsafeBytes { Data($0) }
-        let attrs: [String: Any] = [
+        var attrs: [String: Any] = [
             kSecClass as String:               kSecClassGenericPassword,
             kSecAttrService as String:         service,
             kSecAttrAccount as String:         id,
@@ -131,18 +138,45 @@ public actor KeychainSyncMasterKeyStore {
             kSecAttrAccessible as String:      kSecAttrAccessibleWhenUnlocked,
             kSecValueData as String:           bytes,
         ]
+        addAccessGroup(to: &attrs)
         let status = SecItemAdd(attrs as CFDictionary, nil)
         guard status == errSecSuccess else { throw Error.keychainOSError(status) }
         return (id, key)
     }
 
     public func remove(keyID: String) {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String:           kSecClassGenericPassword,
             kSecAttrService as String:     service,
             kSecAttrAccount as String:     keyID,
             kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
         ]
+        addAccessGroup(to: &query)
         _ = SecItemDelete(query as CFDictionary)
+    }
+
+    private func addAccessGroup(to attributes: inout [String: Any]) {
+        guard let accessGroup else { return }
+        attributes[kSecAttrAccessGroup as String] = accessGroup
+    }
+}
+
+public enum KeychainAccessGroupResolver {
+    public static func sharedGroup() -> String? {
+        #if os(macOS)
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                  task,
+                  "keychain-access-groups" as CFString,
+                  nil
+              ) as? [String] else {
+            return nil
+        }
+        return value.first { $0.hasSuffix(".caterm.shared") }
+        #else
+        return Bundle.main.object(
+            forInfoDictionaryKey: "CatermKeychainAccessGroup"
+        ) as? String
+        #endif
     }
 }

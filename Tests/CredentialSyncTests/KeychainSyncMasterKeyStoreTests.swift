@@ -9,6 +9,24 @@ private struct FixedSyncMasterKeyReader: SyncMasterKeyReading, @unchecked Sendab
     func read(query _: [String: Any]) -> SyncMasterKeyReadResult { result }
 }
 
+private final class CapturingSyncMasterKeyReader: SyncMasterKeyReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var capturedQuery: [String: Any] = [:]
+
+    func read(query: [String: Any]) -> SyncMasterKeyReadResult {
+        lock.lock()
+        capturedQuery = query
+        lock.unlock()
+        return SyncMasterKeyReadResult(status: errSecItemNotFound, value: nil)
+    }
+
+    func accessGroup() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedQuery[kSecAttrAccessGroup as String] as? String
+    }
+}
+
 final class KeychainSyncMasterKeyStoreTests: XCTestCase {
     /// We use a unique service per test so concurrent runs don't collide.
     private func makeStore() -> KeychainSyncMasterKeyStore {
@@ -80,5 +98,19 @@ final class KeychainSyncMasterKeyStoreTests: XCTestCase {
         } catch let error as KeychainSyncMasterKeyStore.Error {
             XCTAssertEqual(error, .keychainOSError(errSecInteractionNotAllowed))
         }
+    }
+
+    func test_lookupAny_scopesSharedMasterKeyToConfiguredAccessGroup() async throws {
+        let reader = CapturingSyncMasterKeyReader()
+        let store = KeychainSyncMasterKeyStore(
+            service: "test",
+            synchronizable: true,
+            reader: reader,
+            accessGroup: "TEAM.caterm.shared"
+        )
+
+        _ = try await store.lookupAny()
+
+        XCTAssertEqual(reader.accessGroup(), "TEAM.caterm.shared")
     }
 }

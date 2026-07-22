@@ -9,6 +9,7 @@ public final class MobilePushDelegate: NSObject, UIApplicationDelegate {
 		subsystem: "app.caterm.mobile",
 		category: "cloudkit-push"
 	)
+	public var hostPushHandler: (@MainActor () async -> MobileHostSyncExecutionResult)?
 
 	public func application(
 		_ application: UIApplication,
@@ -37,11 +38,20 @@ public final class MobilePushDelegate: NSObject, UIApplicationDelegate {
 			completionHandler(.noData)
 			return
 		}
-		NotificationCenter.default.post(
-			name: .catermCloudKitHostChanged,
-			object: nil
-		)
-		completionHandler(.newData)
+		guard let hostPushHandler else {
+			completionHandler(.failed)
+			return
+		}
+		Task { @MainActor in
+			switch await hostPushHandler() {
+			case .newData:
+				completionHandler(.newData)
+			case .noData:
+				completionHandler(.noData)
+			case .failed, .cancelled:
+				completionHandler(.failed)
+			}
+		}
 	}
 
 	public func application(

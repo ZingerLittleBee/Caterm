@@ -111,12 +111,12 @@ public final class HostCredentialSyncEngine {
     /// Returns whether the normal auto-sync path should be scheduled.
     /// During destructive deletion, a fresh local edit must not repopulate the
     /// cloud credential that the deletion pipeline is tombstoning.
-    public func handleLocalCredentialChange(hostId: UUID) -> Bool {
+    public func handleLocalCredentialChange(hostId: UUID) async -> Bool {
         guard preferences.prefs.deleteCredentialsFromCloudInProgress != nil else {
             return true
         }
         do {
-            try repository.markCredentialMaterialSynced(for: hostId)
+			try await repository.markCredentialMaterialSynced(for: hostId)
         } catch {
             let errorDescription = String(describing: error)
             Self.log.error(
@@ -262,7 +262,7 @@ public final class HostCredentialSyncEngine {
                 $0.hostsWithCloudPayload.insert(hostId)
                 $0.cloudCredentialsCleared = false
             }
-            try repository.markCredentialMaterialSynced(for: hostId)
+			try await repository.markCredentialMaterialSynced(for: hostId)
         } catch {
             await materialStore.finishGenerationValidation(validation)
             throw error
@@ -460,7 +460,7 @@ public final class HostCredentialSyncEngine {
             }
 
             do {
-                try repository.applyRemoteCredentialSource(commit)
+				try await repository.applyRemoteCredentialSource(commit)
 
                 let corruptKey = CorruptCredentialKey(
                     hostId: localHostId,

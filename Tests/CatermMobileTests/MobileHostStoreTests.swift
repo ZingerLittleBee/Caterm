@@ -113,9 +113,10 @@ private func platformRepositoriesPersistAndDrainCompensationDeletions(
 	}
 
 	var repository = makeRepository(for: platform, fileURL: fileURL)
-	try repository.recordPendingRemoteDeletion(serverID: "server-orphan")
+	try await repository.recordPendingRemoteDeletion(serverID: "server-orphan")
 	repository = makeRepository(for: platform, fileURL: fileURL)
-	#expect(try repository.pendingRemoteDeletionIDs() == ["server-orphan"])
+	let pendingBeforeDrain = try await repository.pendingRemoteDeletionIDs()
+	#expect(pendingBeforeDrain == ["server-orphan"])
 
 	let client = DeletionDrainClient()
 	_ = try await HostSynchronization.synchronize(
@@ -126,7 +127,7 @@ private func platformRepositoriesPersistAndDrainCompensationDeletions(
 	#expect(client.deletedHostIDs == ["server-orphan"])
 
 	repository = makeRepository(for: platform, fileURL: fileURL)
-	#expect(try repository.pendingRemoteDeletionIDs().isEmpty)
+	#expect(try await repository.pendingRemoteDeletionIDs().isEmpty)
 }
 
 @Test(
@@ -136,7 +137,7 @@ private func platformRepositoriesPersistAndDrainCompensationDeletions(
 @MainActor
 private func platformRepositoriesPersistLocalCreation(
 	_ platform: HostRepositoryPlatform
-) throws {
+) async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -149,7 +150,7 @@ private func platformRepositoriesPersistLocalCreation(
 		username: "deploy",
 		credential: .agent
 	)
-	try repository.createLocalHost(host)
+	try await repository.createLocalHost(host)
 
 	#expect(repository.hostSnapshot == [host])
 	#expect(try HostPersistence.load(from: fileURL) == [host])
@@ -162,7 +163,7 @@ private func platformRepositoriesPersistLocalCreation(
 @MainActor
 private func platformRepositoriesPublishLocalMutations(
 	_ platform: HostRepositoryPlatform
-) throws {
+) async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -170,7 +171,7 @@ private func platformRepositoriesPublishLocalMutations(
 	var mutationCount = 0
 	let cancellable = repository.localMutations.sink { mutationCount += 1 }
 
-	try repository.createLocalHost(SSHHost(
+	try await repository.createLocalHost(SSHHost(
 		name: "production",
 		hostname: "prod.example.com",
 		username: "deploy",
@@ -189,7 +190,7 @@ private func platformRepositoriesPublishLocalMutations(
 @MainActor
 private func platformRepositoriesPreserveCredentialsDuringMetadataUpdates(
 	_ platform: HostRepositoryPlatform
-) throws {
+) async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -201,13 +202,13 @@ private func platformRepositoriesPreserveCredentialsDuringMetadataUpdates(
 		credential: .agent,
 		credentialMaterialDirty: true
 	)
-	try repository.createLocalHost(host)
+	try await repository.createLocalHost(host)
 	var edited = host
 	edited.name = "production-renamed"
 	edited.credential = .password
 	edited.credentialMaterialDirty = false
 
-	try repository.updateLocalHostMetadata(edited)
+	try await repository.updateLocalHostMetadata(edited)
 
 	let saved = try #require(repository.hostSnapshot.first)
 	#expect(saved.name == "production-renamed")
@@ -240,12 +241,12 @@ private func platformRepositoriesPersistLocalDeletionTombstones(
 		username: "deploy",
 		credential: .agent
 	)
-	try repository.createLocalHost(host)
+	try await repository.createLocalHost(host)
 
 	try await repository.deleteLocalHost(id: host.id)
 
 	#expect(repository.hostSnapshot.isEmpty)
-	#expect(try repository.pendingRemoteDeletionIDs() == ["server-production"])
+	#expect(try await repository.pendingRemoteDeletionIDs() == ["server-production"])
 	#expect(try HostPersistence.load(from: fileURL).isEmpty)
 }
 
@@ -256,7 +257,7 @@ private func platformRepositoriesPersistLocalDeletionTombstones(
 @MainActor
 private func platformRepositoriesPersistRemoteCreationWithoutEcho(
 	_ platform: HostRepositoryPlatform
-) throws {
+) async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -275,7 +276,7 @@ private func platformRepositoriesPersistRemoteCreationWithoutEcho(
 		updatedAt: timestamp
 	)
 
-	let localID = try repository.createHostFromRemote(remote)
+	let localID = try await repository.createHostFromRemote(remote)
 
 	let saved = try #require(repository.hostSnapshot.first)
 	#expect(saved.id == localID)
@@ -294,7 +295,7 @@ private func platformRepositoriesPersistRemoteCreationWithoutEcho(
 @MainActor
 private func platformRepositoriesApplyRemoteConflictsWithoutReplacingCredentials(
 	_ platform: HostRepositoryPlatform
-) throws {
+) async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -307,7 +308,7 @@ private func platformRepositoriesApplyRemoteConflictsWithoutReplacingCredentials
 		credential: .keyFile(keyPath: "/device/private-key", hasPassphrase: true),
 		credentialMaterialDirty: true
 	)
-	try repository.createLocalHost(local)
+	try await repository.createLocalHost(local)
 	var mutationCount = 0
 	let cancellable = repository.localMutations.sink { mutationCount += 1 }
 	let remote = RemoteHost(
@@ -321,7 +322,7 @@ private func platformRepositoriesApplyRemoteConflictsWithoutReplacingCredentials
 		updatedAt: local.updatedAt.addingTimeInterval(60)
 	)
 
-	try repository.updateHostFromRemote(localID: local.id, remote: remote)
+	try await repository.updateHostFromRemote(localID: local.id, remote: remote)
 
 	let saved = try #require(repository.hostSnapshot.first)
 	#expect(saved.name == "production")
@@ -342,7 +343,7 @@ private func platformRepositoriesApplyRemoteConflictsWithoutReplacingCredentials
 @MainActor
 private func platformRepositoriesPersistServerAndJumpIdentities(
 	_ platform: HostRepositoryPlatform
-) throws {
+) async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -360,10 +361,10 @@ private func platformRepositoriesPersistServerAndJumpIdentities(
 		credential: .agent,
 		jumpHostId: jump.id
 	)
-	try repository.createLocalHost(jump)
-	try repository.createLocalHost(child)
+	try await repository.createLocalHost(jump)
+	try await repository.createLocalHost(child)
 
-	try repository.assignServerID("server-bastion", to: jump.id)
+	try await repository.assignServerID("server-bastion", to: jump.id)
 
 	let savedJump = try #require(repository.hostSnapshot.first(where: {
 		$0.id == jump.id
@@ -383,7 +384,7 @@ private func platformRepositoriesPersistServerAndJumpIdentities(
 @MainActor
 private func platformRepositoriesPersistCredentialMaterialAcknowledgements(
 	_ platform: HostRepositoryPlatform
-) throws {
+) async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -396,11 +397,11 @@ private func platformRepositoriesPersistCredentialMaterialAcknowledgements(
 		credential: .password,
 		credentialMaterialDirty: true
 	)
-	try repository.createLocalHost(host)
+	try await repository.createLocalHost(host)
 	var mutationCount = 0
 	let cancellable = repository.localMutations.sink { mutationCount += 1 }
 
-	try repository.markCredentialMaterialSynced(for: host.id)
+	try await repository.markCredentialMaterialSynced(for: host.id)
 
 	#expect(repository.hostSnapshot.first?.credentialMaterialDirty == false)
 	#expect(try HostPersistence.load(from: fileURL).first?.credentialMaterialDirty == false)
@@ -428,14 +429,14 @@ private func platformRepositoriesApplyRemoteDeletionWithoutLocalTombstones(
 		username: "deploy",
 		credential: .agent
 	)
-	try repository.createLocalHost(host)
+	try await repository.createLocalHost(host)
 	var mutationCount = 0
 	let cancellable = repository.localMutations.sink { mutationCount += 1 }
 
 	try await repository.deleteHostFromRemote(localID: host.id)
 
 	#expect(repository.hostSnapshot.isEmpty)
-	#expect(try repository.pendingRemoteDeletionIDs().isEmpty)
+	#expect(try await repository.pendingRemoteDeletionIDs().isEmpty)
 	#expect(try HostPersistence.load(from: fileURL).isEmpty)
 	withExtendedLifetime(cancellable) {
 		#expect(mutationCount == 0)
@@ -444,7 +445,7 @@ private func platformRepositoriesApplyRemoteDeletionWithoutLocalTombstones(
 
 @Test("Mobile UI upserts publish repository mutations")
 @MainActor
-private func mobileUIUpsertsPublishRepositoryMutations() throws {
+private func mobileUIUpsertsPublishRepositoryMutations() async throws {
 	let fileURL = FileManager.default.temporaryDirectory
 		.appendingPathComponent("mobile-host-upsert-\(UUID().uuidString).json")
 	defer { try? FileManager.default.removeItem(at: fileURL) }
@@ -452,7 +453,7 @@ private func mobileUIUpsertsPublishRepositoryMutations() throws {
 	var mutationCount = 0
 	let cancellable = store.localMutations.sink { mutationCount += 1 }
 
-	try store.upsert(SSHHost(
+	try await store.upsert(SSHHost(
 		name: "production",
 		hostname: "prod.example.com",
 		username: "deploy",
@@ -486,12 +487,12 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertTrue(store.hosts.isEmpty)
 	}
 
-	func testAddPersistsAndReloadsFromSameFile() throws {
+	func testAddPersistsAndReloadsFromSameFile() async throws {
 		let url = tempURL()
 		let store = MobileHostStore(fileURL: url)
 		let host = makeHost("prod")
 
-		try store.add(host)
+		try await store.add(host)
 
 		XCTAssertEqual(store.hosts.map(\.id), [host.id])
 		// A fresh store over the same file sees the persisted host: this is
@@ -500,38 +501,42 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertEqual(reloaded.hosts.map(\.id), [host.id])
 	}
 
-	func testUpdateReplacesHostInPlaceAndPersists() throws {
+	func testUpdateReplacesHostInPlaceAndPersists() async throws {
 		let url = tempURL()
 		let store = MobileHostStore(fileURL: url)
 		var host = makeHost("prod")
-		try store.add(host)
+		try await store.add(host)
 
 		host.name = "Renamed"
-		try store.update(host)
+		try await store.update(host)
 
 		XCTAssertEqual(store.hosts.first?.name, "Renamed")
 		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.first?.name, "Renamed")
 	}
 
-	func testUpdateUnknownHostThrows() throws {
+	func testUpdateUnknownHostThrows() async throws {
 		let store = MobileHostStore(fileURL: tempURL())
-		XCTAssertThrowsError(try store.update(makeHost("ghost"))) { error in
+		do {
+			try await store.update(makeHost("ghost"))
+			XCTFail("Expected an unknown Host error")
+		} catch {
 			XCTAssertEqual(error as? MobileHostStore.StoreError, .hostNotFound)
 		}
 	}
 
-	func testBindingSetterPersists() throws {
+	func testBindingSetterPersists() async throws {
 		let url = tempURL()
 		let store = MobileHostStore(fileURL: url)
 		let host = makeHost("via-binding")
 
 		store.binding.wrappedValue.append(host)
+		await waitUntil { store.hosts.map(\.id) == [host.id] }
 
 		XCTAssertEqual(store.hosts.map(\.id), [host.id])
 		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.map(\.id), [host.id])
 	}
 
-	func testBindingPersistenceFailureIsPublishedWithoutMutatingHosts() throws {
+	func testBindingPersistenceFailureIsPublishedWithoutMutatingHosts() async throws {
 		let directoryURL = FileManager.default.temporaryDirectory
 			.appendingPathComponent("mobile-hosts-directory-\(UUID().uuidString)")
 		try FileManager.default.createDirectory(
@@ -543,6 +548,7 @@ final class MobileHostStoreTests: XCTestCase {
 		let host = makeHost("cannot-persist")
 
 		store.binding.wrappedValue = [host]
+		await waitUntil { store.lastPersistenceFailure != nil }
 
 		XCTAssertTrue(store.hosts.isEmpty)
 		XCTAssertNotNil(store.lastPersistenceFailure)
@@ -553,8 +559,8 @@ final class MobileHostStoreTests: XCTestCase {
 		let store = MobileHostStore(fileURL: url)
 		let a = makeHost("a")
 		let b = makeHost("b")
-		try store.add(a)
-		try store.add(b)
+		try await store.add(a)
+		try await store.add(b)
 
 		try await store.delete(id: a.id)
 
@@ -578,13 +584,14 @@ final class MobileHostStoreTests: XCTestCase {
 			credential: .password
 		)
 		storage.values[MobileCredentialPlan.passwordAccount(host.id)] = "secret"
-		try store.add(host)
+		try await store.add(host)
 
 		try await store.deleteLocalHost(id: host.id)
 
 		XCTAssertTrue(storage.values.isEmpty)
 		XCTAssertTrue(store.hosts.isEmpty)
-		XCTAssertEqual(try store.pendingRemoteDeletionIDs(), ["server-prod"])
+		let pending = try await store.pendingRemoteDeletionIDs()
+		XCTAssertEqual(pending, ["server-prod"])
 	}
 
 	func testRemoteDeleteClearsCredentialsWithoutCreatingTombstone() async throws {
@@ -603,13 +610,14 @@ final class MobileHostStoreTests: XCTestCase {
 			credential: .password
 		)
 		storage.values[MobileCredentialPlan.passwordAccount(host.id)] = "secret"
-		try store.add(host)
+		try await store.add(host)
 
 		try await store.deleteHostFromRemote(localID: host.id)
 
 		XCTAssertTrue(storage.values.isEmpty)
 		XCTAssertTrue(store.hosts.isEmpty)
-		XCTAssertTrue(try store.pendingRemoteDeletionIDs().isEmpty)
+		let pending = try await store.pendingRemoteDeletionIDs()
+		XCTAssertTrue(pending.isEmpty)
 	}
 
 	func testCredentialCleanupFailureLeavesHostAndTombstoneUnchanged() async throws {
@@ -630,7 +638,7 @@ final class MobileHostStoreTests: XCTestCase {
 		let passwordAccount = MobileCredentialPlan.passwordAccount(host.id)
 		storage.values[passwordAccount] = "secret"
 		storage.failingDeleteAccounts = [passwordAccount]
-		try store.add(host)
+		try await store.add(host)
 
 		do {
 			try await store.deleteLocalHost(id: host.id)
@@ -640,8 +648,17 @@ final class MobileHostStoreTests: XCTestCase {
 		}
 
 		XCTAssertEqual(store.hosts.map(\.id), [host.id])
-		XCTAssertTrue(try store.pendingRemoteDeletionIDs().isEmpty)
+		let pending = try await store.pendingRemoteDeletionIDs()
+		XCTAssertTrue(pending.isEmpty)
 		XCTAssertEqual(try HostPersistence.load(from: url).map(\.id), [host.id])
 		XCTAssertEqual(storage.values[passwordAccount], "secret")
+	}
+
+	private func waitUntil(
+		_ predicate: @MainActor () -> Bool
+	) async {
+		for _ in 0..<100 where !predicate() {
+			await Task.yield()
+		}
 	}
 }

@@ -10,7 +10,7 @@ public protocol HostCredentialRepository: HostRepository {
 	func managedKeyPath(for hostID: UUID) -> String
 	func applyRemoteCredentialSource(
 		_ commit: RemoteCredentialMaterialCommit
-	) throws
+	) async throws
 	func resetCredentialMaterialForAccountChange() async throws
 }
 

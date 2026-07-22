@@ -219,18 +219,19 @@ public final class HostSyncStore: ObservableObject {
         // periodic timer or another mutation event.
         NotificationCenter.default
             .publisher(for: .catermHostCredentialMaterialChanged)
-            .sink { [weak self] note in
-                guard let self else { return }
+			.sink { [weak self] note in
+				guard let self else { return }
                 let changedHostId = note.userInfo?[
                     CatermHostCredentialMaterialChangedKeys.hostId
-                ] as? UUID
-                if let changedHostId,
-                   !self.sharedSyncEngine.handleLocalCredentialChange(
-                       hostID: changedHostId
-                   ) {
-                    return
-                }
-                self.scheduleAutoSync(mode: .auto)
+				] as? UUID
+				Task { @MainActor in
+					if let changedHostId {
+						let shouldSync = await self.sharedSyncEngine
+							.handleLocalCredentialChange(hostID: changedHostId)
+						guard shouldSync else { return }
+					}
+					self.scheduleAutoSync(mode: .auto)
+				}
             }
             .store(in: &cancellables)
     }

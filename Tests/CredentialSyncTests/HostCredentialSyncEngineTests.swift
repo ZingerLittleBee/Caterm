@@ -171,7 +171,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         XCTAssertTrue(preferences.prefs.cloudCredentialsCleared)
     }
 
-    func testLocalCredentialChangeDuringDeletionClearsDirtyAndSuppressesSync() throws {
+    func testLocalCredentialChangeDuringDeletionClearsDirtyAndSuppressesSync() async throws {
         var host = SSHHost(
             name: "host",
             hostname: "host.example",
@@ -187,7 +187,8 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         }
         let sut = makeEngine()
 
-        XCTAssertFalse(sut.handleLocalCredentialChange(hostId: host.id))
+		let shouldSync = await sut.handleLocalCredentialChange(hostId: host.id)
+		XCTAssertFalse(shouldSync)
         XCTAssertFalse(sessionStore.hosts[0].credentialMaterialDirty)
     }
 

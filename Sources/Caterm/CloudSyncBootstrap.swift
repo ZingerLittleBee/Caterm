@@ -36,7 +36,13 @@ struct CloudSyncBootstrap {
 		let session = iCloudAccountSession(provider: cloudContainer)
 		let client = CloudKitSyncClient(database: cloudContainer.privateCloudDatabase)
 		let tracker = AccountIdentityTracker(
-			currentUserRecordID: { try? await cloudContainer.userRecordID() },
+			currentIdentity: {
+				do {
+					return .signedIn(try await cloudContainer.userRecordID())
+				} catch {
+					return .temporarilyUnavailable(error.localizedDescription)
+				}
+			},
 			tokensExist: {
 				let hostTokens = await client.hasAnyHostSyncTokens()
 				let snippetTokens = await client.hasAnySnippetSyncTokens()

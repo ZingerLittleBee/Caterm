@@ -31,12 +31,11 @@ public final class MobileHostStore: ObservableObject {
 		public let underlyingError: any Error
 	}
 
-	private let fileURL: URL
 	private let credentialWriter: MobileCredentialWriter?
 	public let credentialMaterialStore: SessionCredentialMaterialStore
 	public let managedKeyStore: ManagedKeyStore
 	private let localMutationsSubject = PassthroughSubject<Void, Never>()
-	private var deletionOutbox: HostDeletionOutbox
+	private let persistence: MobileHostPersistence
 	@Published public private(set) var lastPersistenceFailure: PersistenceFailure?
 
 	public init(
@@ -45,7 +44,6 @@ public final class MobileHostStore: ObservableObject {
 		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
 		credentialMaterialStore: SessionCredentialMaterialStore? = nil
 	) {
-		self.fileURL = fileURL
 		self.credentialWriter = credentialWriter
 		self.managedKeyStore = managedKeyStore
 		self.credentialMaterialStore = credentialMaterialStore
@@ -55,38 +53,38 @@ public final class MobileHostStore: ObservableObject {
 				managedKeyStore: managedKeyStore
 			)
 		self.hosts = (try? HostPersistence.load(from: fileURL)) ?? []
-		self.deletionOutbox = HostDeletionOutbox(hostsURL: fileURL)
+		self.persistence = MobileHostPersistence(hostsURL: fileURL)
 	}
 
-	public func add(_ host: SSHHost) throws {
+	public func add(_ host: SSHHost) async throws {
 		var updated = hosts
 		updated.append(host)
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 		localMutationsSubject.send()
 	}
 
-	public func update(_ host: SSHHost) throws {
+	public func update(_ host: SSHHost) async throws {
 		guard let index = hosts.firstIndex(where: { $0.id == host.id }) else {
 			throw StoreError.hostNotFound
 		}
 		var updated = hosts
 		updated[index] = host
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 		localMutationsSubject.send()
 	}
 
 	/// Insert or replace by id and persist. Used by the shell's add/edit
 	/// save callbacks, which can't know whether the form was add or edit.
-	public func upsert(_ host: SSHHost) throws {
+	public func upsert(_ host: SSHHost) async throws {
 		var updated = hosts
 		if let index = updated.firstIndex(where: { $0.id == host.id }) {
 			updated[index] = host
 		} else {
 			updated.append(host)
 		}
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 		localMutationsSubject.send()
 	}
@@ -99,9 +97,9 @@ public final class MobileHostStore: ObservableObject {
 	/// through a plain `Binding<[SSHHost]>` (append/remove/replace), so a
 	/// single persisting setter is the seam that keeps every UI edit on
 	/// disk without threading store calls through every view.
-	public func replaceAll(_ newHosts: [SSHHost]) {
+	public func replaceAll(_ newHosts: [SSHHost]) async {
 		do {
-			try persist(newHosts)
+			try await persist(newHosts)
 		} catch {
 			lastPersistenceFailure = PersistenceFailure(underlyingError: error)
 			return
@@ -119,24 +117,26 @@ public final class MobileHostStore: ObservableObject {
 	public var binding: Binding<[SSHHost]> {
 		Binding(
 			get: { self.hosts },
-			set: { self.replaceAll($0) }
+			set: { newHosts in
+				Task { @MainActor in await self.replaceAll(newHosts) }
+			}
 		)
 	}
 
-	private func persist(_ hosts: [SSHHost]) throws {
-		try HostPersistence.save(hosts, to: fileURL)
+	private func persist(_ hosts: [SSHHost]) async throws {
+		try await persistence.save(hosts)
 	}
 
 	private func delete(id: UUID, enqueueRemoteDeletion: Bool) async throws {
 		if let credentialWriter {
 			try await credentialWriter.commitDeletion(hostID: id) {
-				try self.persistDeletion(
+				try await self.persistDeletion(
 					id: id,
 					enqueueRemoteDeletion: enqueueRemoteDeletion
 				)
 			}
 		} else {
-			try persistDeletion(
+			try await persistDeletion(
 				id: id,
 				enqueueRemoteDeletion: enqueueRemoteDeletion
 			)
@@ -146,40 +146,19 @@ public final class MobileHostStore: ObservableObject {
 	private func persistDeletion(
 		id: UUID,
 		enqueueRemoteDeletion: Bool
-	) throws {
+	) async throws {
 		guard let host = hosts.first(where: { $0.id == id }) else { return }
 		let serverID = enqueueRemoteDeletion ? host.serverId : nil
-		let inserted = try serverID.map { try deletionOutbox.insert($0) } ?? false
 		var updated = hosts
 		updated.removeAll { $0.id == id }
-		do {
-			try persist(updated)
-		} catch {
-			try rollbackDeletionIntent(
-				originalError: error,
-				insertedServerID: inserted ? serverID : nil
-			)
-		}
+		try await persistence.commitDeletion(
+			hosts: updated,
+			serverID: serverID
+		)
 		hosts = updated
 		if enqueueRemoteDeletion {
 			localMutationsSubject.send()
 		}
-	}
-
-	private func rollbackDeletionIntent(
-		originalError: any Error,
-		insertedServerID: String?
-	) throws -> Never {
-		guard let insertedServerID else { throw originalError }
-		do {
-			try deletionOutbox.remove(insertedServerID)
-		} catch {
-			throw DeletionRollbackError(
-				originalError: originalError,
-				rollbackErrors: [error]
-			)
-		}
-		throw originalError
 	}
 
 }
@@ -191,7 +170,7 @@ extension MobileHostStore: HostCredentialRepository {
 
 	public func applyRemoteCredentialSource(
 		_ commit: RemoteCredentialMaterialCommit
-	) throws {
+	) async throws {
 		guard let index = hosts.firstIndex(where: {
 			$0.id == commit.hostId
 		}) else { return }
@@ -208,7 +187,7 @@ extension MobileHostStore: HostCredentialRepository {
 			)
 		}
 		updated[index].credentialMaterialDirty = false
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 	}
 
@@ -223,10 +202,7 @@ extension MobileHostStore: HostCredentialRepository {
 	/// gone. The caller keeps synchronization suspended until this succeeds.
 	public func resetForAccountChange() async throws {
 		try await resetCredentialMaterialForAccountChange()
-		try persist([])
-		for serverID in try deletionOutbox.pendingIDs() {
-			try deletionOutbox.remove(serverID)
-		}
+		try await persistence.reset()
 		hosts = []
 	}
 }
@@ -237,11 +213,11 @@ extension MobileHostStore {
 		localMutationsSubject.eraseToAnyPublisher()
 	}
 
-	public func createLocalHost(_ host: SSHHost) throws {
-		try add(host)
+	public func createLocalHost(_ host: SSHHost) async throws {
+		try await add(host)
 	}
 
-	public func updateLocalHostMetadata(_ host: SSHHost) throws {
+	public func updateLocalHostMetadata(_ host: SSHHost) async throws {
 		guard let index = hosts.firstIndex(where: { $0.id == host.id }) else {
 			throw StoreError.hostNotFound
 		}
@@ -251,7 +227,7 @@ extension MobileHostStore {
 		metadata.credentialMaterialDirty = updated[index].credentialMaterialDirty
 		metadata.updatedAt = Date()
 		updated[index] = metadata
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 		localMutationsSubject.send()
 	}
@@ -260,26 +236,26 @@ extension MobileHostStore {
 		try await delete(id: id, enqueueRemoteDeletion: true)
 	}
 
-	public func pendingRemoteDeletionIDs() throws -> [String] {
-		try deletionOutbox.pendingIDs()
+	public func pendingRemoteDeletionIDs() async throws -> [String] {
+		try await persistence.pendingDeletionIDs()
 	}
 
-	public func recordPendingRemoteDeletion(serverID: String) throws {
-		_ = try deletionOutbox.insert(serverID)
+	public func recordPendingRemoteDeletion(serverID: String) async throws {
+		try await persistence.recordDeletion(serverID: serverID)
 	}
 
-	public func clearPendingRemoteDeletion(serverID: String) throws {
-		try deletionOutbox.remove(serverID)
+	public func clearPendingRemoteDeletion(serverID: String) async throws {
+		try await persistence.clearDeletion(serverID: serverID)
 	}
 
-	public func createHostFromRemote(_ remote: RemoteHost) throws -> UUID {
+	public func createHostFromRemote(_ remote: RemoteHost) async throws -> UUID {
 		let result = HostRepositoryProjection.inserting(remote, into: hosts)
-		try persist(result.hosts)
+		try await persist(result.hosts)
 		hosts = result.hosts
 		return result.localID
 	}
 
-	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) throws {
+	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) async throws {
 		guard let updated = HostRepositoryProjection.applying(
 			remote,
 			to: localID,
@@ -287,11 +263,11 @@ extension MobileHostStore {
 		) else {
 			throw StoreError.hostNotFound
 		}
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 	}
 
-	public func assignServerID(_ serverID: String, to localID: UUID) throws {
+	public func assignServerID(_ serverID: String, to localID: UUID) async throws {
 		guard let updated = HostRepositoryProjection.assigning(
 			serverID: serverID,
 			to: localID,
@@ -299,22 +275,74 @@ extension MobileHostStore {
 		) else {
 			throw StoreError.hostNotFound
 		}
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 	}
 
-	public func markCredentialMaterialSynced(for localID: UUID) throws {
+	public func markCredentialMaterialSynced(for localID: UUID) async throws {
 		guard let index = hosts.firstIndex(where: { $0.id == localID }) else {
 			throw StoreError.hostNotFound
 		}
 		guard hosts[index].credentialMaterialDirty else { return }
 		var updated = hosts
 		updated[index].credentialMaterialDirty = false
-		try persist(updated)
+		try await persist(updated)
 		hosts = updated
 	}
 
 	public func deleteHostFromRemote(localID: UUID) async throws {
 		try await delete(id: localID, enqueueRemoteDeletion: false)
+	}
+}
+
+private actor MobileHostPersistence {
+	private let hostsURL: URL
+	private var deletionOutbox: HostDeletionOutbox
+
+	init(hostsURL: URL) {
+		self.hostsURL = hostsURL
+		self.deletionOutbox = HostDeletionOutbox(hostsURL: hostsURL)
+	}
+
+	func save(_ hosts: [SSHHost]) throws {
+		try HostPersistence.save(hosts, to: hostsURL)
+	}
+
+	func pendingDeletionIDs() throws -> [String] {
+		try deletionOutbox.pendingIDs()
+	}
+
+	func recordDeletion(serverID: String) throws {
+		_ = try deletionOutbox.insert(serverID)
+	}
+
+	func clearDeletion(serverID: String) throws {
+		try deletionOutbox.remove(serverID)
+	}
+
+	func commitDeletion(hosts: [SSHHost], serverID: String?) throws {
+		let inserted = try serverID.map { try deletionOutbox.insert($0) } ?? false
+		do {
+			try HostPersistence.save(hosts, to: hostsURL)
+		} catch {
+			guard inserted, let serverID else { throw error }
+			let originalError = error
+			do {
+				try deletionOutbox.remove(serverID)
+			} catch {
+				throw MobileHostStore.DeletionRollbackError(
+					originalError: originalError,
+					rollbackErrors: [error]
+				)
+			}
+			throw originalError
+		}
+	}
+
+	func reset() throws {
+		try HostPersistence.save([], to: hostsURL)
+		for serverID in try deletionOutbox.pendingIDs() {
+			try deletionOutbox.remove(serverID)
+		}
 	}
 }

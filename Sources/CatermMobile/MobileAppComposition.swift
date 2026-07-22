@@ -17,6 +17,7 @@ public final class MobileAppComposition: ObservableObject {
 	public let credentialWriter: MobileCredentialWriter
 	public let syncRuntime: MobileHostSyncRuntime
 	public let terminalSessionFactory: MobileTerminalSessionFactory
+	public let prepareCredentialSyncForSave: () async throws -> Void
 	public let startObservingAccountChanges: () -> Void
 
 	public init(
@@ -24,18 +25,22 @@ public final class MobileAppComposition: ObservableObject {
 		credentialWriter: MobileCredentialWriter,
 		syncRuntime: MobileHostSyncRuntime,
 		terminalSessionFactory: MobileTerminalSessionFactory,
+		prepareCredentialSyncForSave: @escaping () async throws -> Void = {},
 		startObservingAccountChanges: @escaping () -> Void = {}
 	) {
 		self.hostStore = hostStore
 		self.credentialWriter = credentialWriter
 		self.syncRuntime = syncRuntime
 		self.terminalSessionFactory = terminalSessionFactory
+		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
 		self.startObservingAccountChanges = startObservingAccountChanges
 	}
 
 	public static func live(
 		hostsURL: URL,
 		applicationSupportURL: URL,
+		credentialDefaults: UserDefaults = .standard,
+		masterKeyStore: KeychainSyncMasterKeyStore = KeychainSyncMasterKeyStore(),
 		cloudKitEnabled: Bool = Bundle.main.object(
 			forInfoDictionaryKey: "CatermCloudKitEnabled"
 		) as? Bool ?? false,
@@ -68,8 +73,19 @@ public final class MobileAppComposition: ObservableObject {
 		#if targetEnvironment(simulator)
 		seedSimulatorCachedHostIfRequested(in: hostStore)
 		#endif
-		let credentialSync = CredentialSyncPreferencesStore()
-		let masterKeyStore = KeychainSyncMasterKeyStore()
+		let credentialSync = CredentialSyncPreferencesStore(
+			defaults: credentialDefaults
+		)
+		if case .disabled = credentialSync.prefs.state {
+			credentialSync.mutate {
+				$0.state = .enabled
+				$0.credentialsNeedFullScan = true
+			}
+		}
+		let credentialSyncCoordinator = CredentialSyncCoordinator(
+			prefsStore: credentialSync,
+			masterKeyStore: masterKeyStore
+		)
 		let planProvider = MobileAuthenticationPlanProvider(
 			materialStore: materialStore
 		)
@@ -80,6 +96,35 @@ public final class MobileAppComposition: ObservableObject {
 				"known_hosts.json"
 			)
 		)
+
+		#if targetEnvironment(simulator)
+		if let client = simulatorBoundaryClientIfRequested() {
+			let syncEngine = SharedHostSyncEngine(
+				client: client,
+				repository: hostStore,
+				credentialSync: credentialSync,
+				masterKeyStore: masterKeyStore,
+				materialStore: materialStore
+			)
+			let runtime = MobileHostSyncRuntime(
+				hostStore: hostStore,
+				syncEngine: syncEngine,
+				client: client,
+				credentialSync: credentialSync,
+				isSignedIn: { true },
+				refreshAccount: {}
+			)
+			return MobileAppComposition(
+				hostStore: hostStore,
+				credentialWriter: credentialWriter,
+				syncRuntime: runtime,
+				terminalSessionFactory: terminalFactory,
+				prepareCredentialSyncForSave: {
+					try await credentialSyncCoordinator.enable()
+				}
+			)
+		}
+		#endif
 
 		guard cloudKitEnabled else {
 			let client = OfflineMobileHostSyncClient()
@@ -102,7 +147,10 @@ public final class MobileAppComposition: ObservableObject {
 				hostStore: hostStore,
 				credentialWriter: credentialWriter,
 				syncRuntime: runtime,
-				terminalSessionFactory: terminalFactory
+				terminalSessionFactory: terminalFactory,
+				prepareCredentialSyncForSave: {
+					try await credentialSyncCoordinator.enable()
+				}
 			)
 		}
 
@@ -117,7 +165,13 @@ public final class MobileAppComposition: ObservableObject {
 			materialStore: materialStore
 		)
 		let identityTracker = AccountIdentityTracker(
-			currentUserRecordID: { try? await container.userRecordID() },
+			currentIdentity: {
+				do {
+					return .signedIn(try await container.userRecordID())
+				} catch {
+					return .temporarilyUnavailable(error.localizedDescription)
+				}
+			},
 			tokensExist: { await client.hasAnyHostSyncTokens() }
 		)
 		let identityBoundary = MobileAccountIdentityBoundary(
@@ -143,6 +197,9 @@ public final class MobileAppComposition: ObservableObject {
 			credentialWriter: credentialWriter,
 			syncRuntime: runtime,
 			terminalSessionFactory: terminalFactory,
+			prepareCredentialSyncForSave: {
+				try await credentialSyncCoordinator.enable()
+			},
 			startObservingAccountChanges: {
 				accountSession.startObservingAccountChanges()
 			}
@@ -185,6 +242,30 @@ public final class MobileAppComposition: ObservableObject {
 	}
 
 	#if targetEnvironment(simulator)
+	private static func simulatorBoundaryClientIfRequested()
+		-> SimulatorHostSyncBoundaryClient? {
+		#if DEBUG
+		let environment = ProcessInfo.processInfo.environment
+		guard let name = environment["CATERM_SIM_SYNC_REMOTE_HOST_NAME"],
+			!name.isEmpty else { return nil }
+		return SimulatorHostSyncBoundaryClient(remote: RemoteHost(
+			id: "simulator-boundary-host",
+			name: name,
+			hostname: environment["CATERM_SIM_SYNC_REMOTE_HOST_ADDRESS"]
+				?? "fixture.example.com",
+			port: 22,
+			username: environment["CATERM_SIM_SYNC_REMOTE_HOST_USER"]
+				?? "fixture",
+			authType: "agent",
+			createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+			updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+			organization: HostOrganization(tags: ["deterministic-fixture"])
+		))
+		#else
+		return nil
+		#endif
+	}
+
 	private static func seedSimulatorCachedHostIfRequested(
 		in store: MobileHostStore
 	) {
@@ -193,8 +274,7 @@ public final class MobileAppComposition: ObservableObject {
 		guard store.hosts.isEmpty,
 			let name = environment["CATERM_SIM_CACHED_HOST_NAME"],
 			!name.isEmpty else { return }
-		do {
-			try store.add(SSHHost(
+		let host = SSHHost(
 				name: name,
 				hostname: environment["CATERM_SIM_CACHED_HOST_ADDRESS"]
 					?? "offline.example.com",
@@ -202,9 +282,9 @@ public final class MobileAppComposition: ObservableObject {
 					?? "offline",
 				credential: .agent,
 				organization: HostOrganization(tags: ["offline"])
-			))
-		} catch {
-			return
+			)
+		Task { @MainActor in
+			try? await store.add(host)
 		}
 		#endif
 	}
@@ -229,6 +309,76 @@ public final class MobileAppComposition: ObservableObject {
 	}
 	#endif
 }
+
+#if targetEnvironment(simulator)
+private actor SimulatorHostSyncBoundaryClient: IncrementalHostSyncClient {
+	private var hosts: [String: RemoteHost]
+	private var nextID = 0
+
+	init(remote: RemoteHost) {
+		hosts = [remote.id: remote]
+	}
+
+	func listHosts() async throws -> [RemoteHost] { Array(hosts.values) }
+
+	func createHost(_ input: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
+		nextID += 1
+		let id = "simulator-local-\(nextID)"
+		hosts[id] = RemoteHost(
+			id: id,
+			name: input.name,
+			hostname: input.hostname,
+			port: input.port,
+			username: input.username,
+			authType: input.authType,
+			createdAt: input.metadataUpdatedAt,
+			updatedAt: input.metadataUpdatedAt,
+			jumpHostServerId: input.jumpHostServerId,
+			forwards: input.forwards,
+			icon: input.icon,
+			organization: input.organization
+		)
+		return RemoteHostCreateOutput(id: id)
+	}
+
+	func updateHost(_ input: RemoteHostUpdateInput) async throws {
+		guard let current = hosts[input.id] else { return }
+		hosts[input.id] = RemoteHost(
+			id: current.id,
+			name: input.name ?? current.name,
+			hostname: input.hostname ?? current.hostname,
+			port: input.port ?? current.port,
+			username: input.username ?? current.username,
+			authType: input.authType ?? current.authType,
+			createdAt: current.createdAt,
+			updatedAt: input.metadataUpdatedAt ?? current.updatedAt,
+			jumpHostServerId: input.jumpHostServerId,
+			forwards: input.forwards ?? current.forwards,
+			icon: input.icon,
+			organization: input.organization ?? current.organization
+		)
+	}
+
+	func deleteHost(id: String) async throws { hosts.removeValue(forKey: id) }
+	func preferredHostSyncMode() async -> HostSyncMode { .forceFull }
+	func fetchHostChanges() async throws -> HostChangeBatch {
+		try await fetchHostSnapshotAndCheckpoint()
+	}
+	func fetchHostSnapshotAndCheckpoint() async throws -> HostChangeBatch {
+		HostChangeBatch(
+			changedHosts: Array(hosts.values),
+			deletedHostIDs: [],
+			checkpoint: nil,
+			tokenExpired: false,
+			mode: .forceFull
+		)
+	}
+	func commitHostCheckpoint(_: any HostSyncCheckpoint) async throws {}
+	func resetHostSyncState() async {}
+	func ensureHostSubscription() async throws {}
+	func deleteHostSubscription() async throws {}
+}
+#endif
 
 private final class OfflineMobileHostSyncClient: IncrementalHostSyncClient,
 	@unchecked Sendable {

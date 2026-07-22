@@ -47,6 +47,7 @@ public struct MobileRootView: View {
 	@Environment(\.scenePhase) private var scenePhase
 	private let credentialWriter: MobileCredentialWriter
 	private let terminalSessionFactory: MobileTerminalSessionFactory
+	private let prepareCredentialSyncForSave: () async throws -> Void
 	private let startObservingAccountChanges: () -> Void
 	@State private var operationError: MobileHostOperationError?
 	@State private var snippets: [Snippet]
@@ -58,6 +59,7 @@ public struct MobileRootView: View {
 		credentialWriter: MobileCredentialWriter,
 		syncRuntime: MobileHostSyncRuntime,
 		terminalSessionFactory: MobileTerminalSessionFactory,
+		prepareCredentialSyncForSave: @escaping () async throws -> Void = {},
 		startObservingAccountChanges: @escaping () -> Void = {},
 		snippets: [Snippet] = [],
 		remoteEntries: [RemoteEntry] = [],
@@ -67,6 +69,7 @@ public struct MobileRootView: View {
 		_syncRuntime = StateObject(wrappedValue: syncRuntime)
 		self.credentialWriter = credentialWriter
 		self.terminalSessionFactory = terminalSessionFactory
+		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
 		self.startObservingAccountChanges = startObservingAccountChanges
 		_snippets = State(initialValue: snippets)
 		_remoteEntries = State(initialValue: remoteEntries)
@@ -84,7 +87,10 @@ public struct MobileRootView: View {
 			save: { payload in
 				do {
 					try await credentialWriter.commitSave(payload) {
-						try hostStore.upsert(payload.host)
+						if payload.host.credentialMaterialDirty {
+							try await prepareCredentialSyncForSave()
+						}
+						try await hostStore.upsert(payload.host)
 					}
 					return true
 				} catch {
@@ -109,9 +115,7 @@ public struct MobileRootView: View {
 			}
 		))
 		.environment(\.mobileTerminalSessionFactory, terminalSessionFactory)
-		.safeAreaInset(edge: .top, spacing: 0) {
-			MobileHostSyncStatusView(state: syncRuntime.state)
-		}
+		.environment(\.mobileHostSyncState, syncRuntime.state)
 		.refreshable {
 			await syncRuntime.refresh()
 		}
@@ -145,7 +149,7 @@ public struct MobileRootView: View {
 	}
 }
 
-private struct MobileHostSyncStatusView: View {
+struct MobileHostSyncStatusView: View {
 	let state: MobileHostSyncState
 
 	var body: some View {
@@ -184,6 +188,17 @@ private struct MobileHostSyncStatusView: View {
 		.background(.bar)
 		.accessibilityElement(children: .combine)
 		.accessibilityLabel(state.accessibilityDescription)
+	}
+}
+
+private struct MobileHostSyncStateEnvironmentKey: EnvironmentKey {
+	static let defaultValue: MobileHostSyncState? = nil
+}
+
+extension EnvironmentValues {
+	var mobileHostSyncState: MobileHostSyncState? {
+		get { self[MobileHostSyncStateEnvironmentKey.self] }
+		set { self[MobileHostSyncStateEnvironmentKey.self] = newValue }
 	}
 }
 
@@ -269,15 +284,28 @@ private enum MobileShellSelection: Hashable {
 }
 
 private struct MobileCompactShell: View {
+	@Environment(\.mobileHostSave) private var hostSave
 	@Binding var hosts: [SSHHost]
 	@Binding var snippets: [Snippet]
 	@Binding var remoteEntries: [RemoteEntry]
 	@Binding var transfers: [TransferTask]
+	@State private var showingAddHost = false
 
 	var body: some View {
 		TabView {
 			NavigationStack {
-				MobileHostsView(hosts: $hosts)
+				ZStack(alignment: .bottomTrailing) {
+					MobileHostsView(hosts: $hosts)
+
+					Button {
+						showingAddHost = true
+					} label: {
+						Label("Add Host", systemImage: "plus")
+					}
+					.buttonStyle(.borderedProminent)
+					.controlSize(.large)
+					.padding(16)
+				}
 			}
 			.tabItem { Label("Hosts", systemImage: "server.rack") }
 
@@ -295,6 +323,21 @@ private struct MobileCompactShell: View {
 				MobileSettingsView(hosts: $hosts, snippets: $snippets)
 			}
 			.tabItem { Label("Settings", systemImage: "gearshape") }
+		}
+		.sheet(isPresented: $showingAddHost) {
+			NavigationStack {
+				MobileHostFormView(mode: .add, allHosts: hosts) { payload in
+					if let hostSave {
+						Task { @MainActor in
+							guard await hostSave.save(payload) else { return }
+							showingAddHost = false
+						}
+					} else {
+						hosts.append(payload.host)
+						showingAddHost = false
+					}
+				}
+			}
 		}
 	}
 }

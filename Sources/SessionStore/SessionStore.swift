@@ -1170,7 +1170,7 @@ public final class SessionStore: ObservableObject {
 	/// never sets the local dirty bit, which avoids a redundant push loop.
 	public func applyRemoteCredentialSource(
 		_ commit: RemoteCredentialMaterialCommit
-	) throws {
+	) async throws {
 		let hostId = commit.hostId
 		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
 		var updated = hosts

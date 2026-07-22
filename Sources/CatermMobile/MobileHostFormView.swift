@@ -66,6 +66,19 @@ struct MobileHostFormView: View {
 			}
 		}
 		.navigationTitle(title)
+		#if os(iOS)
+		.safeAreaInset(edge: .bottom, spacing: 0) {
+			HStack {
+				Button("Cancel") { dismiss() }
+				Spacer()
+				Button("Save", action: save)
+					.buttonStyle(.borderedProminent)
+			}
+			.padding(.horizontal, 16)
+			.padding(.vertical, 10)
+			.background(.bar)
+		}
+		#else
 		.toolbar {
 			ToolbarItem(placement: .cancellationAction) {
 				Button("Cancel") { dismiss() }
@@ -74,6 +87,7 @@ struct MobileHostFormView: View {
 				Button("Save", action: save)
 			}
 		}
+		#endif
 		.alert("Invalid Host", isPresented: errorIsPresented) {
 			Button("OK") { validationError = nil }
 		} message: {

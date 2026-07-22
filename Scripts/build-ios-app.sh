@@ -95,8 +95,21 @@ else
     "Set :com.apple.developer.ubiquity-kvstore-identifier $TEAM_ID.$BUNDLE_ID" \
     "$ENTITLEMENTS"
   /usr/libexec/PlistBuddy -c \
-    "Set :keychain-access-groups:0 $TEAM_ID.$BUNDLE_ID" "$ENTITLEMENTS"
-  security cms -D -i "$PROFILE" >/dev/null
+    "Set :keychain-access-groups:0 $TEAM_ID.caterm.shared" "$ENTITLEMENTS"
+  PB "Add :CatermKeychainAccessGroup string $TEAM_ID.caterm.shared"
+  PROFILE_PLIST="$ROOT/build/ios/CatermMobile.profile.plist"
+  security cms -D -i "$PROFILE" >"$PROFILE_PLIST"
+  PROFILE_ENTITLEMENTS="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements' "$PROFILE_PLIST")"
+  for required in \
+    "$TEAM_ID.caterm.shared" \
+    "iCloud.com.caterm.app" \
+    "CloudKit" \
+    "aps-environment"; do
+    if ! grep -Fq "$required" <<<"$PROFILE_ENTITLEMENTS"; then
+      echo "[ios] provisioning profile is missing required capability: $required" >&2
+      exit 1
+    fi
+  done
   /usr/libexec/PlistBuddy -c "Set :CatermCloudKitEnabled true" "$PL"
   codesign --force --sign "$IDENTITY" \
     --entitlements "$ENTITLEMENTS" \

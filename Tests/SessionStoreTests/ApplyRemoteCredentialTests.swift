@@ -832,7 +832,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 		) else {
 			return XCTFail("expected a provisional remote commit")
 		}
-		try store.applyRemoteCredentialSource(commit)
+		try await store.applyRemoteCredentialSource(commit)
 		try await store.credentialMaterialStore.resolveRemoteCommit(
 			commit,
 			as: .commit

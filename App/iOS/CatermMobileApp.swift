@@ -30,8 +30,16 @@ struct CatermMobileApp: App {
 				credentialWriter: composition.credentialWriter,
 				syncRuntime: composition.syncRuntime,
 				terminalSessionFactory: composition.terminalSessionFactory,
+				prepareCredentialSyncForSave: composition.prepareCredentialSyncForSave,
 				startObservingAccountChanges: composition.startObservingAccountChanges
 			)
+			#if canImport(UIKit)
+			.task {
+				pushDelegate.hostPushHandler = {
+					await composition.syncRuntime.receivedCloudKitPush()
+				}
+			}
+			#endif
 		}
 	}
 

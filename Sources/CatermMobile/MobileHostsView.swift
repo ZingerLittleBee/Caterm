@@ -6,9 +6,9 @@ import SwiftUI
 public struct MobileHostsView: View {
 	@Binding private var hosts: [SSHHost]
 	@Environment(\.mobileHostSave) private var hostSave
+	@Environment(\.mobileHostSyncState) private var syncState
 	@Environment(\.mobileTerminalSessionFactory) private var terminalSessionFactory
 	@State private var searchText = ""
-	@State private var showingAddHost = false
 	@State private var editingHost: SSHHost?
 	@State private var pendingDelete: SSHHost?
 	@State private var route: MobileHostRoute?
@@ -19,6 +19,12 @@ public struct MobileHostsView: View {
 
 	public var body: some View {
 		List {
+			if let syncState, shouldShowSyncStatus(syncState) {
+				MobileHostSyncStatusView(state: syncState)
+					.listRowInsets(EdgeInsets())
+					.listRowSeparator(.hidden)
+			}
+
 			if filteredHosts.isEmpty {
 				ContentUnavailableView("No Hosts", systemImage: "server.rack")
 					.listRowSeparator(.hidden)
@@ -60,26 +66,6 @@ public struct MobileHostsView: View {
 		.navigationDestination(for: MobileHostRoute.self) { route in
 			destination(for: route)
 		}
-		.toolbar {
-			#if os(iOS)
-			ToolbarItem(placement: .topBarTrailing) {
-				addHostButton
-			}
-			#else
-			ToolbarItem(placement: .primaryAction) {
-				addHostButton
-			}
-			#endif
-		}
-		.sheet(isPresented: $showingAddHost) {
-			NavigationStack {
-				MobileHostFormView(mode: .add, allHosts: hosts) { payload in
-					saveHost(payload) {
-						showingAddHost = false
-					}
-				}
-			}
-		}
 		.sheet(item: $editingHost) { host in
 			NavigationStack {
 				MobileHostFormView(mode: .edit(host), allHosts: hosts) { payload in
@@ -107,15 +93,6 @@ public struct MobileHostsView: View {
 				pendingDelete = nil
 			}
 		}
-	}
-
-	private var addHostButton: some View {
-		Button {
-			showingAddHost = true
-		} label: {
-			Image(systemName: "plus")
-		}
-		.accessibilityLabel("Add Host")
 	}
 
 	@MainActor
@@ -191,6 +168,11 @@ public struct MobileHostsView: View {
 				|| $0.hostname.lowercased().contains(needle)
 				|| $0.username.lowercased().contains(needle)
 		}
+	}
+
+	private func shouldShowSyncStatus(_ state: MobileHostSyncState) -> Bool {
+		if case .upToDate = state { return false }
+		return true
 	}
 
 	@ViewBuilder

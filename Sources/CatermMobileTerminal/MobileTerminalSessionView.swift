@@ -40,6 +40,8 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	public private(set) var session: SSHTerminalSession?
 	private let make: @MainActor (SSHHost) async throws -> SSHTerminalSession
 	private var started = false
+	private var startupTask: Task<Void, Never>?
+	private var startupGeneration: UInt64 = 0
 
 	public init(
 		host: SSHHost,
@@ -66,12 +68,15 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	public func start() {
 		guard !started else { return }
 		started = true
+		startupGeneration &+= 1
+		let generation = startupGeneration
 		state = .connecting
-		Task { @MainActor [weak self] in
+		startupTask = Task { @MainActor [weak self] in
 			guard let self else { return }
 			do {
 				let session = try await make(host)
-				guard started else {
+				try Task.checkCancellation()
+				guard started, generation == startupGeneration else {
 					await session.disconnect()
 					return
 				}
@@ -84,9 +89,13 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 				self.session = session
 				await session.connect()
 			} catch is CancellationError {
-				self.started = false
+				if generation == self.startupGeneration {
+					self.started = false
+				}
 			} catch {
-				self.state = .failed(reason: error.localizedDescription)
+				if generation == self.startupGeneration {
+					self.state = .failed(reason: error.localizedDescription)
+				}
 			}
 		}
 	}
@@ -138,12 +147,20 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	}
 
 	public func disconnect() {
+		startupGeneration &+= 1
+		startupTask?.cancel()
+		startupTask = nil
+		started = false
 		Task { await session?.disconnect() }
 	}
 
 	/// Tears down the current session (if any) and dials again, reusing
 	/// the same retained terminal view/scrollback.
 	public func reconnect() {
+		startupGeneration &+= 1
+		let generation = startupGeneration
+		startupTask?.cancel()
+		startupTask = nil
 		let old = session
 		// Detach first: a disconnecting session emits a late .closed that
 		// would otherwise clobber the fresh session's .connected state.
@@ -156,6 +173,7 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		state = .connecting
 		Task {
 			await old?.disconnect()
+			guard generation == startupGeneration else { return }
 			start()
 		}
 	}

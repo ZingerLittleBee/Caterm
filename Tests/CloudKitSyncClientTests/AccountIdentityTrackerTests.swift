@@ -132,6 +132,26 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		XCTAssertTrue(client.didDeleteSnippetSubscription)
 	}
 
+	func testTemporaryIdentityFailurePreservesPriorAccountState() async {
+		defaults.set("USER-A", forKey: "cloudkit.lastKnownUserRecordName")
+		let client = SpyClient()
+		let tracker = AccountIdentityTracker(
+			defaults: defaults,
+			currentIdentity: { .temporarilyUnavailable("network unavailable") },
+			tokensExist: { true }
+		)
+
+		let outcome = await tracker.handleAccountChange(client: client)
+
+		XCTAssertEqual(outcome, .temporarilyUnavailable("network unavailable"))
+		XCTAssertFalse(client.didReset)
+		XCTAssertFalse(client.didDeleteSubscription)
+		XCTAssertEqual(
+			defaults.string(forKey: "cloudkit.lastKnownUserRecordName"),
+			"USER-A"
+		)
+	}
+
 	// Test-only spy; per-test instance, never accessed concurrently.
 	private final class SpyClient: AccountSensitiveClient {
 		nonisolated(unsafe) var didReset = false

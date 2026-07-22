@@ -20,6 +20,16 @@ private final class MobileSyncFixtureClient: IncrementalHostSyncClient,
 	private var blobs: [String: CredentialBlob] = [:]
 	private var nextID = 0
 	private(set) var resetCount = 0
+	private var subscriptionShouldFail = false
+	private var snapshotFetches = 0
+	private var shouldBlockSnapshot = false
+	private var snapshotIsBlocked = false
+	private var releaseBlockedSnapshot = false
+	private var snapshotContinuation: CheckedContinuation<Void, Never>?
+
+	private enum Failure: Error {
+		case subscriptionUnavailable
+	}
 
 	func listHosts() async throws -> [RemoteHost] {
 		lock.withLock { Array(hosts.values) }
@@ -93,8 +103,9 @@ private final class MobileSyncFixtureClient: IncrementalHostSyncClient,
 	}
 
 	func fetchHostSnapshotAndCheckpoint() async throws -> HostChangeBatch {
-		lock.withLock {
-			HostChangeBatch(
+		let batch = lock.withLock {
+			snapshotFetches += 1
+			return HostChangeBatch(
 				changedHosts: Array(hosts.values),
 				deletedHostIDs: [],
 				credentialBlobsByServerId: blobs,
@@ -103,10 +114,34 @@ private final class MobileSyncFixtureClient: IncrementalHostSyncClient,
 				mode: .forceFull
 			)
 		}
+		let shouldBlock = lock.withLock {
+			guard shouldBlockSnapshot else { return false }
+			shouldBlockSnapshot = false
+			snapshotIsBlocked = true
+			return true
+		}
+		if shouldBlock {
+			await withCheckedContinuation { continuation in
+				let resumeImmediately = lock.withLock {
+					if releaseBlockedSnapshot {
+						releaseBlockedSnapshot = false
+						return true
+					}
+					snapshotContinuation = continuation
+					return false
+				}
+				if resumeImmediately { continuation.resume() }
+			}
+		}
+		return batch
 	}
 
 	func commitHostCheckpoint(_: any HostSyncCheckpoint) async throws {}
-	func ensureHostSubscription() async throws {}
+	func ensureHostSubscription() async throws {
+		if lock.withLock({ subscriptionShouldFail }) {
+			throw Failure.subscriptionUnavailable
+		}
+	}
 	func deleteHostSubscription() async throws {}
 	func resetHostSyncState() async {
 		lock.withLock { resetCount += 1 }
@@ -121,6 +156,37 @@ private final class MobileSyncFixtureClient: IncrementalHostSyncClient,
 			hosts = [:]
 			blobs = [:]
 		}
+	}
+
+	func failSubscription() {
+		lock.withLock { subscriptionShouldFail = true }
+	}
+
+	func snapshotFetchCount() -> Int {
+		lock.withLock { snapshotFetches }
+	}
+
+	func blockNextSnapshot() {
+		lock.withLock { shouldBlockSnapshot = true }
+	}
+
+	func waitUntilSnapshotIsBlocked() async {
+		while !lock.withLock({ snapshotIsBlocked }) {
+			await Task.yield()
+		}
+	}
+
+	func releaseSnapshot() {
+		let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+			snapshotIsBlocked = false
+			guard let continuation = snapshotContinuation else {
+				releaseBlockedSnapshot = true
+				return nil
+			}
+			snapshotContinuation = nil
+			return continuation
+		}
+		continuation?.resume()
 	}
 }
 
@@ -180,7 +246,7 @@ private func mobileRepositoriesRoundTripMetadataAndCredentials() async throws {
 		icon: "point.3.connected.trianglepath.dotted",
 		organization: HostOrganization(groupPath: ["Production"], tags: ["edge"])
 	)
-	try deviceA.store.add(jump)
+	try await deviceA.store.add(jump)
 	let target = SSHHost(
 		name: "Database",
 		hostname: "db.internal",
@@ -219,7 +285,7 @@ private func mobileRepositoriesRoundTripMetadataAndCredentials() async throws {
 			hasPassphrase: hasPassphrase
 		)
 	}
-	try deviceA.store.add(storedTarget)
+	try await deviceA.store.add(storedTarget)
 	await deviceA.material.finalizeLocalCommit(targetCommit)
 
 	let passwordHost = SSHHost(
@@ -235,7 +301,7 @@ private func mobileRepositoriesRoundTripMetadataAndCredentials() async throws {
 		source: .password,
 		for: passwordHost.id
 	)
-	try deviceA.store.add(passwordHost)
+	try await deviceA.store.add(passwordHost)
 	await deviceA.material.finalizeLocalCommit(passwordCommit)
 
 	_ = try await deviceA.engine(client).synchronize(request: .forceFull)
@@ -348,7 +414,7 @@ private func mobileAccountTransitionDoesNotMergeAccounts() async throws {
 	)
 	let device = fixture.makeDevice(name: "runtime", masterKey: master)
 	let account = MobileSyncAccountState()
-	try device.store.add(SSHHost(
+	try await device.store.add(SSHHost(
 		name: "Account A only",
 		hostname: "a.example.com",
 		username: "a",
@@ -375,6 +441,89 @@ private func mobileAccountTransitionDoesNotMergeAccounts() async throws {
 	#expect(runtime.hostStore === device.store)
 	#expect(!device.store.hosts.contains { $0.name == "Account A only" })
 	#expect(runtime.state != MobileHostSyncState.signedOut)
+}
+
+@Test("Account switch drains a cancelled stale Host fetch before loading B")
+@MainActor
+private func mobileAccountTransitionRejectsStaleInFlightBatch() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	_ = try await client.createHost(RemoteHostCreateInput(
+		name: "Account A remote",
+		hostname: "a-remote.example.com",
+		port: 22,
+		username: "a",
+		jumpHostServerId: nil,
+		forwards: [],
+		icon: nil,
+		organization: HostOrganization(),
+		metadataUpdatedAt: Date()
+	))
+	client.blockNextSnapshot()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false,
+		accessGroup: nil
+	)
+	let device = fixture.makeDevice(name: "stale-batch", masterKey: master)
+	let account = MobileSyncAccountState()
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { account.isSignedIn() },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: { account.evaluate() },
+			acknowledge: {}
+		)
+	)
+
+	let launch = Task { @MainActor in await runtime.launch() }
+	await client.waitUntilSnapshotIsBlocked()
+	account.set(identity: "account-b", signedIn: true)
+	client.switchToEmptyAccount()
+	let transition = Task { @MainActor in await runtime.accountDidChange() }
+	await Task.yield()
+	client.releaseSnapshot()
+	await launch.value
+	await transition.value
+
+	#expect(!device.store.hosts.contains { $0.name == "Account A remote" })
+	#expect(client.snapshotFetchCount() == 2)
+}
+
+@Test("Mobile subscription failure remains visible and skips Host fetch")
+@MainActor
+private func mobileSubscriptionFailureIsNotReportedUpToDate() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	client.failSubscription()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false,
+		accessGroup: nil
+	)
+	let device = fixture.makeDevice(name: "subscription-failure", masterKey: master)
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+
+	await runtime.launch()
+
+	guard case .temporarilyUnavailable = runtime.state else {
+		Issue.record("Expected a visible subscription failure")
+		return
+	}
+	#expect(client.snapshotFetchCount() == 0)
 }
 
 @Test("Mobile boot composition shares one Host store with the sync runtime")
@@ -437,6 +586,40 @@ private func offlineMobileCompositionAvoidsCloudKitWithoutEntitlement() throws {
 	#expect(composition.syncRuntime.hostStore === composition.hostStore)
 }
 
+@Test("Mobile composition enables credential receiving without generating a key")
+@MainActor
+private func mobileCompositionPreparesCredentialSyncOnProductionPath() async throws {
+	let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+		"mobile-credential-composition-\(UUID().uuidString)",
+		isDirectory: true
+	)
+	defer { try? FileManager.default.removeItem(at: root) }
+	let suiteName = "MobileCredentialComposition.\(UUID().uuidString)"
+	let defaults = try #require(UserDefaults(suiteName: suiteName))
+	defer { defaults.removePersistentDomain(forName: suiteName) }
+	let master = KeychainSyncMasterKeyStore(
+		service: "com.caterm.test.mobile-composition-master.\(UUID().uuidString)",
+		synchronizable: false,
+		accessGroup: nil
+	)
+	let composition = MobileAppComposition.live(
+		hostsURL: root.appendingPathComponent("hosts.json"),
+		applicationSupportURL: root,
+		credentialDefaults: defaults,
+		masterKeyStore: master,
+		cloudKitEnabled: false
+	)
+
+	let persisted = CredentialSyncPreferencesStore(defaults: defaults)
+	#expect(persisted.prefs.state == .enabled)
+	#expect(try await master.lookupAny() == nil)
+
+	try await composition.prepareCredentialSyncForSave()
+	let generated = try #require(try await master.lookupAny())
+	defer { Task { await master.remove(keyID: generated.keyID) } }
+	#expect(CredentialSyncPreferencesStore(defaults: defaults).prefs.state == .enabled)
+}
+
 @Test("Known Hosts remain device-local after a Host sync")
 @MainActor
 private func knownHostsRemainDeviceLocalAfterSync() async throws {
@@ -457,7 +640,7 @@ private func knownHostsRemainDeviceLocalAfterSync() async throws {
 	)
 	try knownA.trust(endpoint: "server.example.com:22", fingerprint: "SHA256:A")
 	try knownB.trust(endpoint: "server.example.com:22", fingerprint: "SHA256:B")
-	try deviceA.store.add(SSHHost(
+	try await deviceA.store.add(SSHHost(
 		name: "Server",
 		hostname: "server.example.com",
 		username: "ops",
