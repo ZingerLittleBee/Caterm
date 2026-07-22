@@ -133,15 +133,16 @@ public struct MobileRootView: View {
 		.environment(\.mobileTerminalSessionFactory, terminalSessionFactory)
 		.environment(\.mobileSnippetMutation, MobileSnippetMutationAction(
 			upsert: { snippet in
-				try snippetStore.upsert(snippet)
-				snippetSyncRuntime.scheduleLocalMutation()
+				try snippetSyncRuntime.upsert(snippet)
 			},
 			delete: { id in
-				try snippetStore.delete(id: id)
-				snippetSyncRuntime.scheduleLocalMutation(debounceMs: 0)
+				try snippetSyncRuntime.delete(id: id)
 			},
 			move: { offsets, destination in
-				try snippetStore.move(fromOffsets: offsets, toOffset: destination)
+				try snippetSyncRuntime.move(
+					fromOffsets: offsets,
+					toOffset: destination
+				)
 			}
 		))
 		.environment(\.mobileBackupImportAction, MobileBackupImportAction(
@@ -197,8 +198,7 @@ public struct MobileRootView: View {
 			get: { snippetStore.snippets },
 			set: { newSnippets in
 				do {
-					try snippetStore.replaceLocalSnapshot(newSnippets)
-					snippetSyncRuntime.scheduleLocalMutation(debounceMs: 0)
+					try snippetSyncRuntime.replaceLocalSnapshot(newSnippets)
 				} catch {
 					operationError = MobileHostOperationError(
 						title: "Couldn’t Save Snippets",

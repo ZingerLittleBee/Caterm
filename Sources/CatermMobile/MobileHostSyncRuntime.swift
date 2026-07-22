@@ -41,7 +41,7 @@ public struct MobileAccountIdentityBoundary {
 	let beginRelatedSyncSuspension: @MainActor () -> Void
 	let drainRelatedSync: @MainActor () async -> Void
 	let resetRelatedLocalState: @MainActor () throws -> Void
-	let resumeRelatedSync: @MainActor (_ identityChanged: Bool) -> Void
+	let resumeRelatedSync: @MainActor (_ identityChanged: Bool) async -> Void
 
 	public init(
 		evaluate: @escaping () async -> AccountChangeOutcome,
@@ -49,7 +49,7 @@ public struct MobileAccountIdentityBoundary {
 		beginRelatedSyncSuspension: @escaping @MainActor () -> Void = {},
 		drainRelatedSync: @escaping @MainActor () async -> Void = {},
 		resetRelatedLocalState: @escaping @MainActor () throws -> Void = {},
-		resumeRelatedSync: @escaping @MainActor (_ identityChanged: Bool) -> Void = { _ in }
+		resumeRelatedSync: @escaping @MainActor (_ identityChanged: Bool) async -> Void = { _ in }
 	) {
 		self.evaluate = evaluate
 		self.acknowledge = acknowledge
@@ -137,8 +137,9 @@ public final class MobileHostSyncRuntime: ObservableObject {
 		_ = await replaceActiveRun(checkIdentity: true, request: .forceFull)
 	}
 
-	public func accountDidChange() async {
-		_ = await replaceActiveRun(checkIdentity: true, request: .forceFull)
+	@discardableResult
+	public func accountDidChange() async -> MobileHostSyncExecutionResult {
+		await replaceActiveRun(checkIdentity: true, request: .forceFull)
 	}
 
 	private func replaceActiveRun(
@@ -191,9 +192,6 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			identityBoundary.beginRelatedSyncSuspension()
 			await identityBoundary.drainRelatedSync()
 			var relatedIdentityChanged = false
-			defer {
-				identityBoundary.resumeRelatedSync(relatedIdentityChanged)
-			}
 			let outcome = await identityBoundary.evaluate()
 			guard generationIsCurrent(generation) else { return .cancelled }
 			switch outcome {
@@ -223,6 +221,8 @@ public final class MobileHostSyncRuntime: ObservableObject {
 				accountTransitionInProgress = false
 				return .failed
 			}
+			await identityBoundary.resumeRelatedSync(relatedIdentityChanged)
+			guard generationIsCurrent(generation) else { return .cancelled }
 		}
 
 		accountTransitionInProgress = false

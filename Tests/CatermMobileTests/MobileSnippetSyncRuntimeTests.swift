@@ -47,7 +47,7 @@ final class MobileSnippetSyncRuntimeTests: XCTestCase {
 		XCTAssertEqual(reloadedSecondStore.snippets, [acknowledged])
 
 		try firstStore.delete(id: snippet.id)
-		await firstRuntime.sync.runSyncPass(mode: .incremental)
+		try await firstRuntime.sync.runSyncPass(mode: .incremental)
 		await secondRuntime.becameActive()
 
 		XCTAssertTrue(secondStore.snippets.isEmpty)
@@ -111,6 +111,67 @@ final class MobileSnippetSyncRuntimeTests: XCTestCase {
 		XCTAssertEqual(fetchCount, 0)
 	}
 
+	func testCloudPushReportsFailureInsteadOfNoData() async throws {
+		let cloud = MobileSnippetTestCloud()
+		let store = SnippetStore(directory: temporaryDirectory(named: "failure"))
+		try store.load()
+		let client = MobileSnippetTestClient(cloud: cloud)
+		await client.setFetchError(MobileSnippetTestError.fetchFailed)
+		let runtime = makeRuntime(store: store, client: client)
+
+		let result = await runtime.receivedCloudKitPush()
+
+		XCTAssertEqual(result, .failed)
+		guard case .temporarilyUnavailable = runtime.state else {
+			return XCTFail("Expected the runtime to expose the fetch failure")
+		}
+	}
+
+	func testAccountTransitionGatesMutationsAndReinstallsSubscription() async throws {
+		let cloud = MobileSnippetTestCloud()
+		let store = SnippetStore(directory: temporaryDirectory(named: "account"))
+		try store.load()
+		let client = MobileSnippetTestClient(cloud: cloud)
+		let runtime = makeRuntime(store: store, client: client)
+		await runtime.launch()
+		let accountASnippet = Snippet(
+			id: UUID(), name: "Account A", content: "echo account-a",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		_ = try store.applyRemote(accountASnippet)
+		let blockedSnippet = Snippet(
+			id: UUID(), name: "Blocked", content: "echo blocked",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		let accountBSnippet = Snippet(
+			id: UUID(), name: "Account B", content: "echo account-b",
+			createdAt: .distantPast, updatedAt: .distantPast
+		)
+		_ = await cloud.push(accountBSnippet)
+
+		runtime.beginAccountChangeSuspension()
+		await runtime.drainForAccountChange()
+		XCTAssertThrowsError(try runtime.upsert(blockedSnippet)) { error in
+			XCTAssertEqual(
+				error as? MobileSnippetMutationError,
+				.accountTransitionInProgress
+			)
+		}
+		let pushResult = await runtime.receivedCloudKitPush()
+		XCTAssertEqual(pushResult, .cancelled)
+		try runtime.resetLocalStateForAccountChange()
+
+		await runtime.resumeAfterAccountChange(identityChanged: true)
+
+		XCTAssertEqual(store.snippets.map(\.id), [accountBSnippet.id])
+		XCTAssertFalse(store.snippets.contains { $0.id == accountASnippet.id })
+		XCTAssertFalse(store.snippets.contains { $0.id == blockedSnippet.id })
+		let subscriptionInstalled = await client.subscriptionInstalled()
+		let fetchRequestCount = await client.fetchRequestCount()
+		XCTAssertTrue(subscriptionInstalled)
+		XCTAssertEqual(fetchRequestCount, 2)
+	}
+
 	private func makeRuntime(
 		store: SnippetStore,
 		client: MobileSnippetTestClient
@@ -139,6 +200,10 @@ final class MobileSnippetSyncRuntimeTests: XCTestCase {
 private struct MobileSnippetTestCheckpoint: SnippetSyncCheckpoint {
 	let id = UUID()
 	let sequence: Int
+}
+
+private enum MobileSnippetTestError: Error {
+	case fetchFailed
 }
 
 private actor MobileSnippetTestCloud {
@@ -193,6 +258,7 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 	private var commits: [Int] = []
 	private var hasSubscription = false
 	private var fetchRequests = 0
+	private var fetchError: Error?
 
 	init(cloud: MobileSnippetTestCloud) {
 		self.cloud = cloud
@@ -202,6 +268,7 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 
 	func fetchSnippetChanges() async throws -> SnippetChangeBatch {
 		fetchRequests += 1
+		if let fetchError { throw fetchError }
 		let delta = await cloud.changes(after: sequence)
 		return SnippetChangeBatch(
 			changedSnippets: delta.changed,
@@ -214,6 +281,7 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 
 	func fetchSnippetSnapshotAndCheckpoint() async throws -> SnippetChangeBatch {
 		fetchRequests += 1
+		if let fetchError { throw fetchError }
 		let snapshot = await cloud.snapshot()
 		return SnippetChangeBatch(
 			changedSnippets: snapshot.snippets,
@@ -258,4 +326,5 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 	func committedSequences() -> [Int] { commits }
 	func subscriptionInstalled() -> Bool { hasSubscription }
 	func fetchRequestCount() -> Int { fetchRequests }
+	func setFetchError(_ error: Error?) { fetchError = error }
 }

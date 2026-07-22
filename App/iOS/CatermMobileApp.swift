@@ -26,7 +26,11 @@ struct CatermMobileApp: App {
 			await composition.syncRuntime.receivedCloudKitPush()
 		}
 		pushDelegate.snippetPushHandler = {
-			await composition.snippetSyncRuntime.receivedCloudKitPush()
+			let accountResult = await composition.syncRuntime.accountDidChange()
+			guard accountResult != .failed, accountResult != .cancelled else {
+				return accountResult
+			}
+			return await composition.snippetSyncRuntime.receivedCloudKitPush()
 		}
 		#endif
 	}

@@ -10,6 +10,14 @@ public enum MobileSnippetSyncState: Equatable, Sendable {
 	case temporarilyUnavailable(String)
 }
 
+public enum MobileSnippetMutationError: LocalizedError, Equatable {
+	case accountTransitionInProgress
+
+	public var errorDescription: String? {
+		"iCloud account is changing. Try again when synchronization is ready."
+	}
+}
+
 /// iOS lifecycle owner for the shared Snippet store and sync scheduler.
 /// Mutations always persist locally first; account or network failures leave
 /// the durable dirty/outbox state for a later pass.
@@ -23,6 +31,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	private let isSignedIn: () -> Bool
 	private let refreshAccount: () async -> Void
 	private var hasLaunched = false
+	private var accountTransitionInProgress = false
 
 	public init(
 		store: SnippetStore,
@@ -47,7 +56,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 			return
 		}
 		let mode = await client.preferredSnippetSyncMode()
-		await synchronize(mode: mode)
+		_ = await synchronize(mode: mode)
 		sync.startForceFullTimer()
 	}
 
@@ -59,7 +68,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 			state = .signedOut
 			return
 		}
-		await synchronize(mode: .incremental)
+		_ = await synchronize(mode: .incremental)
 		sync.startForceFullTimer()
 	}
 
@@ -70,11 +79,12 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 			state = .signedOut
 			return
 		}
-		await synchronize(mode: .forceFull)
+		_ = await synchronize(mode: .forceFull)
 		sync.startForceFullTimer()
 	}
 
 	public func receivedCloudKitPush() async -> MobileHostSyncExecutionResult {
+		guard !accountTransitionInProgress else { return .cancelled }
 		await refreshAccount()
 		guard isSignedIn() else {
 			sync.stopForceFullTimer()
@@ -82,11 +92,13 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 			return .noData
 		}
 		let before = store.snippets
-		await synchronize(mode: .incremental)
+		let result = await synchronize(mode: .incremental)
+		guard result == .noData else { return result }
 		return before == store.snippets ? .noData : .newData
 	}
 
 	public func scheduleLocalMutation(debounceMs: Int = 500) {
+		guard !accountTransitionInProgress else { return }
 		guard isSignedIn() else {
 			state = .signedOut
 			return
@@ -94,16 +106,82 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 		sync.scheduleSyncPass(mode: .incremental, debounceMs: debounceMs)
 	}
 
-	private func synchronize(mode: SnippetSyncMode) async {
+	public func upsert(_ snippet: Snippet) throws {
+		try ensureMutationAllowed()
+		try store.upsert(snippet)
+		scheduleLocalMutation()
+	}
+
+	public func delete(id: UUID) throws {
+		try ensureMutationAllowed()
+		try store.delete(id: id)
+		scheduleLocalMutation(debounceMs: 0)
+	}
+
+	public func move(fromOffsets: IndexSet, toOffset: Int) throws {
+		try ensureMutationAllowed()
+		try store.move(fromOffsets: fromOffsets, toOffset: toOffset)
+	}
+
+	public func replaceLocalSnapshot(_ snippets: [Snippet]) throws {
+		try ensureMutationAllowed()
+		try store.replaceLocalSnapshot(snippets)
+		scheduleLocalMutation(debounceMs: 0)
+	}
+
+	public func beginAccountChangeSuspension() {
+		guard !accountTransitionInProgress else { return }
+		accountTransitionInProgress = true
+		sync.stopForceFullTimer()
+		sync.beginAccountChangeSuspension()
+	}
+
+	public func drainForAccountChange() async {
+		guard accountTransitionInProgress else { return }
+		await sync.drainForAccountChange()
+	}
+
+	public func resetLocalStateForAccountChange() throws {
+		guard accountTransitionInProgress else {
+			throw MobileSnippetMutationError.accountTransitionInProgress
+		}
+		try store.wipeLocal()
+	}
+
+	public func resumeAfterAccountChange(identityChanged: Bool) async {
+		guard accountTransitionInProgress else { return }
+		defer { accountTransitionInProgress = false }
+		guard let mode = sync.resumeRequestAfterAccountChange(
+			identityChanged: identityChanged
+		) else { return }
+		guard hasLaunched else { return }
+		guard isSignedIn() else {
+			state = .signedOut
+			return
+		}
+		_ = await synchronize(mode: mode)
+		sync.startForceFullTimer()
+	}
+
+	private func synchronize(
+		mode: SnippetSyncMode
+	) async -> MobileHostSyncExecutionResult {
 		state = .syncing
 		do {
-			try await client.ensureSnippetSubscription()
-			await sync.runSyncPass(mode: mode)
+			try await sync.runSyncPass(mode: mode)
 			state = .upToDate(Date())
+			return .noData
 		} catch is CancellationError {
-			return
+			return .cancelled
 		} catch {
 			state = .temporarilyUnavailable(error.localizedDescription)
+			return .failed
+		}
+	}
+
+	private func ensureMutationAllowed() throws {
+		guard !accountTransitionInProgress else {
+			throw MobileSnippetMutationError.accountTransitionInProgress
 		}
 	}
 }

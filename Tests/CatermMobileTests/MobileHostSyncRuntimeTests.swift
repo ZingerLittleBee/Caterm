@@ -620,7 +620,7 @@ private func mobileTransitionKeepsSaveBarrierThroughAcknowledgement() async thro
 	#expect(device.store.isAccountTransitionInProgress)
 
 	await gate.release()
-	await transition.value
+	_ = await transition.value
 	#expect(!device.store.isAccountTransitionInProgress)
 
 	try await coordinator.save(
@@ -675,7 +675,7 @@ private func mobileAccountTransitionRejectsStaleInFlightBatch() async throws {
 	await Task.yield()
 	client.releaseSnapshot()
 	await launch.value
-	await transition.value
+	_ = await transition.value
 
 	#expect(!device.store.hosts.contains { $0.name == "Account A remote" })
 	#expect(client.snapshotFetchCount() == 2)
@@ -710,6 +710,51 @@ private func mobileSubscriptionFailureIsNotReportedUpToDate() async throws {
 		return
 	}
 	#expect(client.snapshotFetchCount() == 0)
+}
+
+@Test("Temporary account failure keeps related sync suspended until recovery")
+@MainActor
+private func mobileTemporaryAccountFailureKeepsRelatedLaneClosed() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "temporary-account", masterKey: master)
+	var outcome = AccountChangeOutcome.temporarilyUnavailable("Account unavailable")
+	var beginCount = 0
+	var resumeCount = 0
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: { outcome },
+			acknowledge: {},
+			beginRelatedSyncSuspension: { beginCount += 1 },
+			resumeRelatedSync: { _ in resumeCount += 1 }
+		)
+	)
+
+	await runtime.launch()
+
+	#expect(beginCount == 1)
+	#expect(resumeCount == 0)
+	guard case .temporarilyUnavailable = runtime.state else {
+		Issue.record("Expected account unavailability to remain visible")
+		return
+	}
+
+	outcome = .unchanged
+	_ = await runtime.accountDidChange()
+
+	#expect(beginCount == 2)
+	#expect(resumeCount == 1)
 }
 
 @Test("Mobile boot composition shares one Host store with the sync runtime")

@@ -281,16 +281,16 @@ public final class MobileAppComposition: ObservableObject {
 				await identityTracker.acknowledgeIdentityChange()
 			},
 			beginRelatedSyncSuspension: {
-				snippetSync.beginAccountChangeSuspension()
+				snippetRuntime.beginAccountChangeSuspension()
 			},
 			drainRelatedSync: {
-				await snippetSync.drainForAccountChange()
+				await snippetRuntime.drainForAccountChange()
 			},
 			resetRelatedLocalState: {
-				try snippetStore.wipeLocal()
+				try snippetRuntime.resetLocalStateForAccountChange()
 			},
 			resumeRelatedSync: { identityChanged in
-				snippetSync.resumeAfterAccountChange(
+				await snippetRuntime.resumeAfterAccountChange(
 					identityChanged: identityChanged
 				)
 			}

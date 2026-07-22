@@ -7,6 +7,11 @@ private struct LegacySnippetsEnvelope: Encodable {
 	let snippets: [Snippet]
 }
 
+private struct LegacyOutboxEnvelope: Encodable {
+	let schemaVersion: Int
+	let pendingDeletedSnippetIDs: [UUID]
+}
+
 @MainActor
 final class SnippetStoreTests: XCTestCase {
 	private func tempDir() -> URL {
@@ -95,6 +100,47 @@ final class SnippetStoreTests: XCTestCase {
 		let store2 = SnippetStore(directory: dir)
 		try store2.load()
 		XCTAssertTrue(store2.pendingDeletedSnippetIDs.contains(id))
+		XCTAssertFalse(FileManager.default.fileExists(
+			atPath: dir.appendingPathComponent("snippets.outbox.json").path
+		))
+		let object = try XCTUnwrap(
+			try JSONSerialization.jsonObject(
+				with: Data(contentsOf: dir.appendingPathComponent("snippets.json"))
+			) as? [String: Any]
+		)
+		XCTAssertEqual(
+			(object["pendingDeletedSnippetIDs"] as? [String])?.first,
+			id.uuidString
+		)
+	}
+
+	func test_loadMigratesLegacyOutboxIntoAtomicStateEnvelope() throws {
+		let dir = tempDir()
+		let id = UUID()
+		let snippetsData = try JSONEncoder().encode(
+			LegacySnippetsEnvelope(schemaVersion: 1, snippets: [])
+		)
+		try snippetsData.write(to: dir.appendingPathComponent("snippets.json"))
+		let outboxData = try JSONEncoder().encode(
+			LegacyOutboxEnvelope(
+				schemaVersion: 1,
+				pendingDeletedSnippetIDs: [id]
+			)
+		)
+		try outboxData.write(
+			to: dir.appendingPathComponent("snippets.outbox.json")
+		)
+
+		let store = SnippetStore(directory: dir)
+		try store.load()
+
+		XCTAssertEqual(store.pendingDeletedSnippetIDs, [id])
+		XCTAssertFalse(FileManager.default.fileExists(
+			atPath: dir.appendingPathComponent("snippets.outbox.json").path
+		))
+		let reloaded = SnippetStore(directory: dir)
+		try reloaded.load()
+		XCTAssertEqual(reloaded.pendingDeletedSnippetIDs, [id])
 	}
 
 	func test_move_persistsOrderAcrossInstances() throws {
