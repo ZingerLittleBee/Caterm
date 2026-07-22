@@ -169,7 +169,7 @@ public enum MobileBackupService {
 		plan: BackupMergePlan,
 		hosts: [SSHHost],
 		snippets: [Snippet],
-		keychain: KeychainStore,
+		keychain: any MobileCredentialStoring,
 		managedKeys: ManagedKeyStore,
 		now: Date = Date(),
 		transactionIsCurrent: @escaping @MainActor @Sendable () -> Bool = { true },
@@ -304,7 +304,7 @@ public enum MobileBackupService {
 
 	private static func captureCredentialSnapshots(
 		hostIDs: Set<UUID>,
-		keychain: KeychainStore,
+		keychain: any MobileCredentialStoring,
 		managedKeys: ManagedKeyStore
 	) throws -> [UUID: CredentialSnapshot] {
 		try Dictionary(uniqueKeysWithValues: hostIDs.map { hostID in
@@ -326,10 +326,13 @@ public enum MobileBackupService {
 
 	private static func captureSecret(
 		account: String,
-		keychain: KeychainStore
+		keychain: any MobileCredentialStoring
 	) throws -> StoredSecret {
 		do {
-			return .value(try keychain.get(account: account))
+			return .value(try keychain.get(
+				account: account,
+				interaction: .userInitiated
+			))
 		} catch KeychainError.notFound {
 			return .missing
 		}
@@ -337,7 +340,7 @@ public enum MobileBackupService {
 
 	private static func rollbackCredentials(
 		_ snapshots: [UUID: CredentialSnapshot],
-		keychain: KeychainStore,
+		keychain: any MobileCredentialStoring,
 		managedKeys: ManagedKeyStore,
 		originalError: any Error
 	) async throws -> Never {
@@ -349,11 +352,19 @@ public enum MobileBackupService {
 					account: MobileCredentialPlan.passwordAccount(hostID),
 					keychain: keychain
 				)
+			} catch {
+				rollbackErrors.append(error)
+			}
+			do {
 				try restoreSecret(
 					snapshot.passphrase,
 					account: MobileCredentialPlan.keyPassphraseAccount(hostID),
 					keychain: keychain
 				)
+			} catch {
+				rollbackErrors.append(error)
+			}
+			do {
 				if let privateKey = snapshot.privateKey {
 					_ = try await managedKeys.write(hostId: hostID, bytes: privateKey)
 				} else {
@@ -375,7 +386,7 @@ public enum MobileBackupService {
 	private static func restoreSecret(
 		_ snapshot: StoredSecret,
 		account: String,
-		keychain: KeychainStore
+		keychain: any MobileCredentialStoring
 	) throws {
 		switch snapshot {
 		case .missing:
@@ -410,13 +421,13 @@ public enum MobileBackupService {
 @MainActor
 final class MobileBackupImportCoordinator {
 	private let hostStore: MobileHostStore
-	private let keychain: KeychainStore
+	private let keychain: any MobileCredentialStoring
 	private let managedKeys: ManagedKeyStore
 	private let beforeCommit: @MainActor @Sendable () async -> Void
 
 	init(
 		hostStore: MobileHostStore,
-		keychain: KeychainStore = KeychainStore(
+		keychain: any MobileCredentialStoring = KeychainStore(
 			service: MobileCredentialWriter.defaultService,
 			accessGroup: nil
 		),
@@ -431,28 +442,60 @@ final class MobileBackupImportCoordinator {
 
 	func apply(
 		plan: BackupMergePlan,
-		hosts: [SSHHost],
+		hosts _: [SSHHost],
 		snippets: [Snippet]
 	) async throws -> MobileBackupService.ApplyResult {
-		let accountContext = try hostStore.beginExclusiveAccountOperation()
+		let accountContext = try await hostStore.beginExclusiveAccountOperation()
 		defer { hostStore.endAccountOperation() }
+		let credentialHostIDs = Set<UUID>(plan.hosts.compactMap { action in
+			guard action.appliesSecrets else { return nil }
+			return plan.hostIdMapping[action.archiveHost.id]
+		})
+		try hostStore.registerCredentialCleanup(
+			hostIDs: credentialHostIDs,
+			accountContext: accountContext
+		)
 
-		return try await MobileBackupService.apply(
-			plan: plan,
-			hosts: hosts,
-			snippets: snippets,
-			keychain: keychain,
-			managedKeys: managedKeys,
-			transactionIsCurrent: {
-				self.hostStore.isCurrent(accountContext)
-			},
-			commit: { result in
-				await self.beforeCommit()
-				try await self.hostStore.replaceAll(
-					result.hosts,
+		do {
+			let result = try await MobileBackupService.apply(
+				plan: plan,
+				hosts: hostStore.hosts,
+				snippets: snippets,
+				keychain: keychain,
+				managedKeys: managedKeys,
+				transactionIsCurrent: {
+					self.hostStore.isCurrent(accountContext)
+				},
+				commit: { result in
+					await self.beforeCommit()
+					try await self.hostStore.replaceAll(
+						result.hosts,
+						accountContext: accountContext
+					)
+				}
+			)
+			try hostStore.unregisterCredentialCleanup(
+				hostIDs: credentialHostIDs,
+				accountContext: accountContext
+			)
+			return result
+		} catch {
+			if hostStore.isCurrent(accountContext),
+				!Self.isRollbackFailure(error) {
+				try? hostStore.unregisterCredentialCleanup(
+					hostIDs: credentialHostIDs,
 					accountContext: accountContext
 				)
 			}
-		)
+			throw error
+		}
+	}
+
+	private static func isRollbackFailure(_ error: any Error) -> Bool {
+		guard let applyError = error as? MobileBackupService.ApplyError else {
+			return false
+		}
+		if case .rollbackFailed = applyError { return true }
+		return false
 	}
 }

@@ -1,6 +1,7 @@
 import Combine
 import HostRepositoryCore
 import KeychainStore
+import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SSHCommandBuilder
@@ -599,7 +600,7 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.map(\.id), [b.id])
 	}
 
-	func testAccountResetRejectsAHostSaveAlreadyWaitingToPersist() async throws {
+	func testAccountResetDrainsAHostSaveAlreadyWaitingToPersist() async throws {
 		let url = tempURL()
 		let accountAHost = makeHost("account-a")
 		try HostPersistence.save([accountAHost], to: url)
@@ -613,20 +614,23 @@ final class MobileHostStoreTests: XCTestCase {
 		let staleSave = Task { @MainActor in
 			do {
 				try await store.upsert(self.makeHost("stale-account-a"))
-				return false
+				return true
 			} catch {
-				return error as? MobileHostStore.StoreError
-					== .accountTransitionInProgress
+				return false
 			}
 		}
 
 		await gate.waitUntilBlocked()
-		try await store.resetForAccountChange()
-		try store.finishAccountTransition()
+		let resetTask = Task { @MainActor in
+			try await store.resetForAccountChange()
+		}
+		await waitUntil { store.isAccountTransitionInProgress }
 		await gate.release()
-		let staleSaveWasRejected = await staleSave.value
+		try await resetTask.value
+		try store.finishAccountTransition()
+		let staleSaveWasDrained = await staleSave.value
 
-		XCTAssertTrue(staleSaveWasRejected)
+		XCTAssertTrue(staleSaveWasDrained)
 		XCTAssertTrue(store.hosts.isEmpty)
 		XCTAssertTrue(try HostPersistence.load(from: url).isEmpty)
 	}
@@ -665,6 +669,40 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertTrue(store.hosts.isEmpty)
 		XCTAssertTrue(try HostPersistence.load(from: url).isEmpty)
 		try store.finishAccountTransition()
+	}
+
+	func testAccountResetCleansRegisteredUncommittedCredentialHosts() async throws {
+		let url = tempURL()
+		let keysRoot = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-pending-keys-\(UUID())", isDirectory: true)
+		defer { try? FileManager.default.removeItem(at: keysRoot) }
+		let managedKeys = ManagedKeyStore(rootURL: keysRoot)
+		let store = MobileHostStore(
+			fileURL: url,
+			managedKeyStore: managedKeys
+		)
+		let uncommittedHostID = UUID()
+		let accountContext = try await store.beginExclusiveAccountOperation()
+		try store.registerCredentialCleanup(
+			hostIDs: [uncommittedHostID],
+			accountContext: accountContext
+		)
+		_ = try await managedKeys.write(
+			hostId: uncommittedHostID,
+			bytes: Data("ACCOUNT-A-KEY".utf8)
+		)
+		let resetTask = Task { @MainActor in
+			try await store.resetForAccountChange()
+		}
+		await waitUntil { store.isAccountTransitionInProgress }
+
+		store.endAccountOperation()
+		try await resetTask.value
+		try store.finishAccountTransition()
+
+		XCTAssertNil(try managedKeys.read(hostId: uncommittedHostID))
+		let hasIdentityBoundState = await store.hasIdentityBoundState()
+		XCTAssertFalse(hasIdentityBoundState)
 	}
 
 	func testIdentityBoundStateIncludesHostsAndDeletionOutbox() async throws {

@@ -46,7 +46,9 @@ public final class MobileHostStore: ObservableObject {
 	private var accountTransitionInProgress = false
 	private var accountResetAwaitingAcknowledgement = false
 	private var exclusiveAccountOperationInProgress = false
+	private var exclusiveAccountOperationPending = false
 	private var activeAccountOperations = 0
+	private var pendingCredentialCleanupHostIDs: Set<UUID> = []
 	private var accountOperationDrainWaiters: [CheckedContinuation<Void, Never>] = []
 	private var publishedRevision: UInt64 = 0
 	@Published public private(set) var lastPersistenceFailure: PersistenceFailure?
@@ -93,34 +95,38 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	public func add(_ host: SSHHost) async throws {
-		let epoch = try writableEpoch()
-		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
-			$0.append(host)
+		try await withAccountOperation { accountContext in
+			let snapshot = try await persistence.mutate(
+				expectedEpoch: accountContext.epoch
+			) {
+				$0.append(host)
+			}
+			publish(snapshot, expectedEpoch: accountContext.epoch)
+			localMutationsSubject.send()
 		}
-		publish(snapshot, expectedEpoch: epoch)
-		localMutationsSubject.send()
 	}
 
 	public func update(_ host: SSHHost) async throws {
-		let epoch = try writableEpoch()
-		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
-			guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
-				throw StoreError.hostNotFound
+		try await withAccountOperation { accountContext in
+			let snapshot = try await persistence.mutate(
+				expectedEpoch: accountContext.epoch
+			) {
+				guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
+					throw StoreError.hostNotFound
+				}
+				$0[index] = host
 			}
-			$0[index] = host
+			publish(snapshot, expectedEpoch: accountContext.epoch)
+			localMutationsSubject.send()
 		}
-		publish(snapshot, expectedEpoch: epoch)
-		localMutationsSubject.send()
 	}
 
 	/// Insert or replace by id and persist. Used by the shell's add/edit
 	/// save callbacks, which can't know whether the form was add or edit.
 	public func upsert(_ host: SSHHost) async throws {
-		let epoch = try writableEpoch()
-		try await upsert(
-			host,
-			accountContext: AccountContext(epoch: epoch)
-		)
+		try await withAccountOperation { accountContext in
+			try await upsert(host, accountContext: accountContext)
+		}
 	}
 
 	func upsert(
@@ -141,12 +147,13 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	public func delete(id: UUID) async throws {
-		let epoch = try writableEpoch()
-		try await delete(
-			id: id,
-			enqueueRemoteDeletion: true,
-			accountContext: AccountContext(epoch: epoch)
-		)
+		try await withAccountOperation { accountContext in
+			try await delete(
+				id: id,
+				enqueueRemoteDeletion: true,
+				accountContext: accountContext
+			)
+		}
 	}
 
 	/// Replace the whole list and persist. The mobile shell mutates hosts
@@ -155,11 +162,12 @@ public final class MobileHostStore: ObservableObject {
 	/// disk without threading store calls through every view.
 	public func replaceAll(_ newHosts: [SSHHost]) async {
 		do {
-			let epoch = try writableEpoch()
-			try await replaceAll(
-				newHosts,
-				accountContext: AccountContext(epoch: epoch)
-			)
+			try await withAccountOperation { accountContext in
+				try await replaceAll(
+					newHosts,
+					accountContext: accountContext
+				)
+			}
 		} catch {
 			lastPersistenceFailure = PersistenceFailure(underlyingError: error)
 			return
@@ -217,19 +225,30 @@ public final class MobileHostStore: ObservableObject {
 
 	func beginAccountOperation() throws -> AccountContext {
 		guard !accountTransitionInProgress,
-			!exclusiveAccountOperationInProgress else {
+			!exclusiveAccountOperationInProgress,
+			!exclusiveAccountOperationPending else {
 			throw StoreError.accountTransitionInProgress
 		}
 		activeAccountOperations += 1
 		return currentAccountContext
 	}
 
-	func beginExclusiveAccountOperation() throws -> AccountContext {
+	func beginExclusiveAccountOperation() async throws -> AccountContext {
 		guard !accountTransitionInProgress,
 			!exclusiveAccountOperationInProgress,
-			activeAccountOperations == 0 else {
+			!exclusiveAccountOperationPending else {
 			throw StoreError.accountTransitionInProgress
 		}
+		exclusiveAccountOperationPending = true
+		if activeAccountOperations > 0 {
+			await waitForAccountOperationsToDrain()
+		}
+		guard !accountTransitionInProgress,
+			!exclusiveAccountOperationInProgress else {
+			exclusiveAccountOperationPending = false
+			throw StoreError.accountTransitionInProgress
+		}
+		exclusiveAccountOperationPending = false
 		exclusiveAccountOperationInProgress = true
 		activeAccountOperations = 1
 		return currentAccountContext
@@ -247,6 +266,14 @@ public final class MobileHostStore: ObservableObject {
 		for waiter in waiters { waiter.resume() }
 	}
 
+	private func withAccountOperation<T>(
+		_ operation: (AccountContext) async throws -> T
+	) async throws -> T {
+		let accountContext = try beginAccountOperation()
+		defer { endAccountOperation() }
+		return try await operation(accountContext)
+	}
+
 	var isAccountTransitionInProgress: Bool { accountTransitionInProgress }
 
 	private func requireCurrent(_ accountContext: AccountContext) throws {
@@ -255,12 +282,20 @@ public final class MobileHostStore: ObservableObject {
 		}
 	}
 
-	private func writableEpoch() throws -> UInt64 {
-		guard !accountTransitionInProgress,
-			!exclusiveAccountOperationInProgress else {
-			throw StoreError.accountTransitionInProgress
-		}
-		return accountEpoch
+	func registerCredentialCleanup(
+		hostIDs: Set<UUID>,
+		accountContext: AccountContext
+	) throws {
+		try requireCurrent(accountContext)
+		pendingCredentialCleanupHostIDs.formUnion(hostIDs)
+	}
+
+	func unregisterCredentialCleanup(
+		hostIDs: Set<UUID>,
+		accountContext: AccountContext
+	) throws {
+		try requireCurrent(accountContext)
+		pendingCredentialCleanupHostIDs.subtract(hostIDs)
 	}
 
 	private func delete(
@@ -317,31 +352,36 @@ extension MobileHostStore: HostCredentialRepository {
 	public func applyRemoteCredentialSource(
 		_ commit: RemoteCredentialMaterialCommit
 	) async throws {
-		let epoch = try writableEpoch()
-		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
-			guard let index = $0.firstIndex(where: {
-				$0.id == commit.hostId
-			}) else { return }
-			switch commit.source {
-			case .unchanged:
-				break
-			case .password:
-				$0[index].credential = .password
-			case let .keyFile(path, hasPassphrase):
-				$0[index].credential = .keyFile(
-					keyPath: path,
-					hasPassphrase: hasPassphrase
-				)
+		try await withAccountOperation { accountContext in
+			let snapshot = try await persistence.mutate(
+				expectedEpoch: accountContext.epoch
+			) {
+				guard let index = $0.firstIndex(where: {
+					$0.id == commit.hostId
+				}) else { return }
+				switch commit.source {
+				case .unchanged:
+					break
+				case .password:
+					$0[index].credential = .password
+				case let .keyFile(path, hasPassphrase):
+					$0[index].credential = .keyFile(
+						keyPath: path,
+						hasPassphrase: hasPassphrase
+					)
+				}
+				$0[index].credentialMaterialDirty = false
 			}
-			$0[index].credentialMaterialDirty = false
+			publish(snapshot, expectedEpoch: accountContext.epoch)
 		}
-		publish(snapshot, expectedEpoch: epoch)
 	}
 
 	public func resetCredentialMaterialForAccountChange() async throws {
+		let hostIDs = Set(hosts.map(\.id))
+			.union(pendingCredentialCleanupHostIDs)
 		try await credentialMaterialStore
 			.resetAllCredentialMaterialForAccountChange(
-				hostIDs: hosts.map(\.id)
+				hostIDs: Array(hostIDs)
 			)
 	}
 
@@ -359,11 +399,14 @@ extension MobileHostStore: HostCredentialRepository {
 		let epoch = accountEpoch
 		await waitForAccountOperationsToDrain()
 		do {
-			let hostIDs = try await persistence.beginAccountReset(epoch: epoch)
+			let persistedHostIDs = try await persistence.beginAccountReset(epoch: epoch)
+			let hostIDs = Set(persistedHostIDs)
+				.union(pendingCredentialCleanupHostIDs)
 			try await credentialMaterialStore
-				.resetAllCredentialMaterialForAccountChange(hostIDs: hostIDs)
+				.resetAllCredentialMaterialForAccountChange(hostIDs: Array(hostIDs))
 			let snapshot = try await persistence.completeAccountReset(epoch: epoch)
 			publish(snapshot, expectedEpoch: epoch)
+			pendingCredentialCleanupHostIDs.removeAll()
 			accountResetAwaitingAcknowledgement = true
 		} catch {
 			await persistence.abortAccountReset(epoch: epoch)
@@ -401,19 +444,22 @@ extension MobileHostStore {
 	}
 
 	public func updateLocalHostMetadata(_ host: SSHHost) async throws {
-		let epoch = try writableEpoch()
-		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
-			guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
-				throw StoreError.hostNotFound
+		try await withAccountOperation { accountContext in
+			let snapshot = try await persistence.mutate(
+				expectedEpoch: accountContext.epoch
+			) {
+				guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
+					throw StoreError.hostNotFound
+				}
+				var metadata = host
+				metadata.credential = $0[index].credential
+				metadata.credentialMaterialDirty = $0[index].credentialMaterialDirty
+				metadata.updatedAt = Date()
+				$0[index] = metadata
 			}
-			var metadata = host
-			metadata.credential = $0[index].credential
-			metadata.credentialMaterialDirty = $0[index].credentialMaterialDirty
-			metadata.updatedAt = Date()
-			$0[index] = metadata
+			publish(snapshot, expectedEpoch: accountContext.epoch)
+			localMutationsSubject.send()
 		}
-		publish(snapshot, expectedEpoch: epoch)
-		localMutationsSubject.send()
 	}
 
 	public func deleteLocalHost(id: UUID) async throws {
@@ -425,73 +471,83 @@ extension MobileHostStore {
 	}
 
 	public func recordPendingRemoteDeletion(serverID: String) async throws {
-		let epoch = try writableEpoch()
-		try await persistence.recordDeletion(
-			serverID: serverID,
-			expectedEpoch: epoch
-		)
+		try await withAccountOperation { accountContext in
+			try await persistence.recordDeletion(
+				serverID: serverID,
+				expectedEpoch: accountContext.epoch
+			)
+		}
 	}
 
 	public func clearPendingRemoteDeletion(serverID: String) async throws {
-		let epoch = try writableEpoch()
-		try await persistence.clearDeletion(
-			serverID: serverID,
-			expectedEpoch: epoch
-		)
+		try await withAccountOperation { accountContext in
+			try await persistence.clearDeletion(
+				serverID: serverID,
+				expectedEpoch: accountContext.epoch
+			)
+		}
 	}
 
 	public func createHostFromRemote(_ remote: RemoteHost) async throws -> UUID {
-		let epoch = try writableEpoch()
-		let result = try await persistence.createFromRemote(
-			remote,
-			expectedEpoch: epoch
-		)
-		publish(result.snapshot, expectedEpoch: epoch)
-		return result.localID
+		try await withAccountOperation { accountContext in
+			let result = try await persistence.createFromRemote(
+				remote,
+				expectedEpoch: accountContext.epoch
+			)
+			publish(result.snapshot, expectedEpoch: accountContext.epoch)
+			return result.localID
+		}
 	}
 
 	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) async throws {
-		let epoch = try writableEpoch()
-		let snapshot = try await persistence.updateFromRemote(
-			localID: localID,
-			remote: remote,
-			expectedEpoch: epoch
-		)
-		publish(snapshot, expectedEpoch: epoch)
+		try await withAccountOperation { accountContext in
+			let snapshot = try await persistence.updateFromRemote(
+				localID: localID,
+				remote: remote,
+				expectedEpoch: accountContext.epoch
+			)
+			publish(snapshot, expectedEpoch: accountContext.epoch)
+		}
 	}
 
 	public func assignServerID(_ serverID: String, to localID: UUID) async throws {
-		let epoch = try writableEpoch()
-		let snapshot = try await persistence.assignServerID(
-			serverID,
-			to: localID,
-			expectedEpoch: epoch
-		)
-		publish(snapshot, expectedEpoch: epoch)
+		try await withAccountOperation { accountContext in
+			let snapshot = try await persistence.assignServerID(
+				serverID,
+				to: localID,
+				expectedEpoch: accountContext.epoch
+			)
+			publish(snapshot, expectedEpoch: accountContext.epoch)
+		}
 	}
 
 	public func markCredentialMaterialSynced(for localID: UUID) async throws {
-		let epoch = try writableEpoch()
-		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
-			guard let index = $0.firstIndex(where: { $0.id == localID }) else {
-				throw StoreError.hostNotFound
+		try await withAccountOperation { accountContext in
+			let snapshot = try await persistence.mutate(
+				expectedEpoch: accountContext.epoch
+			) {
+				guard let index = $0.firstIndex(where: { $0.id == localID }) else {
+					throw StoreError.hostNotFound
+				}
+				$0[index].credentialMaterialDirty = false
 			}
-			$0[index].credentialMaterialDirty = false
+			publish(snapshot, expectedEpoch: accountContext.epoch)
 		}
-		publish(snapshot, expectedEpoch: epoch)
 	}
 
 	public func deleteHostFromRemote(localID: UUID) async throws {
-		let epoch = try writableEpoch()
-		try await delete(
-			id: localID,
-			enqueueRemoteDeletion: false,
-			accountContext: AccountContext(epoch: epoch)
-		)
+		try await withAccountOperation { accountContext in
+			try await delete(
+				id: localID,
+				enqueueRemoteDeletion: false,
+				accountContext: accountContext
+			)
+		}
 	}
 
 	public func hasIdentityBoundState() async -> Bool {
-		await persistence.hasIdentityBoundState()
+		if !pendingCredentialCleanupHostIDs.isEmpty { return true }
+		return await persistence.hasIdentityBoundState()
 	}
 }
 

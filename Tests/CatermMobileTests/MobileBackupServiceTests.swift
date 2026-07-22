@@ -33,6 +33,69 @@ private actor BackupCommitGate {
 		releaseContinuation?.resume()
 		releaseContinuation = nil
 	}
+
+	func blocked() -> Bool { isBlocked }
+}
+
+private actor BackupPersistenceGate {
+	private var entryContinuation: CheckedContinuation<Void, Never>?
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+	private var isReleased = false
+
+	func block() async {
+		guard !isReleased else { return }
+		await withCheckedContinuation { continuation in
+			entryContinuation = continuation
+		}
+		guard !isReleased else { return }
+		await withCheckedContinuation { continuation in
+			releaseContinuation = continuation
+		}
+	}
+
+	func waitUntilBlocked() async {
+		while entryContinuation == nil {
+			await Task.yield()
+		}
+		entryContinuation?.resume()
+		entryContinuation = nil
+	}
+
+	func release() {
+		isReleased = true
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
+}
+
+private final class FailingBackupCredentialStore: MobileCredentialStoring {
+	enum Failure: Error {
+		case deleteRejected
+	}
+
+	var values: [String: String] = [:]
+	var failingDeleteAccounts: Set<String> = []
+
+	func set(account: String, secret: String) throws {
+		values[account] = secret
+	}
+
+	func get(
+		account: String,
+		interaction _: KeychainReadInteraction
+	) throws -> String {
+		guard let value = values[account] else { throw KeychainError.notFound }
+		return value
+	}
+
+	func delete(account: String) throws {
+		guard !failingDeleteAccounts.contains(account) else {
+			throw Failure.deleteRejected
+		}
+		guard values.removeValue(forKey: account) != nil else {
+			throw KeychainError.notFound
+		}
+	}
 }
 
 @MainActor
@@ -262,6 +325,146 @@ final class MobileBackupServiceTests: XCTestCase {
 		XCTAssertThrowsError(try keychain.get(
 			account: MobileCredentialPlan.keyPassphraseAccount(archiveID)
 		))
+		XCTAssertNil(try managedKeys.read(hostId: archiveID))
+	}
+
+	func test_importWaitsForInFlightWriteAndUsesCanonicalHostSnapshot() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-race-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let persistenceGate = BackupPersistenceGate()
+		let persistence = MobileHostPersistence(
+			hostsURL: hostsURL,
+			hosts: [],
+			beforeMutation: { await persistenceGate.block() }
+		)
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys,
+			persistence: persistence
+		)
+		let importGate = BackupCommitGate()
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: keychain,
+			managedKeys: managedKeys,
+			beforeCommit: { await importGate.block() }
+		)
+		let directHost = Host(
+			name: "direct-write",
+			hostname: "direct.example.com",
+			port: 22,
+			username: "deploy",
+			credential: .agent
+		)
+		let archiveID = UUID()
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: archiveID,
+				serverId: nil,
+				name: "backup-write",
+				hostname: "backup.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "password",
+				hasPassphrase: false,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil
+			)]
+		)
+		let plan = MobileBackupService.plan(
+			payload: payload,
+			hosts: [],
+			snippets: [],
+			keychain: keychain
+		)
+		let directWrite = Task { @MainActor in
+			try await store.add(directHost)
+		}
+
+		await persistenceGate.waitUntilBlocked()
+		let importTask = Task { @MainActor in
+			try await coordinator.apply(
+				plan: plan,
+				hosts: [],
+				snippets: []
+			)
+		}
+		for _ in 0..<20 { await Task.yield() }
+		let importReachedCommit = await importGate.blocked()
+		XCTAssertFalse(importReachedCommit)
+
+		await persistenceGate.release()
+		try await directWrite.value
+		await importGate.waitUntilBlocked()
+		await importGate.release()
+		_ = try await importTask.value
+
+		XCTAssertEqual(Set(store.hosts.map(\.id)), [directHost.id, archiveID])
+		XCTAssertEqual(
+			Set(try HostPersistence.load(from: hostsURL).map(\.id)),
+			[directHost.id, archiveID]
+		)
+	}
+
+	func test_rollbackContinuesAfterOneCredentialItemFails() async throws {
+		enum CommitFailure: Error { case rejected }
+		let credentials = FailingBackupCredentialStore()
+		let archiveID = UUID()
+		let passwordAccount = MobileCredentialPlan.passwordAccount(archiveID)
+		let passphraseAccount = MobileCredentialPlan.keyPassphraseAccount(archiveID)
+		credentials.failingDeleteAccounts = [passwordAccount]
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: archiveID,
+				serverId: nil,
+				name: "rollback",
+				hostname: "rollback.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "keyFile",
+				hasPassphrase: true,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil,
+				password: "password",
+				passphrase: "passphrase",
+				privateKey: Data("PRIVATE-KEY".utf8)
+			)]
+		)
+		let plan = BackupMergePlanner.plan(
+			payload: payload,
+			localHosts: [],
+			needsCredentialSetup: { _ in true },
+			localSnippets: [],
+			localSettingsRevision: nil,
+			localBookmarks: { _ in [] },
+			localKnownHostsLines: []
+		)
+
+		do {
+			_ = try await MobileBackupService.apply(
+				plan: plan,
+				hosts: [],
+				snippets: [],
+				keychain: credentials,
+				managedKeys: managedKeys,
+				commit: { _ in throw CommitFailure.rejected }
+			)
+			XCTFail("Expected rollback failure")
+		} catch MobileBackupService.ApplyError.rollbackFailed {
+			// Expected.
+		}
+
+		XCTAssertEqual(credentials.values[passwordAccount], "password")
+		XCTAssertNil(credentials.values[passphraseAccount])
 		XCTAssertNil(try managedKeys.read(hostId: archiveID))
 	}
 
