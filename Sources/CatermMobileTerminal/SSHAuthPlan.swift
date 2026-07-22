@@ -1,14 +1,14 @@
 import Foundation
 import SSHCommandBuilder
 
-public struct SSHAuthPlan: Equatable {
-	public enum Attempt: Equatable {
+public struct SSHAuthPlan: Equatable, Sendable {
+	public enum Attempt: Equatable, Sendable {
 		case password(String)
 		case privateKey(blob: Data, passphrase: String?)
 		case keyboardInteractive
 	}
 
-	public enum Missing: Equatable {
+	public enum Missing: Equatable, Sendable {
 		case password
 		case passphrase
 		case keyBlob

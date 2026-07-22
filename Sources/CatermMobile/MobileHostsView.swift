@@ -1,12 +1,12 @@
 import CatermMobileTerminal
 import Foundation
-import KeychainStore
 import SSHCommandBuilder
 import SwiftUI
 
 public struct MobileHostsView: View {
 	@Binding private var hosts: [SSHHost]
 	@Environment(\.mobileHostSave) private var hostSave
+	@Environment(\.mobileTerminalSessionFactory) private var terminalSessionFactory
 	@State private var searchText = ""
 	@State private var showingAddHost = false
 	@State private var editingHost: SSHHost?
@@ -61,14 +61,15 @@ public struct MobileHostsView: View {
 			destination(for: route)
 		}
 		.toolbar {
-			ToolbarItem(placement: .primaryAction) {
-				Button {
-					showingAddHost = true
-				} label: {
-					Image(systemName: "plus")
-				}
-				.accessibilityLabel("Add Host")
+			#if os(iOS)
+			ToolbarItem(placement: .topBarTrailing) {
+				addHostButton
 			}
+			#else
+			ToolbarItem(placement: .primaryAction) {
+				addHostButton
+			}
+			#endif
 		}
 		.sheet(isPresented: $showingAddHost) {
 			NavigationStack {
@@ -76,7 +77,7 @@ public struct MobileHostsView: View {
 					saveHost(payload) {
 						showingAddHost = false
 					}
-			}
+				}
 			}
 		}
 		.sheet(item: $editingHost) { host in
@@ -108,38 +109,49 @@ public struct MobileHostsView: View {
 		}
 	}
 
-	static func liveSession(for host: SSHHost) -> SSHTerminalSession {
-		let kc = KeychainStore(service: MobileCredentialWriter.defaultService, accessGroup: nil)
-		var password = try? kc.get(account: MobileCredentialPlan.passwordAccount(host.id))
-		var passphrase = try? kc.get(account: MobileCredentialPlan.keyPassphraseAccount(host.id))
+	private var addHostButton: some View {
+		Button {
+			showingAddHost = true
+		} label: {
+			Image(systemName: "plus")
+		}
+		.accessibilityLabel("Add Host")
+	}
 
+	@MainActor
+	static func fallbackSession(for host: SSHHost) async throws -> SSHTerminalSession {
 		#if targetEnvironment(simulator)
-		// The iOS Simulator refuses to launch an ad-hoc / SwiftPM-wrapped
-		// build that carries the keychain-access-groups entitlement, so the
-		// Keychain is simply unavailable on the simulator and the reads
-		// above return nil. To allow real-SSH end-to-end verification there,
-		// fall back to credentials injected via the launch environment.
-		// This is compiled out entirely on device, so device builds remain
-		// strictly Keychain-backed.
 		let env = ProcessInfo.processInfo.environment
-		if password == nil { password = env["CATERM_SIM_SSH_PASSWORD"] }
-		if passphrase == nil { passphrase = env["CATERM_SIM_SSH_PASSPHRASE"] }
+		let password = env["CATERM_SIM_SSH_PASSWORD"]
+		let passphrase = env["CATERM_SIM_SSH_PASSPHRASE"]
+		#else
+		let password: String? = nil
+		let passphrase: String? = nil
 		#endif
-		let keyBlob: Data? = {
+		let keyBlob: Data? = await Task.detached {
 			if case let .keyFile(path, _) = host.credential {
 				return try? Data(contentsOf: URL(fileURLWithPath: (path as NSString).expandingTildeInPath))
 			}
 			return nil
-		}()
+		}.value
 		let plan = SSHAuthPlan.make(
 			host: host, password: password, keyBlob: keyBlob, passphrase: passphrase)
-		let support = FileManager.default
-			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+		let support = (FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+			?? FileManager.default.temporaryDirectory)
 			.appendingPathComponent("Caterm", isDirectory: true)
 		let knownHosts = MobileKnownHostsStore(
 			fileURL: support.appendingPathComponent("known_hosts.json"))
 		let transport = NIOSSHTransport(host: host, plan: plan, knownHosts: knownHosts)
 		return SSHTerminalSession(host: host, transport: transport)
+	}
+
+	@MainActor
+	private func makeSession(for host: SSHHost) async throws -> SSHTerminalSession {
+		if let terminalSessionFactory {
+			return try await terminalSessionFactory.make(host)
+		}
+		return try await Self.fallbackSession(for: host)
 	}
 
 	private func saveHost(
@@ -213,7 +225,7 @@ public struct MobileHostsView: View {
 			if let host = hosts.first(where: { $0.id == id }) {
 				#if canImport(UIKit)
 				MobileTerminalSessionView(initialHost: host, hosts: hosts) {
-					Self.liveSession(for: $0)
+					try await makeSession(for: $0)
 				}
 				#else
 				MobileTerminalPlaceholderView(host: host, snippet: nil)
@@ -231,6 +243,7 @@ struct MobileHostDetailView: View {
 	let onDelete: () -> Void
 	let onUpdate: (SSHHost) -> Void
 	@Environment(\.mobileHostSave) private var hostSave
+	@Environment(\.mobileTerminalSessionFactory) private var terminalSessionFactory
 	@State private var showingDeleteConfirmation = false
 	@State private var showingEdit = false
 	@State private var localRoute: MobileHostRoute?
@@ -332,9 +345,12 @@ struct MobileHostDetailView: View {
 		case .terminalPlaceholder(let id):
 			if id == host.id {
 				#if canImport(UIKit)
-				MobileTerminalSessionView(initialHost: host, hosts: [host]) {
-					MobileHostsView.liveSession(for: $0)
-				}
+					MobileTerminalSessionView(initialHost: host, hosts: [host]) {
+						if let terminalSessionFactory {
+							return try await terminalSessionFactory.make($0)
+						}
+						return try await MobileHostsView.fallbackSession(for: $0)
+					}
 				#else
 				MobileTerminalPlaceholderView(host: host, snippet: nil)
 				#endif

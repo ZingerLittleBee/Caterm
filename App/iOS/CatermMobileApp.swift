@@ -1,5 +1,4 @@
 import CatermMobile
-import KeychainStore
 import SwiftUI
 
 /// iOS/iPadOS entry point. A thin SwiftUI shell over `MobileRootView`
@@ -10,36 +9,39 @@ import SwiftUI
 /// later phase, not a shared filesystem).
 @main
 struct CatermMobileApp: App {
+	#if canImport(UIKit)
+	@UIApplicationDelegateAdaptor(MobilePushDelegate.self) private var pushDelegate
+	#endif
+	@StateObject private var composition: MobileAppComposition
+
+	init() {
+		let supportURL = Self.applicationSupportURL
+		let composition = MobileAppComposition.live(
+			hostsURL: supportURL.appendingPathComponent("hosts.json"),
+			applicationSupportURL: supportURL
+		)
+		_composition = StateObject(wrappedValue: composition)
+	}
+
 	var body: some Scene {
 		WindowGroup {
-			Self.makeRootView()
+			MobileRootView(
+				hostStore: composition.hostStore,
+				credentialWriter: composition.credentialWriter,
+				syncRuntime: composition.syncRuntime,
+				terminalSessionFactory: composition.terminalSessionFactory,
+				startObservingAccountChanges: composition.startObservingAccountChanges
+			)
 		}
 	}
 
-	@MainActor
-	private static func makeRootView() -> MobileRootView {
-		let credentialWriter = MobileCredentialWriter(
-			keychain: KeychainStore(
-				service: MobileCredentialWriter.defaultService,
-				accessGroup: nil
-			)
-		)
-		let hostStore = MobileHostStore(
-			fileURL: hostsURL,
-			credentialWriter: credentialWriter
-		)
-		return MobileRootView(
-			hostStore: hostStore,
-			credentialWriter: credentialWriter
-		)
-	}
-
-	private static var hostsURL: URL {
-		let supportDir = FileManager.default
-			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+	private static var applicationSupportURL: URL {
+		let supportDir = (FileManager.default
+			.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+			?? FileManager.default.temporaryDirectory)
 			.appendingPathComponent("Caterm", isDirectory: true)
 		try? FileManager.default.createDirectory(
 			at: supportDir, withIntermediateDirectories: true)
-		return supportDir.appendingPathComponent("hosts.json")
+		return supportDir
 	}
 }

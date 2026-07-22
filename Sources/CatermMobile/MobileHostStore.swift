@@ -1,9 +1,12 @@
 import Combine
+import CredentialSync
 import Foundation
 import HostRepositoryCore
+import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SSHCommandBuilder
+import SSHCredentialContract
 import SwiftUI
 
 /// Mobile host store. Backs the mobile shell with the same on-disk host
@@ -30,16 +33,27 @@ public final class MobileHostStore: ObservableObject {
 
 	private let fileURL: URL
 	private let credentialWriter: MobileCredentialWriter?
+	public let credentialMaterialStore: SessionCredentialMaterialStore
+	public let managedKeyStore: ManagedKeyStore
 	private let localMutationsSubject = PassthroughSubject<Void, Never>()
 	private var deletionOutbox: HostDeletionOutbox
 	@Published public private(set) var lastPersistenceFailure: PersistenceFailure?
 
 	public init(
 		fileURL: URL,
-		credentialWriter: MobileCredentialWriter? = nil
+		credentialWriter: MobileCredentialWriter? = nil,
+		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
+		credentialMaterialStore: SessionCredentialMaterialStore? = nil
 	) {
 		self.fileURL = fileURL
 		self.credentialWriter = credentialWriter
+		self.managedKeyStore = managedKeyStore
+		self.credentialMaterialStore = credentialMaterialStore
+			?? SessionCredentialMaterialStore(
+				keychainService: SSHCredentialContract.keychainService,
+				keychainAccessGroup: nil,
+				managedKeyStore: managedKeyStore
+			)
 		self.hosts = (try? HostPersistence.load(from: fileURL)) ?? []
 		self.deletionOutbox = HostDeletionOutbox(hostsURL: fileURL)
 	}
@@ -170,7 +184,54 @@ public final class MobileHostStore: ObservableObject {
 
 }
 
-extension MobileHostStore: HostRepository {
+extension MobileHostStore: HostCredentialRepository {
+	public func managedKeyPath(for hostID: UUID) -> String {
+		managedKeyStore.path(hostId: hostID).path
+	}
+
+	public func applyRemoteCredentialSource(
+		_ commit: RemoteCredentialMaterialCommit
+	) throws {
+		guard let index = hosts.firstIndex(where: {
+			$0.id == commit.hostId
+		}) else { return }
+		var updated = hosts
+		switch commit.source {
+		case .unchanged:
+			break
+		case .password:
+			updated[index].credential = .password
+		case let .keyFile(path, hasPassphrase):
+			updated[index].credential = .keyFile(
+				keyPath: path,
+				hasPassphrase: hasPassphrase
+			)
+		}
+		updated[index].credentialMaterialDirty = false
+		try persist(updated)
+		hosts = updated
+	}
+
+	public func resetCredentialMaterialForAccountChange() async throws {
+		try await credentialMaterialStore
+			.resetAllCredentialMaterialForAccountChange(
+				hostIDs: hosts.map(\.id)
+			)
+	}
+
+	/// Clears identity-bound local Host state only after credential material is
+	/// gone. The caller keeps synchronization suspended until this succeeds.
+	public func resetForAccountChange() async throws {
+		try await resetCredentialMaterialForAccountChange()
+		try persist([])
+		for serverID in try deletionOutbox.pendingIDs() {
+			try deletionOutbox.remove(serverID)
+		}
+		hosts = []
+	}
+}
+
+extension MobileHostStore {
 	public var hostSnapshot: [SSHHost] { hosts }
 	public var localMutations: AnyPublisher<Void, Never> {
 		localMutationsSubject.eraseToAnyPublisher()

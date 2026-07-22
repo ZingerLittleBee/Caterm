@@ -162,7 +162,7 @@ let package = Package(
         ),
         .target(
             name: "CredentialSync",
-            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore", "KeychainStore"],
+            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore", "KeychainStore", "HostRepositoryCore"],
             path: "Sources/CredentialSync"
         ),
         .target(
@@ -171,7 +171,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "CredentialSync", "CredentialSyncStore", "CloudKitSyncClient", "ServerSyncClient", "SettingsSyncStore"],
             path: "Sources/CatermMobile"
         ),
         .target(
@@ -313,7 +313,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermMobileTests",
-            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "ServerSyncClient"],
+            dependencies: ["CatermMobile", "CatermMobileTerminal", "CloudKitSyncClient", "SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "ServerSyncClient", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes"],
             path: "Tests/CatermMobileTests"
         ),
         .testTarget(

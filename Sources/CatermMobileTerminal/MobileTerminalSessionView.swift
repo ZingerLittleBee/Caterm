@@ -38,10 +38,13 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	public let terminalView: TerminalView
 	private let coordinator = TerminalCoordinator()
 	public private(set) var session: SSHTerminalSession?
-	private let make: (SSHHost) -> SSHTerminalSession
+	private let make: @MainActor (SSHHost) async throws -> SSHTerminalSession
 	private var started = false
 
-	public init(host: SSHHost, makeSession: @escaping (SSHHost) -> SSHTerminalSession) {
+	public init(
+		host: SSHHost,
+		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
+	) {
 		self.host = host
 		self.title = host.name
 		self.make = makeSession
@@ -63,15 +66,29 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	public func start() {
 		guard !started else { return }
 		started = true
-		let s = make(host)
-		s.onStateChange = { [weak self] st in
-			Task { @MainActor in self?.state = st }
+		state = .connecting
+		Task { @MainActor [weak self] in
+			guard let self else { return }
+			do {
+				let session = try await make(host)
+				guard started else {
+					await session.disconnect()
+					return
+				}
+				session.onStateChange = { [weak self] state in
+					Task { @MainActor in self?.state = state }
+				}
+				session.onOutput = { [weak self] bytes in
+					Task { @MainActor in self?.coordinator.feed(bytes) }
+				}
+				self.session = session
+				await session.connect()
+			} catch is CancellationError {
+				self.started = false
+			} catch {
+				self.state = .failed(reason: error.localizedDescription)
+			}
 		}
-		s.onOutput = { [weak self] bytes in
-			Task { @MainActor in self?.coordinator.feed(bytes) }
-		}
-		session = s
-		Task { await s.connect() }
 	}
 
 	public func tapKey(_ key: TerminalKeyBar.Key) {
@@ -152,9 +169,12 @@ public final class TerminalSessionsModel: ObservableObject {
 	@Published public var selectedID: UUID?
 	@Published public var keyboardMode: TerminalKeyboardMode = .custom
 
-	private let makeSession: (SSHHost) -> SSHTerminalSession
+	private let makeSession: @MainActor (SSHHost) async throws -> SSHTerminalSession
 
-	public init(initialHost: SSHHost, makeSession: @escaping (SSHHost) -> SSHTerminalSession) {
+	public init(
+		initialHost: SSHHost,
+		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
+	) {
 		self.makeSession = makeSession
 		self.keyboardMode = MobileTerminalSettings.defaultKeyboardMode
 		addTab(host: initialHost)
@@ -224,7 +244,7 @@ public struct MobileTerminalSessionView: View {
 		initialHost: SSHHost,
 		hosts: [SSHHost] = [],
 		snippets: [TerminalSnippet] = [],
-		makeSession: @escaping (SSHHost) -> SSHTerminalSession
+		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
 	) {
 		self.hosts = hosts
 		self.snippets = snippets

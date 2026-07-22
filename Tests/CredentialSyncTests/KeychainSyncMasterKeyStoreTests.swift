@@ -1,6 +1,13 @@
 import CryptoKit
-import CredentialSyncStore
+@testable import CredentialSyncStore
+import Security
 import XCTest
+
+private struct FixedSyncMasterKeyReader: SyncMasterKeyReading, @unchecked Sendable {
+    let result: SyncMasterKeyReadResult
+
+    func read(query _: [String: Any]) -> SyncMasterKeyReadResult { result }
+}
 
 final class KeychainSyncMasterKeyStoreTests: XCTestCase {
     /// We use a unique service per test so concurrent runs don't collide.
@@ -41,5 +48,37 @@ final class KeychainSyncMasterKeyStoreTests: XCTestCase {
         await store.remove(keyID: id)  // second call: must not throw / crash
         let afterRemove = await store.load(keyID: id)
         XCTAssertNil(afterRemove)
+    }
+
+    func test_lookupAny_distinguishesMissingFromUnavailable() async throws {
+        let missing = KeychainSyncMasterKeyStore(
+            service: "test",
+            synchronizable: false,
+            reader: FixedSyncMasterKeyReader(
+                result: SyncMasterKeyReadResult(
+                    status: errSecItemNotFound,
+                    value: nil
+                )
+            )
+        )
+        let unavailable = KeychainSyncMasterKeyStore(
+            service: "test",
+            synchronizable: false,
+            reader: FixedSyncMasterKeyReader(
+                result: SyncMasterKeyReadResult(
+                    status: errSecInteractionNotAllowed,
+                    value: nil
+                )
+            )
+        )
+
+        let missingResult = try await missing.lookupAny()
+        XCTAssertNil(missingResult)
+        do {
+            _ = try await unavailable.lookupAny()
+            XCTFail("Expected a Keychain availability error")
+        } catch let error as KeychainSyncMasterKeyStore.Error {
+            XCTAssertEqual(error, .keychainOSError(errSecInteractionNotAllowed))
+        }
     }
 }

@@ -1150,7 +1150,9 @@ public final class SessionStore: ObservableObject {
 	}
 
 	public func resetCredentialMaterialForAccountChange() async throws {
-		try await credentialMaterialStore.resetManagedKeysForAccountChange()
+		try await credentialMaterialStore.resetAllCredentialMaterialForAccountChange(
+			hostIDs: hosts.map(\.id)
+		)
 		credentialAvailabilityRevision &+= 1
 	}
 

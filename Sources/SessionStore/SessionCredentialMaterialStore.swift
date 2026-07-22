@@ -90,16 +90,16 @@ public struct CredentialMaterialReadBarrier: Sendable {
 	let id: UUID
 }
 
-enum LocalCredentialSource: Equatable, Sendable {
+public enum LocalCredentialSource: Equatable, Sendable {
 	case password
 	case keyFile(path: String, hasPassphrase: Bool)
 	case agent
 }
 
-struct LocalCredentialMaterialCommit: Sendable {
-	let source: LocalCredentialSource
+public struct LocalCredentialMaterialCommit: Sendable {
+	public let source: LocalCredentialSource
 	let id: UUID
-	let hostId: UUID
+	public let hostId: UUID
 }
 
 public enum RemoteCredentialSource: Equatable, Sendable {
@@ -111,7 +111,7 @@ public enum RemoteCredentialSource: Equatable, Sendable {
 public struct RemoteCredentialMaterialCommit: Sendable {
 	public let source: RemoteCredentialSource
 	let id: UUID
-	let hostId: UUID
+	public let hostId: UUID
 }
 
 public enum RemoteCredentialCommitDisposition: Sendable {
@@ -120,9 +120,9 @@ public enum RemoteCredentialCommitDisposition: Sendable {
 	case discard
 }
 
-struct CredentialMaterialDeletionCommit: Sendable {
+public struct CredentialMaterialDeletionCommit: Sendable {
 	let id: UUID
-	let hostId: UUID
+	public let hostId: UUID
 }
 
 struct CredentialMaterialMigrationCommit: Sendable {
@@ -179,7 +179,7 @@ public actor SessionCredentialMaterialStore {
 	private var globalLeaseWaiters: [GlobalLeaseWaiter] = []
 	private var activeCommits: [UUID: ActiveCommit] = [:]
 
-	init(
+	public init(
 		keychainService: String,
 		keychainAccessGroup: String?,
 		managedKeyStore: ManagedKeyStore
@@ -203,7 +203,7 @@ public actor SessionCredentialMaterialStore {
 
 	/// Writes local material and returns a provisional commit while retaining
 	/// the host lease. The caller must finalize, roll back, or discard it.
-	func applyLocal(
+	public func applyLocal(
 		_ secrets: HostSecrets,
 		source: LocalCredentialSource,
 		for hostId: UUID
@@ -256,7 +256,7 @@ public actor SessionCredentialMaterialStore {
 		}
 	}
 
-	func finalizeLocalCommit(_ commit: LocalCredentialMaterialCommit) {
+	public func finalizeLocalCommit(_ commit: LocalCredentialMaterialCommit) {
 		guard isProvisionalCommit(id: commit.id, hostId: commit.hostId) else {
 			return
 		}
@@ -264,13 +264,13 @@ public actor SessionCredentialMaterialStore {
 		finishCommit(id: commit.id, hostId: commit.hostId)
 	}
 
-	func rollbackLocalCommit(
+	public func rollbackLocalCommit(
 		_ commit: LocalCredentialMaterialCommit
 	) async throws {
 		try await rollbackCommit(id: commit.id, hostId: commit.hostId)
 	}
 
-	func discardLocalCommitForDeletedHost(
+	public func discardLocalCommitForDeletedHost(
 		_ commit: LocalCredentialMaterialCommit
 	) async throws {
 		try await discardCommit(id: commit.id, hostId: commit.hostId)
@@ -599,7 +599,7 @@ public actor SessionCredentialMaterialStore {
 	/// Removes all credential material while retaining the host lease. The
 	/// caller must finalize after host metadata persists, or roll back if that
 	/// persistence fails.
-	func beginDeletion(
+	public func beginDeletion(
 		for hostId: UUID
 	) async throws -> CredentialMaterialDeletionCommit {
 		let commitID = try await acquireLease(for: hostId)
@@ -639,7 +639,7 @@ public actor SessionCredentialMaterialStore {
 		}
 	}
 
-	func finalizeDeletion(_ commit: CredentialMaterialDeletionCommit) {
+	public func finalizeDeletion(_ commit: CredentialMaterialDeletionCommit) {
 		guard isProvisionalCommit(id: commit.id, hostId: commit.hostId) else {
 			return
 		}
@@ -647,7 +647,7 @@ public actor SessionCredentialMaterialStore {
 		finishCommit(id: commit.id, hostId: commit.hostId)
 	}
 
-	func rollbackDeletion(
+	public func rollbackDeletion(
 		_ commit: CredentialMaterialDeletionCommit
 	) async throws {
 		try await rollbackCommit(id: commit.id, hostId: commit.hostId)
@@ -666,6 +666,38 @@ public actor SessionCredentialMaterialStore {
 		}
 		try Task.checkCancellation()
 		try await managedKeyStore.wipeAll()
+	}
+
+	/// Removes all credential material associated with the departing account.
+	/// The global lease prevents an older per-Host transaction from resuming
+	/// after the reset and repopulating wiped material.
+	public func resetAllCredentialMaterialForAccountChange(
+		hostIDs: [UUID]
+	) async throws {
+		let leaseID = try await acquireGlobalLease(
+			rejectQueuedHostTransactions: true
+		)
+		defer {
+			globalGeneration &+= 1
+			releaseGlobalLease(id: leaseID)
+		}
+		try Task.checkCancellation()
+		var firstError: (any Error)?
+		for hostID in hostIDs {
+			do {
+				try secrets.deleteAll(
+					prefix: SSHCredentialContract.accountPrefix(hostID: hostID)
+				)
+			} catch {
+				if firstError == nil { firstError = error }
+			}
+		}
+		do {
+			try await managedKeyStore.wipeAll()
+		} catch {
+			if firstError == nil { firstError = error }
+		}
+		if let firstError { throw firstError }
 	}
 
 	#if DEBUG

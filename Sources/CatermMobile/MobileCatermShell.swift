@@ -3,6 +3,7 @@ import Combine
 import FileTransferStore
 import SnippetSyncClient
 import SSHCommandBuilder
+import SettingsSyncStore
 import SwiftUI
 
 /// Array-seeded mobile shell. Keeps an in-memory `@State` copy of every
@@ -42,7 +43,11 @@ public struct MobileCatermShell: View {
 /// the desktop terminal surface stay isolated.
 public struct MobileRootView: View {
 	@StateObject private var hostStore: MobileHostStore
+	@StateObject private var syncRuntime: MobileHostSyncRuntime
+	@Environment(\.scenePhase) private var scenePhase
 	private let credentialWriter: MobileCredentialWriter
+	private let terminalSessionFactory: MobileTerminalSessionFactory
+	private let startObservingAccountChanges: () -> Void
 	@State private var operationError: MobileHostOperationError?
 	@State private var snippets: [Snippet]
 	@State private var remoteEntries: [RemoteEntry]
@@ -51,12 +56,18 @@ public struct MobileRootView: View {
 	public init(
 		hostStore: MobileHostStore,
 		credentialWriter: MobileCredentialWriter,
+		syncRuntime: MobileHostSyncRuntime,
+		terminalSessionFactory: MobileTerminalSessionFactory,
+		startObservingAccountChanges: @escaping () -> Void = {},
 		snippets: [Snippet] = [],
 		remoteEntries: [RemoteEntry] = [],
 		transfers: [TransferTask] = []
 	) {
 		_hostStore = StateObject(wrappedValue: hostStore)
+		_syncRuntime = StateObject(wrappedValue: syncRuntime)
 		self.credentialWriter = credentialWriter
+		self.terminalSessionFactory = terminalSessionFactory
+		self.startObservingAccountChanges = startObservingAccountChanges
 		_snippets = State(initialValue: snippets)
 		_remoteEntries = State(initialValue: remoteEntries)
 		_transfers = State(initialValue: transfers)
@@ -97,6 +108,26 @@ public struct MobileRootView: View {
 				}
 			}
 		))
+		.environment(\.mobileTerminalSessionFactory, terminalSessionFactory)
+		.safeAreaInset(edge: .top, spacing: 0) {
+			MobileHostSyncStatusView(state: syncRuntime.state)
+		}
+		.refreshable {
+			await syncRuntime.refresh()
+		}
+		.task {
+			startObservingAccountChanges()
+			await syncRuntime.launch()
+		}
+		.onChange(of: scenePhase) { _, phase in
+			guard phase == .active else { return }
+			Task { await syncRuntime.becameActive() }
+		}
+		.onReceive(
+			NotificationCenter.default.publisher(for: .catermICloudAccountChanged)
+		) { _ in
+			Task { await syncRuntime.accountDidChange() }
+		}
 		.alert(item: $operationError) { failure in
 			Alert(
 				title: Text(failure.title),
@@ -111,6 +142,48 @@ public struct MobileRootView: View {
 			)
 			hostStore.clearPersistenceFailure()
 		}
+	}
+}
+
+private struct MobileHostSyncStatusView: View {
+	let state: MobileHostSyncState
+
+	var body: some View {
+		switch state {
+		case .upToDate:
+			EmptyView()
+		case .checkingAccount:
+			status("Checking iCloud…", systemImage: "icloud", progress: true)
+		case .syncing:
+			status("Syncing Hosts…", systemImage: "arrow.triangle.2.circlepath", progress: true)
+		case .signedOut:
+			status("Hosts are available offline. Sign in to iCloud to sync.", systemImage: "icloud.slash")
+		case let .temporarilyUnavailable(message):
+			status(message, systemImage: "exclamationmark.icloud")
+		}
+	}
+
+	private func status(
+		_ text: String,
+		systemImage: String,
+		progress: Bool = false
+	) -> some View {
+		HStack(spacing: 8) {
+			if progress {
+				ProgressView().controlSize(.small)
+			} else {
+				Image(systemName: systemImage)
+			}
+			Text(text)
+				.font(.footnote)
+				.lineLimit(2)
+			Spacer(minLength: 0)
+		}
+		.padding(.horizontal, 12)
+		.padding(.vertical, 8)
+		.background(.bar)
+		.accessibilityElement(children: .combine)
+		.accessibilityLabel(state.accessibilityDescription)
 	}
 }
 
@@ -269,6 +342,7 @@ private struct MobileShellSidebar: View {
 }
 
 private struct MobileShellDetail: View {
+	@Environment(\.mobileTerminalSessionFactory) private var terminalSessionFactory
 	@Environment(\.mobileHostSave) private var hostSave
 	@Binding var selection: MobileShellSelection?
 	@Binding var hosts: [SSHHost]
@@ -322,7 +396,12 @@ private struct MobileShellDetail: View {
 					snippets: snippets.map {
 						TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
 					}
-				) { MobileHostsView.liveSession(for: $0) }
+					) {
+						if let terminalSessionFactory {
+							return try await terminalSessionFactory.make($0)
+						}
+						return try await MobileHostsView.fallbackSession(for: $0)
+					}
 				#else
 				MobileTerminalPlaceholderView(host: host, snippet: nil)
 				#endif

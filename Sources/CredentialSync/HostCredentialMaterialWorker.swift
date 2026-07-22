@@ -48,7 +48,7 @@ actor HostCredentialMaterialWorker: HostCredentialMaterialWorking {
         from request: LocalCredentialEncryptionRequest,
         loadMaterial: @escaping CredentialMaterialLoader
     ) async throws -> EncryptedLocalCredentialBlob? {
-        guard let resolved = await masterKeyStore.loadAny() else { return nil }
+        guard let resolved = try await masterKeyStore.lookupAny() else { return nil }
         try Task.checkCancellation()
         let material = try await loadMaterial()
         try Task.checkCancellation()
@@ -103,7 +103,7 @@ actor HostCredentialMaterialWorker: HostCredentialMaterialWorking {
         guard let keyID = blob.keyID else {
             return .missingKey(keyID: nil)
         }
-        guard let masterKey = await masterKeyStore.load(keyID: keyID) else {
+        guard let masterKey = try await masterKeyStore.lookup(keyID: keyID) else {
             return .missingKey(keyID: keyID)
         }
         try Task.checkCancellation()

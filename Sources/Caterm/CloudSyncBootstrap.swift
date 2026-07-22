@@ -54,6 +54,7 @@ struct CloudSyncBootstrap {
 	}
 }
 
+@MainActor
 private final class DisabledCloudAccountSession: AuthSessionProtocol, AccountSessionProviding {
 	let isSignedIn = false
 

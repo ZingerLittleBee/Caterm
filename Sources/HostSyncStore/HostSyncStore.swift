@@ -100,7 +100,7 @@ public final class HostSyncStore: ObservableObject {
     private let sessionStore: SessionStore
     private let authSession: AuthSessionProtocol
     private let preferences: SyncPreferences
-    private let credentialEngine: HostCredentialSyncEngine
+    private let sharedSyncEngine: SharedHostSyncEngine
     private let userDefaults: UserDefaults
 
     /// The view layer reads the same threshold used by failure detection.
@@ -167,11 +167,12 @@ public final class HostSyncStore: ObservableObject {
         self.sessionStore = sessionStore
         self.authSession = authSession
         self.preferences = preferences
-        self.credentialEngine = HostCredentialSyncEngine(
+        self.sharedSyncEngine = SharedHostSyncEngine(
             client: client,
-            sessionStore: sessionStore,
-            preferences: credentialSync,
-            masterKeyStore: masterKeyStore
+            repository: sessionStore,
+            credentialSync: credentialSync,
+            masterKeyStore: masterKeyStore,
+            materialStore: sessionStore.credentialMaterialStore
         )
         self.periodicInterval = periodicInterval
         self.userDefaults = userDefaults
@@ -224,8 +225,8 @@ public final class HostSyncStore: ObservableObject {
                     CatermHostCredentialMaterialChangedKeys.hostId
                 ] as? UUID
                 if let changedHostId,
-                   !self.credentialEngine.handleLocalCredentialChange(
-                       hostId: changedHostId
+                   !self.sharedSyncEngine.handleLocalCredentialChange(
+                       hostID: changedHostId
                    ) {
                     return
                 }
@@ -394,57 +395,17 @@ public final class HostSyncStore: ObservableObject {
         userDefaults.set(attempted, forKey: Self.lastSyncAttemptedAtKey)
 
         do {
-            let credentialCycle = try await credentialEngine.beginCycle()
-            guard case let .hostSync(requiresFullSnapshot) = credentialCycle else {
+            let request: SharedHostSyncRequest = switch requestedMode {
+            case .auto: .automatic
+            case .forceFull: .forceFull
+            case .incremental: .incremental
+            }
+            let result = try await sharedSyncEngine.synchronize(request: request)
+            guard case .synchronized = result else {
                 // Destructive credential deletion is a side pipeline and must
                 // not advance the user-visible host freshness timestamp.
                 return
             }
-
-            let effectiveMode: HostSyncMode
-            switch requestedMode {
-            case .auto:
-                if requiresFullSnapshot {
-                    effectiveMode = .forceFull
-                } else {
-                    effectiveMode = await client.preferredHostSyncMode()
-                }
-            case .forceFull:   effectiveMode = .forceFull
-            case .incremental: effectiveMode = .incremental
-            }
-
-            let credentialOps = credentialEngine.credentialHostIDs().map {
-                SyncOperation.updateRemoteCredentials(localHostId: $0)
-            }
-
-			func runPass(_ mode: HostSyncMode) async throws {
-				_ = try await HostSynchronization.synchronize(
-					repository: sessionStore,
-					client: client,
-					mode: mode,
-					additionalOperations: credentialOps,
-					afterApply: { [weak self] operation, batch in
-						guard let self else { return }
-						try await self.applyCredentialEffects(
-							for: operation,
-							credentialBlobs: batch.credentialBlobsByServerId
-						)
-					},
-					didCommitCheckpoint: { [weak self] in
-						self?.credentialEngine.didCommitCheckpoint()
-					}
-				)
-			}
-
-			do {
-				try await runPass(effectiveMode)
-			} catch let error as ServerSyncError {
-				guard case .remoteHostNotFound = error,
-				      effectiveMode != .forceFull else {
-					throw error
-				}
-				try await runPass(.forceFull)
-			}
 
             // Spec §4.2: only update after the op loop completes without
             // throwing. Partial-apply failures must NOT advance freshness.
@@ -507,31 +468,6 @@ public final class HostSyncStore: ObservableObject {
             trigger: nil
         )
         try? await notificationCenter.add(request)
-    }
-
-    private func applyCredentialEffects(
-        for operation: SyncOperation,
-        credentialBlobs: [String: CredentialBlob]
-    ) async throws {
-        switch operation {
-        case let .createLocal(remote):
-            if let blob = credentialBlobs[remote.id],
-               let local = sessionStore.hosts.last(where: { $0.serverId == remote.id }) {
-                try await credentialEngine.applyRemoteBlob(
-                    localHostId: local.id, remote: remote, blob: blob
-                )
-            }
-        case let .updateLocal(localHostId, remote):
-            if let blob = credentialBlobs[remote.id] {
-                try await credentialEngine.applyRemoteBlob(
-                    localHostId: localHostId, remote: remote, blob: blob
-                )
-            }
-        case let .updateRemoteCredentials(localHostId):
-            try await credentialEngine.pushLocalCredential(hostId: localHostId)
-        case .createRemote, .updateRemote, .deleteLocal:
-            break
-        }
     }
 
 }

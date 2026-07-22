@@ -1,38 +1,11 @@
 import CredentialSyncStore
 import CredentialSyncTypes
 import Foundation
+import HostRepositoryCore
 import KeychainStore
 import os
 import ServerSyncClient
 import SessionStore
-
-protocol HostCredentialMaterialStoring: Sendable {
-    func snapshot(
-        for hostId: UUID,
-        selecting selection: CredentialMaterialSelection,
-        interaction: KeychainReadInteraction
-    ) async throws
-        -> StoredCredentialMaterialSnapshot
-    func currentGeneration(for hostId: UUID) async -> UInt64
-    func beginGenerationValidation(
-        for hostId: UUID,
-        expectedGeneration: UInt64
-    ) async throws -> CredentialGenerationValidation?
-    func finishGenerationValidation(
-        _ validation: CredentialGenerationValidation
-    ) async
-    func applyRemote(
-        _ secrets: HostSecrets,
-        for hostId: UUID,
-        expectedGeneration: UInt64
-    ) async throws -> RemoteCredentialMaterialCommit?
-    func resolveRemoteCommit(
-        _ commit: RemoteCredentialMaterialCommit,
-        as disposition: RemoteCredentialCommitDisposition
-    ) async throws
-}
-
-extension SessionCredentialMaterialStore: HostCredentialMaterialStoring {}
 
 /// Owns credential-specific state transitions and side effects within a host
 /// sync cycle. The surrounding `HostSyncStore` remains responsible for cycle
@@ -50,7 +23,7 @@ public final class HostCredentialSyncEngine {
     )
 
     private let client: any CredentialBlobPushing
-    private let sessionStore: SessionStore
+    private let repository: any HostCredentialRepository
     private let preferences: CredentialSyncPreferencesStore
     private let materialWorker: any HostCredentialMaterialWorking
     private let materialStore: any HostCredentialMaterialStoring
@@ -63,11 +36,26 @@ public final class HostCredentialSyncEngine {
     ) {
         self.init(
             client: client,
-            sessionStore: sessionStore,
+            repository: sessionStore,
             preferences: preferences,
             masterKeyStore: masterKeyStore,
-            materialWorker: nil,
-            materialStore: nil
+            materialStore: sessionStore.credentialMaterialStore
+        )
+    }
+
+    public init(
+        client: any CredentialBlobPushing,
+        repository: any HostCredentialRepository,
+        preferences: CredentialSyncPreferencesStore,
+        masterKeyStore: KeychainSyncMasterKeyStore,
+        materialStore: any HostCredentialMaterialStoring
+    ) {
+        self.client = client
+        self.repository = repository
+        self.preferences = preferences
+        self.materialStore = materialStore
+        self.materialWorker = HostCredentialMaterialWorker(
+            masterKeyStore: masterKeyStore
         )
     }
 
@@ -80,7 +68,7 @@ public final class HostCredentialSyncEngine {
         materialStore: (any HostCredentialMaterialStoring)? = nil
     ) {
         self.client = client
-        self.sessionStore = sessionStore
+        self.repository = sessionStore
         self.preferences = preferences
         self.materialStore = materialStore ?? sessionStore.credentialMaterialStore
         self.materialWorker = materialWorker ?? HostCredentialMaterialWorker(
@@ -109,7 +97,7 @@ public final class HostCredentialSyncEngine {
             return []
         }
 
-        return sessionStore.hosts
+        return repository.hostSnapshot
             .filter(\.credentialMaterialDirty)
             .map(\.id)
     }
@@ -128,7 +116,7 @@ public final class HostCredentialSyncEngine {
             return true
         }
         do {
-            try sessionStore.clearCredentialMaterialDirty(hostId)
+            try repository.markCredentialMaterialSynced(for: hostId)
         } catch {
             let errorDescription = String(describing: error)
             Self.log.error(
@@ -207,7 +195,7 @@ public final class HostCredentialSyncEngine {
     /// Missing prerequisites are retryable no-ops and keep the dirty bit set.
     public func pushLocalCredential(hostId: UUID) async throws {
         guard case .enabled = preferences.prefs.state else { return }
-        guard let host = sessionStore.hosts.first(where: { $0.id == hostId }) else {
+        guard let host = repository.hostSnapshot.first(where: { $0.id == hostId }) else {
             return
         }
         guard let serverId = host.serverId else { return }
@@ -223,7 +211,7 @@ public final class HostCredentialSyncEngine {
             selection = hasPassphrase
                 ? [.passphrase, .managedPrivateKey]
                 : .managedPrivateKey
-            let managedPath = sessionStore.managedKeyPath(for: hostId)
+            let managedPath = repository.managedKeyPath(for: hostId)
             fallbackPrivateKeyPath = path == managedPath ? nil : path
         case .agent:
             selection = []
@@ -251,7 +239,7 @@ public final class HostCredentialSyncEngine {
         do {
             try Task.checkCancellation()
             guard case .enabled = preferences.prefs.state,
-                  let currentHost = sessionStore.hosts.first(where: {
+                  let currentHost = repository.hostSnapshot.first(where: {
                       $0.id == hostId
                   }),
                   currentHost.serverId == serverId,
@@ -274,7 +262,7 @@ public final class HostCredentialSyncEngine {
                 $0.hostsWithCloudPayload.insert(hostId)
                 $0.cloudCredentialsCleared = false
             }
-            try sessionStore.clearCredentialMaterialDirty(hostId)
+            try repository.markCredentialMaterialSynced(for: hostId)
         } catch {
             await materialStore.finishGenerationValidation(validation)
             throw error
@@ -288,7 +276,7 @@ public final class HostCredentialSyncEngine {
         var remaining = progress.pendingLocalHostIds
         for localHostId in progress.pendingLocalHostIds {
             try Task.checkCancellation()
-            guard let host = sessionStore.hosts.first(where: {
+            guard let host = repository.hostSnapshot.first(where: {
                 $0.id == localHostId
             }), let serverId = host.serverId else {
                 remaining.removeAll { $0 == localHostId }
@@ -381,6 +369,8 @@ public final class HostCredentialSyncEngine {
             )
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as KeychainSyncMasterKeyStore.Error {
+            throw error
         } catch {
             recordCorruptAttempt(
                 localHostId: localHostId,
@@ -459,7 +449,7 @@ public final class HostCredentialSyncEngine {
                 try await abortRemoteCommit(commit, localHostId: localHostId)
                 throw error
             }
-            guard sessionStore.hosts.contains(where: { $0.id == localHostId }) else {
+            guard repository.hostSnapshot.contains(where: { $0.id == localHostId }) else {
                 try await materialStore.resolveRemoteCommit(commit, as: .discard)
                 return
             }
@@ -470,7 +460,7 @@ public final class HostCredentialSyncEngine {
             }
 
             do {
-                try sessionStore.applyRemoteCredentialSource(commit)
+                try repository.applyRemoteCredentialSource(commit)
 
                 let corruptKey = CorruptCredentialKey(
                     hostId: localHostId,
@@ -505,7 +495,7 @@ public final class HostCredentialSyncEngine {
         _ commit: RemoteCredentialMaterialCommit,
         localHostId: UUID
     ) async throws {
-        if sessionStore.hosts.contains(where: { $0.id == localHostId }) {
+        if repository.hostSnapshot.contains(where: { $0.id == localHostId }) {
             try await materialStore.resolveRemoteCommit(commit, as: .rollback)
         } else {
             try await materialStore.resolveRemoteCommit(commit, as: .discard)
@@ -517,7 +507,7 @@ public final class HostCredentialSyncEngine {
               case .enabled = preferences.prefs.state else {
             return false
         }
-        return sessionStore.hosts.contains { $0.id == localHostId }
+        return repository.hostSnapshot.contains { $0.id == localHostId }
     }
 
     private func recordCorruptAttempt(localHostId: UUID, revision: Int64) {
