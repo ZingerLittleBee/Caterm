@@ -318,6 +318,7 @@ final class MobileCredentialWriterTests: XCTestCase {
 
 		let staleSaveWasRejected = await staleSave.value
 		try await reset.value
+		try store.finishAccountTransition()
 		XCTAssertTrue(staleSaveWasRejected)
 		XCTAssertTrue(storage.values.isEmpty)
 		XCTAssertTrue(store.hosts.isEmpty)

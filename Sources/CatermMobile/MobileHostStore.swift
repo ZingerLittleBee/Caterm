@@ -44,6 +44,7 @@ public final class MobileHostStore: ObservableObject {
 	private let persistence: MobileHostPersistence
 	private var accountEpoch: UInt64 = 0
 	private var accountTransitionInProgress = false
+	private var accountResetAwaitingAcknowledgement = false
 	private var activeAccountOperations = 0
 	private var accountOperationDrainWaiters: [CheckedContinuation<Void, Never>] = []
 	private var publishedRevision: UInt64 = 0
@@ -306,6 +307,9 @@ extension MobileHostStore: HostCredentialRepository {
 	/// Clears identity-bound local Host state only after credential material is
 	/// gone. The caller keeps synchronization suspended until this succeeds.
 	public func resetForAccountChange() async throws {
+		if accountTransitionInProgress && accountResetAwaitingAcknowledgement {
+			return
+		}
 		guard !accountTransitionInProgress else {
 			throw StoreError.accountTransitionInProgress
 		}
@@ -319,12 +323,22 @@ extension MobileHostStore: HostCredentialRepository {
 				.resetAllCredentialMaterialForAccountChange(hostIDs: hostIDs)
 			let snapshot = try await persistence.completeAccountReset(epoch: epoch)
 			publish(snapshot, expectedEpoch: epoch)
-			accountTransitionInProgress = false
+			accountResetAwaitingAcknowledgement = true
 		} catch {
 			await persistence.abortAccountReset(epoch: epoch)
+			accountResetAwaitingAcknowledgement = false
 			accountTransitionInProgress = false
 			throw error
 		}
+	}
+
+	func finishAccountTransition() throws {
+		guard accountTransitionInProgress,
+			accountResetAwaitingAcknowledgement else {
+			throw StoreError.accountTransitionInProgress
+		}
+		accountResetAwaitingAcknowledgement = false
+		accountTransitionInProgress = false
 	}
 
 	private func waitForAccountOperationsToDrain() async {

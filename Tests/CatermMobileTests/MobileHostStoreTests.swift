@@ -622,6 +622,7 @@ final class MobileHostStoreTests: XCTestCase {
 
 		await gate.waitUntilBlocked()
 		try await store.resetForAccountChange()
+		try store.finishAccountTransition()
 		await gate.release()
 		let staleSaveWasRejected = await staleSave.value
 
@@ -641,6 +642,7 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertTrue(hasState)
 
 		try await store.resetForAccountChange()
+		try store.finishAccountTransition()
 		hasState = await store.hasIdentityBoundState()
 		XCTAssertFalse(hasState)
 		try await store.recordPendingRemoteDeletion(serverID: "stale-server-id")

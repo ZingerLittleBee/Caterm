@@ -189,6 +189,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 					guard generationIsCurrent(generation) else { return .cancelled }
 					resetCredentialSyncPreferences()
 					await identityBoundary.acknowledge()
+					try hostStore.finishAccountTransition()
 					guard generationIsCurrent(generation) else { return .cancelled }
 					resolvedRequest = .forceFull
 				} catch {

@@ -508,6 +508,100 @@ private func mobileFirstIdentityDoesNotUploadUnknownLocalState() async throws {
 	#expect(defaults.string(forKey: "cloudkit.lastKnownUserRecordName") == "ACCOUNT-B")
 }
 
+@Test("Mobile transition blocks new saves until identity acknowledgement")
+@MainActor
+private func mobileTransitionKeepsSaveBarrierThroughAcknowledgement() async throws {
+	actor AcknowledgementGate {
+		var entered = false
+		var continuation: CheckedContinuation<Void, Never>?
+
+		func block() async {
+			entered = true
+			await withCheckedContinuation { continuation = $0 }
+		}
+
+		func waitUntilEntered() async {
+			while !entered { await Task.yield() }
+		}
+
+		func release() {
+			continuation?.resume()
+			continuation = nil
+		}
+	}
+
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false,
+		accessGroup: nil
+	)
+	let device = fixture.makeDevice(name: "ack-barrier", masterKey: master)
+	try await device.store.add(SSHHost(
+		name: "Account A",
+		hostname: "a.example.com",
+		username: "a",
+		credential: .agent
+	))
+	let gate = AcknowledgementGate()
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: { .identityChanged },
+			acknowledge: { await gate.block() }
+		),
+		debounceInterval: 0
+	)
+	let transition = Task { @MainActor in await runtime.launch() }
+	await gate.waitUntilEntered()
+
+	let writer = MobileCredentialWriter(keychain: KeychainStore(
+		service: "com.caterm.test.ack-barrier.\(UUID().uuidString)",
+		accessGroup: nil
+	))
+	let coordinator = MobileHostSaveCoordinator(
+		hostStore: device.store,
+		credentialWriter: writer,
+		prepareCredentialSyncForSave: { _ in }
+	)
+	let accountBHost = SSHHost(
+		name: "Account B",
+		hostname: "b.example.com",
+		username: "b",
+		credential: .agent
+	)
+	let blockedSave = Task { @MainActor in
+		do {
+			try await coordinator.save(
+				MobileHostDraftPayload(host: accountBHost, secret: nil)
+			)
+			return false
+		} catch {
+			return true
+		}
+	}
+	let saveWasBlocked = await blockedSave.value
+	#expect(saveWasBlocked)
+	#expect(device.store.hosts.isEmpty)
+	#expect(device.store.isAccountTransitionInProgress)
+
+	await gate.release()
+	await transition.value
+	#expect(!device.store.isAccountTransitionInProgress)
+
+	try await coordinator.save(
+		MobileHostDraftPayload(host: accountBHost, secret: nil)
+	)
+	#expect(device.store.hosts.map(\.id) == [accountBHost.id])
+}
+
 @Test("Account switch drains a cancelled stale Host fetch before loading B")
 @MainActor
 private func mobileAccountTransitionRejectsStaleInFlightBatch() async throws {
