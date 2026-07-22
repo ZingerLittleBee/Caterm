@@ -157,7 +157,7 @@ let package = Package(
         ),
         .target(
             name: "CredentialSync",
-            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
+            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore", "KeychainStore"],
             path: "Sources/CredentialSync"
         ),
         .target(
@@ -378,7 +378,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CredentialSyncTests",
-            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "CredentialSyncStore"],
+            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "ServerSyncClient", "SSHCommandBuilder", "SSHCredentialContract", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Tests/CredentialSyncTests"
         ),
         .testTarget(

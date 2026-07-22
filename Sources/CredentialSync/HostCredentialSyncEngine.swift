@@ -1,6 +1,7 @@
 import CredentialSyncStore
 import CredentialSyncTypes
 import Foundation
+import KeychainStore
 import os
 import ServerSyncClient
 import SessionStore
@@ -8,7 +9,8 @@ import SessionStore
 protocol HostCredentialMaterialStoring: Sendable {
     func snapshot(
         for hostId: UUID,
-        selecting selection: CredentialMaterialSelection
+        selecting selection: CredentialMaterialSelection,
+        interaction: KeychainReadInteraction
     ) async throws
         -> StoredCredentialMaterialSnapshot
     func currentGeneration(for hostId: UUID) async -> UInt64
@@ -243,7 +245,8 @@ public final class HostCredentialSyncEngine {
             loadMaterial: { [materialStore] in
                 try await materialStore.snapshot(
                     for: hostId,
-                    selecting: selection
+                    selecting: selection,
+                    interaction: .nonInteractive
                 )
             }
         ) else { return }

@@ -730,7 +730,10 @@ private final class InMemoryBackupCredentialSecretStore:
 	private let lock = NSLock()
 	private var values: [String: String] = [:]
 
-	func get(account: String) throws -> String {
+	func get(
+		account: String,
+		interaction: KeychainReadInteraction
+	) throws -> String {
 		lock.lock()
 		defer { lock.unlock() }
 		guard let value = values[account] else {

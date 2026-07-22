@@ -2,6 +2,7 @@ import CredentialSyncStore
 import CredentialSyncTypes
 import KeychainStore
 import ManagedKeyStore
+import SSHCredentialContract
 import XCTest
 @testable import CredentialSync
 @testable import ServerSyncClient
@@ -37,6 +38,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
     private var preferences: CredentialSyncPreferencesStore!
     private var temporaryDirectory: URL!
     private var managedKeyStore: ManagedKeyStore!
+    private var credentialSecretStore: InMemoryEngineCredentialSecretStore!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -49,8 +51,9 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         managedKeyStore = ManagedKeyStore(
             rootURL: temporaryDirectory.appendingPathComponent("managed-keys")
         )
+        credentialSecretStore = InMemoryEngineCredentialSecretStore()
         let credentialMaterialStore = SessionCredentialMaterialStore(
-            secrets: InMemoryEngineCredentialSecretStore(),
+            secrets: credentialSecretStore,
             managedKeyStore: managedKeyStore
         )
         sessionStore = SessionStore(
@@ -250,6 +253,62 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         XCTAssertTrue(sessionStore.hosts[0].credentialMaterialDirty)
         XCTAssertTrue(client.pushCredentialCalls.isEmpty)
         XCTAssertEqual(snapshotCount, 0)
+    }
+
+    func testBackgroundPushUsesNonInteractiveCredentialRead() async throws {
+        let host = SSHHost(
+            serverId: "server-host",
+            name: "host",
+            hostname: "host.example",
+            username: "root",
+            credential: .password,
+            credentialMaterialDirty: true
+        )
+        try sessionStore.addHost(host)
+        preferences.mutate { $0.state = .enabled }
+        credentialSecretStore.set(
+            account: SSHCredentialContract.account(
+                hostID: host.id,
+                kind: .password
+            ),
+            secret: "secret"
+        )
+        let sut = makeEngine(materialWorker: StubCredentialMaterialWorker())
+
+        try await sut.pushLocalCredential(hostId: host.id)
+
+        let interactions = credentialSecretStore.readInteractions()
+        XCTAssertEqual(interactions, [.nonInteractive])
+        XCTAssertEqual(client.pushCredentialCalls.count, 1)
+        XCTAssertFalse(sessionStore.hosts[0].credentialMaterialDirty)
+    }
+
+    func testNonInteractiveCredentialDenialKeepsDirtyForRetry() async throws {
+        let host = SSHHost(
+            serverId: "server-host",
+            name: "host",
+            hostname: "host.example",
+            username: "root",
+            credential: .password,
+            credentialMaterialDirty: true
+        )
+        try sessionStore.addHost(host)
+        preferences.mutate { $0.state = .enabled }
+        credentialSecretStore.failReads(with: KeychainError.interactionNotAllowed)
+        let sut = makeEngine(materialWorker: StubCredentialMaterialWorker())
+
+        do {
+            try await sut.pushLocalCredential(hostId: host.id)
+            XCTFail("expected non-interactive credential denial")
+        } catch KeychainError.interactionNotAllowed {
+            // The sync scheduler retries the still-dirty host later.
+        }
+
+        let interactions = credentialSecretStore.readInteractions()
+        XCTAssertEqual(interactions, [.nonInteractive])
+        XCTAssertTrue(client.pushCredentialCalls.isEmpty)
+        XCTAssertTrue(sessionStore.hosts[0].credentialMaterialDirty)
+        XCTAssertNil(preferences.prefs.lastAppliedRevision[host.id])
     }
 
     func testPasswordPushExcludesStaleManagedPrivateKey() async throws {
@@ -893,10 +952,17 @@ private final class InMemoryEngineCredentialSecretStore:
     CredentialSecretStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: String] = [:]
+    private var interactions: [KeychainReadInteraction] = []
+    private var getError: Error?
 
-    func get(account: String) throws -> String {
+    func get(
+        account: String,
+        interaction: KeychainReadInteraction
+    ) throws -> String {
         lock.lock()
         defer { lock.unlock() }
+        interactions.append(interaction)
+        if let getError { throw getError }
         guard let value = values[account] else { throw KeychainError.notFound }
         return value
     }
@@ -918,6 +984,18 @@ private final class InMemoryEngineCredentialSecretStore:
     func deleteAll(prefix: String) {
         lock.lock()
         values = values.filter { !$0.key.hasPrefix(prefix) }
+        lock.unlock()
+    }
+
+    func readInteractions() -> [KeychainReadInteraction] {
+        lock.lock()
+        defer { lock.unlock() }
+        return interactions
+    }
+
+    func failReads(with error: Error) {
+        lock.lock()
+        getError = error
         lock.unlock()
     }
 }
@@ -1051,7 +1129,8 @@ private actor InMemoryCredentialMaterialStore: HostCredentialMaterialStoring {
 
     func snapshot(
         for hostId: UUID,
-        selecting selection: CredentialMaterialSelection
+        selecting selection: CredentialMaterialSelection,
+        interaction: KeychainReadInteraction
     ) throws -> StoredCredentialMaterialSnapshot {
         snapshots += 1
         if let snapshotError { throw snapshotError }

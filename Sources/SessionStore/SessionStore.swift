@@ -912,12 +912,19 @@ public final class SessionStore: ObservableObject {
     /// True when this host has no usable local credential. Pulled hosts always
     /// fall here (no Keychain item under their local UUID). Local-only `.agent`
     /// hosts are always false. See spec §7.1.2 needsCredentialSetup.
-    public func needsCredentialSetup(_ host: SSHHost) async -> Bool {
+	public func needsCredentialSetup(
+		_ host: SSHHost,
+		interaction: KeychainReadInteraction = .userInitiated
+	) async -> Bool {
 		var source = hosts.first(where: { $0.id == host.id })?.credential
 			?? host.credential
 		while true {
 			guard let check = await credentialMaterialStore
-				.beginCredentialSetupCheck(for: host.id, source: source) else {
+				.beginCredentialSetupCheck(
+					for: host.id,
+					source: source,
+					interaction: interaction
+				) else {
 				return true
 			}
 			guard let currentSource = hosts.first(where: {

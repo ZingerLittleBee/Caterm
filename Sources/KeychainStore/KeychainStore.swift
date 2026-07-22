@@ -1,9 +1,11 @@
 import Foundation
+import LocalAuthentication
 import Security
 import SSHCredentialContract
 
 public enum KeychainError: Error, Equatable {
     case notFound
+    case interactionNotAllowed
     case osStatus(OSStatus)
     case decodeFailed
     /// `deleteAll` could not delete one or more matched items. Carries the
@@ -12,16 +14,52 @@ public enum KeychainError: Error, Equatable {
     case partialDeleteFailure(failedAccounts: [String])
 }
 
+public enum KeychainReadInteraction: Equatable, Sendable {
+    case userInitiated
+    case nonInteractive
+}
+
+struct KeychainItemReadResult {
+    let status: OSStatus
+    let value: AnyObject?
+}
+
+protocol KeychainItemReading {
+    func read(query: [String: Any]) -> KeychainItemReadResult
+}
+
+private struct SecurityKeychainItemReader: KeychainItemReading {
+    func read(query: [String: Any]) -> KeychainItemReadResult {
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        return KeychainItemReadResult(status: status, value: result)
+    }
+}
+
 public final class KeychainStore {
     public let service: String
     public let accessGroup: String?
+    private let itemReader: any KeychainItemReading
 
-    public init(
+    public convenience init(
         service: String = SSHCredentialContract.keychainService,
         accessGroup: String?
     ) {
+        self.init(
+            service: service,
+            accessGroup: accessGroup,
+            itemReader: SecurityKeychainItemReader()
+        )
+    }
+
+    init(
+        service: String,
+        accessGroup: String?,
+        itemReader: any KeychainItemReading
+    ) {
         self.service = service
         self.accessGroup = accessGroup
+        self.itemReader = itemReader
     }
 
     public func set(account: String, secret: String) throws {
@@ -40,15 +78,26 @@ public final class KeychainStore {
         if addStatus != errSecSuccess { throw KeychainError.osStatus(addStatus) }
     }
 
-    public func get(account: String) throws -> String {
+    public func get(
+        account: String,
+        interaction: KeychainReadInteraction = .userInitiated
+    ) throws -> String {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if interaction == .nonInteractive {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
+        let result = itemReader.read(query: query)
+        let status = result.status
         if status == errSecItemNotFound { throw KeychainError.notFound }
+        if status == errSecInteractionNotAllowed {
+            throw KeychainError.interactionNotAllowed
+        }
         if status != errSecSuccess { throw KeychainError.osStatus(status) }
-        guard let data = result as? Data,
+        guard let data = result.value as? Data,
               let secret = String(data: data, encoding: .utf8) else {
             throw KeychainError.decodeFailed
         }

@@ -1,12 +1,15 @@
+import LocalAuthentication
+import Security
 import XCTest
 @testable import KeychainStore
 
 final class KeychainStoreTests: XCTestCase {
-    let testService = "com.caterm.host.test"
+    var testService: String!
     let testAccount = "test-host-id.password"
     var store: KeychainStore!
 
     override func setUp() async throws {
+        testService = "com.caterm.host.test.\(UUID().uuidString)"
         store = KeychainStore(
             service: testService,
             accessGroup: nil  // nil → login keychain (no codesign required)
@@ -75,5 +78,71 @@ final class KeychainStoreTests: XCTestCase {
         try store.set(account: testAccount, secret: "密码 café 😀")
         let read = try store.get(account: testAccount)
         XCTAssertEqual(read, "密码 café 😀")
+    }
+
+    func testNonInteractiveReadDisablesAuthenticationUI() {
+        let reader = CapturingKeychainItemReader(
+            result: KeychainItemReadResult(
+                status: errSecInteractionNotAllowed,
+                value: nil
+            )
+        )
+        let store = KeychainStore(
+            service: testService,
+            accessGroup: nil,
+            itemReader: reader
+        )
+
+        XCTAssertThrowsError(
+            try store.get(
+                account: testAccount,
+                interaction: .nonInteractive
+            )
+        ) { error in
+            XCTAssertEqual(error as? KeychainError, .interactionNotAllowed)
+        }
+
+        let context = reader.lastQuery?[kSecUseAuthenticationContext as String]
+            as? LAContext
+        XCTAssertNotNil(context)
+        XCTAssertEqual(context?.interactionNotAllowed, true)
+    }
+
+    func testUserInitiatedReadKeepsAuthenticationUIAvailable() throws {
+        let reader = CapturingKeychainItemReader(
+            result: KeychainItemReadResult(
+                status: errSecSuccess,
+                value: Data("secret".utf8) as CFData
+            )
+        )
+        let store = KeychainStore(
+            service: testService,
+            accessGroup: nil,
+            itemReader: reader
+        )
+
+        let secret = try store.get(
+            account: testAccount,
+            interaction: .userInitiated
+        )
+
+        XCTAssertEqual(secret, "secret")
+        XCTAssertNil(
+            reader.lastQuery?[kSecUseAuthenticationContext as String]
+        )
+    }
+}
+
+private final class CapturingKeychainItemReader: KeychainItemReading {
+    private let result: KeychainItemReadResult
+    private(set) var lastQuery: [String: Any]?
+
+    init(result: KeychainItemReadResult) {
+        self.result = result
+    }
+
+    func read(query: [String: Any]) -> KeychainItemReadResult {
+        lastQuery = query
+        return result
     }
 }

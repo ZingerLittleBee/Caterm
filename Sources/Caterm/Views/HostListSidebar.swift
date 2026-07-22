@@ -760,7 +760,10 @@ struct HostRow: View {
 			source: host.credential,
 			revision: store.credentialAvailabilityRevision
 		)) {
-			let required = await store.needsCredentialSetup(host)
+			let required = await store.needsCredentialSetup(
+				host,
+				interaction: .nonInteractive
+			)
 			guard !Task.isCancelled else { return }
 			needsCredentialSetup = required
 		}

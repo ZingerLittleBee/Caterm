@@ -157,7 +157,10 @@ if let chainJSON = env[SSHCredentialEnvironmentKey.chain.rawValue], !chainJSON.i
     let store = KeychainStore(service: SSHCredentialContract.keychainService,
                               accessGroup: accessGroup)
     do {
-        let secret = try store.get(account: account)
+        let secret = try store.get(
+            account: account,
+            interaction: .userInitiated
+        )
         let out = secret + "\n"
         FileHandle.standardOutput.write(Data(out.utf8))
         if kind == .password,
@@ -204,7 +207,10 @@ let store = KeychainStore(
 )
 
 do {
-    let secret = try store.get(account: account)
+    let secret = try store.get(
+        account: account,
+        interaction: .userInitiated
+    )
     let out = secret + "\n"
     FileHandle.standardOutput.write(Data(out.utf8))
     logLine("OK exit=0 account=\(account) group=\(groupTag) secretLen=\(secret.count)")
