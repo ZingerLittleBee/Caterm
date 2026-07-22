@@ -98,7 +98,7 @@ private final class PostCreateDeletingRepository: HostRepository {
 	func createLocalHost(_: SSHHost) throws {}
 	func updateLocalHostMetadata(_: SSHHost) throws {}
 	func deleteLocalHost(id _: UUID) async throws {}
-	func pendingRemoteDeletionIDs() throws -> [String] { [] }
+	func pendingRemoteDeletionIDs() throws -> [String] { pendingDeletionIDs }
 	func recordPendingRemoteDeletion(serverID: String) throws {
 		pendingDeletionIDs.append(serverID)
 	}
@@ -203,7 +203,7 @@ private func failedRemoteCreateCompensationPersistsDeletionIntent() async throws
 		)
 	}
 	#expect(client.committedCheckpointIDs.isEmpty)
-	#expect(repository.pendingDeletionIDs == ["server-host"])
+	#expect(try repository.pendingRemoteDeletionIDs() == ["server-host"])
 }
 
 @Test("A Host removed during remote creation does not commit the checkpoint")
@@ -229,5 +229,5 @@ private func removedHostAfterRemoteCreateAbortsCheckpoint() async throws {
 	}
 	#expect(client.committedCheckpointIDs.isEmpty)
 	#expect(client.deletedHostIDs == ["server-host"])
-	#expect(repository.pendingDeletionIDs.isEmpty)
+	#expect(try repository.pendingRemoteDeletionIDs().isEmpty)
 }

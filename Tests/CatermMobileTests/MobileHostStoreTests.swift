@@ -38,6 +38,40 @@ private enum HostRepositoryPlatform: Sendable {
 	case iOS
 }
 
+private final class DeletionDrainClient: IncrementalHostSyncClient, @unchecked Sendable {
+	private(set) var deletedHostIDs: [String] = []
+
+	func listHosts() async throws -> [RemoteHost] { [] }
+	func createHost(_: RemoteHostCreateInput) async throws -> RemoteHostCreateOutput {
+		RemoteHostCreateOutput(id: "unused")
+	}
+	func updateHost(_: RemoteHostUpdateInput) async throws {}
+	func deleteHost(id: String) async throws { deletedHostIDs.append(id) }
+	func preferredHostSyncMode() async -> HostSyncMode { .forceFull }
+	func fetchHostChanges() async throws -> HostChangeBatch {
+		HostChangeBatch(
+			changedHosts: [],
+			deletedHostIDs: [],
+			checkpoint: nil,
+			tokenExpired: false,
+			mode: .incremental
+		)
+	}
+	func fetchHostSnapshotAndCheckpoint() async throws -> HostChangeBatch {
+		HostChangeBatch(
+			changedHosts: [],
+			deletedHostIDs: [],
+			checkpoint: nil,
+			tokenExpired: false,
+			mode: .forceFull
+		)
+	}
+	func commitHostCheckpoint(_: any HostSyncCheckpoint) async throws {}
+	func resetHostSyncState() async {}
+	func ensureHostSubscription() async throws {}
+	func deleteHostSubscription() async throws {}
+}
+
 @MainActor
 private func makeRepository(
 	for platform: HostRepositoryPlatform,
@@ -59,6 +93,40 @@ private func makeRepository(
 	case .iOS:
 		return MobileHostStore(fileURL: fileURL)
 	}
+}
+
+@Test(
+	"Platform Host repositories persist and drain compensation deletions",
+	arguments: [HostRepositoryPlatform.macOS, .iOS]
+)
+@MainActor
+private func platformRepositoriesPersistAndDrainCompensationDeletions(
+	_ platform: HostRepositoryPlatform
+) async throws {
+	let fileURL = FileManager.default.temporaryDirectory
+		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
+	let deletionURL = fileURL.deletingPathExtension()
+		.appendingPathExtension("deletions.json")
+	defer {
+		try? FileManager.default.removeItem(at: fileURL)
+		try? FileManager.default.removeItem(at: deletionURL)
+	}
+
+	var repository = makeRepository(for: platform, fileURL: fileURL)
+	try repository.recordPendingRemoteDeletion(serverID: "server-orphan")
+	repository = makeRepository(for: platform, fileURL: fileURL)
+	#expect(try repository.pendingRemoteDeletionIDs() == ["server-orphan"])
+
+	let client = DeletionDrainClient()
+	_ = try await HostSynchronization.synchronize(
+		repository: repository,
+		client: client,
+		mode: .forceFull
+	)
+	#expect(client.deletedHostIDs == ["server-orphan"])
+
+	repository = makeRepository(for: platform, fileURL: fileURL)
+	#expect(try repository.pendingRemoteDeletionIDs().isEmpty)
 }
 
 @Test(
