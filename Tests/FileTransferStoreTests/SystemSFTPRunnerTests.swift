@@ -131,11 +131,42 @@ final class SystemSFTPRunnerTests: XCTestCase {
 
 		XCTAssertFalse(FileManager.default.fileExists(atPath: sentinel.path))
 	}
+
+	func testCancellationWinsRaceWithSubsequentInputFailure() async throws {
+		let gate = InputWriterGate()
+		let invocation = SFTPInvocation(
+			argv: ["/bin/sh", "-c", "trap '' TERM; cat"],
+			environment: [:],
+			scriptStdin: "trigger write"
+		)
+		let runner = SystemSFTPRunner(inputWriter: { _, _ in
+			gate.started.signal()
+			gate.release.wait()
+			throw NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE))
+		})
+		let task = Task { try await runner.run(invocation) }
+		XCTAssertEqual(gate.started.wait(timeout: .now() + 1), .success)
+
+		task.cancel()
+		gate.release.signal()
+
+		do {
+			_ = try await task.value
+			XCTFail("Expected cancellation")
+		} catch is CancellationError {
+			// Expected.
+		}
+	}
 }
 
 private enum InputFailure: LocalizedError {
 	case fixture
 
 	var errorDescription: String? { "fixture input failure" }
+}
+
+private final class InputWriterGate: @unchecked Sendable {
+	let started = DispatchSemaphore(value: 0)
+	let release = DispatchSemaphore(value: 0)
 }
 #endif

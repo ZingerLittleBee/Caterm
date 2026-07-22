@@ -315,35 +315,52 @@ private struct SFTPPipe: Sendable {
 }
 
 private final class SFTPProcessCancellation: @unchecked Sendable {
+	private enum TerminalOutcome {
+		case active
+		case cancelled
+		case failed(Error)
+	}
+
 	private let lock = NSLock()
 	private var processID: pid_t?
-	private var cancelled = false
-	private var failure: Error?
+	private var outcome = TerminalOutcome.active
 	private let escalationDelay = DispatchTimeInterval.milliseconds(250)
 
 	var isCancelled: Bool {
 		lock.lock()
 		defer { lock.unlock() }
-		return cancelled
+		guard case .cancelled = outcome else { return false }
+		return true
 	}
 
 	var completionFailure: Error? {
 		lock.lock()
 		defer { lock.unlock() }
-		return failure
+		guard case .failed(let error) = outcome else { return nil }
+		return error
 	}
 
 	func install(processID: pid_t) {
 		lock.lock()
 		self.processID = processID
-		let shouldTerminate = cancelled
+		let shouldTerminate: Bool
+		switch outcome {
+		case .active:
+			shouldTerminate = false
+		case .cancelled, .failed:
+			shouldTerminate = true
+		}
 		lock.unlock()
 		if shouldTerminate { terminate(processGroup: processID) }
 	}
 
 	func cancel() {
 		lock.lock()
-		cancelled = true
+		guard case .active = outcome else {
+			lock.unlock()
+			return
+		}
+		outcome = .cancelled
 		let processID = processID
 		lock.unlock()
 		guard let processID else { return }
@@ -352,7 +369,11 @@ private final class SFTPProcessCancellation: @unchecked Sendable {
 
 	func fail(processID: pid_t, error: Error) {
 		lock.lock()
-		if failure == nil { failure = error }
+		guard case .active = outcome else {
+			lock.unlock()
+			return
+		}
+		outcome = .failed(error)
 		lock.unlock()
 		terminate(processGroup: processID)
 	}
