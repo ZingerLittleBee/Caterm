@@ -17,6 +17,7 @@ public protocol HostRepository: AnyObject {
 	func updateLocalHostMetadata(_ host: SSHHost) throws
 	func deleteLocalHost(id: UUID) async throws
 	func pendingRemoteDeletionIDs() throws -> [String]
+	func recordPendingRemoteDeletion(serverID: String) throws
 	func clearPendingRemoteDeletion(serverID: String) throws
 	func createHostFromRemote(_ remote: RemoteHost) throws -> UUID
 	func updateHostFromRemote(localID: UUID, remote: RemoteHost) throws

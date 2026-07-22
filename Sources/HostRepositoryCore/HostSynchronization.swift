@@ -3,6 +3,11 @@ import ServerSyncClient
 
 public enum HostSynchronizationError: Error, Equatable {
 	case localHostMissing(UUID)
+	case remoteCreationCompensationFailed(
+		localHostID: UUID,
+		serverID: String,
+		detail: String
+	)
 }
 
 @MainActor
@@ -113,7 +118,28 @@ public enum HostSynchronization {
 			))
 			// Do not insert a cancellation point between remote creation and
 			// persisting its identity. Otherwise a retry duplicates the Host.
-			try repository.assignServerID(output.id, to: localHostID)
+			do {
+				try repository.assignServerID(output.id, to: localHostID)
+			} catch {
+				let assignmentError = error
+				do {
+					try await client.deleteHost(id: output.id)
+				} catch {
+					do {
+						try repository.recordPendingRemoteDeletion(
+							serverID: output.id
+						)
+					} catch {
+						throw HostSynchronizationError
+							.remoteCreationCompensationFailed(
+								localHostID: localHostID,
+								serverID: output.id,
+								detail: error.localizedDescription
+							)
+					}
+				}
+				throw assignmentError
+			}
 
 		case .createLocal(let remote):
 			_ = try repository.createHostFromRemote(remote)

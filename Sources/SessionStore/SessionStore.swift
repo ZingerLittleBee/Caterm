@@ -329,6 +329,10 @@ public final class SessionStore: ObservableObject {
         try hostDeletionOutbox.remove(serverID)
     }
 
+	public func recordPendingRemoteHostDeletion(serverID: String) throws {
+		_ = try hostDeletionOutbox.insert(serverID)
+	}
+
     public func deleteHost(id: UUID) async throws {
         try await deleteHost(id: id, enqueueRemoteDeletion: true)
     }

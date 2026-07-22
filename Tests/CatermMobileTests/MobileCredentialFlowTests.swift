@@ -178,6 +178,73 @@ final class MobileCredentialWriterTests: XCTestCase {
 		XCTAssertEqual(storage.values[passwordAccount], "password")
 		XCTAssertEqual(storage.values[passphraseAccount], "passphrase")
 	}
+
+	func testTransactionsForSameHostDoNotInterleaveAcrossCommitAwait() async throws {
+		actor CommitOrder {
+			var firstEntered = false
+			var secondEntered = false
+			var firstContinuation: CheckedContinuation<Void, Never>?
+
+			func enterFirst() async {
+				firstEntered = true
+				await withCheckedContinuation { firstContinuation = $0 }
+			}
+
+			func enterSecond() {
+				secondEntered = true
+			}
+
+			func releaseFirst() {
+				firstContinuation?.resume()
+				firstContinuation = nil
+			}
+		}
+
+		let storage = RecordingCredentialStore()
+		let host = SSHHost(
+			name: "Box",
+			hostname: "box.example.com",
+			username: "deploy",
+			credential: .password
+		)
+		let writer = MobileCredentialWriter(storage: storage)
+		let order = CommitOrder()
+		let first = Task {
+			do {
+				try await writer.commitSave(
+					MobileHostDraftPayload(host: host, secret: "first")
+				) {
+					await order.enterFirst()
+					throw RecordingCredentialStore.Failure.rejected
+				}
+			} catch RecordingCredentialStore.Failure.rejected {
+				// Expected.
+			}
+		}
+
+		while await !order.firstEntered { await Task.yield() }
+		let second = Task {
+			try await writer.commitSave(
+				MobileHostDraftPayload(host: host, secret: "second")
+			) {
+				await order.enterSecond()
+			}
+		}
+		for _ in 0..<20 { await Task.yield() }
+		let secondEnteredWhileFirstWasOpen = await order.secondEntered
+		XCTAssertFalse(secondEnteredWhileFirstWasOpen)
+
+		await order.releaseFirst()
+		try await first.value
+		try await second.value
+
+		let secondEnteredAfterRelease = await order.secondEntered
+		XCTAssertTrue(secondEnteredAfterRelease)
+		XCTAssertEqual(
+			storage.values[MobileCredentialPlan.passwordAccount(host.id)],
+			"second"
+		)
+	}
 }
 
 private func XCTAssertThrowsErrorAsync(

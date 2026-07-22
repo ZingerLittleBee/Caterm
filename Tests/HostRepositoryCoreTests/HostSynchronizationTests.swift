@@ -31,6 +31,7 @@ private final class DisappearingHostRepository: HostRepository {
 	func updateLocalHostMetadata(_: SSHHost) throws {}
 	func deleteLocalHost(id _: UUID) async throws {}
 	func pendingRemoteDeletionIDs() throws -> [String] { [] }
+	func recordPendingRemoteDeletion(serverID _: String) throws {}
 	func clearPendingRemoteDeletion(serverID _: String) throws {}
 	func createHostFromRemote(_: RemoteHost) throws -> UUID { UUID() }
 	func updateHostFromRemote(localID _: UUID, remote _: RemoteHost) throws {}
@@ -79,6 +80,7 @@ private final class RecordingSyncClient: IncrementalHostSyncClient, @unchecked S
 @MainActor
 private final class PostCreateDeletingRepository: HostRepository {
 	private var hosts: [SSHHost]
+	private(set) var pendingDeletionIDs: [String] = []
 
 	init(host: SSHHost) {
 		hosts = [host]
@@ -97,6 +99,9 @@ private final class PostCreateDeletingRepository: HostRepository {
 	func updateLocalHostMetadata(_: SSHHost) throws {}
 	func deleteLocalHost(id _: UUID) async throws {}
 	func pendingRemoteDeletionIDs() throws -> [String] { [] }
+	func recordPendingRemoteDeletion(serverID: String) throws {
+		pendingDeletionIDs.append(serverID)
+	}
 	func clearPendingRemoteDeletion(serverID _: String) throws {}
 	func createHostFromRemote(_: RemoteHost) throws -> UUID { UUID() }
 	func updateHostFromRemote(localID _: UUID, remote _: RemoteHost) throws {}
@@ -113,6 +118,8 @@ private final class PostCreateDeletingClient: IncrementalHostSyncClient, @unchec
 	let checkpoint = TestCheckpoint()
 	private let onCreate: @Sendable () async -> Void
 	private(set) var committedCheckpointIDs: [UUID] = []
+	private(set) var deletedHostIDs: [String] = []
+	var deletionError: (any Error)?
 
 	init(onCreate: @escaping @Sendable () async -> Void) {
 		self.onCreate = onCreate
@@ -124,7 +131,10 @@ private final class PostCreateDeletingClient: IncrementalHostSyncClient, @unchec
 		return RemoteHostCreateOutput(id: "server-host")
 	}
 	func updateHost(_: RemoteHostUpdateInput) async throws {}
-	func deleteHost(id _: String) async throws {}
+	func deleteHost(id: String) async throws {
+		if let deletionError { throw deletionError }
+		deletedHostIDs.append(id)
+	}
 	func preferredHostSyncMode() async -> HostSyncMode { .forceFull }
 	func fetchHostChanges() async throws -> HostChangeBatch { batch(mode: .incremental) }
 	func fetchHostSnapshotAndCheckpoint() async throws -> HostChangeBatch { batch(mode: .forceFull) }
@@ -169,6 +179,33 @@ private func missingPlannedLocalHostAbortsCheckpoint() async throws {
 	#expect(client.committedCheckpointIDs.isEmpty)
 }
 
+@Test("A failed compensation records the orphaned remote Host for deletion")
+@MainActor
+private func failedRemoteCreateCompensationPersistsDeletionIntent() async throws {
+	enum Failure: Error { case offline }
+	let host = SSHHost(
+		name: "Production",
+		hostname: "prod.example.com",
+		username: "deploy",
+		credential: .agent
+	)
+	let repository = PostCreateDeletingRepository(host: host)
+	let client = PostCreateDeletingClient {
+		await repository.removeHostDuringRemoteCreate()
+	}
+	client.deletionError = Failure.offline
+
+	await #expect(throws: HostSynchronizationError.localHostMissing(host.id)) {
+		try await HostSynchronization.synchronize(
+			repository: repository,
+			client: client,
+			mode: .forceFull
+		)
+	}
+	#expect(client.committedCheckpointIDs.isEmpty)
+	#expect(repository.pendingDeletionIDs == ["server-host"])
+}
+
 @Test("A Host removed during remote creation does not commit the checkpoint")
 @MainActor
 private func removedHostAfterRemoteCreateAbortsCheckpoint() async throws {
@@ -191,4 +228,6 @@ private func removedHostAfterRemoteCreateAbortsCheckpoint() async throws {
 		)
 	}
 	#expect(client.committedCheckpointIDs.isEmpty)
+	#expect(client.deletedHostIDs == ["server-host"])
+	#expect(repository.pendingDeletionIDs.isEmpty)
 }

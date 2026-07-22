@@ -24,6 +24,10 @@ extension SessionStore: HostRepository {
 		try pendingRemoteHostDeletionIDs()
 	}
 
+	public func recordPendingRemoteDeletion(serverID: String) throws {
+		try recordPendingRemoteHostDeletion(serverID: serverID)
+	}
+
 	public func clearPendingRemoteDeletion(serverID: String) throws {
 		try clearPendingRemoteHostDeletion(serverID: serverID)
 	}

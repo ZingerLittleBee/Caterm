@@ -203,6 +203,10 @@ extension MobileHostStore: HostRepository {
 		try deletionOutbox.pendingIDs()
 	}
 
+	public func recordPendingRemoteDeletion(serverID: String) throws {
+		_ = try deletionOutbox.insert(serverID)
+	}
+
 	public func clearPendingRemoteDeletion(serverID: String) throws {
 		try deletionOutbox.remove(serverID)
 	}

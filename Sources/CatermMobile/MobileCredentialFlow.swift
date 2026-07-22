@@ -78,6 +78,10 @@ public actor MobileCredentialWriter {
 	public static let defaultService = SSHCredentialContract.keychainService
 
 	private let storage: any MobileCredentialStoring
+	private var transactionHolders: Set<UUID> = []
+	private var transactionWaiters: [
+		UUID: [CheckedContinuation<Void, Never>]
+	] = [:]
 
 	public init(keychain: KeychainStore) {
 		self.storage = keychain
@@ -95,7 +99,11 @@ public actor MobileCredentialWriter {
 		_ payload: MobileHostDraftPayload,
 		commit: @MainActor @Sendable () async throws -> Void
 	) async throws {
-		let accounts = Self.accounts(hostID: payload.host.id)
+		let hostID = payload.host.id
+		await acquireTransaction(for: hostID)
+		defer { releaseTransaction(for: hostID) }
+		try Task.checkCancellation()
+		let accounts = Self.accounts(hostID: hostID)
 		let snapshot = try capture(accounts)
 		do {
 			try apply(MobileCredentialPlan.operations(for: payload))
@@ -109,6 +117,9 @@ public actor MobileCredentialWriter {
 		hostID: UUID,
 		commit: @MainActor @Sendable () async throws -> Void
 	) async throws {
+		await acquireTransaction(for: hostID)
+		defer { releaseTransaction(for: hostID) }
+		try Task.checkCancellation()
 		let accounts = Self.accounts(hostID: hostID)
 		let snapshot = try capture(accounts)
 		do {
@@ -150,6 +161,31 @@ public actor MobileCredentialWriter {
 			MobileCredentialPlan.passwordAccount(hostID),
 			MobileCredentialPlan.keyPassphraseAccount(hostID),
 		]
+	}
+
+	private func acquireTransaction(for hostID: UUID) async {
+		guard transactionHolders.contains(hostID) else {
+			transactionHolders.insert(hostID)
+			return
+		}
+		await withCheckedContinuation { continuation in
+			transactionWaiters[hostID, default: []].append(continuation)
+		}
+	}
+
+	private func releaseTransaction(for hostID: UUID) {
+		guard var waiters = transactionWaiters[hostID], !waiters.isEmpty else {
+			transactionHolders.remove(hostID)
+			transactionWaiters.removeValue(forKey: hostID)
+			return
+		}
+		let next = waiters.removeFirst()
+		if waiters.isEmpty {
+			transactionWaiters.removeValue(forKey: hostID)
+		} else {
+			transactionWaiters[hostID] = waiters
+		}
+		next.resume()
 	}
 
 	private func capture(_ accounts: [String]) throws -> [String: StoredSecret] {
