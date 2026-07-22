@@ -40,16 +40,7 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 	public func list(_ path: String) async throws -> [RemoteEntry] {
 		do {
 			let client = try await connectedClient()
-			return try await client.listDirectory(at: path).map {
-				RemoteEntry(
-					name: $0.name,
-					type: $0.type.remoteEntryType,
-					size: $0.size,
-					mtime: $0.modificationDate,
-					mode: $0.permissions,
-					canonicalPath: $0.path
-				)
-			}
+			return try await client.listDirectory(at: path).map(\.remoteEntry)
 		} catch {
 			if Self.invalidatesSession(error) {
 				client?.close()
@@ -60,7 +51,18 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 	}
 
 	public func stat(_ path: String) async throws -> RemoteEntry? {
-		throw RemoteFileError.unsupported(operation: "stat")
+		do {
+			let client = try await connectedClient()
+			return try await client.stat(at: path).remoteEntry
+		} catch MobileSFTPError.notFound {
+			return nil
+		} catch {
+			if Self.invalidatesSession(error) {
+				client?.close()
+				client = nil
+			}
+			throw map(error, path: path)
+		}
 	}
 
 	public func upload(
@@ -84,15 +86,15 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 	}
 
 	public func createDirectory(_ path: String) async throws {
-		throw RemoteFileError.unsupported(operation: "create directory")
+		try await mutate(path: path) { try await $0.createDirectory(at: path) }
 	}
 
 	public func rename(from: String, to: String) async throws {
-		throw RemoteFileError.unsupported(operation: "rename")
+		try await mutate(path: from) { try await $0.rename(from: from, to: to) }
 	}
 
 	public func delete(_ path: String, isDirectory: Bool) async throws {
-		throw RemoteFileError.unsupported(operation: "delete")
+		try await mutate(path: path) { try await $0.delete(at: path, isDirectory: isDirectory) }
 	}
 
 	public func disconnect() {
@@ -119,6 +121,10 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 			.permissionDenied(message: message)
 		case MobileSFTPError.notFound:
 			.notFound(path: path)
+		case MobileSFTPError.alreadyExists(let path):
+			.conflict(path: path)
+		case MobileSFTPError.directoryNotEmpty(let path):
+			.directoryNotEmpty(path: path)
 		case MobileSFTPError.disconnected:
 			.sessionUnavailable
 		case MobileSSHTrustError.changed(let endpoint):
@@ -133,6 +139,22 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 			.cancelled
 		default:
 			.transport(message: error.localizedDescription)
+		}
+	}
+
+	private func mutate(
+		path: String,
+		operation: @escaping @Sendable (MobileSFTPClient) async throws -> Void
+	) async throws {
+		do {
+			let client = try await connectedClient()
+			try await operation(client)
+		} catch {
+			if Self.invalidatesSession(error) {
+				client?.close()
+				client = nil
+			}
+			throw map(error, path: path)
 		}
 	}
 
@@ -156,5 +178,18 @@ private extension MobileSFTPEntryType {
 		case .directory: .directory
 		case .unknown: .unknown
 		}
+	}
+}
+
+private extension MobileSFTPEntry {
+	var remoteEntry: RemoteEntry {
+		RemoteEntry(
+			name: name,
+			type: type.remoteEntryType,
+			size: size,
+			mtime: modificationDate,
+			mode: permissions,
+			canonicalPath: path
+		)
 	}
 }

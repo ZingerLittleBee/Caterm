@@ -24,6 +24,9 @@ public enum MobileSFTPError: Error, Equatable, Sendable {
 	case cancelled
 	case permissionDenied(message: String)
 	case notFound(path: String)
+	case alreadyExists(path: String)
+	case directoryNotEmpty(path: String)
+	case failure(path: String, message: String)
 	case disconnected
 	case unsupportedVersion(UInt32)
 	case invalidResponse(message: String)
@@ -40,6 +43,14 @@ extension MobileSFTPError: LocalizedError {
 			message
 		case .notFound(let path):
 			"Remote path not found: \(path)"
+		case .alreadyExists(let path):
+			"A remote item already exists at \(path)."
+		case .directoryNotEmpty(let path):
+			"Remote folder is not empty: \(path)."
+		case .failure(let path, let message):
+			message.isEmpty
+				? "SFTP request failed for \(path)."
+				: message
 		case .disconnected:
 			"The SFTP connection closed."
 		case .unsupportedVersion(let version):
@@ -206,6 +217,128 @@ public final class MobileSFTPClient: @unchecked Sendable {
 		}
 	}
 
+	public func stat(at path: String) async throws -> MobileSFTPEntry {
+		try await withTaskCancellationHandler {
+			do {
+				try Task.checkCancellation()
+				let canonicalPath = try await handler.realPath(
+					Self.protocolPath(for: path)
+				).get()
+				let attributes = try await handler.stat(canonicalPath).get()
+				try Task.checkCancellation()
+				return MobileSFTPEntry(
+					path: canonicalPath,
+					name: (canonicalPath as NSString).lastPathComponent,
+					type: attributes.type,
+					size: attributes.size,
+					modificationDate: attributes.modificationDate,
+					permissions: attributes.permissions.map { UInt16($0 & 0o7777) }
+				)
+			} catch is CancellationError {
+				throw MobileSFTPError.cancelled
+			} catch MobileSFTPError.notFound {
+				throw MobileSFTPError.notFound(path: path)
+			} catch {
+				throw Self.map(error, path: path)
+			}
+		} onCancel: { [weak self] in
+			self?.close()
+		}
+	}
+
+	public func createDirectory(at path: String) async throws {
+		try await withTaskCancellationHandler {
+			do {
+				try Task.checkCancellation()
+				let protocolPath = Self.protocolPath(for: path)
+				do {
+					_ = try await handler.lstat(protocolPath).get()
+					throw MobileSFTPError.alreadyExists(path: path)
+				} catch MobileSFTPError.notFound {
+					// The path is available at this instant; the server remains authoritative.
+				}
+				do {
+					try await handler.createDirectory(protocolPath).get()
+				} catch let failure as MobileSFTPError where failure.isGenericFailure {
+					if (try? await handler.lstat(protocolPath).get()) != nil {
+						throw MobileSFTPError.alreadyExists(path: path)
+					}
+					throw failure
+				}
+				try Task.checkCancellation()
+			} catch is CancellationError {
+				throw MobileSFTPError.cancelled
+			} catch MobileSFTPError.alreadyExists {
+				throw MobileSFTPError.alreadyExists(path: path)
+			} catch {
+				throw Self.map(error, path: path)
+			}
+		} onCancel: { [weak self] in
+			self?.close()
+		}
+	}
+
+	public func rename(from source: String, to destination: String) async throws {
+		try await withTaskCancellationHandler {
+			do {
+				try Task.checkCancellation()
+				let protocolSource = Self.protocolPath(for: source)
+				let protocolDestination = Self.protocolPath(for: destination)
+				do {
+					_ = try await handler.lstat(protocolDestination).get()
+					throw MobileSFTPError.alreadyExists(path: destination)
+				} catch MobileSFTPError.notFound {
+					// The destination is available at this instant; the server remains authoritative.
+				}
+				do {
+					try await handler.rename(
+						from: protocolSource,
+						to: protocolDestination
+					).get()
+				} catch let failure as MobileSFTPError where failure.isGenericFailure {
+					if (try? await handler.lstat(protocolDestination).get()) != nil {
+						throw MobileSFTPError.alreadyExists(path: destination)
+					}
+					throw failure
+				}
+				try Task.checkCancellation()
+			} catch is CancellationError {
+				throw MobileSFTPError.cancelled
+			} catch MobileSFTPError.alreadyExists {
+				throw MobileSFTPError.alreadyExists(path: destination)
+			} catch MobileSFTPError.notFound {
+				throw MobileSFTPError.notFound(path: source)
+			} catch {
+				throw Self.map(error, path: source)
+			}
+		} onCancel: { [weak self] in
+			self?.close()
+		}
+	}
+
+	public func delete(at path: String, isDirectory: Bool) async throws {
+		if isDirectory {
+			let entries = try await listDirectory(at: path)
+			guard entries.isEmpty else {
+				throw MobileSFTPError.directoryNotEmpty(path: path)
+			}
+		}
+		do {
+			try await performMutation(path: path) { handler, protocolPath in
+				if isDirectory {
+					try await handler.removeDirectory(protocolPath).get()
+				} else {
+					try await handler.removeFile(protocolPath).get()
+				}
+			}
+		} catch let failure as MobileSFTPError where failure.isGenericFailure && isDirectory {
+			if let entries = try? await listDirectory(at: path), !entries.isEmpty {
+				throw MobileSFTPError.directoryNotEmpty(path: path)
+			}
+			throw failure
+		}
+	}
+
 	public func close() {
 		lock.lock()
 		guard !closed else {
@@ -231,6 +364,37 @@ public final class MobileSFTPClient: @unchecked Sendable {
 		if let sftp = error as? MobileSFTPError { return sftp }
 		if error is CancellationError { return MobileSFTPError.cancelled }
 		return MobileSFTPError.transport(message: error.localizedDescription)
+	}
+
+	private func performMutation(
+		path: String,
+		operation: @escaping @Sendable (MobileSFTPChannelHandler, String) async throws -> Void
+	) async throws {
+		try await withTaskCancellationHandler {
+			do {
+				try Task.checkCancellation()
+				try await operation(handler, Self.protocolPath(for: path))
+				try Task.checkCancellation()
+			} catch is CancellationError {
+				throw MobileSFTPError.cancelled
+			} catch MobileSFTPError.alreadyExists {
+				throw MobileSFTPError.alreadyExists(path: path)
+			} catch MobileSFTPError.directoryNotEmpty {
+				throw MobileSFTPError.directoryNotEmpty(path: path)
+			} catch MobileSFTPError.notFound {
+				throw MobileSFTPError.notFound(path: path)
+			} catch {
+				throw Self.map(error, path: path)
+			}
+		} onCancel: { [weak self] in
+			self?.close()
+		}
+	}
+
+	private static func protocolPath(for path: String) -> String {
+		if path == "~" { return "." }
+		if path.hasPrefix("~/") { return "." + path.dropFirst() }
+		return path
 	}
 }
 
@@ -454,6 +618,54 @@ private final class MobileSFTPChannelHandler: ChannelInboundHandler,
 		}
 	}
 
+	func stat(_ path: String) -> EventLoopFuture<SFTPAttributes> {
+		send(type: 17) { $0.writeSFTPString(path) }.flatMapThrowing { response in
+			guard case .attributes(let attributes) = response else {
+				throw response.error(path: path)
+			}
+			return attributes
+		}
+	}
+
+	func lstat(_ path: String) -> EventLoopFuture<SFTPAttributes> {
+		send(type: 7) { $0.writeSFTPString(path) }.flatMapThrowing { response in
+			guard case .attributes(let attributes) = response else {
+				throw response.error(path: path)
+			}
+			return attributes
+		}
+	}
+
+	func createDirectory(_ path: String) -> EventLoopFuture<Void> {
+		send(type: 14) {
+			$0.writeSFTPString(path)
+			$0.writeInteger(UInt32(0))
+		}.flatMapThrowing { response in
+			try response.requireSuccess(path: path)
+		}
+	}
+
+	func rename(from source: String, to destination: String) -> EventLoopFuture<Void> {
+		send(type: 18) {
+			$0.writeSFTPString(source)
+			$0.writeSFTPString(destination)
+		}.flatMapThrowing { response in
+			try response.requireSuccess(path: source)
+		}
+	}
+
+	func removeFile(_ path: String) -> EventLoopFuture<Void> {
+		send(type: 13) { $0.writeSFTPString(path) }.flatMapThrowing { response in
+			try response.requireSuccess(path: path)
+		}
+	}
+
+	func removeDirectory(_ path: String) -> EventLoopFuture<Void> {
+		send(type: 15) { $0.writeSFTPString(path) }.flatMapThrowing { response in
+			try response.requireSuccess(path: path)
+		}
+	}
+
 	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
 		let value = unwrapInboundIn(data)
 		guard case .byteBuffer(var bytes) = value.data else { return }
@@ -605,6 +817,7 @@ enum SFTPResponse {
 	case status(SFTPStatus)
 	case handle(Data)
 	case names([SFTPName])
+	case attributes(SFTPAttributes)
 
 	init(type: UInt8, payload: inout ByteBuffer) throws {
 		switch type {
@@ -637,6 +850,8 @@ enum SFTPResponse {
 				))
 			}
 			self = .names(names)
+		case 105:
+			self = .attributes(try payload.readSFTPAttributes())
 		default:
 			throw MobileSFTPError.invalidResponse(
 				message: "Unexpected SFTP response type \(type)."
@@ -653,6 +868,8 @@ enum SFTPResponse {
 			return .notFound(path: path)
 		case 3:
 			return .permissionDenied(message: status.message)
+		case 4:
+			return .failure(path: path, message: status.message)
 		case 7:
 			return .disconnected
 		default:
@@ -660,6 +877,19 @@ enum SFTPResponse {
 				? "SFTP request failed with status \(status.code)."
 				: status.message)
 		}
+	}
+
+	func requireSuccess(path: String) throws {
+		guard case .status(let status) = self, status.code == 0 else {
+			throw error(path: path)
+		}
+	}
+}
+
+private extension MobileSFTPError {
+	var isGenericFailure: Bool {
+		if case .failure = self { return true }
+		return false
 	}
 }
 

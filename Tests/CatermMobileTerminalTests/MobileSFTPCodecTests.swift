@@ -56,6 +56,42 @@ final class MobileSFTPCodecTests: XCTestCase {
 		XCTAssertEqual(status.code, 1)
 	}
 
+	func testGenericFailureStatusRetainsStatusForPostflightDiagnosis() throws {
+		var payload = Data()
+		payload.appendUInt32(4)
+		payload.appendString("Failure")
+		payload.appendString("")
+
+		let response = try MobileSFTPCodec.decodeResponse(type: 101, payload: payload)
+
+		XCTAssertEqual(
+			response.error(path: "/readonly/item"),
+			.failure(path: "/readonly/item", message: "Failure")
+		)
+	}
+
+	func testDecodesStatAttributesResponse() throws {
+		var payload = Data()
+		payload.appendUInt32(0x1 | 0x4 | 0x8)
+		payload.appendUInt64(42)
+		payload.appendUInt32(0o040755)
+		payload.appendUInt32(1_700_000_000)
+		payload.appendUInt32(1_700_000_123)
+
+		let response = try MobileSFTPCodec.decodeResponse(type: 105, payload: payload)
+
+		guard case .attributes(let attributes) = response else {
+			return XCTFail("Expected an SFTP ATTRS response")
+		}
+		XCTAssertEqual(attributes.type, .directory)
+		XCTAssertEqual(attributes.size, 42)
+		XCTAssertEqual(attributes.permissions, 0o040755)
+		XCTAssertEqual(
+			attributes.modificationDate,
+			Date(timeIntervalSince1970: 1_700_000_123)
+		)
+	}
+
 	func testPreservesUnknownMetadataInsteadOfInventingFileValues() throws {
 		var payload = Data()
 		payload.appendUInt32(1)

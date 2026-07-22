@@ -41,6 +41,10 @@ public enum RemoteFileError: Error, Equatable, Sendable {
 	case hostKeyPersistenceFailed(endpoint: String)
 	case permissionDenied(message: String)
 	case notFound(path: String)
+	case conflict(path: String)
+	case directoryNotEmpty(path: String)
+	case invalidName(reason: String)
+	case staleOperation
 	case unsupported(operation: String)
 	case transport(message: String)
 	case invalidResponse(message: String)
@@ -63,6 +67,14 @@ extension RemoteFileError: LocalizedError {
 			message
 		case .notFound(let path):
 			"Remote path not found: \(path)"
+		case .conflict(let path):
+			"A remote item already exists at \(path)"
+		case .directoryNotEmpty(let path):
+			"Remote folder is not empty: \(path)"
+		case .invalidName(let reason):
+			reason
+		case .staleOperation:
+			"The Host or folder changed before the file action could run."
 		case .unsupported(let operation):
 			"Remote file operation is unsupported: \(operation)"
 		case .transport(let message),
