@@ -87,29 +87,16 @@ else
     exit 1
   }
   cp "$PROFILE" "$OUT/embedded.mobileprovision"
-  ENTITLEMENTS="$ROOT/build/ios/CatermMobile.resolved.entitlements"
-  cp "$ROOT/Resources/CatermMobile.entitlements" "$ENTITLEMENTS"
-  /usr/libexec/PlistBuddy -c \
-    "Set :application-identifier $TEAM_ID.$BUNDLE_ID" "$ENTITLEMENTS"
-  /usr/libexec/PlistBuddy -c \
-    "Set :com.apple.developer.ubiquity-kvstore-identifier $TEAM_ID.$BUNDLE_ID" \
-    "$ENTITLEMENTS"
-  /usr/libexec/PlistBuddy -c \
-    "Set :keychain-access-groups:0 $TEAM_ID.caterm.shared" "$ENTITLEMENTS"
-  PB "Add :CatermKeychainAccessGroup string $TEAM_ID.caterm.shared"
   PROFILE_PLIST="$ROOT/build/ios/CatermMobile.profile.plist"
   security cms -D -i "$PROFILE" >"$PROFILE_PLIST"
-  PROFILE_ENTITLEMENTS="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements' "$PROFILE_PLIST")"
-  for required in \
-    "$TEAM_ID.caterm.shared" \
-    "iCloud.com.caterm.app" \
-    "CloudKit" \
-    "aps-environment"; do
-    if ! grep -Fq "$required" <<<"$PROFILE_ENTITLEMENTS"; then
-      echo "[ios] provisioning profile is missing required capability: $required" >&2
-      exit 1
-    fi
-  done
+  ENTITLEMENTS="$ROOT/build/ios/CatermMobile.resolved.entitlements"
+  bash "$ROOT/Scripts/resolve-ios-entitlements.sh" \
+    "$PROFILE_PLIST" \
+    "$ROOT/Resources/CatermMobile.entitlements" \
+    "$ENTITLEMENTS" \
+    "$TEAM_ID" \
+    "$BUNDLE_ID"
+  PB "Add :CatermKeychainAccessGroup string $TEAM_ID.caterm.shared"
   /usr/libexec/PlistBuddy -c "Set :CatermCloudKitEnabled true" "$PL"
   codesign --force --sign "$IDENTITY" \
     --entitlements "$ENTITLEMENTS" \

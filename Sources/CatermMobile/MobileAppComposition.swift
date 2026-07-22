@@ -166,11 +166,7 @@ public final class MobileAppComposition: ObservableObject {
 		)
 		let identityTracker = AccountIdentityTracker(
 			currentIdentity: {
-				do {
-					return .signedIn(try await container.userRecordID())
-				} catch {
-					return .temporarilyUnavailable(error.localizedDescription)
-				}
+				await CloudKitAccountIdentityObserver.observe(provider: container)
 			},
 			tokensExist: { await client.hasAnyHostSyncTokens() }
 		)

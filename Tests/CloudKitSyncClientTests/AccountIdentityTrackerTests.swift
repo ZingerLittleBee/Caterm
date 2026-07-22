@@ -152,6 +152,41 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		)
 	}
 
+	func testCloudIdentityObserverMapsNoAccountToSignedOut() async {
+		let provider = IdentityProvider(status: .noAccount)
+
+		let observation = await CloudKitAccountIdentityObserver.observe(
+			provider: provider
+		)
+
+		XCTAssertEqual(observation, .signedOut)
+	}
+
+	func testCloudIdentityObserverPreservesTemporaryAccountState() async {
+		let provider = IdentityProvider(status: .temporarilyUnavailable)
+
+		let observation = await CloudKitAccountIdentityObserver.observe(
+			provider: provider
+		)
+
+		guard case .temporarilyUnavailable = observation else {
+			return XCTFail("Expected temporary account unavailability")
+		}
+	}
+
+	func testCloudIdentityObserverMapsAuthenticationRaceToSignedOut() async {
+		let provider = IdentityProvider(
+			status: .available,
+			userRecordError: CKError(.notAuthenticated)
+		)
+
+		let observation = await CloudKitAccountIdentityObserver.observe(
+			provider: provider
+		)
+
+		XCTAssertEqual(observation, .signedOut)
+	}
+
 	// Test-only spy; per-test instance, never accessed concurrently.
 	private final class SpyClient: AccountSensitiveClient {
 		nonisolated(unsafe) var didReset = false
@@ -166,5 +201,23 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		func deleteHostSubscription() async throws { didDeleteSubscription = true }
 		func resetSnippetSyncState() async { didResetSnippet = true }
 		func deleteSnippetSubscription() async throws { didDeleteSnippetSubscription = true }
+	}
+
+	private final class IdentityProvider: CKAccountIdentityProviding,
+		@unchecked Sendable {
+		let status: CKAccountStatus
+		let userRecordError: Error?
+
+		init(status: CKAccountStatus, userRecordError: Error? = nil) {
+			self.status = status
+			self.userRecordError = userRecordError
+		}
+
+		func accountStatus() async throws -> CKAccountStatus { status }
+
+		func userRecordID() async throws -> CKRecord.ID {
+			if let userRecordError { throw userRecordError }
+			return CKRecord.ID(recordName: "USER-A")
+		}
 	}
 }

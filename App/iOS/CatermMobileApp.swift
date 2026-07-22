@@ -21,6 +21,11 @@ struct CatermMobileApp: App {
 			applicationSupportURL: supportURL
 		)
 		_composition = StateObject(wrappedValue: composition)
+		#if canImport(UIKit)
+		pushDelegate.hostPushHandler = {
+			await composition.syncRuntime.receivedCloudKitPush()
+		}
+		#endif
 	}
 
 	var body: some Scene {
@@ -33,13 +38,6 @@ struct CatermMobileApp: App {
 				prepareCredentialSyncForSave: composition.prepareCredentialSyncForSave,
 				startObservingAccountChanges: composition.startObservingAccountChanges
 			)
-			#if canImport(UIKit)
-			.task {
-				pushDelegate.hostPushHandler = {
-					await composition.syncRuntime.receivedCloudKitPush()
-				}
-			}
-			#endif
 		}
 	}
 

@@ -33,6 +33,37 @@ private final class RecordingCredentialStore: MobileCredentialStoring, @unchecke
 	}
 }
 
+private actor PersistenceMutationGate {
+	private var blockedContinuation: CheckedContinuation<Void, Never>?
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+	private var isReleased = false
+
+	func block() async {
+		guard !isReleased else { return }
+		await withCheckedContinuation { continuation in
+			blockedContinuation = continuation
+		}
+		guard !isReleased else { return }
+		await withCheckedContinuation { continuation in
+			releaseContinuation = continuation
+		}
+	}
+
+	func waitUntilBlocked() async {
+		while blockedContinuation == nil {
+			await Task.yield()
+		}
+		blockedContinuation?.resume()
+		blockedContinuation = nil
+	}
+
+	func release() {
+		isReleased = true
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
+}
+
 private enum HostRepositoryPlatform: Sendable {
 	case macOS
 	case iOS
@@ -566,6 +597,37 @@ final class MobileHostStoreTests: XCTestCase {
 
 		XCTAssertEqual(store.hosts.map(\.id), [b.id])
 		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.map(\.id), [b.id])
+	}
+
+	func testAccountResetRejectsAHostSaveAlreadyWaitingToPersist() async throws {
+		let url = tempURL()
+		let accountAHost = makeHost("account-a")
+		try HostPersistence.save([accountAHost], to: url)
+		let gate = PersistenceMutationGate()
+		let persistence = MobileHostPersistence(
+			hostsURL: url,
+			hosts: [accountAHost],
+			beforeMutation: { await gate.block() }
+		)
+		let store = MobileHostStore(fileURL: url, persistence: persistence)
+		let staleSave = Task { @MainActor in
+			do {
+				try await store.upsert(self.makeHost("stale-account-a"))
+				return false
+			} catch {
+				return error as? MobileHostStore.StoreError
+					== .accountTransitionInProgress
+			}
+		}
+
+		await gate.waitUntilBlocked()
+		try await store.resetForAccountChange()
+		await gate.release()
+		let staleSaveWasRejected = await staleSave.value
+
+		XCTAssertTrue(staleSaveWasRejected)
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertTrue(try HostPersistence.load(from: url).isEmpty)
 	}
 
 	func testLocalDeleteClearsCredentialsAndPersistsTombstone() async throws {

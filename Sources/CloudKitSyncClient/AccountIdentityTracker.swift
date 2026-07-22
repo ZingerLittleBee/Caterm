@@ -29,6 +29,44 @@ public enum AccountIdentityObservation: Sendable, Equatable {
 	case temporarilyUnavailable(String)
 }
 
+public protocol CKAccountIdentityProviding: CKAccountStatusProviding {
+	func userRecordID() async throws -> CKRecord.ID
+}
+
+extension CKContainer: CKAccountIdentityProviding {}
+
+public enum CloudKitAccountIdentityObserver {
+	public static func observe(
+		provider: any CKAccountIdentityProviding
+	) async -> AccountIdentityObservation {
+		let status: CKAccountStatus
+		do {
+			status = try await provider.accountStatus()
+		} catch {
+			return .temporarilyUnavailable(error.localizedDescription)
+		}
+
+		switch status {
+		case .available:
+			do {
+				return .signedIn(try await provider.userRecordID())
+			} catch let error as CKError where error.code == .notAuthenticated {
+				return .signedOut
+			} catch {
+				return .temporarilyUnavailable(error.localizedDescription)
+			}
+		case .noAccount, .restricted:
+			return .signedOut
+		case .couldNotDetermine:
+			return .temporarilyUnavailable("iCloud account status could not be determined.")
+		case .temporarilyUnavailable:
+			return .temporarilyUnavailable("iCloud account is temporarily unavailable.")
+		@unknown default:
+			return .temporarilyUnavailable("iCloud account status is unsupported.")
+		}
+	}
+}
+
 public actor AccountIdentityTracker {
 	private enum PendingIdentity {
 		case signedIn(String)

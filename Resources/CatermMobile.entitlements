@@ -5,7 +5,7 @@
 	<key>application-identifier</key>
 	<string>TEAM_ID.app.caterm.mobile</string>
 	<key>aps-environment</key>
-	<string>development</string>
+	<string>APS_ENVIRONMENT</string>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
 		<string>iCloud.com.caterm.app</string>

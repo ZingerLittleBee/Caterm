@@ -232,6 +232,12 @@ run-ios: ios-build ## build + boot simulator + install + launch mobile app
 	xcrun simctl install $(IOS_SIM) "$(IOS_APP)"
 	xcrun simctl launch $(IOS_SIM) $(IOS_BUNDLE_ID)
 
+.PHONY: test-ios-host-sync
+test-ios-host-sync: ## signed-Simulator offline cache + deterministic Host sync proof
+	@test -n "$(IOS_SIM)" || { echo "No iOS simulator available"; exit 1; }
+	xcrun simctl boot $(IOS_SIM) 2>/dev/null || true
+	IOS_SIM=$(IOS_SIM) bash Scripts/ios-host-sync-e2e.sh
+
 .PHONY: clean
 clean: ## remove .build (forces full rebuild)
 	swift package clean

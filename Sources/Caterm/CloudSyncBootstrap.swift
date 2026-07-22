@@ -37,11 +37,9 @@ struct CloudSyncBootstrap {
 		let client = CloudKitSyncClient(database: cloudContainer.privateCloudDatabase)
 		let tracker = AccountIdentityTracker(
 			currentIdentity: {
-				do {
-					return .signedIn(try await cloudContainer.userRecordID())
-				} catch {
-					return .temporarilyUnavailable(error.localizedDescription)
-				}
+				await CloudKitAccountIdentityObserver.observe(
+					provider: cloudContainer
+				)
 			},
 			tokensExist: {
 				let hostTokens = await client.hasAnyHostSyncTokens()

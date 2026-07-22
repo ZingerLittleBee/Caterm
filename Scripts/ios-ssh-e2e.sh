@@ -59,7 +59,7 @@ sleep 4
 echo "[e2e] add host E2E ($SSH_USER@127.0.0.1:$SSH_PORT)"
 # Coordinates are points for iPhone 17 Pro (402x874). Adjust if the
 # booted device differs.
-IDB ui tap --udid "$SIM" 363 83 >/dev/null 2>&1; sleep 2          # +
+IDB ui tap --udid "$SIM" 318 750 >/dev/null 2>&1; sleep 2        # Add Host
 IDB ui tap --udid "$SIM" 200 251 >/dev/null 2>&1; sleep 1
 IDB ui text --udid "$SIM" "E2E" >/dev/null 2>&1; sleep 1          # Label
 IDB ui tap --udid "$SIM" 200 303 >/dev/null 2>&1; sleep 1
@@ -72,7 +72,7 @@ IDB ui tap --udid "$SIM" 200 407 >/dev/null 2>&1; sleep 1
 IDB ui text --udid "$SIM" "$SSH_USER" >/dev/null 2>&1; sleep 1   # Username
 IDB ui tap --udid "$SIM" 200 569 >/dev/null 2>&1; sleep 1
 IDB ui text --udid "$SIM" "$SSH_PASS" >/dev/null 2>&1; sleep 1   # Password
-IDB ui tap --udid "$SIM" 350 100 >/dev/null 2>&1; sleep 2        # Save
+IDB ui tap --udid "$SIM" 355 813 >/dev/null 2>&1; sleep 2        # Save
 
 echo "[e2e] connect"
 IDB ui tap --udid "$SIM" 201 264 >/dev/null 2>&1; sleep 2        # open host
