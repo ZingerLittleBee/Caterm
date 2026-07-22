@@ -143,7 +143,6 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	public func beginAccountChangeSuspension() {
 		guard !accountTransitionInProgress else { return }
 		accountTransitionInProgress = true
-		sync.stopForceFullTimer()
 		sync.beginAccountChangeSuspension()
 	}
 

@@ -790,6 +790,46 @@ private func mobileRelatedSyncIdentityGateDoesNotFetchHosts() async throws {
 	#expect(resumeCount == 1)
 }
 
+@Test("Related sync identity gate resubmits interrupted Host work")
+@MainActor
+private func mobileRelatedSyncIdentityGatePreservesActiveHostRequest() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	client.blockNextSnapshot()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "related-gate-active", masterKey: master)
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: { .unchanged },
+			acknowledge: {}
+		)
+	)
+	let launch = Task { @MainActor in await runtime.launch() }
+	await client.waitUntilSnapshotIsBlocked()
+
+	let gate = Task { @MainActor in await runtime.prepareForRelatedSync() }
+	await Task.yield()
+	client.releaseSnapshot()
+	_ = await launch.value
+	#expect(await gate.value == .noData)
+	for _ in 0..<1_000 {
+		if client.snapshotFetchCount() == 2 { break }
+		await Task.yield()
+	}
+
+	#expect(client.snapshotFetchCount() == 2)
+}
+
 @Test("Mobile boot composition shares one Host store with the sync runtime")
 @MainActor
 private func mobileBootCompositionUsesSharedRuntime() throws {

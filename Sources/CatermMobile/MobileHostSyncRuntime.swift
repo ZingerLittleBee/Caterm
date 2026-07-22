@@ -78,6 +78,8 @@ public final class MobileHostSyncRuntime: ObservableObject {
 	private var cancellables: Set<AnyCancellable> = []
 	private var activeTask: Task<MobileHostSyncExecutionResult, Never>?
 	private var activeRunID: UUID?
+	private var activeRequest: SharedHostSyncRequest?
+	private var pendingHostRequest: SharedHostSyncRequest?
 	private var debounceTask: Task<Void, Never>?
 	private var lifecycleGeneration: UInt64 = 0
 	private var accountTransitionInProgress = false
@@ -134,7 +136,16 @@ public final class MobileHostSyncRuntime: ObservableObject {
 	}
 
 	public func prepareForRelatedSync() async -> MobileHostSyncExecutionResult {
-		await replaceActiveRun(checkIdentity: true, request: nil)
+		pendingHostRequest = mergedRequest(pendingHostRequest, activeRequest)
+		if debounceTask != nil {
+			pendingHostRequest = mergedRequest(pendingHostRequest, .automatic)
+		}
+		let result = await replaceActiveRun(checkIdentity: true, request: nil)
+		guard result != .failed, result != .cancelled, isSignedIn(),
+			let pendingHostRequest else { return result }
+		self.pendingHostRequest = nil
+		scheduleSync(request: pendingHostRequest)
+		return result
 	}
 
 	public func refresh() async {
@@ -150,6 +161,11 @@ public final class MobileHostSyncRuntime: ObservableObject {
 		checkIdentity: Bool,
 		request: SharedHostSyncRequest?
 	) async -> MobileHostSyncExecutionResult {
+		var resolvedRequest = request
+		if request != nil, let pendingHostRequest {
+			resolvedRequest = mergedRequest(request, pendingHostRequest)
+			self.pendingHostRequest = nil
+		}
 		accountTransitionInProgress = true
 		lifecycleGeneration &+= 1
 		let generation = lifecycleGeneration
@@ -159,6 +175,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 		let prior = activeTask
 		activeTask = nil
 		activeRunID = nil
+		activeRequest = nil
 		prior?.cancel()
 		_ = await prior?.result
 		guard generationIsCurrent(generation) else { return .cancelled }
@@ -168,16 +185,18 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			guard let self else { return MobileHostSyncExecutionResult.cancelled }
 			return await refreshAndSynchronize(
 				checkIdentity: checkIdentity,
-				request: request,
+				request: resolvedRequest,
 				generation: generation
 			)
 		}
 		activeRunID = runID
+		activeRequest = resolvedRequest
 		activeTask = task
 		let result = await task.value
 		if activeRunID == runID {
 			activeTask = nil
 			activeRunID = nil
+			activeRequest = nil
 		}
 		return result
 	}
@@ -315,5 +334,16 @@ public final class MobileHostSyncRuntime: ObservableObject {
 
 	private func generationIsCurrent(_ generation: UInt64) -> Bool {
 		generation == lifecycleGeneration && !Task.isCancelled
+	}
+
+	private func mergedRequest(
+		_ current: SharedHostSyncRequest?,
+		_ incoming: SharedHostSyncRequest?
+	) -> SharedHostSyncRequest? {
+		guard let incoming else { return current }
+		guard let current else { return incoming }
+		if current == .forceFull || incoming == .forceFull { return .forceFull }
+		if current == .automatic || incoming == .automatic { return .automatic }
+		return .incremental
 	}
 }
