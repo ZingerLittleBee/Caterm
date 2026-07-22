@@ -1,5 +1,6 @@
 import AppKit
 import FileTransferStore
+import HostSyncStore
 import SessionStore
 import SFTPCommandBuilder
 import SnippetStore
@@ -7,6 +8,7 @@ import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
+import WorkspaceCore
 
 enum MainWindowToolbarAction: CaseIterable {
 	case snippets
@@ -42,20 +44,18 @@ enum MainWindowSnippetPalettePlacement {
 	}
 }
 
-/// Content of one window in the multi-tab `WindowGroup(for: UUID.self)`. Each
-/// SwiftUI window represents one SessionStore tab; macOS merges them into
-/// native tabs because `NSWindow.allowsAutomaticWindowTabbing = true` (set in
-/// `AppDelegate`).
-///
-/// Closing the window (⌘W on the active tab) deinits this view tree. The
-/// `.onDisappear` hook keeps `SessionStore.tabs` in sync; surface destruction
-/// (and the resulting SIGHUP to ssh) happens via `GhosttySurfaceNSView.deinit`.
+/// Content of one native window tab. The window owns a durable Workspace
+/// identity while `SessionStore` continues to own the one runtime SSH session.
+/// A one-Pane Workspace deliberately renders the existing terminal UI without
+/// pane headers or a custom tab strip.
 struct MainWindow: View {
 	@EnvironmentObject var store: SessionStore
+	@EnvironmentObject var preferences: SyncPreferences
 	@EnvironmentObject var fileTransferStore: FileTransferStore
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	@EnvironmentObject var snippetStore: SnippetStore
 	@EnvironmentObject var snippetSync: SnippetSyncStore
+	@EnvironmentObject var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
 	@StateObject private var bannerState = SettingsBannerState()
 	@State private var fileDrawerOpen = false
@@ -67,14 +67,20 @@ struct MainWindow: View {
 	@State private var presentingManager = false
 	@State private var hostWindow: NSWindow?
 	@State private var remoteFsCache = RemoteFsCache()
-	let tabId: UUID
+	@State private var restorationStatus = WorkspaceRestorationStatus.pending
+	@Binding var workspace: Workspace
 
 	private static let drawerMinWidth: CGFloat = 240
 	private static let drawerMaxWidth: CGFloat = 600
 
-	/// Host backing the active tab — `nil` once the tab has been closed.
+	private var activeSessionID: UUID? {
+		workspaceCoordinator.sessionID(for: workspace)
+	}
+
+	/// Host backing the active Pane's runtime session.
 	private var activeHost: SSHHost? {
-		store.tabs.first(where: { $0.id == tabId })?.host
+		guard let activeSessionID else { return nil }
+		return store.tabs.first(where: { $0.id == activeSessionID })?.host
 	}
 
 	private var skippedForwardBannerText: String {
@@ -118,10 +124,11 @@ struct MainWindow: View {
 		}
 	}
 
-	/// Returns the surface registered for this window's tab, used to dispatch
+	/// Returns the surface registered for this Workspace's session, used to dispatch
 	/// snippet paste/run commands from the palette.
 	private func resolveActiveSurface() -> (any SnippetDispatchTarget)? {
-		surfaceRegistry.surface(for: tabId)
+		guard let activeSessionID else { return nil }
+		return surfaceRegistry.surface(for: activeSessionID)
 	}
 
 	var body: some View {
@@ -144,7 +151,7 @@ struct MainWindow: View {
 			}
 			if bannerState.showNewSurfaceBanner {
 				Banner(
-					text: "Some settings (scrollback / titlebar) apply to new tabs only.",
+					text: "Some settings (scrollback / titlebar) apply to new sessions only.",
 					onDismiss: bannerState.dismissNewSurface
 				)
 			}
@@ -168,20 +175,21 @@ struct MainWindow: View {
 					? drawerWidth + 1 : 0
 				ZStack(alignment: .topLeading) {
 					NavigationSplitView {
-						// Already a tab — connecting from this sidebar
+						// Already a Workspace — connecting from this sidebar
 						// should spawn a sibling tabbed window
-						// (auto-merged by macOS into the current tab
-						// bar), not replace this window's session.
-						HostListSidebar(onOpenTab: { newId in openWindow(value: newId) })
+						// rather than replacing this Workspace's session.
+						HostListSidebar(onOpenWorkspace: { newWorkspace in
+							openWindow(value: WorkspaceWindowState.workspace(newWorkspace))
+						})
 							.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
 					} detail: {
 						Group {
-							if store.tabs.contains(where: { $0.id == tabId }) {
-								TerminalContainerView(tabId: tabId)
+							if let activeSessionID,
+							   store.tabs.contains(where: { $0.id == activeSessionID }) {
+								TerminalContainerView(tabId: activeSessionID)
 									.padding(.trailing, drawerTotal)
 							} else {
-								Text("Tab closed")
-									.foregroundColor(.secondary)
+								workspaceRestorationPlaceholder
 							}
 						}
 						.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -288,7 +296,14 @@ struct MainWindow: View {
 				}
 			)
 		}
-		.background(WindowAccessor(window: $hostWindow))
+		.background(
+			WorkspaceWindowLifecycleObserver(window: $hostWindow) {
+				if let activeSessionID {
+					surfaceRegistry.unregister(activeSessionID)
+				}
+				workspaceCoordinator.closeWorkspace(workspace.id)
+			}
+		)
 		.modifier(SnippetCommandObserver(
 			presentingPalette: $presentingPalette,
 			presentingEditor: $presentingEditor,
@@ -305,9 +320,36 @@ struct MainWindow: View {
 				.environmentObject(snippetStore)
 				.environmentObject(snippetSync)
 		}
-		.onDisappear {
-			surfaceRegistry.unregister(tabId)
-			store.closeTab(tabId: tabId)
+		.task(id: workspace.id) {
+			do {
+				let sessionID = try workspaceCoordinator.ensureSession(
+					for: workspace,
+					installTerminfo: preferences.installTerminfoEnabled
+				)
+				restorationStatus = sessionID == nil ? .missingHost : .ready
+			} catch {
+				restorationStatus = .failed(error.localizedDescription)
+			}
+		}
+	}
+
+	@ViewBuilder
+	private var workspaceRestorationPlaceholder: some View {
+		switch restorationStatus {
+		case .pending, .ready:
+			ProgressView("Restoring Workspace…")
+		case .missingHost:
+			ContentUnavailableView(
+				"Host Unavailable",
+				systemImage: "questionmark.square.dashed",
+				description: Text("This Workspace is safe, but its saved Host is no longer available.")
+			)
+		case .failed(let message):
+			ContentUnavailableView(
+				"Workspace Could Not Open",
+				systemImage: "exclamationmark.triangle",
+				description: Text(message)
+			)
 		}
 	}
 
@@ -329,6 +371,13 @@ struct MainWindow: View {
 			onCreate: { presentingPalette = false; presentingEditor = true }
 		)
 	}
+}
+
+private enum WorkspaceRestorationStatus: Equatable {
+	case pending
+	case ready
+	case missingHost
+	case failed(String)
 }
 
 /// Caches one `RemoteFileSystem` per `host.id` so a stable instance

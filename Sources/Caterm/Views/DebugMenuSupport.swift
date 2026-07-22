@@ -7,7 +7,7 @@ import SSHCommandBuilder
 /// osascript) a stable AX hook into the host-list connect path. Gated behind
 /// `#if DEBUG` so it never ships in release builds.
 ///
-/// The Debug menu's "Open Tab for First Host" item posts
+/// The Debug menu's "Open Workspace for First Host" item posts
 /// `.catermDebugOpenFirstHost`; `HostListSidebar` listens and feeds the picked
 /// host back through the real `connect(_:)` → `resolveConnectIntent` → either
 /// `.openTab` or `.promptCredentials` — same path as a sidebar double-click.

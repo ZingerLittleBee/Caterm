@@ -2,6 +2,7 @@ import HostSyncStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+import WorkspaceCore
 
 enum PortForwardWorkspaceWindow {
 	static let id = "port-forwarding"
@@ -70,6 +71,7 @@ enum PortForwardWorkspaceModel {
 struct PortForwardWorkspaceView: View {
 	@EnvironmentObject private var store: SessionStore
 	@EnvironmentObject private var preferences: SyncPreferences
+	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
 	@State private var selection: Set<UUID> = []
 	@State private var query = ""
@@ -77,6 +79,7 @@ struct PortForwardWorkspaceView: View {
 	@State private var sortOrder = [
 		KeyPathComparator(\PortForwardWorkspaceRow.hostName)
 	]
+	@State private var connectionErrorMessage: String?
 
 	private struct EditorRequest: Identifiable {
 		let id = UUID()
@@ -192,6 +195,18 @@ struct PortForwardWorkspaceView: View {
 				.frame(width: 440, height: 240)
 			}
 		}
+		.alert(
+			"Unable to Open Workspace",
+			isPresented: Binding(
+				get: { connectionErrorMessage != nil },
+				set: { if !$0 { connectionErrorMessage = nil } }
+			),
+			presenting: connectionErrorMessage
+		) { _ in
+			Button("OK") { connectionErrorMessage = nil }
+		} message: { message in
+			Text(message)
+		}
 		.frame(minWidth: 760, minHeight: 420)
 	}
 
@@ -215,11 +230,15 @@ struct PortForwardWorkspaceView: View {
 
 	private func connect(_ hostID: UUID) {
 		guard let host = store.hosts.first(where: { $0.id == hostID }) else { return }
-		let tabID = store.openTab(
-			host: host,
-			installTerminfo: preferences.installTerminfoEnabled
-		)
-		openWindow(value: tabID)
+		do {
+			let workspace = try workspaceCoordinator.openSavedHost(
+				host,
+				installTerminfo: preferences.installTerminfoEnabled
+			)
+			openWindow(value: WorkspaceWindowState.workspace(workspace))
+		} catch {
+			connectionErrorMessage = error.localizedDescription
+		}
 	}
 }
 

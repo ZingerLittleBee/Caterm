@@ -65,6 +65,10 @@ let package = Package(
             path: "Sources/SessionHistory"
         ),
         .target(
+            name: "WorkspaceCore",
+            path: "Sources/WorkspaceCore"
+        ),
+        .target(
             name: "HostRepositoryCore",
             dependencies: ["SSHCommandBuilder", "ServerSyncClient", "MergeDecision"],
             path: "Sources/HostRepositoryCore"
@@ -204,6 +208,7 @@ let package = Package(
                 "SSHCredentialContract",
                 "SessionStore",
                 "SessionHistory",
+                "WorkspaceCore",
                 "KnownHostsStore",
                 "KeychainStore",
                 "ConfigStore",
@@ -277,6 +282,11 @@ let package = Package(
             path: "Tests/SessionHistoryTests"
         ),
         .testTarget(
+            name: "WorkspaceCoreTests",
+            dependencies: ["WorkspaceCore"],
+            path: "Tests/WorkspaceCoreTests"
+        ),
+        .testTarget(
             name: "HostRepositoryCoreTests",
             dependencies: ["HostRepositoryCore", "ServerSyncClient", "SSHCommandBuilder", "SessionStore", "CatermMobile", "KeychainStore"],
             path: "Tests/HostRepositoryCoreTests"
@@ -308,7 +318,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermTests",
-            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient"],
+            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient", "WorkspaceCore"],
             path: "Tests/CatermTests"
         ),
         .testTarget(

@@ -6,7 +6,7 @@ import XCTest
 @testable import KeychainStore
 
 /// Tests for the debug-only menu helper that picks a target host for the
-/// "Open Tab for First Host" command (⌃⌥⌘O). The helper exists so UI
+/// "Open Workspace for First Host" command (⌃⌥⌘O). The helper exists so UI
 /// automation (Computer Use / cliclick / osascript) has a reliable AX-level
 /// hook into the same `connect(_:)` path the sidebar's double-click uses,
 /// without having to drive a SwiftUI List row.

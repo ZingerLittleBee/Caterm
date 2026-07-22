@@ -2,6 +2,7 @@ import HostSyncStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+import WorkspaceCore
 
 enum HostManagerWindow {
 	static let id = "host-manager"
@@ -31,6 +32,7 @@ private struct HostManagerRow: Identifiable {
 struct HostManagerView: View {
 	@EnvironmentObject private var store: SessionStore
 	@EnvironmentObject private var preferences: SyncPreferences
+	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
 	@State private var scope: HostManagerScope? = .all
 	@State private var selection: Set<UUID> = []
@@ -247,11 +249,15 @@ struct HostManagerView: View {
 	private func connect(_ hostID: UUID?) {
 		guard let hostID,
 		      let host = store.hosts.first(where: { $0.id == hostID }) else { return }
-		let tabID = store.openTab(
-			host: host,
-			installTerminfo: preferences.installTerminfoEnabled
-		)
-		openWindow(value: tabID)
+		do {
+			let workspace = try workspaceCoordinator.openSavedHost(
+				host,
+				installTerminfo: preferences.installTerminfoEnabled
+			)
+			openWindow(value: WorkspaceWindowState.workspace(workspace))
+		} catch {
+			errorMessage = error.localizedDescription
+		}
 	}
 
 	private func presentEditor(

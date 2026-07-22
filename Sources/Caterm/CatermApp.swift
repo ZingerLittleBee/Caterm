@@ -22,6 +22,7 @@ import SnippetStore
 import SnippetSyncClient
 import SwiftUI
 import TerminalEngine
+import WorkspaceCore
 
 @main
 struct CatermApp: App {
@@ -37,6 +38,7 @@ struct CatermApp: App {
   @StateObject var surfaceRegistry: SurfaceRegistry
   @StateObject private var snippetStore: SnippetStore
   @StateObject private var snippetSync: SnippetSyncStore
+  @StateObject private var workspaceCoordinator: WorkspaceCoordinator
   private let updaterController = UpdaterController()
 
   /// Holds the live-reload dispatcher and its NotificationCenter
@@ -60,6 +62,9 @@ struct CatermApp: App {
     let session = makeStore(
       managedKeyStore: mngs,
       historyRecorder: history
+    )
+    _workspaceCoordinator = StateObject(
+      wrappedValue: WorkspaceCoordinator(sessionStore: session)
     )
     _historyStore = StateObject(wrappedValue: history)
     let surfaceRegistry = SurfaceRegistry()
@@ -298,24 +303,15 @@ struct CatermApp: App {
   }
 
   var body: some Scene {
-    // Each tab in the OS-provided native tab bar is one window in this
-    // `WindowGroup(for: UUID.self)`. macOS auto-tabs them because
+    // Each tab in the OS-provided native tab bar is one Workspace window in
+    // this data-driven group. macOS auto-tabs them because
     // `NSWindow.allowsAutomaticWindowTabbing = true` (AppDelegate).
     //
-    // When `tabId == nil` the user opened a "fresh" window via the
-    // File > New Window default; show the landing screen with the host
-    // list sidebar.
-    WindowGroup(for: UUID.self) { $tabId in
-      Group {
-        if let id = tabId, store.tabs.contains(where: { $0.id == id }) {
-          MainWindow(tabId: id)
-        } else {
-          // Pass the tabId binding so connecting from this Landing
-          // window converts it into the new tab in place instead of
-          // spawning a sibling blank tab.
-          LandingView(tabId: $tabId)
-        }
-      }
+    // SwiftUI persists the Codable value for window restoration. Workspace
+    // state contains only stable identities and a safe Host reference; the
+    // coordinator rebuilds a fresh SessionStore mapping at runtime.
+    WindowGroup(for: WorkspaceWindowState.self) { $windowState in
+      WorkspaceSceneRoot(windowState: $windowState)
       .environmentObject(store)
       .environmentObject(historyStore)
       .environmentObject(syncStore)  // NEW (v1.4)
@@ -326,6 +322,7 @@ struct CatermApp: App {
       .environmentObject(surfaceRegistry)
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
+      .environmentObject(workspaceCoordinator)
       .background(
         SyncSettingsCommandBridge {
           let preferencesWindow = PreferencesWindowController.shared
@@ -386,6 +383,8 @@ struct CatermApp: App {
         guard !cloudSyncDisabled else { return }
         accountChangeSyncCoordinator.enqueue()
       }
+    } defaultValue: {
+      WorkspaceWindowState.landing(id: UUID())
     }
     .commands {
       CatermWindowCommands()
@@ -498,7 +497,7 @@ struct CatermApp: App {
         // feeds through the real `connect(_:)` path, so the resulting
         // behavior is identical to a sidebar double-click.
         CommandMenu("Debug") {
-          Button("Open Tab for First Host") {
+          Button("Open Workspace for First Host") {
             NotificationCenter.default.post(
               name: .catermDebugOpenFirstHost,
               object: NSApp.keyWindow
@@ -513,18 +512,21 @@ struct CatermApp: App {
         .environmentObject(store)
         .environmentObject(historyStore)
         .environmentObject(preferences)
+        .environmentObject(workspaceCoordinator)
     }
     .defaultSize(width: 840, height: 520)
     Window("Hosts", id: HostManagerWindow.id) {
       HostManagerView()
         .environmentObject(store)
         .environmentObject(preferences)
+        .environmentObject(workspaceCoordinator)
     }
     .defaultSize(width: 1040, height: 620)
     Window("Port Forwarding", id: PortForwardWorkspaceWindow.id) {
       PortForwardWorkspaceView()
         .environmentObject(store)
         .environmentObject(preferences)
+        .environmentObject(workspaceCoordinator)
     }
     .defaultSize(width: 860, height: 520)
     Window("Known Hosts", id: KnownHostsWindow.id) {
@@ -543,18 +545,18 @@ extension Notification.Name {
 
 /// App-wide window commands use SwiftUI's scene action directly. A
 /// NotificationCenter bridge here would be mounted once per WindowGroup
-/// scene, so one menu action would be multiplied by the number of live tabs.
+/// scene, so one menu action would be multiplied by the number of live windows.
 struct CatermWindowCommands: Commands {
   @Environment(\.openWindow) private var openWindow
 
   var body: some Commands {
     CommandGroup(replacing: .newItem) {
       Button("New Window") {
-        openWindow(value: UUID())
+        openWindow(value: WorkspaceWindowState.landing(id: UUID()))
       }
       .keyboardShortcut("n", modifiers: .command)
       Button("New Tab") {
-        openWindow(value: UUID())
+        openWindow(value: WorkspaceWindowState.landing(id: UUID()))
       }
       .keyboardShortcut("t", modifiers: .command)
       Button("New Host…") {
@@ -583,13 +585,31 @@ struct CatermWindowCommands: Commands {
   }
 }
 
-/// Initial landing view shown when a "fresh" (tabId-less) window opens.
-/// Embeds the host list sidebar so users can manage hosts before any tab
-/// is open. When the user picks a host, swap our own `tabId` binding to
-/// the new tab id — this morphs the current window from Landing into
-/// MainWindow rather than spawning a separate window/tab.
+struct WorkspaceSceneRoot: View {
+  @Binding var windowState: WorkspaceWindowState
+
+  @ViewBuilder
+  var body: some View {
+    if case .workspace(let workspace) = windowState {
+      MainWindow(
+        workspace: Binding(
+          get: { windowState.workspace ?? workspace },
+          set: { windowState = .workspace($0) }
+        )
+      )
+      .id(workspace.id)
+    } else {
+      LandingView(windowState: $windowState)
+    }
+  }
+}
+
+/// Initial landing view shown for a fresh Workspace window.
+/// Embeds the Host list sidebar so users can manage Hosts before a Workspace
+/// exists. Picking a Host replaces this window's landing value with the new
+/// Workspace shell instead of leaving a sibling blank window behind.
 struct LandingView: View {
-  @Binding var tabId: UUID?
+  @Binding var windowState: WorkspaceWindowState
   @EnvironmentObject var snippetStore: SnippetStore
   @EnvironmentObject var snippetSync: SnippetSyncStore
   @State private var presentingPalette = false
@@ -599,7 +619,9 @@ struct LandingView: View {
 
   var body: some View {
     NavigationSplitView {
-      HostListSidebar(onOpenTab: { newId in tabId = newId })
+      HostListSidebar(onOpenWorkspace: { workspace in
+        windowState = .workspace(workspace)
+      })
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
     } detail: {
       VStack(spacing: 12) {

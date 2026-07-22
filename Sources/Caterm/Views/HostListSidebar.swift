@@ -4,6 +4,7 @@ import HostSyncStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+import WorkspaceCore
 
 enum HostCredentialEditRoute: Equatable {
 	case preserveCurrent
@@ -32,18 +33,18 @@ enum HostCredentialEditRouting {
 /// - Add (toolbar + ⌘T notification)
 /// - Edit (context menu)
 /// - Delete (context menu)
-/// - Connect (context menu / double-click) — delegates "open this new tab"
-///   to the owning window via `onOpenTab`. A LandingView swaps its tab
-///   identity in-place (so the empty Landing window becomes the new tab);
-///   a MainWindow calls `openWindow(value:)` to spawn a sibling tab.
+/// - Connect (context menu / double-click) — delegates the new Workspace shell
+///   to the owning window via `onOpenWorkspace`. A LandingView swaps its scene
+///   value in place; a MainWindow opens a sibling native tab.
 ///   This avoids the previous behavior of always spawning a new window
 ///   and leaving the original Landing window around as a blank tab.
 struct HostListSidebar: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
+	@EnvironmentObject var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
-	let onOpenTab: (UUID) -> Void
+	let onOpenWorkspace: (Workspace) -> Void
 	@State private var selectedHostId: UUID?
 	@State private var showingAddSheet = false
 	@State private var editingHost: SSHHost?
@@ -449,11 +450,15 @@ struct HostListSidebar: View {
 			case .promptCredentials:
 				pendingCredentialHost = current
 			case .openTab:
-				let tabId = store.openTab(
-					host: current,
-					installTerminfo: preferences.installTerminfoEnabled
-				)
-				onOpenTab(tabId)
+				do {
+					let workspace = try workspaceCoordinator.openSavedHost(
+						current,
+						installTerminfo: preferences.installTerminfoEnabled
+					)
+					onOpenWorkspace(workspace)
+				} catch {
+					errorMessage = error.localizedDescription
+				}
 			}
 		}
 	}
@@ -473,12 +478,15 @@ struct HostListSidebar: View {
 	}
 
 	private func connectOnce(_ destination: QuickConnectDestination) {
-		let tabId = store.openTab(
-			host: destination.makeHost(),
-			installTerminfo: preferences.installTerminfoEnabled,
-			authenticationMode: .interactive
-		)
-		onOpenTab(tabId)
+		do {
+			let workspace = try workspaceCoordinator.openOneTimeHost(
+				destination.makeHost(),
+				installTerminfo: preferences.installTerminfoEnabled
+			)
+			onOpenWorkspace(workspace)
+		} catch {
+			errorMessage = error.localizedDescription
+		}
 	}
 
 	private func deleteHost(_ host: SSHHost) {
