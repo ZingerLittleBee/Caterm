@@ -109,7 +109,7 @@ public final class SnippetSyncStore: ObservableObject {
 		isSuspendedForAccountChange = false
 		let suspendedMode = pendingWhileSuspended
 		pendingWhileSuspended = nil
-		return identityChanged ? .forceFull : suspendedMode ?? .incremental
+		return identityChanged ? .forceFull : suspendedMode
 	}
 
 	func waitUntilIdle() async {

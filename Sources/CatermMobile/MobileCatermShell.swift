@@ -175,7 +175,11 @@ public struct MobileRootView: View {
 		.onReceive(
 			NotificationCenter.default.publisher(for: .catermICloudAccountChanged)
 		) { _ in
-			Task { await syncRuntime.accountDidChange() }
+			Task {
+				let result = await syncRuntime.accountDidChange()
+				guard result != .failed, result != .cancelled else { return }
+				await snippetSyncRuntime.refresh()
+			}
 		}
 		.alert(item: $operationError) { failure in
 			Alert(

@@ -32,6 +32,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	private let refreshAccount: () async -> Void
 	private var hasLaunched = false
 	private var accountTransitionInProgress = false
+	private var pendingResumeMode: SnippetSyncMode?
 
 	public init(
 		store: SnippetStore,
@@ -84,8 +85,18 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	}
 
 	public func receivedCloudKitPush() async -> MobileHostSyncExecutionResult {
+		await receiveCloudKitPush(refreshAccountFirst: true)
+	}
+
+	public func receivedCloudKitPushAfterIdentityCheck() async -> MobileHostSyncExecutionResult {
+		await receiveCloudKitPush(refreshAccountFirst: false)
+	}
+
+	private func receiveCloudKitPush(
+		refreshAccountFirst: Bool
+	) async -> MobileHostSyncExecutionResult {
 		guard !accountTransitionInProgress else { return .cancelled }
-		await refreshAccount()
+		if refreshAccountFirst { await refreshAccount() }
 		guard isSignedIn() else {
 			sync.stopForceFullTimer()
 			state = .signedOut
@@ -148,35 +159,41 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 		try store.wipeLocal()
 	}
 
-	public func resumeAfterAccountChange(identityChanged: Bool) async {
+	public func resumeAfterAccountChange(identityChanged: Bool) {
 		guard accountTransitionInProgress else { return }
 		defer { accountTransitionInProgress = false }
 		guard let mode = sync.resumeRequestAfterAccountChange(
 			identityChanged: identityChanged
 		) else { return }
-		guard hasLaunched else { return }
-		guard isSignedIn() else {
-			state = .signedOut
-			return
-		}
-		_ = await synchronize(mode: mode)
-		sync.startForceFullTimer()
+		pendingResumeMode = strongerMode(pendingResumeMode, mode)
 	}
 
 	private func synchronize(
 		mode: SnippetSyncMode
 	) async -> MobileHostSyncExecutionResult {
+		let resolvedMode = strongerMode(pendingResumeMode, mode)
+		pendingResumeMode = nil
 		state = .syncing
 		do {
-			try await sync.runSyncPass(mode: mode)
+			try await sync.runSyncPass(mode: resolvedMode)
 			state = .upToDate(Date())
 			return .noData
 		} catch is CancellationError {
+			pendingResumeMode = strongerMode(pendingResumeMode, resolvedMode)
 			return .cancelled
 		} catch {
+			pendingResumeMode = strongerMode(pendingResumeMode, resolvedMode)
 			state = .temporarilyUnavailable(error.localizedDescription)
 			return .failed
 		}
+	}
+
+	private func strongerMode(
+		_ current: SnippetSyncMode?,
+		_ incoming: SnippetSyncMode
+	) -> SnippetSyncMode {
+		guard current != .forceFull else { return .forceFull }
+		return incoming
 	}
 
 	private func ensureMutationAllowed() throws {

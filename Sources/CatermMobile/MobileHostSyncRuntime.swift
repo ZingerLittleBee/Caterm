@@ -133,6 +133,10 @@ public final class MobileHostSyncRuntime: ObservableObject {
 		await replaceActiveRun(checkIdentity: true, request: .incremental)
 	}
 
+	public func prepareForRelatedSync() async -> MobileHostSyncExecutionResult {
+		await replaceActiveRun(checkIdentity: true, request: nil)
+	}
+
 	public func refresh() async {
 		_ = await replaceActiveRun(checkIdentity: true, request: .forceFull)
 	}
@@ -144,7 +148,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 
 	private func replaceActiveRun(
 		checkIdentity: Bool,
-		request: SharedHostSyncRequest
+		request: SharedHostSyncRequest?
 	) async -> MobileHostSyncExecutionResult {
 		accountTransitionInProgress = true
 		lifecycleGeneration &+= 1
@@ -180,10 +184,10 @@ public final class MobileHostSyncRuntime: ObservableObject {
 
 	private func refreshAndSynchronize(
 		checkIdentity: Bool,
-		request: SharedHostSyncRequest,
+		request: SharedHostSyncRequest?,
 		generation: UInt64
 	) async -> MobileHostSyncExecutionResult {
-		state = .checkingAccount
+		if request != nil { state = .checkingAccount }
 		await refreshAccount()
 		guard generationIsCurrent(generation) else { return .cancelled }
 
@@ -198,7 +202,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			case .unchanged:
 				break
 			case .firstObservation:
-				resolvedRequest = .forceFull
+				if resolvedRequest != nil { resolvedRequest = .forceFull }
 			case .identityChanged:
 				do {
 					try await hostStore.resetForAccountChange()
@@ -209,7 +213,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 					await identityBoundary.acknowledge()
 					try hostStore.finishAccountTransition()
 					guard generationIsCurrent(generation) else { return .cancelled }
-					resolvedRequest = .forceFull
+					if resolvedRequest != nil { resolvedRequest = .forceFull }
 				} catch {
 					guard generationIsCurrent(generation) else { return .cancelled }
 					state = .temporarilyUnavailable(error.localizedDescription)
@@ -230,6 +234,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			state = .signedOut
 			return .noData
 		}
+		guard let resolvedRequest else { return .noData }
 		do {
 			try await client.ensureHostSubscription()
 			guard generationIsCurrent(generation) else { return .cancelled }

@@ -161,8 +161,10 @@ final class MobileSnippetSyncRuntimeTests: XCTestCase {
 		XCTAssertEqual(pushResult, .cancelled)
 		try runtime.resetLocalStateForAccountChange()
 
-		await runtime.resumeAfterAccountChange(identityChanged: true)
+		runtime.resumeAfterAccountChange(identityChanged: true)
+		let resumedResult = await runtime.receivedCloudKitPushAfterIdentityCheck()
 
+		XCTAssertEqual(resumedResult, .newData)
 		XCTAssertEqual(store.snippets.map(\.id), [accountBSnippet.id])
 		XCTAssertFalse(store.snippets.contains { $0.id == accountASnippet.id })
 		XCTAssertFalse(store.snippets.contains { $0.id == blockedSnippet.id })
@@ -170,6 +172,55 @@ final class MobileSnippetSyncRuntimeTests: XCTestCase {
 		let fetchRequestCount = await client.fetchRequestCount()
 		XCTAssertTrue(subscriptionInstalled)
 		XCTAssertEqual(fetchRequestCount, 2)
+	}
+
+	func testIdentityGateResumeDefersWorkToOriginatingPush() async throws {
+		let cloud = MobileSnippetTestCloud()
+		let store = SnippetStore(directory: temporaryDirectory(named: "identity-gate"))
+		try store.load()
+		let client = MobileSnippetTestClient(cloud: cloud)
+		let runtime = makeRuntime(store: store, client: client)
+		await runtime.launch()
+
+		runtime.beginAccountChangeSuspension()
+		await runtime.drainForAccountChange()
+		runtime.resumeAfterAccountChange(identityChanged: false)
+		for _ in 0..<20 { await Task.yield() }
+
+		let fetchCountBeforePush = await client.fetchRequestCount()
+		XCTAssertEqual(fetchCountBeforePush, 1)
+
+		_ = await runtime.receivedCloudKitPushAfterIdentityCheck()
+
+		let fetchCountAfterPush = await client.fetchRequestCount()
+		let modesAfterPush = await client.requestedModes()
+		XCTAssertEqual(fetchCountAfterPush, 2)
+		XCTAssertEqual(modesAfterPush, [.forceFull, .incremental])
+	}
+
+	func testIdentityChangePromotesNextOriginatingPushToOneFullPass() async throws {
+		let cloud = MobileSnippetTestCloud()
+		let store = SnippetStore(directory: temporaryDirectory(named: "identity-change"))
+		try store.load()
+		let client = MobileSnippetTestClient(cloud: cloud)
+		let runtime = makeRuntime(store: store, client: client)
+		await runtime.launch()
+
+		runtime.beginAccountChangeSuspension()
+		await runtime.drainForAccountChange()
+		try runtime.resetLocalStateForAccountChange()
+		runtime.resumeAfterAccountChange(identityChanged: true)
+		for _ in 0..<20 { await Task.yield() }
+
+		let fetchCountBeforePush = await client.fetchRequestCount()
+		XCTAssertEqual(fetchCountBeforePush, 1)
+
+		_ = await runtime.receivedCloudKitPushAfterIdentityCheck()
+
+		let fetchCountAfterPush = await client.fetchRequestCount()
+		let modesAfterPush = await client.requestedModes()
+		XCTAssertEqual(fetchCountAfterPush, 2)
+		XCTAssertEqual(modesAfterPush, [.forceFull, .forceFull])
 	}
 
 	private func makeRuntime(
@@ -258,6 +309,7 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 	private var commits: [Int] = []
 	private var hasSubscription = false
 	private var fetchRequests = 0
+	private var modes: [SnippetSyncMode] = []
 	private var fetchError: Error?
 
 	init(cloud: MobileSnippetTestCloud) {
@@ -268,6 +320,7 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 
 	func fetchSnippetChanges() async throws -> SnippetChangeBatch {
 		fetchRequests += 1
+		modes.append(.incremental)
 		if let fetchError { throw fetchError }
 		let delta = await cloud.changes(after: sequence)
 		return SnippetChangeBatch(
@@ -281,6 +334,7 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 
 	func fetchSnippetSnapshotAndCheckpoint() async throws -> SnippetChangeBatch {
 		fetchRequests += 1
+		modes.append(.forceFull)
 		if let fetchError { throw fetchError }
 		let snapshot = await cloud.snapshot()
 		return SnippetChangeBatch(
@@ -326,5 +380,6 @@ private actor MobileSnippetTestClient: IncrementalSnippetSyncClient {
 	func committedSequences() -> [Int] { commits }
 	func subscriptionInstalled() -> Bool { hasSubscription }
 	func fetchRequestCount() -> Int { fetchRequests }
+	func requestedModes() -> [SnippetSyncMode] { modes }
 	func setFetchError(_ error: Error?) { fetchError = error }
 }

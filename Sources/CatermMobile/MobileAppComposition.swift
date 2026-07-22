@@ -290,7 +290,7 @@ public final class MobileAppComposition: ObservableObject {
 				try snippetRuntime.resetLocalStateForAccountChange()
 			},
 			resumeRelatedSync: { identityChanged in
-				await snippetRuntime.resumeAfterAccountChange(
+				snippetRuntime.resumeAfterAccountChange(
 					identityChanged: identityChanged
 				)
 			}

@@ -757,6 +757,39 @@ private func mobileTemporaryAccountFailureKeepsRelatedLaneClosed() async throws 
 	#expect(resumeCount == 1)
 }
 
+@Test("Related sync identity gate does not run a Host pass")
+@MainActor
+private func mobileRelatedSyncIdentityGateDoesNotFetchHosts() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "related-gate", masterKey: master)
+	var resumeCount = 0
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: { .unchanged },
+			acknowledge: {},
+			resumeRelatedSync: { _ in resumeCount += 1 }
+		)
+	)
+
+	let result = await runtime.prepareForRelatedSync()
+
+	#expect(result == .noData)
+	#expect(client.snapshotFetchCount() == 0)
+	#expect(resumeCount == 1)
+}
+
 @Test("Mobile boot composition shares one Host store with the sync runtime")
 @MainActor
 private func mobileBootCompositionUsesSharedRuntime() throws {
