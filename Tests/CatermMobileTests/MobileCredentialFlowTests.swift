@@ -50,6 +50,31 @@ final class MobileCredentialPlanTests: XCTestCase {
 }
 
 final class MobileCredentialWriterTests: XCTestCase {
+	private final class RecordingCredentialStore: MobileCredentialStoring {
+		enum Failure: Error { case rejected }
+
+		var values: [String: String] = [:]
+		var failingSetAccounts: Set<String> = []
+		var failingDeleteAccounts: Set<String> = []
+
+		func set(account: String, secret: String) throws {
+			guard !failingSetAccounts.contains(account) else { throw Failure.rejected }
+			values[account] = secret
+		}
+
+		func get(account: String, interaction _: KeychainReadInteraction) throws -> String {
+			guard let value = values[account] else { throw KeychainError.notFound }
+			return value
+		}
+
+		func delete(account: String) throws {
+			guard !failingDeleteAccounts.contains(account) else { throw Failure.rejected }
+			guard values.removeValue(forKey: account) != nil else {
+				throw KeychainError.notFound
+			}
+		}
+	}
+
 	func testApplyWritesAndIsIdempotentOnClear() async throws {
 		let kc = KeychainStore(
 			service: "com.caterm.test.\(UUID().uuidString)", accessGroup: nil)
@@ -105,5 +130,65 @@ final class MobileCredentialWriterTests: XCTestCase {
 		XCTAssertTrue(deleted)
 		XCTAssertEqual(savedHostIDs, [host.id])
 		XCTAssertEqual(deletedHostIDs, [host.id])
+	}
+
+	func testSaveRollbackRestoresCredentialsWhenHostPersistenceFails() async throws {
+		let storage = RecordingCredentialStore()
+		let host = SSHHost(
+			name: "Box",
+			hostname: "box.example.com",
+			username: "deploy",
+			credential: .password
+		)
+		let passwordAccount = MobileCredentialPlan.passwordAccount(host.id)
+		let passphraseAccount = MobileCredentialPlan.keyPassphraseAccount(host.id)
+		storage.values[passwordAccount] = "old-password"
+		storage.values[passphraseAccount] = "old-passphrase"
+		let writer = MobileCredentialWriter(storage: storage)
+
+		do {
+			try await writer.commitSave(
+				MobileHostDraftPayload(host: host, secret: "new-password")
+			) {
+				throw RecordingCredentialStore.Failure.rejected
+			}
+			XCTFail("Expected persistence failure")
+		} catch RecordingCredentialStore.Failure.rejected {
+			// Expected.
+		}
+
+		XCTAssertEqual(storage.values[passwordAccount], "old-password")
+		XCTAssertEqual(storage.values[passphraseAccount], "old-passphrase")
+	}
+
+	func testDeleteRollbackRestoresAlreadyDeletedCredentials() async throws {
+		let storage = RecordingCredentialStore()
+		let hostID = UUID()
+		let passwordAccount = MobileCredentialPlan.passwordAccount(hostID)
+		let passphraseAccount = MobileCredentialPlan.keyPassphraseAccount(hostID)
+		storage.values[passwordAccount] = "password"
+		storage.values[passphraseAccount] = "passphrase"
+		storage.failingDeleteAccounts = [passphraseAccount]
+		let writer = MobileCredentialWriter(storage: storage)
+
+		await XCTAssertThrowsErrorAsync {
+			try await writer.commitDeletion(hostID: hostID) {}
+		}
+
+		XCTAssertEqual(storage.values[passwordAccount], "password")
+		XCTAssertEqual(storage.values[passphraseAccount], "passphrase")
+	}
+}
+
+private func XCTAssertThrowsErrorAsync(
+	_ expression: () async throws -> Void,
+	file: StaticString = #filePath,
+	line: UInt = #line
+) async {
+	do {
+		try await expression()
+		XCTFail("Expected error", file: file, line: line)
+	} catch {
+		// Expected.
 	}
 }

@@ -16,12 +16,12 @@ public final class MobileHostStore: ObservableObject {
 		case hostNotFound
 	}
 
-	@Published public private(set) var hosts: [SSHHost]
-
 	public struct DeletionRollbackError: Error {
 		public let originalError: any Error
 		public let rollbackErrors: [any Error]
 	}
+
+	@Published public private(set) var hosts: [SSHHost]
 
 	public struct PersistenceFailure: Error, Identifiable {
 		public let id = UUID()
@@ -29,17 +29,17 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	private let fileURL: URL
-	private let credentialCleanup: @Sendable (UUID) async throws -> Void
+	private let credentialWriter: MobileCredentialWriter?
 	private let localMutationsSubject = PassthroughSubject<Void, Never>()
 	private var deletionOutbox: HostDeletionOutbox
 	@Published public private(set) var lastPersistenceFailure: PersistenceFailure?
 
 	public init(
 		fileURL: URL,
-		credentialCleanup: @escaping @Sendable (UUID) async throws -> Void = { _ in }
+		credentialWriter: MobileCredentialWriter? = nil
 	) {
 		self.fileURL = fileURL
-		self.credentialCleanup = credentialCleanup
+		self.credentialWriter = credentialWriter
 		self.hosts = (try? HostPersistence.load(from: fileURL)) ?? []
 		self.deletionOutbox = HostDeletionOutbox(hostsURL: fileURL)
 	}
@@ -114,6 +114,25 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	private func delete(id: UUID, enqueueRemoteDeletion: Bool) async throws {
+		if let credentialWriter {
+			try await credentialWriter.commitDeletion(hostID: id) {
+				try self.persistDeletion(
+					id: id,
+					enqueueRemoteDeletion: enqueueRemoteDeletion
+				)
+			}
+		} else {
+			try persistDeletion(
+				id: id,
+				enqueueRemoteDeletion: enqueueRemoteDeletion
+			)
+		}
+	}
+
+	private func persistDeletion(
+		id: UUID,
+		enqueueRemoteDeletion: Bool
+	) throws {
 		guard let host = hosts.first(where: { $0.id == id }) else { return }
 		let serverID = enqueueRemoteDeletion ? host.serverId : nil
 		let inserted = try serverID.map { try deletionOutbox.insert($0) } ?? false
@@ -126,30 +145,6 @@ public final class MobileHostStore: ObservableObject {
 				originalError: error,
 				insertedServerID: inserted ? serverID : nil
 			)
-		}
-		do {
-			try await credentialCleanup(id)
-		} catch {
-			var rollbackErrors: [any Error] = []
-			do {
-				try persist(hosts)
-			} catch {
-				rollbackErrors.append(error)
-			}
-			if inserted, let serverID {
-				do {
-					try deletionOutbox.remove(serverID)
-				} catch {
-					rollbackErrors.append(error)
-				}
-			}
-			guard rollbackErrors.isEmpty else {
-				throw DeletionRollbackError(
-					originalError: error,
-					rollbackErrors: rollbackErrors
-				)
-			}
-			throw error
 		}
 		hosts = updated
 		if enqueueRemoteDeletion {

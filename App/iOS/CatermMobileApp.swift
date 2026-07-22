@@ -26,9 +26,7 @@ struct CatermMobileApp: App {
 		)
 		let hostStore = MobileHostStore(
 			fileURL: hostsURL,
-			credentialCleanup: { hostID in
-				try await credentialWriter.clearAll(hostId: hostID)
-			}
+			credentialWriter: credentialWriter
 		)
 		return MobileRootView(
 			hostStore: hostStore,

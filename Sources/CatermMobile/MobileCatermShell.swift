@@ -72,8 +72,9 @@ public struct MobileRootView: View {
 		.environment(\.mobileHostSave, MobileHostSaveAction(
 			save: { payload in
 				do {
-					try await credentialWriter.apply(payload)
-					try hostStore.upsert(payload.host)
+					try await credentialWriter.commitSave(payload) {
+						try hostStore.upsert(payload.host)
+					}
 					return true
 				} catch {
 					operationError = MobileHostOperationError(

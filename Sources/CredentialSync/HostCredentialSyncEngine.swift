@@ -55,12 +55,6 @@ public final class HostCredentialSyncEngine {
     private let materialWorker: any HostCredentialMaterialWorking
     private let materialStore: any HostCredentialMaterialStoring
 
-    #if DEBUG
-    public private(set) var decryptAndApplyInvocations: [
-        (localHostId: UUID, revision: Int64)
-    ] = []
-    #endif
-
     public convenience init(
         client: any CredentialBlobPushing,
         sessionStore: SessionStore,
@@ -376,12 +370,6 @@ public final class HostCredentialSyncEngine {
         remote: RemoteHost,
         blob: CredentialBlob
     ) async throws {
-        #if DEBUG
-        decryptAndApplyInvocations.append(
-            (localHostId: localHostId, revision: blob.revision)
-        )
-        #endif
-
         let materialGeneration = await materialStore.currentGeneration(
             for: localHostId
         )

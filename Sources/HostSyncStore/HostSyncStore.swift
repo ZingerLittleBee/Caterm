@@ -103,13 +103,6 @@ public final class HostSyncStore: ObservableObject {
     private let credentialEngine: HostCredentialSyncEngine
     private let userDefaults: UserDefaults
 
-    #if DEBUG
-    internal var decryptAndApplyInvocations: [
-        (localHostId: UUID, revision: Int64)
-    ] {
-        credentialEngine.decryptAndApplyInvocations
-    }
-    #endif
     /// The view layer reads the same threshold used by failure detection.
     public let periodicInterval: TimeInterval
     private var cancellables: Set<AnyCancellable> = []

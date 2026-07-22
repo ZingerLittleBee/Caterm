@@ -8,21 +8,28 @@ import SSHCommandBuilder
 import Testing
 import XCTest
 
-private actor CredentialCleanupRecorder {
+private final class RecordingCredentialStore: MobileCredentialStoring, @unchecked Sendable {
 	enum Failure: Error {
 		case rejected
 	}
 
-	private(set) var hostIDs: [UUID] = []
-	private var shouldFail = false
+	var values: [String: String] = [:]
+	var failingDeleteAccounts: Set<String> = []
 
-	func setShouldFail(_ value: Bool) {
-		shouldFail = value
+	func set(account: String, secret: String) throws {
+		values[account] = secret
 	}
 
-	func clear(hostID: UUID) throws {
-		if shouldFail { throw Failure.rejected }
-		hostIDs.append(hostID)
+	func get(account: String, interaction _: KeychainReadInteraction) throws -> String {
+		guard let value = values[account] else { throw KeychainError.notFound }
+		return value
+	}
+
+	func delete(account: String) throws {
+		guard !failingDeleteAccounts.contains(account) else { throw Failure.rejected }
+		guard values.removeValue(forKey: account) != nil else {
+			throw KeychainError.notFound
+		}
 	}
 }
 
@@ -489,12 +496,11 @@ final class MobileHostStoreTests: XCTestCase {
 
 	func testLocalDeleteClearsCredentialsAndPersistsTombstone() async throws {
 		let url = tempURL()
-		let recorder = CredentialCleanupRecorder()
+		let storage = RecordingCredentialStore()
+		let writer = MobileCredentialWriter(storage: storage)
 		let store = MobileHostStore(
 			fileURL: url,
-			credentialCleanup: { hostID in
-				try await recorder.clear(hostID: hostID)
-			}
+			credentialWriter: writer
 		)
 		let host = SSHHost(
 			serverId: "server-prod",
@@ -503,24 +509,23 @@ final class MobileHostStoreTests: XCTestCase {
 			username: "deploy",
 			credential: .password
 		)
+		storage.values[MobileCredentialPlan.passwordAccount(host.id)] = "secret"
 		try store.add(host)
 
 		try await store.deleteLocalHost(id: host.id)
 
-		let clearedHostIDs = await recorder.hostIDs
-		XCTAssertEqual(clearedHostIDs, [host.id])
+		XCTAssertTrue(storage.values.isEmpty)
 		XCTAssertTrue(store.hosts.isEmpty)
 		XCTAssertEqual(try store.pendingRemoteDeletionIDs(), ["server-prod"])
 	}
 
 	func testRemoteDeleteClearsCredentialsWithoutCreatingTombstone() async throws {
 		let url = tempURL()
-		let recorder = CredentialCleanupRecorder()
+		let storage = RecordingCredentialStore()
+		let writer = MobileCredentialWriter(storage: storage)
 		let store = MobileHostStore(
 			fileURL: url,
-			credentialCleanup: { hostID in
-				try await recorder.clear(hostID: hostID)
-			}
+			credentialWriter: writer
 		)
 		let host = SSHHost(
 			serverId: "server-prod",
@@ -529,25 +534,23 @@ final class MobileHostStoreTests: XCTestCase {
 			username: "deploy",
 			credential: .password
 		)
+		storage.values[MobileCredentialPlan.passwordAccount(host.id)] = "secret"
 		try store.add(host)
 
 		try await store.deleteHostFromRemote(localID: host.id)
 
-		let clearedHostIDs = await recorder.hostIDs
-		XCTAssertEqual(clearedHostIDs, [host.id])
+		XCTAssertTrue(storage.values.isEmpty)
 		XCTAssertTrue(store.hosts.isEmpty)
 		XCTAssertTrue(try store.pendingRemoteDeletionIDs().isEmpty)
 	}
 
 	func testCredentialCleanupFailureLeavesHostAndTombstoneUnchanged() async throws {
 		let url = tempURL()
-		let recorder = CredentialCleanupRecorder()
-		await recorder.setShouldFail(true)
+		let storage = RecordingCredentialStore()
+		let writer = MobileCredentialWriter(storage: storage)
 		let store = MobileHostStore(
 			fileURL: url,
-			credentialCleanup: { hostID in
-				try await recorder.clear(hostID: hostID)
-			}
+			credentialWriter: writer
 		)
 		let host = SSHHost(
 			serverId: "server-prod",
@@ -556,17 +559,21 @@ final class MobileHostStoreTests: XCTestCase {
 			username: "deploy",
 			credential: .password
 		)
+		let passwordAccount = MobileCredentialPlan.passwordAccount(host.id)
+		storage.values[passwordAccount] = "secret"
+		storage.failingDeleteAccounts = [passwordAccount]
 		try store.add(host)
 
 		do {
 			try await store.deleteLocalHost(id: host.id)
 			XCTFail("Expected credential cleanup to fail")
-		} catch CredentialCleanupRecorder.Failure.rejected {
+		} catch RecordingCredentialStore.Failure.rejected {
 			// Expected.
 		}
 
 		XCTAssertEqual(store.hosts.map(\.id), [host.id])
 		XCTAssertTrue(try store.pendingRemoteDeletionIDs().isEmpty)
 		XCTAssertEqual(try HostPersistence.load(from: url).map(\.id), [host.id])
+		XCTAssertEqual(storage.values[passwordAccount], "secret")
 	}
 }

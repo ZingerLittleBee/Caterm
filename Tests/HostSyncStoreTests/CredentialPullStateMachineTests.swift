@@ -12,10 +12,7 @@ import XCTest
 ///
 /// `applyCredentialBlobOnPull(localHostId:remote:blob:)` dispatches a
 /// freshly-fetched `CredentialBlob` based on `prefs.state`. These tests
-/// cover the four state arms and the stale-revision drop. The actual
-/// decrypt body for `.enabled` + `.payload` lives in Task 17 — Task 16
-/// only verifies that the dispatch path reaches `decryptAndApply` (via
-/// the `decryptAndApplyInvocations` DEBUG seam).
+/// cover the four state arms and the stale-revision drop.
 ///
 /// **Reconciler-emit gap:** `HostSyncReconciler` compares metadata only;
 /// a remote whose only change is the credential blob produces NO op, so
@@ -91,8 +88,6 @@ final class CredentialPullStateMachineTests: XCTestCase {
         )
         XCTAssertEqual(prefsStore.prefs.state, .disabled,
                        "disabled state must remain unchanged")
-        XCTAssertEqual(sut.decryptAndApplyInvocations.count, 0,
-                       "disabled must not reach decryptAndApply")
         XCTAssertNil(
             try? keychain.get(account: "\(host.id.uuidString).password"),
             "disabled must not write credentials to the keychain"
@@ -120,8 +115,6 @@ final class CredentialPullStateMachineTests: XCTestCase {
             prefsStore.prefs.lastAppliedRevision[host.id],
             "paused must NOT advance lastAppliedRevision"
         )
-        XCTAssertEqual(sut.decryptAndApplyInvocations.count, 0,
-                       "paused must not reach decryptAndApply")
     }
 
     func test_waitingForKey_payload_setsObservedKeyID() async throws {
@@ -145,7 +138,6 @@ final class CredentialPullStateMachineTests: XCTestCase {
             prefsStore.prefs.lastAppliedRevision[host.id],
             "waitingForKey must NOT advance lastAppliedRevision"
         )
-        XCTAssertEqual(sut.decryptAndApplyInvocations.count, 0)
     }
 
     func test_waitingForKey_tombstone_transitionsToPaused() async throws {
@@ -189,8 +181,6 @@ final class CredentialPullStateMachineTests: XCTestCase {
             prefsStore.prefs.lastAppliedRevision[host.id], 13,
             "enabled+tombstone advances lastAppliedRevision so we don't replay"
         )
-        XCTAssertEqual(sut.decryptAndApplyInvocations.count, 0,
-                       "tombstone never reaches decryptAndApply")
         XCTAssertNil(
             try? keychain.get(account: "\(host.id.uuidString).password"),
             "tombstone in enabled must not touch keychain credentials"
@@ -203,9 +193,8 @@ final class CredentialPullStateMachineTests: XCTestCase {
 
     func test_enabled_payload_decryptsAndAppliesViaSessionStore() async throws {
         // Plan C / Task 17 — `.enabled.payload` actually decrypts ciphertext
-        // and persists via SessionStore. We assert the dispatch path reached
-        // `decryptAndApply` (DEBUG seam) AND that the password round-tripped
-        // to the keychain on the happy path.
+        // and persists via SessionStore. The public outcome is the password
+        // round-tripping to the keychain and revision state advancing.
         prefsStore.mutate { $0.state = .enabled }
         let host = seedLocalHost(serverId: "rec-1")
 
@@ -229,13 +218,6 @@ final class CredentialPullStateMachineTests: XCTestCase {
         let sut = makeStore()
         try await sut.sync()
 
-        XCTAssertEqual(
-            sut.decryptAndApplyInvocations.count, 1,
-            "enabled+payload must reach decryptAndApply exactly once"
-        )
-        let inv = sut.decryptAndApplyInvocations[0]
-        XCTAssertEqual(inv.localHostId, host.id)
-        XCTAssertEqual(inv.revision, revision)
         XCTAssertEqual(
             try keychain.get(account: "\(host.id.uuidString).password"), "p1",
             "decryptAndApply must persist the decrypted password to the keychain"

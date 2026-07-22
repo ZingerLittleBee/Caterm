@@ -953,7 +953,7 @@ public final class SessionStore: ObservableObject {
             serverID: serverId,
             to: hostId,
             in: hosts
-        ) else { return }
+        ) else { throw HostSynchronizationError.localHostMissing(hostId) }
         try HostPersistence.save(updated, to: hostsURL)
         hosts = updated
     }
@@ -965,7 +965,7 @@ public final class SessionStore: ObservableObject {
             remote,
             to: localHostId,
             in: hosts
-        ) else { return }
+        ) else { throw HostSynchronizationError.localHostMissing(localHostId) }
         try HostPersistence.save(updated, to: hostsURL)
         hosts = updated
     }
