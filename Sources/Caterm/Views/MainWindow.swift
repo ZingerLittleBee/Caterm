@@ -8,6 +8,7 @@ import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 import TerminalEngine
+import WorkspaceBroadcast
 import WorkspaceCore
 import WorkspaceTemplateStore
 
@@ -60,6 +61,7 @@ struct MainWindow: View {
 	@EnvironmentObject var workspaceTemplateStore: WorkspaceTemplateStore
 	@Environment(\.openWindow) private var openWindow
 	@StateObject private var bannerState = SettingsBannerState()
+	@StateObject private var broadcastSession = WorkspaceBroadcastSession()
 	@State private var fileDrawerOpen = false
 	@State private var drawerWidth: CGFloat = 320
 	@State private var pendingUpload: PendingPaneUpload?
@@ -70,6 +72,9 @@ struct MainWindow: View {
 	@State private var presentingManager = false
 	@State private var presentingTemplateManager = false
 	@State private var presentingTemplateName = false
+	@State private var presentingBroadcastComposer = false
+	@State private var reviewedBroadcastPlan: WorkspaceBroadcastPlan?
+	@State private var broadcastMessage: String?
 	@State private var hostWindow: NSWindow?
 	@State private var remoteFsCache = RemoteFsCache()
 	@State private var restorationStatus = WorkspaceRestorationStatus.pending
@@ -80,6 +85,30 @@ struct MainWindow: View {
 
 	private var activeSessionID: UUID? {
 		workspaceCoordinator.sessionID(for: workspace)
+	}
+
+	private var broadcastCandidates: [WorkspaceBroadcastRecipient] {
+		WorkspaceBroadcastResolver.candidates(
+			in: workspace,
+			coordinator: workspaceCoordinator,
+			store: store,
+			registry: surfaceRegistry
+		)
+	}
+
+	private var broadcastRecipientMarkers: [PaneID: String] {
+		Dictionary(uniqueKeysWithValues:
+			broadcastSession.activePlan?.recipients.map { recipient in
+				(recipient.paneID, "Broadcast Receiver · \(recipient.paneLabel)")
+			} ?? []
+		)
+	}
+
+	private var hasMissingWorkspaceHost: Bool {
+		workspace.topology.panes.contains { pane in
+			pane.host != nil
+				&& workspaceCoordinator.sessionID(for: pane.id, in: workspace) == nil
+		}
 	}
 
 	/// Host backing the active Pane's runtime session.
@@ -164,6 +193,14 @@ struct MainWindow: View {
 
 	var body: some View {
 		VStack(spacing: 0) {
+			if let plan = broadcastSession.activePlan {
+				WorkspaceBroadcastBanner(
+					plan: plan,
+					isDelivering: broadcastSession.isDelivering,
+					onReview: { reviewedBroadcastPlan = plan },
+					onStop: stopBroadcast
+				)
+			}
 			// Banners collapse to nothing when their state is empty, so for
 			// the common case the layout is identical to the pre-banner
 			// version. They sit above the split view so users see them
@@ -220,7 +257,8 @@ struct MainWindow: View {
 							} else {
 								WorkspacePaneTreeView(
 									workspace: $workspace,
-									restorationMessage: restorationMessage
+									restorationMessage: restorationMessage,
+									broadcastRecipientMarkers: broadcastRecipientMarkers
 								)
 								.padding(.trailing, drawerTotal)
 							}
@@ -283,6 +321,15 @@ struct MainWindow: View {
 		}
 		.frame(minWidth: 1000, minHeight: 600)
 		.toolbar {
+			ToolbarItem(placement: .primaryAction) {
+				Button {
+					presentingBroadcastComposer = true
+				} label: {
+					Image(systemName: "antenna.radiowaves.left.and.right")
+				}
+				.help("Review Command Broadcast")
+				.disabled(broadcastSession.activePlan != nil)
+			}
 			ToolbarItem(placement: .primaryAction) {
 				Menu {
 					Button("Save Workspace as Template…") {
@@ -433,15 +480,24 @@ struct MainWindow: View {
 					for: workspace,
 					installTerminfo: preferences.installTerminfoEnabled
 				)
-				let hasMissingHost = workspace.topology.panes.contains { pane in
-					pane.host != nil
-						&& workspaceCoordinator.sessionID(for: pane.id, in: workspace) == nil
-				}
-				restorationStatus = hasMissingHost ? .missingHost : .ready
+				restorationStatus = hasMissingWorkspaceHost ? .missingHost : .ready
 			} catch {
 				restorationStatus = .failed(error.localizedDescription)
 			}
 		}
+		.modifier(WorkspaceBroadcastWindowModifier(
+			session: broadcastSession,
+			workspace: $workspace,
+			presentingComposer: $presentingBroadcastComposer,
+			reviewedPlan: $reviewedBroadcastPlan,
+			message: $broadcastMessage,
+			candidates: broadcastCandidates,
+			snippets: snippetStore.snippets,
+			hostWindow: hostWindow,
+			onReconcile: reconcileBroadcastEligibility,
+			onDeliver: deliverBroadcast,
+			onStop: stopBroadcast
+		))
 	}
 
 	private var restorationMessage: String? {
@@ -509,6 +565,55 @@ struct MainWindow: View {
 		} catch {
 			restorationStatus = .failed(error.localizedDescription)
 		}
+	}
+
+	private func reconcileBroadcastEligibility() {
+		let result = broadcastSession.reconcileEligibility { recipient in
+			WorkspaceBroadcastResolver.eligibility(
+				of: recipient,
+				in: workspace,
+				coordinator: workspaceCoordinator,
+				store: store,
+				registry: surfaceRegistry
+			)
+		}
+		switch result {
+		case .unchanged:
+			break
+		case .disarmed:
+			reviewedBroadcastPlan = nil
+			broadcastMessage = "Fewer than two armed recipients remain connected. No command was sent."
+		case .stoppingDelivery:
+			reviewedBroadcastPlan = nil
+		}
+	}
+
+	private func deliverBroadcast() {
+		Task { @MainActor in
+			await broadcastSession.deliver(
+				eligibility: { recipient in
+					WorkspaceBroadcastResolver.eligibility(
+						of: recipient,
+						in: workspace,
+						coordinator: workspaceCoordinator,
+						store: store,
+						registry: surfaceRegistry
+					)
+				},
+				send: { recipient, text in
+					try WorkspaceBroadcastResolver.send(
+						text,
+						to: recipient,
+						registry: surfaceRegistry
+					)
+				}
+			)
+		}
+	}
+
+	private func stopBroadcast() {
+		broadcastSession.stop()
+		reviewedBroadcastPlan = nil
 	}
 
 	private var snippetPalette: some View {

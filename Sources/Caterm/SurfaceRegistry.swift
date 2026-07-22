@@ -16,20 +16,40 @@ import TerminalEngine
 @MainActor
 public final class SurfaceRegistry: ObservableObject {
 	private var surfaces: [UUID: WeakSurfaceBox] = [:]
+	@Published public private(set) var revision: UInt64 = 0
 
 	private final class WeakSurfaceBox {
 		weak var surface: GhosttySurface?
-		init(_ s: GhosttySurface) { self.surface = s }
+		let leaseID: UUID
+
+		init(_ surface: GhosttySurface, leaseID: UUID = UUID()) {
+			self.surface = surface
+			self.leaseID = leaseID
+		}
 	}
 
 	public init() {}
 
 	public func register(_ surface: GhosttySurface, for tabId: UUID) {
 		surfaces[tabId] = WeakSurfaceBox(surface)
+		revision &+= 1
 	}
 
 	public func surface(for tabId: UUID) -> GhosttySurface? {
 		surfaces[tabId]?.surface
+	}
+
+	public func leaseID(for tabId: UUID) -> UUID? {
+		guard let box = surfaces[tabId], box.surface != nil else {
+			surfaces.removeValue(forKey: tabId)
+			return nil
+		}
+		return box.leaseID
+	}
+
+	public func surface(for tabId: UUID, leaseID: UUID) -> GhosttySurface? {
+		guard let box = surfaces[tabId], box.leaseID == leaseID else { return nil }
+		return box.surface
 	}
 
 	public func activeTabIds() -> [UUID] {
@@ -38,6 +58,7 @@ public final class SurfaceRegistry: ObservableObject {
 	}
 
 	public func unregister(_ tabId: UUID) {
-		surfaces.removeValue(forKey: tabId)
+		guard surfaces.removeValue(forKey: tabId) != nil else { return }
+		revision &+= 1
 	}
 }

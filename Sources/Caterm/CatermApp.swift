@@ -492,6 +492,24 @@ struct CatermApp: App {
             object: NSApp.keyWindow
           )
         }
+
+        Divider()
+
+        Button("Review Command Broadcast…") {
+          NotificationCenter.default.post(
+            name: .catermStartWorkspaceBroadcast,
+            object: NSApp.keyWindow
+          )
+        }
+        .keyboardShortcut("b", modifiers: [.command, .option])
+
+        Button("Stop Command Broadcast") {
+          NotificationCenter.default.post(
+            name: .catermStopWorkspaceBroadcast,
+            object: NSApp.keyWindow
+          )
+        }
+        .keyboardShortcut(".", modifiers: [.command, .option])
       }
       CommandMenu("Pane") {
         Button("Split Right") {
@@ -628,6 +646,10 @@ extension Notification.Name {
     "CatermSaveWorkspaceTemplateNotification")
   static let catermManageWorkspaceTemplates = Notification.Name(
     "CatermManageWorkspaceTemplatesNotification")
+  static let catermStartWorkspaceBroadcast = Notification.Name(
+    "CatermStartWorkspaceBroadcastNotification")
+  static let catermStopWorkspaceBroadcast = Notification.Name(
+    "CatermStopWorkspaceBroadcastNotification")
 }
 
 /// App-wide window commands use SwiftUI's scene action directly. A
@@ -783,6 +805,12 @@ struct LandingView: View {
     )) { note in
       guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
       workspaceTemplateMessage = "Open a Host before saving a Workspace template."
+    }
+    .onReceive(NotificationCenter.default.publisher(
+      for: .catermStartWorkspaceBroadcast
+    )) { note in
+      guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+      workspaceTemplateMessage = "Open a Workspace with at least two connected terminal Panes before starting a broadcast."
     }
     .alert(
       "No Active Workspace",

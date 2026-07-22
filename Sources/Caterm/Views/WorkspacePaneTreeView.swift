@@ -16,6 +16,17 @@ struct WorkspacePaneTreeView: View {
 	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
 	@Binding var workspace: Workspace
 	let restorationMessage: String?
+	let broadcastRecipientMarkers: [PaneID: String]
+
+	init(
+		workspace: Binding<Workspace>,
+		restorationMessage: String?,
+		broadcastRecipientMarkers: [PaneID: String] = [:]
+	) {
+		_workspace = workspace
+		self.restorationMessage = restorationMessage
+		self.broadcastRecipientMarkers = broadcastRecipientMarkers
+	}
 
 	var body: some View {
 		let minimumWidth = WorkspaceTreeMinimumLength.length(
@@ -115,13 +126,31 @@ struct WorkspacePaneTreeView: View {
 						.allowsHitTesting(false)
 				}
 			}
+			.overlay(alignment: .topLeading) {
+				if let marker = broadcastRecipientMarkers[pane.id] {
+					Label(marker, systemImage: "antenna.radiowaves.left.and.right")
+						.font(.caption2.weight(.semibold))
+						.foregroundStyle(.black)
+						.padding(.horizontal, 7)
+						.padding(.vertical, 4)
+						.background(Color.orange, in: Capsule())
+						.padding(8)
+						.allowsHitTesting(false)
+				}
+			}
 			if isCompact {
 				WorkspacePaneRail(pane: pane, onActivate: activate)
 			}
 		}
 		.accessibilityElement(children: .contain)
 		.accessibilityLabel("Terminal Pane")
-		.accessibilityValue(isActive ? "Active Pane" : "Inactive Pane")
+		.accessibilityValue(accessibilityValue(for: pane.id, isActive: isActive))
+	}
+
+	private func accessibilityValue(for paneID: PaneID, isActive: Bool) -> String {
+		let focus = isActive ? "Active Pane" : "Inactive Pane"
+		guard let marker = broadcastRecipientMarkers[paneID] else { return focus }
+		return "\(focus), \(marker)"
 	}
 
 	private var missingSessionView: some View {
