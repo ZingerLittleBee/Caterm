@@ -207,6 +207,39 @@ final class CredentialPushExecutorTests: XCTestCase {
         )
     }
 
+	func test_missingRemoteDuringIncrementalCredentialPushRetriesFullSnapshot() async throws {
+		prefsStore.mutate { $0.state = .enabled }
+		let host = makeDirtyHost()
+		try sessionStore.setServerId("rec-1", for: host.id)
+		try sessionStore.setHostSecret("p1", hostId: host.id, kind: .password)
+		try await stageMasterKey()
+		fakeClient.preferredModeOverride = .incremental
+		fakeClient.fetchSnapshotResult = HostChangeBatch(
+			changedHosts: [],
+			deletedHostIDs: [],
+			checkpoint: nil,
+			tokenExpired: false,
+			mode: .incremental
+		)
+		fakeClient.fetchSnapshotResultRetry = HostChangeBatch(
+			changedHosts: [],
+			deletedHostIDs: [],
+			checkpoint: nil,
+			tokenExpired: false,
+			mode: .forceFull
+		)
+		fakeClient.pushCredentialError = ServerSyncError.remoteHostNotFound(
+			serverID: "rec-1"
+		)
+
+		let sut = makeStore()
+		try await sut.sync()
+
+		XCTAssertEqual(fakeClient.fetchModes, [.incremental, .forceFull])
+		XCTAssertFalse(sessionStore.hosts.contains(where: { $0.id == host.id }))
+		XCTAssertNil(sut.lastSyncErrorKind)
+	}
+
     // MARK: - Helpers
 
     private func makeStore() -> HostSyncStore {

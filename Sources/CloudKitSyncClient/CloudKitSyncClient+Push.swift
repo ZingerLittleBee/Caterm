@@ -84,14 +84,24 @@ extension CloudKitSyncClient: IncrementalHostSyncClient {
         blob: CredentialBlob
     ) async throws -> Int64 {
         let recordID = CKRecord.ID(recordName: serverId, zoneID: zoneID)
-        let existing = try await database.record(for: recordID)
-        if existing[CKRecordHostMapping.Field.metadataUpdatedAt] == nil {
-            let seed = existing.modificationDate ?? existing.creationDate ?? Date.distantPast
-            existing[CKRecordHostMapping.Field.metadataUpdatedAt] = seed as CKRecordValue
+		do {
+			let existing = try await database.record(for: recordID)
+			if existing[CKRecordHostMapping.Field.metadataUpdatedAt] == nil {
+				let seed = existing.modificationDate
+					?? existing.creationDate
+					?? Date.distantPast
+				existing[CKRecordHostMapping.Field.metadataUpdatedAt] = seed as CKRecordValue
+			}
+			CKRecordHostMapping.applyCredentialBlob(into: existing, blob: blob)
+			_ = try await database.save(existing)
+			return blob.revision
+		} catch let ck as CKError where ck.code == .unknownItem {
+			throw ServerSyncError.remoteHostNotFound(serverID: serverId)
+		} catch let error as ServerSyncError {
+			throw error
+		} catch {
+			throw CloudKitErrorMapping.map(error)
         }
-        CKRecordHostMapping.applyCredentialBlob(into: existing, blob: blob)
-        _ = try await database.save(existing)
-        return blob.revision
     }
 
     // MARK: - Drain loop

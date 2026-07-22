@@ -99,4 +99,25 @@ final class CredentialPushTests: XCTestCase {
 			7
 		)
 	}
+
+	func test_pushMissingHostRequestsFullReconciliation() async throws {
+		let blob = CredentialBlob(
+			state: .payload,
+			revision: 1,
+			keyID: "K"
+		)
+
+		do {
+			_ = try await sut.pushHostCredentialBlob(
+				serverId: "missing",
+				blob: blob
+			)
+			XCTFail("Expected missing Host error")
+		} catch let error as ServerSyncError {
+			XCTAssertEqual(
+				error,
+				.remoteHostNotFound(serverID: "missing")
+			)
+		}
+	}
 }

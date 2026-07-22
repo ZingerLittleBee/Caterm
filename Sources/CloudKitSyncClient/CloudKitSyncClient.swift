@@ -138,6 +138,8 @@ public final class CloudKitSyncClient: ServerSyncClient {
         // CKErrors / URLErrors to ServerSyncError uniformly.
         } catch let e as ServerSyncError {
             throw e
+		} catch let ck as CKError where ck.code == .unknownItem {
+			throw ServerSyncError.remoteHostNotFound(serverID: input.id)
         } catch {
             throw CloudKitErrorMapping.map(error)
         }

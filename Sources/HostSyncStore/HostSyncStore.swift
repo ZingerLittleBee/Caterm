@@ -417,22 +417,34 @@ public final class HostSyncStore: ObservableObject {
                 SyncOperation.updateRemoteCredentials(localHostId: $0)
             }
 
-            _ = try await HostSynchronization.synchronize(
-                repository: sessionStore,
-                client: client,
-                mode: effectiveMode,
-                additionalOperations: credentialOps,
-                afterApply: { [weak self] operation, batch in
-                    guard let self else { return }
-                    try await self.applyCredentialEffects(
-                        for: operation,
-                        credentialBlobs: batch.credentialBlobsByServerId
-                    )
-                },
-                didCommitCheckpoint: { [weak self] in
-                    self?.credentialEngine.didCommitCheckpoint()
-                }
-            )
+			func runPass(_ mode: HostSyncMode) async throws {
+				_ = try await HostSynchronization.synchronize(
+					repository: sessionStore,
+					client: client,
+					mode: mode,
+					additionalOperations: credentialOps,
+					afterApply: { [weak self] operation, batch in
+						guard let self else { return }
+						try await self.applyCredentialEffects(
+							for: operation,
+							credentialBlobs: batch.credentialBlobsByServerId
+						)
+					},
+					didCommitCheckpoint: { [weak self] in
+						self?.credentialEngine.didCommitCheckpoint()
+					}
+				)
+			}
+
+			do {
+				try await runPass(effectiveMode)
+			} catch let error as ServerSyncError {
+				guard case .remoteHostNotFound = error,
+				      effectiveMode != .forceFull else {
+					throw error
+				}
+				try await runPass(.forceFull)
+			}
 
             // Spec §4.2: only update after the op loop completes without
             // throwing. Partial-apply failures must NOT advance freshness.
