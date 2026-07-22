@@ -25,6 +25,7 @@ public final class MobileAppComposition: ObservableObject {
 	public let settingsStore: SettingsStore
 	public let syncCoordinator: MobileSyncCoordinator
 	public let terminalSessionFactory: MobileTerminalSessionFactory
+	public let remoteFileClientFactory: MobileRemoteFileClientFactory
 	public let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
 
 	public init(
@@ -37,6 +38,7 @@ public final class MobileAppComposition: ObservableObject {
 		settingsSync: SettingsSyncStore?,
 		cloudSyncAvailable: Bool = true,
 		terminalSessionFactory: MobileTerminalSessionFactory,
+		remoteFileClientFactory: MobileRemoteFileClientFactory = .unavailable,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		startObservingAccountChanges: @escaping () -> Void = {}
 	) {
@@ -54,6 +56,7 @@ public final class MobileAppComposition: ObservableObject {
 			startObservingAccountChanges: startObservingAccountChanges
 		)
 		self.terminalSessionFactory = terminalSessionFactory
+		self.remoteFileClientFactory = remoteFileClientFactory
 		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
 	}
 
@@ -129,12 +132,18 @@ public final class MobileAppComposition: ObservableObject {
 		let planProvider = MobileAuthenticationPlanProvider(
 			materialStore: materialStore
 		)
+		let knownHosts = MobileKnownHostsStore(
+			fileURL: applicationSupportURL.appendingPathComponent("known_hosts.json")
+		)
 		let terminalFactory = makeTerminalFactory(
 			planProvider: planProvider,
 			credentialSync: credentialSync,
-			knownHostsURL: applicationSupportURL.appendingPathComponent(
-				"known_hosts.json"
-			)
+			knownHosts: knownHosts
+		)
+		let remoteFileFactory = makeRemoteFileClientFactory(
+			planProvider: planProvider,
+			credentialSync: credentialSync,
+			knownHosts: knownHosts
 		)
 
 		#if targetEnvironment(simulator)
@@ -175,6 +184,7 @@ public final class MobileAppComposition: ObservableObject {
 				settingsStore: settingsStore,
 				settingsSync: nil,
 				terminalSessionFactory: terminalFactory,
+				remoteFileClientFactory: remoteFileFactory,
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
 						transactionIsCurrent: transactionIsCurrent
@@ -223,6 +233,7 @@ public final class MobileAppComposition: ObservableObject {
 				settingsSync: nil,
 				cloudSyncAvailable: simulatorSyncStatusWasRequested,
 				terminalSessionFactory: terminalFactory,
+				remoteFileClientFactory: remoteFileFactory,
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
 						transactionIsCurrent: transactionIsCurrent
@@ -323,6 +334,7 @@ public final class MobileAppComposition: ObservableObject {
 			settingsStore: settingsStore,
 			settingsSync: settingsSync,
 			terminalSessionFactory: terminalFactory,
+			remoteFileClientFactory: remoteFileFactory,
 			prepareCredentialSyncForSave: { transactionIsCurrent in
 				try await credentialSyncCoordinator.enable(
 					transactionIsCurrent: transactionIsCurrent
@@ -341,35 +353,59 @@ public final class MobileAppComposition: ObservableObject {
 	private static func makeTerminalFactory(
 		planProvider: MobileAuthenticationPlanProvider,
 		credentialSync: CredentialSyncPreferencesStore,
-		knownHostsURL: URL
+		knownHosts: MobileKnownHostsStore
 	) -> MobileTerminalSessionFactory {
 		MobileTerminalSessionFactory { host in
-			let result = await planProvider.resolve(
-				host: host,
-				credentialSyncState: credentialSync.prefs.state
+			let plan = try await resolvePlan(
+				for: host,
+				planProvider: planProvider,
+				credentialSync: credentialSync
 			)
-			let plan: SSHAuthPlan
-			switch result {
-			case let .available(value):
-				plan = value
-			case let .unavailable(reason):
-				#if targetEnvironment(simulator)
-				if let injected = simulatorPlan(host: host) {
-					plan = injected
-				} else {
-					throw reason
-				}
-				#else
-				throw reason
-				#endif
-			}
-			let knownHosts = MobileKnownHostsStore(fileURL: knownHostsURL)
 			let transport = NIOSSHTransport(
 				host: host,
 				plan: plan,
 				knownHosts: knownHosts
 			)
 			return SSHTerminalSession(host: host, transport: transport)
+		}
+	}
+
+	private static func makeRemoteFileClientFactory(
+		planProvider: MobileAuthenticationPlanProvider,
+		credentialSync: CredentialSyncPreferencesStore,
+		knownHosts: MobileKnownHostsStore
+	) -> MobileRemoteFileClientFactory {
+		MobileRemoteFileClientFactory { host in
+			let plan = try await resolvePlan(
+				for: host,
+				planProvider: planProvider,
+				credentialSync: credentialSync
+			)
+			return MobileRemoteFileClient(
+				host: host,
+				plan: plan,
+				knownHosts: knownHosts
+			)
+		}
+	}
+
+	private static func resolvePlan(
+		for host: SSHHost,
+		planProvider: MobileAuthenticationPlanProvider,
+		credentialSync: CredentialSyncPreferencesStore
+	) async throws -> SSHAuthPlan {
+		let result = await planProvider.resolve(
+			host: host,
+			credentialSyncState: credentialSync.prefs.state
+		)
+		switch result {
+		case .available(let plan):
+			return plan
+		case .unavailable(let reason):
+			#if targetEnvironment(simulator)
+			if let injected = simulatorPlan(host: host) { return injected }
+			#endif
+			throw reason
 		}
 	}
 

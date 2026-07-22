@@ -1446,15 +1446,15 @@ private func knownHostsRemainDeviceLocalAfterSync() async throws {
 	_ = try await deviceA.engine(client).synchronize(request: .forceFull)
 	_ = try await deviceB.engine(client).synchronize(request: .forceFull)
 
-	#expect(knownA.evaluate(
+	#expect(try knownA.evaluate(
 		endpoint: "server.example.com:22",
 		fingerprint: "SHA256:A"
 	) == .trusted)
-	#expect(knownB.evaluate(
+	#expect(try knownB.evaluate(
 		endpoint: "server.example.com:22",
 		fingerprint: "SHA256:B"
 	) == .trusted)
-	#expect(knownB.evaluate(
+	#expect(try knownB.evaluate(
 		endpoint: "server.example.com:22",
 		fingerprint: "SHA256:A"
 	) == .mismatch)

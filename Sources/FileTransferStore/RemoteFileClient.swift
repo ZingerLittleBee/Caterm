@@ -37,6 +37,8 @@ public struct RemoteFileTransferResult: Equatable, Sendable {
 public enum RemoteFileError: Error, Equatable, Sendable {
 	case cancelled
 	case sessionUnavailable
+	case hostKeyChanged(endpoint: String)
+	case hostKeyPersistenceFailed(endpoint: String)
 	case permissionDenied(message: String)
 	case notFound(path: String)
 	case unsupported(operation: String)
@@ -53,6 +55,10 @@ extension RemoteFileError: LocalizedError {
 			"Transfer cancelled"
 		case .sessionUnavailable:
 			"SSH session is no longer available"
+		case .hostKeyChanged(let endpoint):
+			"The SSH host key changed for \(endpoint)."
+		case .hostKeyPersistenceFailed(let endpoint):
+			"Caterm could not save the SSH host key for \(endpoint)."
 		case .permissionDenied(let message):
 			message
 		case .notFound(let path):

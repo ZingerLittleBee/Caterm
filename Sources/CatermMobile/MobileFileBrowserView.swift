@@ -1,65 +1,45 @@
 import FileTransferStore
+import SSHCommandBuilder
 import SwiftUI
 
 public struct MobileFileBrowserView: View {
-	@State private var model = MobileFileBrowserModel()
-	let entries: [RemoteEntry]
+	let hosts: [SSHHost]
 	let transfers: [TransferTask]
+	@StateObject private var controller: MobileFileBrowserController
 
-	public init(entries: [RemoteEntry] = [], transfers: [TransferTask] = []) {
-		self.entries = entries
+	public init(
+		hosts: [SSHHost] = [],
+		clientFactory: MobileRemoteFileClientFactory = .unavailable,
+		entries: [RemoteEntry] = [],
+		transfers: [TransferTask] = []
+	) {
+		self.hosts = hosts
 		self.transfers = transfers
+		_controller = StateObject(wrappedValue: MobileFileBrowserController(
+			factory: clientFactory,
+			entries: entries
+		))
 	}
 
 	public var body: some View {
 		List {
-			Section {
-				Label {
-					VStack(alignment: .leading, spacing: 4) {
-						Text("Remote browsing is not available in this phase.")
-							.font(.subheadline.weight(.semibold))
-						Text("On-device SFTP needs a platform-safe SSH transport, which lands with the mobile terminal. Navigation and actions below are previews only.")
-							.font(.caption)
-							.foregroundStyle(.secondary)
-					}
-				} icon: {
-					Image(systemName: "exclamationmark.triangle")
-						.foregroundStyle(.orange)
-				}
-			}
-
-			Section {
-				if model.path != "~", model.path != "/" {
-					Button {
-						model.goUp()
-					} label: {
-						Label("Parent Folder", systemImage: "arrow.up")
-					}
-				}
-
-				if entries.isEmpty {
-					ContentUnavailableView("No Files", systemImage: "folder")
-						.listRowSeparator(.hidden)
-				} else {
-					ForEach(entries) { entry in
-						Button {
-							model.activate(entry)
-						} label: {
-							MobileRemoteEntryRow(entry: entry)
-						}
-						.contextMenu {
-							Button {
-								model.requestRename(entry)
-							} label: {
-								Label("Rename", systemImage: "pencil")
-							}
-							Button(role: .destructive) {
-								model.requestDelete(entry)
-							} label: {
-								Label("Delete", systemImage: "trash")
-							}
+			if hosts.isEmpty {
+				ContentUnavailableView(
+					"No Hosts",
+					systemImage: "server.rack",
+					description: Text("Add a Host before browsing remote files.")
+				)
+				.listRowSeparator(.hidden)
+			} else {
+				Section("Connection") {
+					Picker("Host", selection: hostSelection) {
+						ForEach(hosts) { host in
+							Text(host.name).tag(Optional(host.id))
 						}
 					}
+				}
+				Section {
+					browserContent
 				}
 			}
 
@@ -71,64 +51,109 @@ public struct MobileFileBrowserView: View {
 				}
 			}
 		}
-		.navigationTitle(model.path)
+		.navigationTitle(controller.model.path)
 		.toolbar {
-			ToolbarItemGroup(placement: .primaryAction) {
+			ToolbarItem(placement: .primaryAction) {
 				Button {
-					model.presentation = nil
+					guard let host = selectedHost else { return }
+					Task { await controller.refresh(host: host) }
 				} label: {
 					Image(systemName: "arrow.clockwise")
 				}
 				.accessibilityLabel("Refresh")
-
-				Menu {
-					Button {
-						model.presentation = .rename(path: model.path.appendingNewFolderName, currentName: "New Folder")
-					} label: {
-						Label("New Folder", systemImage: "folder.badge.plus")
-					}
-					Button {
-						model.presentation = .download(path: model.path)
-					} label: {
-						Label("Download", systemImage: "square.and.arrow.down")
-					}
-				} label: {
-					Image(systemName: "ellipsis.circle")
-				}
-				.accessibilityLabel("File Actions")
+				.disabled(selectedHost == nil || controller.state == .connecting)
 			}
 		}
-		.confirmationDialog(
-			"File Action",
-			isPresented: Binding(
-				get: { model.presentation != nil },
-				set: { if !$0 { model.presentation = nil } }
-			),
-			presenting: model.presentation
-		) { presentation in
-			switch presentation {
-			case .download:
-				Button("Download") { model.presentation = nil }
-			case .confirmDelete:
-				Button("Delete", role: .destructive) { model.presentation = nil }
-			case .rename:
-				Button("Rename") { model.presentation = nil }
+		.task(id: hosts.map(\.id)) {
+			if let selectedHost {
+				await controller.refresh(host: selectedHost)
+			} else if let first = hosts.first {
+				controller.select(host: first)
 			}
-			Button("Cancel", role: .cancel) { model.presentation = nil }
-		} message: { presentation in
-			Text(message(for: presentation))
+		}
+		.onDisappear { controller.disconnect() }
+		.refreshable {
+			guard let host = selectedHost else { return }
+			await controller.refresh(host: host)
 		}
 	}
 
-	private func message(for presentation: MobileFileBrowserPresentation) -> String {
-		switch presentation {
-		case .download(let path):
-			"Download \(path) when mobile file export is wired."
-		case .confirmDelete(let path, let isDirectory):
-			"Delete \(isDirectory ? "folder" : "file") \(path)?"
-		case .rename(let path, _):
-			"Rename \(path) when mobile file operations are wired."
+	@ViewBuilder
+	private var browserContent: some View {
+		if let host = selectedHost {
+			if controller.model.path != "~", controller.model.path != "/" {
+				Button {
+					controller.goUp(host: host)
+				} label: {
+					Label("Parent Folder", systemImage: "arrow.up")
+				}
+			}
+
+			switch controller.state {
+			case .idle where controller.entries.isEmpty,
+			     .connecting where controller.entries.isEmpty:
+				HStack {
+					ProgressView()
+					Text("Connecting to \(host.name)…")
+				}
+				.accessibilityElement(children: .combine)
+			case .permissionDenied(let message):
+				failureView("Permission Denied", message: message, image: "lock.trianglebadge.exclamationmark", host: host)
+			case .disconnected:
+				failureView("Disconnected", message: "The SFTP connection closed.", image: "bolt.slash", host: host)
+			case .trustFailure(let message):
+				failureView("Host Identity Changed", message: message, image: "exclamationmark.shield", host: host)
+			case .failed(let message):
+				failureView("Couldn’t Browse Files", message: message, image: "exclamationmark.triangle", host: host)
+			case .idle, .connecting, .loaded:
+				if controller.state == .connecting {
+					ProgressView("Refreshing…")
+				}
+				if controller.entries.isEmpty {
+					ContentUnavailableView("Empty Folder", systemImage: "folder")
+						.listRowSeparator(.hidden)
+				} else {
+					ForEach(controller.entries) { entry in
+						Button {
+							controller.activate(entry, host: host)
+						} label: {
+							MobileRemoteEntryRow(entry: entry)
+						}
+						.disabled(!entry.isDirectory)
+					}
+				}
+			}
 		}
+	}
+
+	private func failureView(
+		_ title: String,
+		message: String,
+		image: String,
+		host: SSHHost
+	) -> some View {
+		VStack(spacing: 12) {
+			ContentUnavailableView(title, systemImage: image, description: Text(message))
+			Button("Retry") {
+				Task { await controller.refresh(host: host) }
+			}
+			.buttonStyle(.borderedProminent)
+		}
+		.listRowSeparator(.hidden)
+	}
+
+	private var hostSelection: Binding<UUID?> {
+		Binding(
+			get: { controller.selectedHostID },
+			set: { id in
+				guard let host = hosts.first(where: { $0.id == id }) else { return }
+				controller.select(host: host)
+			}
+		)
+	}
+
+	private var selectedHost: SSHHost? {
+		hosts.first { $0.id == controller.selectedHostID }
 	}
 }
 
@@ -137,13 +162,13 @@ private struct MobileRemoteEntryRow: View {
 
 	var body: some View {
 		HStack(spacing: 12) {
-			Image(systemName: entry.isDirectory ? "folder" : "doc")
+			Image(systemName: iconName)
 				.foregroundStyle(entry.isDirectory ? .blue : .secondary)
 			VStack(alignment: .leading, spacing: 4) {
 				Text(entry.name)
 					.font(.headline)
-				if !entry.isDirectory {
-					Text(ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))
+				if entry.type == .file {
+					Text(sizeDescription)
 						.font(.caption)
 						.foregroundStyle(.secondary)
 				}
@@ -157,6 +182,19 @@ private struct MobileRemoteEntryRow: View {
 		}
 		.contentShape(Rectangle())
 		.accessibilityElement(children: .combine)
+	}
+
+	private var iconName: String {
+		switch entry.type {
+		case .file: "doc"
+		case .directory: "folder"
+		case .unknown: "questionmark.square.dashed"
+		}
+	}
+
+	private var sizeDescription: String {
+		guard let size = entry.size else { return "Size unavailable" }
+		return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
 	}
 }
 
@@ -182,19 +220,6 @@ private struct MobileTransferRow: View {
 		case .completed: "Completed"
 		case .failed: "Failed"
 		case .cancelled: "Cancelled"
-		}
-	}
-}
-
-private extension String {
-	var appendingNewFolderName: String {
-		switch self {
-		case "~":
-			"~/New Folder"
-		case "/":
-			"/New Folder"
-		default:
-			hasSuffix("/") ? "\(self)New Folder" : "\(self)/New Folder"
 		}
 	}
 }

@@ -223,10 +223,12 @@ private final class ShellHandler: ChannelDuplexHandler {
 
 // MARK: - User authentication delegate
 
-private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
+final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate,
+	@unchecked Sendable {
 	private let host: SSHHost
 	private let plan: SSHAuthPlan
 	private let sink: @Sendable (SSHTransportEvent) -> Void
+	private var nextAttemptIndex = 0
 
 	init(
 		host: SSHHost,
@@ -248,10 +250,12 @@ private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
 			return
 		}
 
-		guard let attempt = plan.attempts.first else {
+		guard nextAttemptIndex < plan.attempts.count else {
 			nextChallengePromise.succeed(nil)
 			return
 		}
+		let attempt = plan.attempts[nextAttemptIndex]
+		nextAttemptIndex += 1
 
 		switch attempt {
 		case .password(let password) where availableMethods.contains(.password):
@@ -265,12 +269,25 @@ private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
 			// Server does not accept password auth.
 			nextChallengePromise.succeed(nil)
 
+		case let .privateKey(blob, passphrase)
+			where availableMethods.contains(.publicKey):
+			do {
+				let key = try OpenSSHPrivateKeyParser.parse(
+					blob,
+					passphrase: passphrase
+				)
+				let offer = NIOSSHUserAuthenticationOffer(
+					username: host.username,
+					serviceName: "",
+					offer: .privateKey(.init(privateKey: key))
+				)
+				nextChallengePromise.succeed(offer)
+			} catch {
+				sink(.failed(reason: error.localizedDescription))
+				nextChallengePromise.fail(error)
+			}
+
 		case .privateKey:
-			// swift-nio-ssh 0.13.0 has no OpenSSH private key (PEM) initializer
-			// on NIOSSHPrivateKey — only typed CryptoKit key inits. We cannot
-			// parse an arbitrary OpenSSH key blob, so report this honestly
-			// rather than inventing an API.
-			sink(.failed(reason: "private key auth unsupported by NIOSSH 0.13.0"))
 			nextChallengePromise.succeed(nil)
 
 		case .keyboardInteractive:
@@ -285,23 +302,39 @@ private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
 
 // MARK: - Host key validation delegate
 
-private struct HostKeyMismatchError: Error {
-	let endpoint: String
+public enum MobileSSHTrustError: Error, Equatable, Sendable {
+	case changed(endpoint: String)
+	case persistenceFailed(endpoint: String)
 }
 
-private final class NIOSSHHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
+extension MobileSSHTrustError: LocalizedError {
+	public var errorDescription: String? {
+		switch self {
+		case .changed(let endpoint):
+			"The SSH host key changed for \(endpoint)."
+		case .persistenceFailed(let endpoint):
+			"Caterm could not save the SSH host key for \(endpoint)."
+		}
+	}
+}
+
+final class NIOSSHHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate,
+	@unchecked Sendable {
 	private let endpoint: String
 	private let knownHosts: MobileKnownHostsStore
 	private let sink: @Sendable (SSHTransportEvent) -> Void
+	private let onFailure: @Sendable (MobileSSHTrustError) -> Void
 
 	init(
 		endpoint: String,
 		knownHosts: MobileKnownHostsStore,
-		sink: @escaping @Sendable (SSHTransportEvent) -> Void
+		sink: @escaping @Sendable (SSHTransportEvent) -> Void,
+		onFailure: @escaping @Sendable (MobileSSHTrustError) -> Void = { _ in }
 	) {
 		self.endpoint = endpoint
 		self.knownHosts = knownHosts
 		self.sink = sink
+		self.onFailure = onFailure
 	}
 
 	func validateHostKey(
@@ -309,16 +342,31 @@ private final class NIOSSHHostKeyDelegate: NIOSSHClientServerAuthenticationDeleg
 		validationCompletePromise: EventLoopPromise<Void>
 	) {
 		let fingerprint = Self.fingerprint(for: hostKey)
-		switch knownHosts.evaluate(endpoint: endpoint, fingerprint: fingerprint) {
-		case .trusted:
-			validationCompletePromise.succeed(())
-		case .unknown:
-			sink(.hostKeyPrompt(endpoint: endpoint, fingerprint: fingerprint))
-			try? knownHosts.trust(endpoint: endpoint, fingerprint: fingerprint)
-			validationCompletePromise.succeed(())
-		case .mismatch:
-			sink(.failed(reason: "host key mismatch for \(endpoint)"))
-			validationCompletePromise.fail(HostKeyMismatchError(endpoint: endpoint))
+		do {
+			switch try knownHosts.evaluate(
+				endpoint: endpoint,
+				fingerprint: fingerprint
+			) {
+			case .trusted:
+				validationCompletePromise.succeed(())
+			case .unknown:
+				sink(.hostKeyPrompt(endpoint: endpoint, fingerprint: fingerprint))
+				try knownHosts.trust(endpoint: endpoint, fingerprint: fingerprint)
+				validationCompletePromise.succeed(())
+			case .mismatch:
+				sink(.failed(reason: "host key mismatch for \(endpoint)"))
+				let failure = MobileSSHTrustError.changed(endpoint: endpoint)
+				onFailure(failure)
+				validationCompletePromise.fail(failure)
+			}
+		} catch MobileKnownHostsError.concurrentKeyChange {
+			let failure = MobileSSHTrustError.changed(endpoint: endpoint)
+			onFailure(failure)
+			validationCompletePromise.fail(failure)
+		} catch {
+			let failure = MobileSSHTrustError.persistenceFailed(endpoint: endpoint)
+			onFailure(failure)
+			validationCompletePromise.fail(failure)
 		}
 	}
 

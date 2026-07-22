@@ -41,6 +41,7 @@ struct CatermMobileApp: App {
 				settingsStore: composition.settingsStore,
 				syncCoordinator: composition.syncCoordinator,
 				terminalSessionFactory: composition.terminalSessionFactory,
+				remoteFileClientFactory: composition.remoteFileClientFactory,
 				prepareCredentialSyncForSave: composition.prepareCredentialSyncForSave
 			)
 		}

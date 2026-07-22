@@ -27,8 +27,8 @@ struct RemoteFileListView: View {
 					.truncationMode(.middle)
 					.frame(maxWidth: .infinity, alignment: .leading)
 					.layoutPriority(0)
-				if !entry.isDirectory {
-					Text(byteString(entry.size))
+				if entry.type == .file, let size = entry.size {
+					Text(byteString(size))
 						.font(.caption)
 						.foregroundStyle(.secondary)
 						.lineLimit(1)
@@ -43,7 +43,7 @@ struct RemoteFileListView: View {
 			.onTapGesture(count: 2) { onActivate(entry) }
 			.modifier(FolderDropModifier(entry: entry, onDropOnFolder: onDropOnFolder))
 			.contextMenu {
-				if !entry.isDirectory {
+				if entry.type == .file {
 					Button("Download…") { onDownload(entry) }
 				}
 				Button("Rename…") { onRename(entry) }
