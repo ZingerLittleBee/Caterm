@@ -9,7 +9,7 @@ public struct MobileHostsView: View {
 	private let snippets: [Snippet]
 	private let terminalPreferences: MobileTerminalPreferences
 	@Environment(\.mobileHostSave) private var hostSave
-	@Environment(\.mobileHostSyncState) private var syncState
+	@Environment(\.mobileSyncStatus) private var syncStatus
 	@Environment(\.mobileTerminalSessionFactory) private var terminalSessionFactory
 	@State private var searchText = ""
 	@State private var editingHost: SSHHost?
@@ -28,8 +28,8 @@ public struct MobileHostsView: View {
 
 	public var body: some View {
 		List {
-			if let syncState, shouldShowSyncStatus(syncState) {
-				MobileHostSyncStatusView(state: syncState)
+			if let syncStatus, shouldShowSyncStatus(syncStatus) {
+				MobileSyncStatusView(status: syncStatus)
 					.listRowInsets(EdgeInsets())
 					.listRowSeparator(.hidden)
 			}
@@ -179,8 +179,8 @@ public struct MobileHostsView: View {
 		}
 	}
 
-	private func shouldShowSyncStatus(_ state: MobileHostSyncState) -> Bool {
-		if case .upToDate = state { return false }
+	private func shouldShowSyncStatus(_ status: MobileSyncStatus) -> Bool {
+		if case .upToDate = status { return false }
 		return true
 	}
 

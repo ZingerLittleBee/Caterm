@@ -23,15 +23,10 @@ struct CatermMobileApp: App {
 		_composition = StateObject(wrappedValue: composition)
 		#if canImport(UIKit)
 		pushDelegate.hostPushHandler = {
-			await composition.syncRuntime.receivedCloudKitPush()
+			await composition.syncCoordinator.receivedHostPush()
 		}
 		pushDelegate.snippetPushHandler = {
-			let accountResult = await composition.syncRuntime.prepareForRelatedSync()
-			guard accountResult != .failed, accountResult != .cancelled else {
-				return accountResult
-			}
-			return await composition.snippetSyncRuntime
-				.receivedCloudKitPushAfterIdentityCheck()
+			await composition.syncCoordinator.receivedSnippetPush()
 		}
 		#endif
 	}
@@ -41,14 +36,12 @@ struct CatermMobileApp: App {
 			MobileRootView(
 				hostStore: composition.hostStore,
 				credentialWriter: composition.credentialWriter,
-				syncRuntime: composition.syncRuntime,
 				snippetStore: composition.snippetStore,
 				snippetSyncRuntime: composition.snippetSyncRuntime,
 				settingsStore: composition.settingsStore,
-				settingsSync: composition.settingsSync,
+				syncCoordinator: composition.syncCoordinator,
 				terminalSessionFactory: composition.terminalSessionFactory,
-				prepareCredentialSyncForSave: composition.prepareCredentialSyncForSave,
-				startObservingAccountChanges: composition.startObservingAccountChanges
+				prepareCredentialSyncForSave: composition.prepareCredentialSyncForSave
 			)
 		}
 	}

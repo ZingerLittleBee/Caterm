@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### iOS
+
+- Route launch, foreground, pull-to-refresh, silent push, account changes,
+  and manual refresh through one serialized iCloud sync coordinator.
+- Show actionable iCloud sync status and recovery controls while keeping
+  cached hosts and snippets available through transient network failures.
+
 ## [1.1.0] - 2026-05-17
 
 Adds an iOS companion app — a Termius-style SSH terminal that reuses

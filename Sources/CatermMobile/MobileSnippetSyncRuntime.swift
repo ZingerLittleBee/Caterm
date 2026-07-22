@@ -8,6 +8,7 @@ public enum MobileSnippetSyncState: Equatable, Sendable {
 	case syncing
 	case upToDate(Date)
 	case temporarilyUnavailable(String)
+	case failed(String)
 }
 
 public enum MobileSnippetMutationError: LocalizedError, Equatable {
@@ -194,7 +195,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 			return .cancelled
 		} catch {
 			pendingResumeMode = strongerMode(pendingResumeMode, resolvedMode)
-			state = .temporarilyUnavailable(error.localizedDescription)
+			state = .failed(error.localizedDescription)
 			return .failed
 		}
 	}

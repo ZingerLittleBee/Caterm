@@ -47,16 +47,14 @@ public struct MobileCatermShell: View {
 /// the desktop terminal surface stay isolated.
 public struct MobileRootView: View {
 	@StateObject private var hostStore: MobileHostStore
-	@StateObject private var syncRuntime: MobileHostSyncRuntime
 	@StateObject private var snippetStore: SnippetStore
 	@StateObject private var snippetSyncRuntime: MobileSnippetSyncRuntime
 	@StateObject private var settingsStore: SettingsStore
+	@StateObject private var syncCoordinator: MobileSyncCoordinator
 	@Environment(\.scenePhase) private var scenePhase
 	private let hostSaveCoordinator: MobileHostSaveCoordinator
 	private let backupImportCoordinator: MobileBackupImportCoordinator
 	private let terminalSessionFactory: MobileTerminalSessionFactory
-	private let settingsSync: SettingsSyncStore?
-	private let startObservingAccountChanges: () -> Void
 	@State private var operationError: MobileHostOperationError?
 	@State private var remoteEntries: [RemoteEntry]
 	@State private var transfers: [TransferTask]
@@ -64,22 +62,20 @@ public struct MobileRootView: View {
 	public init(
 		hostStore: MobileHostStore,
 		credentialWriter: MobileCredentialWriter,
-		syncRuntime: MobileHostSyncRuntime,
 		snippetStore: SnippetStore,
 		snippetSyncRuntime: MobileSnippetSyncRuntime,
 		settingsStore: SettingsStore,
-		settingsSync: SettingsSyncStore?,
+		syncCoordinator: MobileSyncCoordinator,
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
-		startObservingAccountChanges: @escaping () -> Void = {},
 		remoteEntries: [RemoteEntry] = [],
 		transfers: [TransferTask] = []
 	) {
 		_hostStore = StateObject(wrappedValue: hostStore)
-		_syncRuntime = StateObject(wrappedValue: syncRuntime)
 		_snippetStore = StateObject(wrappedValue: snippetStore)
 		_snippetSyncRuntime = StateObject(wrappedValue: snippetSyncRuntime)
 		_settingsStore = StateObject(wrappedValue: settingsStore)
+		_syncCoordinator = StateObject(wrappedValue: syncCoordinator)
 		self.hostSaveCoordinator = MobileHostSaveCoordinator(
 			hostStore: hostStore,
 			credentialWriter: credentialWriter,
@@ -89,8 +85,6 @@ public struct MobileRootView: View {
 			hostStore: hostStore
 		)
 		self.terminalSessionFactory = terminalSessionFactory
-		self.settingsSync = settingsSync
-		self.startObservingAccountChanges = startObservingAccountChanges
 		_remoteEntries = State(initialValue: remoteEntries)
 		_transfers = State(initialValue: transfers)
 	}
@@ -153,32 +147,28 @@ public struct MobileRootView: View {
 				)
 			}
 		))
-		.environment(\.mobileHostSyncState, syncRuntime.state)
+		.environment(
+			\.mobileSyncStatus,
+			syncCoordinator.isAvailable ? syncCoordinator.status : nil
+		)
+		.environment(\.mobileSyncAction, mobileSyncAction)
 		.refreshable {
-			await syncRuntime.refresh()
-			await snippetSyncRuntime.refresh()
+			await syncCoordinator.pullToRefresh()
 		}
 		.task {
-			startObservingAccountChanges()
-			settingsSync?.installLifecycleObservers()
-			await syncRuntime.launch()
-			await snippetSyncRuntime.launch()
-			if let settingsSync { await settingsSync.startSync() }
+			await syncCoordinator.launch()
 		}
 		.onChange(of: scenePhase) { _, phase in
 			guard phase == .active else { return }
 			Task {
-				await syncRuntime.becameActive()
-				await snippetSyncRuntime.becameActive()
+				await syncCoordinator.becameActive()
 			}
 		}
 		.onReceive(
 			NotificationCenter.default.publisher(for: .catermICloudAccountChanged)
 		) { _ in
 			Task {
-				let result = await syncRuntime.accountDidChange()
-				guard result != .failed, result != .cancelled else { return }
-				await snippetSyncRuntime.refresh()
+				await syncCoordinator.accountChanged()
 			}
 		}
 		.alert(item: $operationError) { failure in
@@ -225,58 +215,131 @@ public struct MobileRootView: View {
 				: .custom
 		)
 	}
+
+	private var mobileSyncAction: MobileSyncAction? {
+		guard syncCoordinator.isAvailable else { return nil }
+		return MobileSyncAction(syncNow: {
+			await syncCoordinator.syncNow()
+		})
+	}
 }
 
-struct MobileHostSyncStatusView: View {
-	let state: MobileHostSyncState
+struct MobileSyncStatusView: View {
+	private enum RecoveryAction: Equatable {
+		case retry
+		case signInHelp
+	}
+
+	let status: MobileSyncStatus
+	@Environment(\.mobileSyncAction) private var syncAction
+	@State private var showingSignInHelp = false
 
 	var body: some View {
-		switch state {
+		switch status {
 		case .upToDate:
 			EmptyView()
 		case .checkingAccount:
-			status("Checking iCloud…", systemImage: "icloud", progress: true)
+			statusRow("Checking iCloud…", systemImage: "icloud", progress: true)
 		case .syncing:
-			status("Syncing Hosts…", systemImage: "arrow.triangle.2.circlepath", progress: true)
+			statusRow("Syncing with iCloud…", systemImage: "arrow.triangle.2.circlepath", progress: true)
 		case .signedOut:
-			status("Hosts are available offline. Sign in to iCloud to sync.", systemImage: "icloud.slash")
+			statusRow(
+				"Available offline. Sign in to iCloud to sync.",
+				systemImage: "icloud.slash",
+				recovery: .signInHelp
+			)
+			.alert("Sign In to iCloud", isPresented: $showingSignInHelp) {
+				Button("OK", role: .cancel) {}
+			} message: {
+				Text("Open the Settings app, tap your name or Sign in to your iPhone or iPad, sign in to iCloud, then return to Caterm and tap Sync Now.")
+			}
 		case let .temporarilyUnavailable(message):
-			status(message, systemImage: "exclamationmark.icloud")
+			statusRow(message, systemImage: "exclamationmark.icloud", recovery: .retry)
+		case let .failed(message):
+			statusRow(message, systemImage: "exclamationmark.triangle", recovery: .retry)
 		}
 	}
 
-	private func status(
+	@ViewBuilder
+	private func statusRow(
 		_ text: String,
 		systemImage: String,
-		progress: Bool = false
+		progress: Bool = false,
+		recovery: RecoveryAction? = nil
 	) -> some View {
-		HStack(spacing: 8) {
+		let content = HStack(spacing: 8) {
 			if progress {
-				ProgressView().controlSize(.small)
+				ProgressView()
+					.controlSize(.small)
+					.accessibilityHidden(true)
 			} else {
 				Image(systemName: systemImage)
+					.accessibilityHidden(true)
 			}
 			Text(text)
 				.font(.footnote)
 				.lineLimit(2)
+				.accessibilityLabel(status.accessibilityDescription)
 			Spacer(minLength: 0)
+			if let recovery {
+				Button(recovery == .retry ? "Retry" : "Sign-In Help") {
+					recover(using: recovery)
+				}
+				.buttonStyle(.borderless)
+				.accessibilityHint(recovery == .retry
+					? "Attempts iCloud synchronization again"
+					: "Shows the steps for signing in to iCloud")
+			}
 		}
 		.padding(.horizontal, 12)
 		.padding(.vertical, 8)
 		.background(.bar)
-		.accessibilityElement(children: .combine)
-		.accessibilityLabel(state.accessibilityDescription)
+
+		if recovery != nil {
+			content.accessibilityElement(children: .contain)
+		} else {
+			content
+				.accessibilityElement(children: .combine)
+				.accessibilityLabel(status.accessibilityDescription)
+		}
+	}
+
+	private func recover(using action: RecoveryAction) {
+		switch action {
+		case .retry:
+			guard let syncAction else { return }
+			Task { await syncAction.syncNow() }
+		case .signInHelp:
+			showingSignInHelp = true
+		}
 	}
 }
 
-private struct MobileHostSyncStateEnvironmentKey: EnvironmentKey {
-	static let defaultValue: MobileHostSyncState? = nil
+public struct MobileSyncAction: Sendable {
+	public let syncNow: @MainActor @Sendable () async -> Void
+
+	public init(syncNow: @escaping @MainActor @Sendable () async -> Void) {
+		self.syncNow = syncNow
+	}
+}
+
+private struct MobileSyncStatusEnvironmentKey: EnvironmentKey {
+	static let defaultValue: MobileSyncStatus? = nil
+}
+
+private struct MobileSyncActionEnvironmentKey: EnvironmentKey {
+	static let defaultValue: MobileSyncAction? = nil
 }
 
 extension EnvironmentValues {
-	var mobileHostSyncState: MobileHostSyncState? {
-		get { self[MobileHostSyncStateEnvironmentKey.self] }
-		set { self[MobileHostSyncStateEnvironmentKey.self] = newValue }
+	var mobileSyncStatus: MobileSyncStatus? {
+		get { self[MobileSyncStatusEnvironmentKey.self] }
+		set { self[MobileSyncStatusEnvironmentKey.self] = newValue }
+	}
+
+	var mobileSyncAction: MobileSyncAction? {
+		get { self[MobileSyncActionEnvironmentKey.self] }
+		set { self[MobileSyncActionEnvironmentKey.self] = newValue }
 	}
 }
 

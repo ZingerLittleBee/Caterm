@@ -122,7 +122,7 @@ final class MobileSnippetSyncRuntimeTests: XCTestCase {
 		let result = await runtime.receivedCloudKitPush()
 
 		XCTAssertEqual(result, .failed)
-		guard case .temporarilyUnavailable = runtime.state else {
+		guard case .failed = runtime.state else {
 			return XCTFail("Expected the runtime to expose the fetch failure")
 		}
 	}

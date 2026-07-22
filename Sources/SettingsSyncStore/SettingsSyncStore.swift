@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SettingsStore
 import SyncScheduler
@@ -13,6 +14,12 @@ public protocol AccountSessionProviding: AnyObject {
 public extension Notification.Name {
 	static let catermICloudAccountChanged =
 		Notification.Name("catermICloudAccountChanged")
+}
+
+public enum SettingsSyncExecutionResult: Equatable, Sendable {
+	case signedOut
+	case upToDate(Date)
+	case failed(String)
 }
 
 package struct SettingsSyncConfiguration: Sendable {
@@ -66,6 +73,12 @@ public final class SettingsSyncStore {
 	private var inInitialSyncGrace: Bool = false
 	private var isSyncRunning: Bool = false
 	private var lifecycleGeneration: UInt64 = 0
+	private var lastOperationFailureMessage: String?
+	@Published public private(set) var lastExecutionResult: SettingsSyncExecutionResult = .signedOut
+
+	public var executionResultPublisher: AnyPublisher<SettingsSyncExecutionResult, Never> {
+		$lastExecutionResult.eraseToAnyPublisher()
+	}
 
 	package var isPushSuspended: Bool {
 		syncState != .active || inInitialSyncGrace
@@ -149,11 +162,20 @@ public final class SettingsSyncStore {
 	}
 
 	public func startSync() async {
+		_ = await startSyncAndReport()
+	}
+
+	@discardableResult
+	public func startSyncAndReport() async -> SettingsSyncExecutionResult {
 		if isSyncRunning {
 			_ = await bootDecisionTask?.value
-			return
+			publishExecutionResult()
+			return lastExecutionResult
 		}
-		guard accountSession.isSignedIn else { return }
+		guard accountSession.isSignedIn else {
+			lastExecutionResult = .signedOut
+			return .signedOut
+		}
 		lifecycleGeneration &+= 1
 		let generation = lifecycleGeneration
 		isSyncRunning = true
@@ -168,6 +190,50 @@ public final class SettingsSyncStore {
 		}
 		bootDecisionTask = task
 		await task.value
+		publishExecutionResult()
+		return lastExecutionResult
+	}
+
+	/// Explicit foreground refresh used by native pull-to-refresh and Sync Now.
+	/// Local settings remain available if KVS is offline; the next external
+	/// change or lifecycle retry re-evaluates the same decision state machine.
+	@discardableResult
+	public func synchronizeNow() async -> SettingsSyncExecutionResult {
+		guard accountSession.isSignedIn else {
+			lastExecutionResult = .signedOut
+			stopSync()
+			return .signedOut
+		}
+		guard isSyncRunning else {
+			return await startSyncAndReport()
+		}
+		lastOperationFailureMessage = nil
+		guard kvs.synchronize() else {
+			lastExecutionResult = .failed(
+				"Shared settings could not be saved locally for iCloud sync."
+			)
+			return lastExecutionResult
+		}
+		classifyAndApply(lifecycleGeneration: lifecycleGeneration)
+		return lastExecutionResult
+	}
+
+	private func executionResult() -> SettingsSyncExecutionResult {
+		if let lastOperationFailureMessage {
+			return .failed(lastOperationFailureMessage)
+		}
+		guard isSyncRunning else { return lastExecutionResult }
+		guard accountSession.isSignedIn else { return .signedOut }
+		guard syncState != .quarantined else {
+			return .failed(
+				"Shared settings in iCloud could not be read or applied safely."
+			)
+		}
+		return .upToDate(Date())
+	}
+
+	private func publishExecutionResult() {
+		lastExecutionResult = executionResult()
 	}
 
 	private func registerSyncObservers() {
@@ -234,6 +300,7 @@ public final class SettingsSyncStore {
 		switch request.reason {
 		case .quotaViolationChange:
 			NSLog("[SettingsSyncStore] quota violation; key present? \(kvs.data(forKey: Self.kvsKey) != nil)")
+			lastExecutionResult = .failed("iCloud shared settings exceeded the available quota.")
 			return
 		case .initialSyncChange:
 			// `inInitialSyncGrace` was already set synchronously by
@@ -257,6 +324,7 @@ public final class SettingsSyncStore {
 
 	private func classifyAndApply(lifecycleGeneration generation: UInt64) {
 		guard ownsLifecycle(generation) else { return }
+		lastOperationFailureMessage = nil
 		let bootStartedAt = Date()
 		let persisted = tokenStore.loadPersisted()
 		let current = currentTokenProvider()
@@ -265,8 +333,10 @@ public final class SettingsSyncStore {
 		let decision: Decision
 		switch classification {
 		case .notSignedIn:
+			lastExecutionResult = .signedOut
 			stopSync(); return
 		case .signedOut:
+			lastExecutionResult = .signedOut
 			stopSync(); return
 		case .firstObservation, .identitySame:
 			decision = BootstrapDecider.decide(
@@ -282,6 +352,7 @@ public final class SettingsSyncStore {
 			currentToken: current,
 			lifecycleGeneration: generation
 		)
+		publishExecutionResult()
 	}
 
 	private func handleLocalSettingsChange(
@@ -311,14 +382,17 @@ public final class SettingsSyncStore {
 			// CRITICAL ORDERING: unfreeze BEFORE the push for this same edit so
 			// that quitting after one edit still leaves the cloud blob populated.
 			syncState = .active
+			lastOperationFailureMessage = nil
 			pushLocalToKVS()
 			// Persist the current token — user has accepted identity Y by
 			// authoring data under it.
-			if let token = currentTokenProvider() {
+			if case .upToDate = lastExecutionResult,
+				let token = currentTokenProvider() {
 				tokenStore.persist(token)
 			}
 
 		case .active:
+			lastOperationFailureMessage = nil
 			pushLocalToKVS()
 		}
 	}
@@ -349,7 +423,14 @@ public final class SettingsSyncStore {
 	private func runBootSequence(lifecycleGeneration generation: UInt64) async {
 		// Trigger initial pull and wait briefly. We don't yet subscribe to
 		// didChangeExternallyNotification — production wiring lands in Task 16.
-		_ = kvs.synchronize()
+		lastOperationFailureMessage = nil
+		guard kvs.synchronize() else {
+			lastExecutionResult = .failed(
+				"Shared settings could not be saved locally for iCloud sync."
+			)
+			stopSync()
+			return
+		}
 		try? await Task.sleep(for: configuration.bootTimeout)
 		// stopSync may have run while we were sleeping. Bail out before we
 		// touch state — applyDecision would otherwise persist a token and
@@ -365,6 +446,7 @@ public final class SettingsSyncStore {
 		let decision: Decision
 		switch classification {
 		case .notSignedIn:
+			lastExecutionResult = .signedOut
 			stopSync()
 			return
 		case .firstObservation, .identitySame:
@@ -378,6 +460,7 @@ public final class SettingsSyncStore {
 				local: store.settings, cloudY: cloud
 			)
 		case .signedOut:
+			lastExecutionResult = .signedOut
 			stopSync()
 			return
 		}
@@ -387,6 +470,7 @@ public final class SettingsSyncStore {
 			currentToken: current,
 			lifecycleGeneration: generation
 		)
+		publishExecutionResult()
 	}
 
 	private func decodeCloud() -> CloudReadResult {
@@ -434,6 +518,8 @@ public final class SettingsSyncStore {
 			//   local state over the cloud blob we just failed to apply.
 			//   The next pull re-evaluates and can clear quarantine.
 			syncState = .quarantined
+			lastOperationFailureMessage =
+				"Shared settings from iCloud could not be applied safely."
 			return
 		}
 
@@ -452,9 +538,17 @@ public final class SettingsSyncStore {
 		do {
 			let blob = try SettingsBlobCodec.encode(store.settings)
 			kvs.set(blob, forKey: Self.kvsKey)
-			_ = kvs.synchronize()
+			guard kvs.synchronize() else {
+				lastOperationFailureMessage =
+					"Shared settings could not be saved locally for iCloud sync."
+				lastExecutionResult = .failed(lastOperationFailureMessage ?? "iCloud sync failed.")
+				return
+			}
+			lastExecutionResult = .upToDate(Date())
 		} catch {
 			NSLog("[SettingsSyncStore] encode/push failed: \(error)")
+			lastOperationFailureMessage = error.localizedDescription
+			lastExecutionResult = .failed(error.localizedDescription)
 		}
 	}
 

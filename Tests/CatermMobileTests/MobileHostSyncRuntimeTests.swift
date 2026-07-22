@@ -1,6 +1,7 @@
 import CatermMobileTerminal
 import CloudKit
 import CloudKitSyncClient
+import Combine
 import CredentialSync
 import CredentialSyncStore
 import CredentialSyncTypes
@@ -10,6 +11,7 @@ import ManagedKeyStore
 import ServerSyncClient
 import SessionStore
 import SettingsStore
+import SettingsSyncStore
 import SnippetStore
 import SnippetSyncClient
 import SSHCommandBuilder
@@ -216,6 +218,66 @@ private final class MobileSnippetFixtureClient: IncrementalSnippetSyncClient,
 	func pushSnippet(_ snippet: Snippet) async throws -> Snippet { snippet }
 	func deleteSnippet(id _: UUID) async throws {}
 	func hasAnySnippetSyncTokens() async -> Bool { false }
+}
+
+@MainActor
+private final class MobileSettingsSyncSpy: MobileSettingsSyncing {
+	private let results = CurrentValueSubject<SettingsSyncExecutionResult, Never>(.signedOut)
+	var startResult: SettingsSyncExecutionResult = .upToDate(.now)
+	var refreshResult: SettingsSyncExecutionResult = .upToDate(.now)
+	private(set) var startCount = 0
+	private(set) var refreshCount = 0
+	private(set) var stopCount = 0
+	private(set) var maximumActiveRefreshCount = 0
+	private var activeRefreshCount = 0
+	private var shouldBlockNextRefresh = false
+	private var refreshIsBlocked = false
+	private var refreshContinuation: CheckedContinuation<Void, Never>?
+	var executionResultPublisher: AnyPublisher<SettingsSyncExecutionResult, Never> {
+		results.eraseToAnyPublisher()
+	}
+
+	func startSyncAndReport() async -> SettingsSyncExecutionResult {
+		startCount += 1
+		results.send(startResult)
+		return startResult
+	}
+
+	func synchronizeNow() async -> SettingsSyncExecutionResult {
+		refreshCount += 1
+		activeRefreshCount += 1
+		maximumActiveRefreshCount = max(maximumActiveRefreshCount, activeRefreshCount)
+		defer { activeRefreshCount -= 1 }
+		if shouldBlockNextRefresh {
+			shouldBlockNextRefresh = false
+			refreshIsBlocked = true
+			await withCheckedContinuation { refreshContinuation = $0 }
+			refreshIsBlocked = false
+		}
+		results.send(refreshResult)
+		return refreshResult
+	}
+
+	func stopSync() {
+		stopCount += 1
+	}
+
+	func blockNextRefresh() {
+		shouldBlockNextRefresh = true
+	}
+
+	func waitUntilRefreshIsBlocked() async {
+		while !refreshIsBlocked { await Task.yield() }
+	}
+
+	func releaseRefresh() {
+		refreshContinuation?.resume()
+		refreshContinuation = nil
+	}
+
+	func publish(_ result: SettingsSyncExecutionResult) {
+		results.send(result)
+	}
 }
 
 private actor MobileAccountSensitiveSpy: AccountSensitiveClient {
@@ -705,7 +767,7 @@ private func mobileSubscriptionFailureIsNotReportedUpToDate() async throws {
 
 	await runtime.launch()
 
-	guard case .temporarilyUnavailable = runtime.state else {
+	guard case .failed = runtime.state else {
 		Issue.record("Expected a visible subscription failure")
 		return
 	}
@@ -1034,6 +1096,267 @@ private func mobileBootCompositionUsesSharedRuntime() throws {
 	#expect(composition.snippetStore === snippetStore)
 	#expect(composition.snippetSyncRuntime.store === composition.snippetStore)
 	#expect(composition.settingsStore === settingsStore)
+	#expect(composition.syncCoordinator.status == .checkingAccount)
+}
+
+@Test("Simulator sync scenarios accept only supported values")
+private func simulatorSyncScenariosRejectInvalidValues() {
+	#expect(MobileSimulatorSyncScenario(rawValue: "signed-out") == .signedOut)
+	#expect(MobileSimulatorSyncScenario(rawValue: "failed") == .failed)
+	#expect(
+		MobileSimulatorSyncScenario(rawValue: "temporarily-unavailable")
+			== .temporarilyUnavailable
+	)
+	#expect(MobileSimulatorSyncScenario(rawValue: "") == nil)
+	#expect(MobileSimulatorSyncScenario(rawValue: "offline") == nil)
+	#expect(MobileSimulatorSyncScenario.signedOut.status == .signedOut)
+}
+
+@Test("Mobile sync coordinator serializes concurrent manual refreshes")
+@MainActor
+private func mobileSyncCoordinatorSerializesManualRefreshes() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "coordinator", masterKey: master)
+	let hostRuntime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let snippetDirectory = fixture.root.appendingPathComponent(
+		"coordinator-snippets",
+		isDirectory: true
+	)
+	let snippetStore = SnippetStore(directory: snippetDirectory)
+	try snippetStore.load()
+	let snippetClient = MobileSnippetFixtureClient()
+	let snippetRuntime = MobileSnippetSyncRuntime(
+		store: snippetStore,
+		sync: SnippetSyncStore(store: snippetStore, client: snippetClient),
+		client: snippetClient,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let coordinator = MobileSyncCoordinator(
+		hostRuntime: hostRuntime,
+		snippetRuntime: snippetRuntime,
+		settingsSync: nil
+	)
+
+	await coordinator.launch()
+	#expect(client.snapshotFetchCount() == 1)
+	guard case .upToDate = coordinator.status else {
+		Issue.record("Expected launch to expose the last successful sync")
+		return
+	}
+
+	client.blockNextSnapshot()
+	let first = Task { @MainActor in await coordinator.syncNow() }
+	await client.waitUntilSnapshotIsBlocked()
+	let second = Task { @MainActor in await coordinator.syncNow() }
+	for _ in 0..<20 { await Task.yield() }
+
+	#expect(client.snapshotFetchCount() == 2)
+	#expect(coordinator.status == .syncing)
+
+	client.releaseSnapshot()
+	await first.value
+	await second.value
+
+	#expect(client.snapshotFetchCount() == 3)
+	guard case .upToDate = coordinator.status else {
+		Issue.record("Expected queued refreshes to finish up to date")
+		return
+	}
+}
+
+@Test("Mobile sync coordinator closes Settings writes when account status is unavailable")
+@MainActor
+private func mobileSyncCoordinatorSuspendsSettingsForUnavailableAccount() async throws {
+	actor IdentityGate {
+		private var entered = false
+		private var continuation: CheckedContinuation<Void, Never>?
+
+		func evaluate() async -> AccountChangeOutcome {
+			entered = true
+			await withCheckedContinuation { continuation = $0 }
+			return .temporarilyUnavailable("Account unavailable")
+		}
+
+		func waitUntilEntered() async {
+			while !entered { await Task.yield() }
+		}
+
+		func release() {
+			continuation?.resume()
+			continuation = nil
+		}
+	}
+
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "coordinator-unavailable", masterKey: master)
+	let identityGate = IdentityGate()
+	let hostRuntime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: { await identityGate.evaluate() },
+			acknowledge: {}
+		)
+	)
+	let snippetStore = SnippetStore(
+		directory: fixture.root.appendingPathComponent("coordinator-unavailable-snippets")
+	)
+	try snippetStore.load()
+	let snippetClient = MobileSnippetFixtureClient()
+	let snippetRuntime = MobileSnippetSyncRuntime(
+		store: snippetStore,
+		sync: SnippetSyncStore(store: snippetStore, client: snippetClient),
+		client: snippetClient,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let settings = MobileSettingsSyncSpy()
+	let coordinator = MobileSyncCoordinator(
+		hostRuntime: hostRuntime,
+		snippetRuntime: snippetRuntime,
+		settingsSync: settings
+	)
+
+	let launch = Task { @MainActor in await coordinator.launch() }
+	await identityGate.waitUntilEntered()
+
+	#expect(settings.stopCount == 1)
+	#expect(settings.startCount == 0)
+	await identityGate.release()
+	await launch.value
+	#expect(coordinator.status == .temporarilyUnavailable("Account unavailable"))
+}
+
+@Test("Mobile sync coordinator surfaces Settings failures")
+@MainActor
+private func mobileSyncCoordinatorSurfacesSettingsFailure() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "coordinator-settings-failure", masterKey: master)
+	let hostRuntime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let snippetStore = SnippetStore(
+		directory: fixture.root.appendingPathComponent("coordinator-settings-failure-snippets")
+	)
+	try snippetStore.load()
+	let snippetClient = MobileSnippetFixtureClient()
+	let snippetRuntime = MobileSnippetSyncRuntime(
+		store: snippetStore,
+		sync: SnippetSyncStore(store: snippetStore, client: snippetClient),
+		client: snippetClient,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let settings = MobileSettingsSyncSpy()
+	settings.startResult = .failed("Settings unavailable")
+	let coordinator = MobileSyncCoordinator(
+		hostRuntime: hostRuntime,
+		snippetRuntime: snippetRuntime,
+		settingsSync: settings
+	)
+
+	await coordinator.launch()
+
+	#expect(settings.startCount == 1)
+	#expect(coordinator.status == .failed("Settings unavailable"))
+
+	settings.publish(.upToDate(.now))
+	guard case .upToDate = coordinator.status else {
+		Issue.record("Expected published Settings recovery to update aggregate status")
+		return
+	}
+	settings.publish(.failed("External Settings failure"))
+	#expect(coordinator.status == .failed("External Settings failure"))
+}
+
+@Test("Mobile sync coordinator serializes the Settings lane")
+@MainActor
+private func mobileSyncCoordinatorSerializesSettingsLane() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "coordinator-settings-serial", masterKey: master)
+	let hostRuntime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let snippetStore = SnippetStore(
+		directory: fixture.root.appendingPathComponent("coordinator-settings-serial-snippets")
+	)
+	try snippetStore.load()
+	let snippetClient = MobileSnippetFixtureClient()
+	let snippetRuntime = MobileSnippetSyncRuntime(
+		store: snippetStore,
+		sync: SnippetSyncStore(store: snippetStore, client: snippetClient),
+		client: snippetClient,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let settings = MobileSettingsSyncSpy()
+	let coordinator = MobileSyncCoordinator(
+		hostRuntime: hostRuntime,
+		snippetRuntime: snippetRuntime,
+		settingsSync: settings
+	)
+	await coordinator.launch()
+	settings.blockNextRefresh()
+
+	let first = Task { @MainActor in await coordinator.syncNow() }
+	await settings.waitUntilRefreshIsBlocked()
+	let second = Task { @MainActor in await coordinator.syncNow() }
+	for _ in 0..<20 { await Task.yield() }
+
+	#expect(settings.refreshCount == 1)
+	#expect(settings.maximumActiveRefreshCount == 1)
+	settings.releaseRefresh()
+	await first.value
+	await second.value
+
+	#expect(settings.refreshCount == 2)
+	#expect(settings.maximumActiveRefreshCount == 1)
 }
 
 @Test("Offline mobile composition never constructs CloudKit")

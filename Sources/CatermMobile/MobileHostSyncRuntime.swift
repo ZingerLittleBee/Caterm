@@ -11,21 +11,7 @@ public enum MobileHostSyncState: Equatable, Sendable {
 	case syncing
 	case upToDate(Date)
 	case temporarilyUnavailable(String)
-
-	public var accessibilityDescription: String {
-		switch self {
-		case .checkingAccount:
-			"Checking iCloud account"
-		case .signedOut:
-			"iCloud sync is signed out"
-		case .syncing:
-			"Syncing Hosts"
-		case .upToDate:
-			"Hosts are up to date"
-		case .temporarilyUnavailable:
-			"Host sync is temporarily unavailable"
-		}
-	}
+	case failed(String)
 }
 
 public enum MobileHostSyncExecutionResult: Equatable, Sendable {
@@ -281,7 +267,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			return .cancelled
 		} catch {
 			guard generationIsCurrent(generation) else { return .cancelled }
-			state = .temporarilyUnavailable(error.localizedDescription)
+			state = .failed(error.localizedDescription)
 			return .failed
 		}
 		return await runSync(request: resolvedRequest, generation: generation)
@@ -358,7 +344,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			return .cancelled
 		} catch {
 			guard generationIsCurrent(generation) else { return .cancelled }
-			state = .temporarilyUnavailable(error.localizedDescription)
+			state = .failed(error.localizedDescription)
 			return .failed
 		}
 	}

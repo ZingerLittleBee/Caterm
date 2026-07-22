@@ -23,10 +23,9 @@ public final class MobileAppComposition: ObservableObject {
 	public let snippetStore: SnippetStore
 	public let snippetSyncRuntime: MobileSnippetSyncRuntime
 	public let settingsStore: SettingsStore
-	public let settingsSync: SettingsSyncStore?
+	public let syncCoordinator: MobileSyncCoordinator
 	public let terminalSessionFactory: MobileTerminalSessionFactory
 	public let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
-	public let startObservingAccountChanges: () -> Void
 
 	public init(
 		hostStore: MobileHostStore,
@@ -36,6 +35,7 @@ public final class MobileAppComposition: ObservableObject {
 		snippetSyncRuntime: MobileSnippetSyncRuntime,
 		settingsStore: SettingsStore,
 		settingsSync: SettingsSyncStore?,
+		cloudSyncAvailable: Bool = true,
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		startObservingAccountChanges: @escaping () -> Void = {}
@@ -46,10 +46,15 @@ public final class MobileAppComposition: ObservableObject {
 		self.snippetStore = snippetStore
 		self.snippetSyncRuntime = snippetSyncRuntime
 		self.settingsStore = settingsStore
-		self.settingsSync = settingsSync
+		self.syncCoordinator = MobileSyncCoordinator(
+			hostRuntime: syncRuntime,
+			snippetRuntime: snippetSyncRuntime,
+			settingsSync: settingsSync,
+			isAvailable: cloudSyncAvailable,
+			startObservingAccountChanges: startObservingAccountChanges
+		)
 		self.terminalSessionFactory = terminalSessionFactory
 		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
-		self.startObservingAccountChanges = startObservingAccountChanges
 	}
 
 	public static func live(
@@ -216,6 +221,7 @@ public final class MobileAppComposition: ObservableObject {
 				snippetSyncRuntime: snippetRuntime,
 				settingsStore: settingsStore,
 				settingsSync: nil,
+				cloudSyncAvailable: simulatorSyncStatusWasRequested,
 				terminalSessionFactory: terminalFactory,
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
@@ -326,6 +332,10 @@ public final class MobileAppComposition: ObservableObject {
 				accountSession.startObservingAccountChanges()
 			}
 		)
+	}
+
+	private static var simulatorSyncStatusWasRequested: Bool {
+		MobileSimulatorSyncScenario.current != nil
 	}
 
 	private static func makeTerminalFactory(
