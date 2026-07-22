@@ -17,6 +17,8 @@ public final class SnippetSyncStore: ObservableObject {
 	private var debouncedMode: SnippetSyncMode?
 	private var isSuspendedForAccountChange = false
 	private var pendingWhileSuspended: SnippetSyncMode?
+	private var submittedMode: SnippetSyncMode?
+	private var submissionGeneration: UInt64 = 0
 	private lazy var scheduler = SyncScheduler<SnippetSyncMode>(
 		strategy: .coalescing { _, incoming in incoming },
 		operation: { [weak self] mode in
@@ -40,7 +42,8 @@ public final class SnippetSyncStore: ObservableObject {
 		guard debounceMs > 0 else {
 			debounce = nil
 			debouncedMode = nil
-			observe(scheduler.submit(mode))
+			let submission = submit(mode)
+			observe(submission.task, generation: submission.generation)
 			return
 		}
 		debouncedMode = mode
@@ -50,7 +53,8 @@ public final class SnippetSyncStore: ObservableObject {
 			      !self.isSuspendedForAccountChange else { return }
 			self.debouncedMode = nil
 			self.debounce = nil
-			self.observe(self.scheduler.submit(mode))
+			let submission = self.submit(mode)
+			self.observe(submission.task, generation: submission.generation)
 		}
 	}
 
@@ -62,7 +66,9 @@ public final class SnippetSyncStore: ObservableObject {
 			pendingWhileSuspended = mode
 			throw SnippetSyncStoreError.accountTransitionInProgress
 		}
-		try await scheduler.submit(mode).value
+		let submission = submit(mode)
+		defer { finishSubmission(generation: submission.generation) }
+		try await submission.task.value
 	}
 
 	/// Close the snippet lane synchronously before any account-scoped store is
@@ -71,9 +77,19 @@ public final class SnippetSyncStore: ObservableObject {
 		guard !isSuspendedForAccountChange else { return }
 		isSuspendedForAccountChange = true
 		if let debouncedMode {
-			pendingWhileSuspended = debouncedMode
+			pendingWhileSuspended = strongerMode(
+				pendingWhileSuspended,
+				debouncedMode
+			)
+		}
+		if let submittedMode {
+			pendingWhileSuspended = strongerMode(
+				pendingWhileSuspended,
+				submittedMode
+			)
 		}
 		debouncedMode = nil
+		submittedMode = nil
 		debounce?.cancel()
 		debounce = nil
 		scheduler.cancel()
@@ -161,8 +177,17 @@ public final class SnippetSyncStore: ObservableObject {
 		}
 	}
 
-	private func observe(_ task: Task<Void, Error>) {
+	private func submit(
+		_ mode: SnippetSyncMode
+	) -> (task: Task<Void, Error>, generation: UInt64) {
+		submissionGeneration &+= 1
+		submittedMode = strongerMode(submittedMode, mode)
+		return (scheduler.submit(mode), submissionGeneration)
+	}
+
+	private func observe(_ task: Task<Void, Error>, generation: UInt64) {
 		Task { @MainActor in
+			defer { finishSubmission(generation: generation) }
 			do {
 				try await task.value
 			} catch is CancellationError {
@@ -173,6 +198,19 @@ public final class SnippetSyncStore: ObservableObject {
 				)
 			}
 		}
+	}
+
+	private func finishSubmission(generation: UInt64) {
+		guard generation == submissionGeneration else { return }
+		submittedMode = nil
+	}
+
+	private func strongerMode(
+		_ current: SnippetSyncMode?,
+		_ incoming: SnippetSyncMode
+	) -> SnippetSyncMode {
+		guard current != .forceFull else { return .forceFull }
+		return incoming
 	}
 
 	// MARK: - Force-full periodic timer
