@@ -83,6 +83,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 	private var debounceTask: Task<Void, Never>?
 	private var lifecycleGeneration: UInt64 = 0
 	private var accountTransitionInProgress = false
+	private var remoteSyncSuspendedForAccountCheck = false
 	private var hasLaunched = false
 
 	public init(
@@ -161,6 +162,11 @@ public final class MobileHostSyncRuntime: ObservableObject {
 		checkIdentity: Bool,
 		request: SharedHostSyncRequest?
 	) async -> MobileHostSyncExecutionResult {
+		if !checkIdentity,
+			accountTransitionInProgress || remoteSyncSuspendedForAccountCheck {
+			pendingHostRequest = mergedRequest(pendingHostRequest, request)
+			return .cancelled
+		}
 		var resolvedRequest = request
 		if request != nil, let pendingHostRequest {
 			resolvedRequest = mergedRequest(request, pendingHostRequest)
@@ -193,6 +199,12 @@ public final class MobileHostSyncRuntime: ObservableObject {
 		activeRequest = resolvedRequest
 		activeTask = task
 		let result = await task.value
+		if result == .failed, let resolvedRequest {
+			pendingHostRequest = mergedRequest(
+				pendingHostRequest,
+				resolvedRequest
+			)
+		}
 		if activeRunID == runID {
 			activeTask = nil
 			activeRunID = nil
@@ -236,14 +248,17 @@ public final class MobileHostSyncRuntime: ObservableObject {
 				} catch {
 					guard generationIsCurrent(generation) else { return .cancelled }
 					state = .temporarilyUnavailable(error.localizedDescription)
+					remoteSyncSuspendedForAccountCheck = true
 					accountTransitionInProgress = false
 					return .failed
 				}
 			case .temporarilyUnavailable(let message):
 				state = .temporarilyUnavailable(message)
+				remoteSyncSuspendedForAccountCheck = true
 				accountTransitionInProgress = false
 				return .failed
 			}
+			remoteSyncSuspendedForAccountCheck = false
 			await identityBoundary.resumeRelatedSync(relatedIdentityChanged)
 			guard generationIsCurrent(generation) else { return .cancelled }
 		}
@@ -282,6 +297,11 @@ public final class MobileHostSyncRuntime: ObservableObject {
 
 	private func scheduleMutationSync() {
 		debounceTask?.cancel()
+		if accountTransitionInProgress || remoteSyncSuspendedForAccountCheck {
+			debounceTask = nil
+			pendingHostRequest = mergedRequest(pendingHostRequest, .automatic)
+			return
+		}
 		let generation = lifecycleGeneration
 		debounceTask = Task { @MainActor [weak self] in
 			guard let self else { return }
@@ -297,7 +317,8 @@ public final class MobileHostSyncRuntime: ObservableObject {
 
 	private func scheduleSync(request: SharedHostSyncRequest) {
 		guard isSignedIn() else { return }
-		guard !accountTransitionInProgress else {
+		guard !accountTransitionInProgress,
+			!remoteSyncSuspendedForAccountCheck else {
 			pendingHostRequest = mergedRequest(pendingHostRequest, request)
 			return
 		}
@@ -313,6 +334,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 	) async -> MobileHostSyncExecutionResult {
 		guard generationIsCurrent(generation),
 			!accountTransitionInProgress,
+			!remoteSyncSuspendedForAccountCheck,
 			isSignedIn() else { return .cancelled }
 		state = .syncing
 		do {
