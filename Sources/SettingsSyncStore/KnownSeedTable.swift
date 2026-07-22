@@ -36,11 +36,9 @@ public enum KnownSeedTable {
     }
 
     /// Canonical SHA-256 of a `PartialSettings`. Binary plist format is used
-    /// because it produces a compact, deterministic byte sequence given that
-    /// `PartialSettings` has synthesized Codable with a fixed property order.
-    /// WARNING: reordering properties in `PartialSettings` will change this
-    /// hash and break recognition of historical seeds. Append-only seed
-    /// entries protect against this only if the property order is preserved.
+    /// because it produces a compact, deterministic byte sequence. Known
+    /// fields use stable coding keys; opaque future fields participate only
+    /// when they are actually present.
     public static func canonicalHash(of partial: PartialSettings) -> String {
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
