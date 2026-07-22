@@ -1,7 +1,7 @@
 import Foundation
 import SSHCommandBuilder
 
-public struct SFTPInvocation: Equatable {
+public struct SFTPInvocation: Equatable, Sendable {
 	public let argv: [String]
 	public let environment: [String: String]
 	public let scriptStdin: String

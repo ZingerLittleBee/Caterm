@@ -27,6 +27,8 @@ public struct UnavailableSFTPRunner: SFTPRunner {
 }
 
 #if os(macOS)
+import Darwin
+
 public struct SystemSFTPRunner: SFTPRunner {
 	public init() {}
 	public func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
@@ -45,57 +47,125 @@ public struct SystemSFTPRunner: SFTPRunner {
 	) async throws -> (stdout: String, exit: Int32) {
 		try await withCheckedThrowingContinuation { (cont: CheckedContinuation<(String, Int32), Error>) in
 			let continuation = SFTPContinuationGate(cont)
-			let proc = Process()
-			proc.executableURL = URL(fileURLWithPath: inv.argv[0])
-			proc.arguments = Array(inv.argv.dropFirst())
-			if !inv.environment.isEmpty {
-				var e = ProcessInfo.processInfo.environment
-				for (k, v) in inv.environment { e[k] = v }
-				proc.environment = e
+			guard !inv.argv.isEmpty else {
+				continuation.resume(throwing: SFTPProcessError.missingExecutable)
+				return
 			}
 			let stdoutPipe = Pipe()
 			let stdinPipe = Pipe()
-			proc.standardOutput = stdoutPipe
-			proc.standardInput = stdinPipe
-			proc.standardError = stdoutPipe // merge for parsing simplicity
-			proc.terminationHandler = { p in
+			do {
+				let processID = try spawn(
+					inv,
+					stdinFileDescriptor: stdinPipe.fileHandleForReading.fileDescriptor,
+					stdoutFileDescriptor: stdoutPipe.fileHandleForWriting.fileDescriptor
+				)
+				try stdinPipe.fileHandleForReading.close()
+				try stdoutPipe.fileHandleForWriting.close()
+				cancellation.install(processID: processID)
+
+				DispatchQueue.global(qos: .utility).async {
 				let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-				cancellation.clear(process: p)
+					var status: Int32 = 0
+					while waitpid(processID, &status, 0) == -1, errno == EINTR {}
+					cancellation.clear(processID: processID)
 				if cancellation.isCancelled {
 					continuation.resume(throwing: CancellationError())
 				} else {
 					continuation.resume(returning: (
 						String(data: data, encoding: .utf8) ?? "",
-						p.terminationStatus
+						Self.exitCode(from: status)
 					))
 				}
-			}
-			guard cancellation.install(proc) else {
-				continuation.resume(throwing: CancellationError())
-				return
-			}
-			do {
-				try proc.run()
-				if cancellation.isCancelled {
-					proc.terminate()
-					return
 				}
-				stdinPipe.fileHandleForWriting.write(
-					inv.scriptStdin.data(using: .utf8) ?? Data()
+				try? stdinPipe.fileHandleForWriting.write(
+					contentsOf: inv.scriptStdin.data(using: .utf8) ?? Data()
 				)
 				try stdinPipe.fileHandleForWriting.close()
 			} catch {
-				cancellation.clear(process: proc)
 				continuation.resume(throwing: error)
 			}
 		}
+	}
+
+	private func spawn(
+		_ invocation: SFTPInvocation,
+		stdinFileDescriptor: Int32,
+		stdoutFileDescriptor: Int32
+	) throws -> pid_t {
+		var actions: posix_spawn_file_actions_t?
+		guard posix_spawn_file_actions_init(&actions) == 0 else {
+			throw SFTPProcessError.spawnSetupFailed
+		}
+		defer { posix_spawn_file_actions_destroy(&actions) }
+		posix_spawn_file_actions_adddup2(&actions, stdinFileDescriptor, STDIN_FILENO)
+		posix_spawn_file_actions_adddup2(&actions, stdoutFileDescriptor, STDOUT_FILENO)
+		posix_spawn_file_actions_adddup2(&actions, stdoutFileDescriptor, STDERR_FILENO)
+
+		var attributes: posix_spawnattr_t?
+		guard posix_spawnattr_init(&attributes) == 0 else {
+			throw SFTPProcessError.spawnSetupFailed
+		}
+		defer { posix_spawnattr_destroy(&attributes) }
+		guard posix_spawnattr_setflags(
+			&attributes,
+			Int16(POSIX_SPAWN_SETPGROUP)
+		) == 0,
+		posix_spawnattr_setpgroup(&attributes, 0) == 0 else {
+			throw SFTPProcessError.spawnSetupFailed
+		}
+
+		var environment = ProcessInfo.processInfo.environment
+		for (key, value) in invocation.environment {
+			environment[key] = value
+		}
+		let environmentValues = environment
+			.sorted { $0.key < $1.key }
+			.map { "\($0.key)=\($0.value)" }
+		return try withCStringArray(invocation.argv) { arguments in
+			try withCStringArray(environmentValues) { environmentPointer in
+				var processID: pid_t = 0
+				let result = posix_spawn(
+					&processID,
+					arguments[0],
+					&actions,
+					&attributes,
+					arguments.baseAddress,
+					environmentPointer.baseAddress
+				)
+				guard result == 0 else {
+					throw NSError(
+						domain: NSPOSIXErrorDomain,
+						code: Int(result)
+					)
+				}
+				return processID
+			}
+		}
+	}
+
+	private func withCStringArray<Result>(
+		_ strings: [String],
+		body: (UnsafeMutableBufferPointer<UnsafeMutablePointer<CChar>?>) throws -> Result
+	) throws -> Result {
+		var pointers = strings.map { strdup($0) }
+		defer { pointers.forEach { free($0) } }
+		pointers.append(nil)
+		return try pointers.withUnsafeMutableBufferPointer { buffer in
+			try body(buffer)
+		}
+	}
+
+	private static func exitCode(from waitStatus: Int32) -> Int32 {
+		let signal = waitStatus & 0x7f
+		return signal == 0 ? (waitStatus >> 8) & 0xff : 128 + signal
 	}
 }
 
 private final class SFTPProcessCancellation: @unchecked Sendable {
 	private let lock = NSLock()
-	private var process: Process?
+	private var processID: pid_t?
 	private var cancelled = false
+	private let escalationDelay = DispatchTimeInterval.milliseconds(250)
 
 	var isCancelled: Bool {
 		lock.lock()
@@ -103,31 +173,47 @@ private final class SFTPProcessCancellation: @unchecked Sendable {
 		return cancelled
 	}
 
-	func install(_ process: Process) -> Bool {
+	func install(processID: pid_t) {
 		lock.lock()
-		defer { lock.unlock() }
-		guard !cancelled else { return false }
-		self.process = process
-		return true
+		self.processID = processID
+		let shouldTerminate = cancelled
+		lock.unlock()
+		if shouldTerminate { terminate(processGroup: processID) }
 	}
 
 	func cancel() {
 		lock.lock()
 		cancelled = true
-		let process = process
+		let processID = processID
 		lock.unlock()
-		if process?.isRunning == true {
-			process?.terminate()
-		}
+		guard let processID else { return }
+		terminate(processGroup: processID)
 	}
 
-	func clear(process: Process) {
+	func clear(processID: pid_t) {
 		lock.lock()
-		if self.process === process {
-			self.process = nil
+		if self.processID == processID {
+			self.processID = nil
 		}
 		lock.unlock()
 	}
+
+	private func terminate(processGroup: pid_t) {
+		guard processGroup > 0 else { return }
+		kill(-processGroup, SIGTERM)
+		DispatchQueue.global(qos: .utility).asyncAfter(
+			deadline: .now() + escalationDelay
+		) {
+			if kill(-processGroup, 0) == 0 {
+				kill(-processGroup, SIGKILL)
+			}
+		}
+	}
+}
+
+private enum SFTPProcessError: Error {
+	case missingExecutable
+	case spawnSetupFailed
 }
 
 private final class SFTPContinuationGate: @unchecked Sendable {

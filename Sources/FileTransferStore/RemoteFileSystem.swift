@@ -176,11 +176,12 @@ func parseLsOutput(_ stdout: String) throws -> [RemoteEntry] {
 	for raw in stdout.split(separator: "\n") {
 		let line = raw.trimmingCharacters(in: .whitespaces)
 		if line.isEmpty || line.hasPrefix("sftp>") { continue }
-		let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-		guard parts.count >= 9 else { continue }
-		let perms = parts[0]
-		guard let size = Int64(parts[4]) else { continue }
-		let name = parts[8...].joined(separator: " ")
+		guard let (metadata, filename) = splitLsMetadataAndFilename(line) else {
+			continue
+		}
+		let perms = metadata[0]
+		guard let size = Int64(metadata[4]) else { continue }
+		let name = String(filename)
 		if name == "." || name == ".." { continue }
 		out.append(RemoteEntry(
 			name: name,
@@ -191,4 +192,29 @@ func parseLsOutput(_ stdout: String) throws -> [RemoteEntry] {
 		))
 	}
 	return out
+}
+
+private func splitLsMetadataAndFilename(
+	_ line: String
+) -> ([Substring], Substring)? {
+	var fields: [Substring] = []
+	var index = line.startIndex
+
+	for _ in 0..<8 {
+		while index < line.endIndex, line[index].isWhitespace {
+			index = line.index(after: index)
+		}
+		guard index < line.endIndex else { return nil }
+		let start = index
+		while index < line.endIndex, !line[index].isWhitespace {
+			index = line.index(after: index)
+		}
+		fields.append(line[start..<index])
+	}
+
+	while index < line.endIndex, line[index].isWhitespace {
+		index = line.index(after: index)
+	}
+	guard index < line.endIndex else { return nil }
+	return (fields, line[index...])
 }

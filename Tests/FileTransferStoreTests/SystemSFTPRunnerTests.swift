@@ -28,5 +28,78 @@ final class SystemSFTPRunnerTests: XCTestCase {
 
 		XCTAssertLessThan(started.duration(to: clock.now), .seconds(1))
 	}
+
+	func testCancellationEscalatesWhenSubprocessIgnoresTerm() async throws {
+		let invocation = SFTPInvocation(
+			argv: [
+				"/bin/sh",
+				"-c",
+				"trap '' TERM; while :; do sleep 1; done",
+			],
+			environment: [:],
+			scriptStdin: ""
+		)
+		let task = Task { try await SystemSFTPRunner().run(invocation) }
+		try await Task.sleep(for: .milliseconds(100))
+		let clock = ContinuousClock()
+		let started = clock.now
+		task.cancel()
+
+		do {
+			_ = try await task.value
+			XCTFail("Expected cancellation")
+		} catch is CancellationError {
+			// Expected.
+		}
+
+		XCTAssertLessThan(started.duration(to: clock.now), .seconds(1))
+	}
+
+	func testCancellationTerminatesChildProcessGroup() async throws {
+		let sentinel = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-sftp-child-\(UUID().uuidString)")
+		defer { try? FileManager.default.removeItem(at: sentinel) }
+		let invocation = SFTPInvocation(
+			argv: [
+				"/bin/sh",
+				"-c",
+				"trap '' TERM; (sleep 1; printf child > \"$1\") & while :; do sleep 1; done",
+				"caterm-sftp-fixture",
+				sentinel.path,
+			],
+			environment: [:],
+			scriptStdin: ""
+		)
+		let task = Task { try await SystemSFTPRunner().run(invocation) }
+		try await Task.sleep(for: .milliseconds(100))
+		task.cancel()
+
+		do {
+			_ = try await task.value
+			XCTFail("Expected cancellation")
+		} catch is CancellationError {
+			// Expected.
+		}
+		try await Task.sleep(for: .milliseconds(1_200))
+
+		XCTAssertFalse(FileManager.default.fileExists(atPath: sentinel.path))
+	}
+
+	func testLargeOutputDoesNotDeadlockPipe() async throws {
+		let invocation = SFTPInvocation(
+			argv: [
+				"/bin/sh",
+				"-c",
+				"dd if=/dev/zero bs=1048576 count=2 2>/dev/null",
+			],
+			environment: [:],
+			scriptStdin: ""
+		)
+
+		let result = try await SystemSFTPRunner().run(invocation)
+
+		XCTAssertEqual(result.exit, 0)
+		XCTAssertEqual(result.stdout.utf8.count, 2 * 1_048_576)
+	}
 }
 #endif

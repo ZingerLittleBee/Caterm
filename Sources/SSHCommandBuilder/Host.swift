@@ -6,7 +6,7 @@ import Foundation
 /// inside this module and existing tests.
 public typealias SSHHost = Host
 
-public struct Host: Codable, Identifiable, Hashable {
+public struct Host: Codable, Identifiable, Hashable, Sendable {
 	public let id: UUID
 	public var serverId: String?
 	public var name: String
@@ -103,7 +103,7 @@ public struct Host: Codable, Identifiable, Hashable {
 	// Synthesized encode(to:) is fine — it writes all keys.
 }
 
-public enum CredentialSource: Codable, Hashable {
+public enum CredentialSource: Codable, Hashable, Sendable {
 	case password
 	case keyFile(keyPath: String, hasPassphrase: Bool)
 	case agent

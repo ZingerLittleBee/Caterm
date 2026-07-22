@@ -11,8 +11,10 @@ final class RemoteFileSystemTests: XCTestCase {
 		var error: Error?
 		var lastInvocation: SFTPInvocation?
 		var invocations: [SFTPInvocation] = []
+		var onRun: ((SFTPInvocation) throws -> Void)?
 		func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
 			if let error { throw error }
+			try onRun?(inv)
 			lastInvocation = inv
 			invocations.append(inv)
 			if !scriptedResults.isEmpty {
@@ -75,6 +77,54 @@ final class RemoteFileSystemTests: XCTestCase {
 		XCTAssertEqual(entries[0].size, 1234)
 	}
 
+	func testListPreservesConsecutiveSpacesInFilename() async throws {
+		let runner = FakeSFTPRunner()
+		runner.nextStdout = "-rw-r--r-- 1 user staff 4 Jul 22 10:00 report  final.txt\n"
+		let fs = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+
+		let entries = try await fs.list("/remote")
+
+		XCTAssertEqual(entries.map(\.name), ["report  final.txt"])
+		let match = try await fs.stat("/remote/report  final.txt")
+		XCTAssertEqual(match?.name, "report  final.txt")
+	}
+
+	@MainActor
+	func testUploadConflictWithConsecutiveSpacesDoesNotOverwrite() async throws {
+		let runner = FakeSFTPRunner()
+		runner.nextStdout = "-rw-r--r-- 1 user staff 4 Jul 22 10:00 report  final.txt\n"
+		let host = makeHost()
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: host,
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let local = FileManager.default.temporaryDirectory
+			.appendingPathComponent("report  final.txt")
+		try Data("new".utf8).write(to: local)
+		defer { try? FileManager.default.removeItem(at: local) }
+		let store = FileTransferStore(clientForHost: { _ in client })
+
+		let id = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [local],
+			remoteDir: "/remote",
+			host: host
+		).first)
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .conflict)
+		XCTAssertEqual(runner.invocations.count, 1)
+		XCTAssertFalse(runner.invocations[0].scriptStdin.contains("put "))
+	}
+
 	func testMkdirInvokesSubprocessAndPropagatesFailure() async {
 		let runner = FakeSFTPRunner()
 		runner.nextStdout = "permission denied\n"
@@ -107,6 +157,20 @@ final class RemoteFileSystemTests: XCTestCase {
 			(listing, 0),
 			("", 0),
 		]
+		let workspace = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-client-contract-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: workspace,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: workspace) }
+		runner.onRun = { invocation in
+			if invocation.scriptStdin.hasPrefix("get") {
+				try Data("data".utf8).write(
+					to: workspace.appendingPathComponent("download.txt")
+				)
+			}
+		}
 		let client: any RemoteFileClient = RemoteFileSystem(
 			host: makeHost(),
 			controlPath: URL(fileURLWithPath: "/sock"),
@@ -114,44 +178,11 @@ final class RemoteFileSystemTests: XCTestCase {
 			runner: runner,
 			liveness: AlwaysAlive()
 		)
-		let local = FileManager.default.temporaryDirectory
-			.appendingPathComponent("caterm-client-contract-\(UUID().uuidString)")
-		try Data("data".utf8).write(to: local)
-		defer { try? FileManager.default.removeItem(at: local) }
-		let progress = ProgressRecorder()
 
-		let entries = try await client.list("/remote")
-		let metadata = try await client.stat("/remote/file.txt")
-		XCTAssertEqual(entries.map(\.name), ["file.txt"])
-		XCTAssertEqual(metadata?.size, 4)
-		try await client.createDirectory("/remote/new")
-		try await client.rename(from: "/remote/new", to: "/remote/renamed")
-		try await client.delete("/remote/renamed", isDirectory: true)
-		let upload = try await client.upload(
-			localURL: local,
-			remotePath: "/remote/file.txt",
-			isDirectory: false,
-			resume: false,
-			progress: { update in await progress.append(update) }
+		try await RemoteFileClientContract.verifyBehavior(
+			client: client,
+			workspace: workspace
 		)
-		let download = try await client.download(
-			remotePath: "/remote/file.txt",
-			localURL: local.appendingPathExtension("download"),
-			isDirectory: false,
-			resume: false,
-			progress: { update in await progress.append(update) }
-		)
-		let progressUpdates = await progress.values()
-
-		XCTAssertEqual(upload.bytesTransferred, 4)
-		XCTAssertEqual(download.bytesTransferred, 4)
-		XCTAssertEqual(progressUpdates.last?.bytesTransferred, 4)
-		let scripts = runner.invocations.map(\.scriptStdin)
-		XCTAssertTrue(scripts.contains { $0.hasPrefix("mkdir") })
-		XCTAssertTrue(scripts.contains { $0.hasPrefix("rename") })
-		XCTAssertTrue(scripts.contains { $0.hasPrefix("rmdir") })
-		XCTAssertTrue(scripts.contains { $0.hasPrefix("put") })
-		XCTAssertTrue(scripts.contains { $0.hasPrefix("get") })
 	}
 
 	func testPublicClientMapsRunnerCancellationToTypedFailure() async {
@@ -165,25 +196,6 @@ final class RemoteFileSystemTests: XCTestCase {
 			liveness: AlwaysAlive()
 		)
 
-		do {
-			_ = try await client.list("/")
-			XCTFail("Expected cancellation")
-		} catch RemoteFileError.cancelled {
-			// Expected.
-		} catch {
-			XCTFail("Unexpected error: \(error)")
-		}
-	}
-}
-
-private actor ProgressRecorder {
-	private var updates: [TransferProgress] = []
-
-	func append(_ update: TransferProgress) {
-		updates.append(update)
-	}
-
-	func values() -> [TransferProgress] {
-		updates
+		await RemoteFileClientContract.verifyTypedCancellation(client: client)
 	}
 }

@@ -76,6 +76,32 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertTrue(try partialFiles().isEmpty)
 	}
 
+	func testCleanupFailurePreservesOriginalTypedFailure() async throws {
+		let client = RecordingRemoteFileClient(
+			downloadData: Data("partial".utf8),
+			downloadFailure: .transport(message: "connection reset")
+		)
+		let store = FileTransferStore(
+			clientForHost: { _ in client },
+			localFiles: CleanupFailingLocalFiles()
+		)
+
+		let id = try XCTUnwrap(store.enqueueDownload(
+			remotePaths: ["/remote/archive.bin"],
+			localDir: temporaryDirectory,
+			host: makeHost()
+		).first)
+		try await store.waitIdle()
+
+		guard case .cleanupFailed(let original, let cleanupMessage) =
+			store.task(id: id)?.failure else {
+			return XCTFail("Expected cleanup failure")
+		}
+		XCTAssertEqual(original, .transport(message: "connection reset"))
+		XCTAssertEqual(cleanupMessage, "fixture cleanup failure")
+		XCTAssertEqual(try partialFiles().count, 1)
+	}
+
 	func testDownloadReplacePublishesCompleteBytesOverExistingDestination() async throws {
 		let destination = temporaryDirectory.appendingPathComponent("replace.txt")
 		try Data("old".utf8).write(to: destination)
@@ -199,6 +225,47 @@ final class TransferCoordinatorContractTests: XCTestCase {
 			at: temporaryDirectory,
 			includingPropertiesForKeys: nil
 		).filter { $0.lastPathComponent.contains(".caterm-partial-") }
+	}
+}
+
+private actor CleanupFailingLocalFiles: LocalTransferFileCoordinating {
+	private let base = LocalTransferFileCoordinator()
+
+	func isDirectory(at url: URL) async throws -> Bool {
+		try await base.isDirectory(at: url)
+	}
+
+	func prepareDestination(
+		_ requested: URL,
+		policy: TransferConflictPolicy?
+	) async throws -> DestinationPreparation<URL> {
+		try await base.prepareDestination(requested, policy: policy)
+	}
+
+	func temporaryDestination(for destination: URL) async throws -> URL {
+		try await base.temporaryDestination(for: destination)
+	}
+
+	func publish(
+		temporary: URL,
+		to destination: URL,
+		replacing: Bool
+	) async throws {
+		try await base.publish(
+			temporary: temporary,
+			to: destination,
+			replacing: replacing
+		)
+	}
+
+	func remove(_ url: URL) async throws {
+		throw CleanupFailure.fixture
+	}
+
+	private enum CleanupFailure: LocalizedError {
+		case fixture
+
+		var errorDescription: String? { "fixture cleanup failure" }
 	}
 }
 

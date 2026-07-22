@@ -1,6 +1,11 @@
 import Foundation
 
 public struct TransferProgress: Equatable, Sendable {
+	public static let zero = TransferProgress(
+		bytesTransferred: 0,
+		totalBytes: nil
+	)
+
 	public let bytesTransferred: Int64
 	public let totalBytes: Int64?
 
@@ -38,6 +43,7 @@ public enum RemoteFileError: Error, Equatable, Sendable {
 	case transport(message: String)
 	case invalidResponse(message: String)
 	case localIO(message: String)
+	indirect case cleanupFailed(original: RemoteFileError, cleanupMessage: String)
 }
 
 extension RemoteFileError: LocalizedError {
@@ -57,6 +63,8 @@ extension RemoteFileError: LocalizedError {
 		     .invalidResponse(let message),
 		     .localIO(let message):
 			message
+		case .cleanupFailed(let original, let cleanupMessage):
+			"\(original.localizedDescription). Partial-file cleanup failed: \(cleanupMessage)"
 		}
 	}
 }

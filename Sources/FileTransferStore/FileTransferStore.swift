@@ -10,7 +10,7 @@ public final class FileTransferStore: ObservableObject {
 	@Published public private(set) var tasks: [TransferTask] = []
 
 	private let clientForHost: ClientFactory
-	private let localFiles = LocalTransferFileCoordinator()
+	private let localFiles: any LocalTransferFileCoordinating
 	private var perHostQueues: [UUID: [TaskId]] = [:]
 	private var perHostBusy: Set<UUID> = []
 	private var perHostHost: [UUID: SSHHost] = [:]
@@ -19,6 +19,15 @@ public final class FileTransferStore: ObservableObject {
 	/// Creates a transport-independent transfer coordinator.
 	public init(clientForHost: @escaping ClientFactory) {
 		self.clientForHost = clientForHost
+		localFiles = LocalTransferFileCoordinator()
+	}
+
+	init(
+		clientForHost: @escaping ClientFactory,
+		localFiles: any LocalTransferFileCoordinating
+	) {
+		self.clientForHost = clientForHost
+		self.localFiles = localFiles
 	}
 
 	/// Preserves the existing macOS composition while adapting OpenSSH SFTP
@@ -53,9 +62,6 @@ public final class FileTransferStore: ObservableObject {
 		var ids: [TaskId] = []
 		perHostHost[host.id] = host
 		for path in localPaths {
-			let isDirectory = (try? path.resourceValues(
-				forKeys: [.isDirectoryKey]
-			).isDirectory) ?? false
 			let destination = (remoteDir as NSString)
 				.appendingPathComponent(path.lastPathComponent)
 			let task = TransferTask(
@@ -64,9 +70,7 @@ public final class FileTransferStore: ObservableObject {
 				hostId: host.id,
 				source: path.path,
 				destination: destination,
-				isDirectory: isDirectory,
-				status: .pending,
-				error: nil,
+				isDirectory: false,
 				conflictPolicy: conflictPolicy
 			)
 			tasks.append(task)
@@ -96,8 +100,6 @@ public final class FileTransferStore: ObservableObject {
 				source: remotePath,
 				destination: destination.path,
 				isDirectory: false,
-				status: .pending,
-				error: nil,
 				conflictPolicy: conflictPolicy
 			)
 			tasks.append(task)
@@ -127,14 +129,7 @@ public final class FileTransferStore: ObservableObject {
 		guard let index = index(of: id), tasks[index].status == .failed else {
 			return
 		}
-		tasks[index].status = .pending
-		tasks[index].failure = nil
-		tasks[index].error = nil
-		tasks[index].conflict = nil
-		tasks[index].progress = TransferProgress(
-			bytesTransferred: 0,
-			totalBytes: nil
-		)
+		tasks[index].state = .pending
 		tasks[index].attemptCount += 1
 		perHostQueues[tasks[index].hostId, default: []].append(id)
 		kick(tasks[index].hostId)
@@ -152,8 +147,7 @@ public final class FileTransferStore: ObservableObject {
 			return
 		}
 		tasks[index].conflictPolicy = policy
-		tasks[index].conflict = nil
-		tasks[index].status = .pending
+		tasks[index].state = .pending
 		perHostQueues[tasks[index].hostId, default: []].append(id)
 		kick(tasks[index].hostId)
 	}
@@ -178,7 +172,7 @@ public final class FileTransferStore: ObservableObject {
 		}
 
 		perHostBusy.insert(hostID)
-		tasks[index].status = .running
+		tasks[index].state = .running(.zero)
 		let job = Task { [weak self] in
 			guard let self else { return }
 			await self.runTask(id: next)
@@ -213,9 +207,9 @@ public final class FileTransferStore: ObservableObject {
 			      tasks[completedIndex].status == .running else {
 				return
 			}
-			tasks[completedIndex].status = .completed
-			tasks[completedIndex].failure = nil
-			tasks[completedIndex].error = nil
+			tasks[completedIndex].state = .completed(
+				tasks[completedIndex].progress
+			)
 		} catch is CancellationError {
 			markCancelled(id: id)
 		} catch RemoteFileError.cancelled {
@@ -235,6 +229,15 @@ public final class FileTransferStore: ObservableObject {
 		client: any RemoteFileClient
 	) async throws {
 		guard let task = task(id: id) else { return }
+		let source = URL(fileURLWithPath: task.source)
+		let isDirectory: Bool
+		do {
+			isDirectory = try await localFiles.isDirectory(at: source)
+		} catch {
+			throw RemoteFileError.localIO(message: String(describing: error))
+		}
+		guard let index = index(of: id) else { return }
+		tasks[index].isDirectory = isDirectory
 		let preparation = try await prepareRemoteDestination(
 			task.destination,
 			policy: task.conflictPolicy,
@@ -242,9 +245,9 @@ public final class FileTransferStore: ObservableObject {
 		)
 		guard let destination = apply(preparation, to: id) else { return }
 		let result = try await client.upload(
-			localURL: URL(fileURLWithPath: task.source),
+			localURL: source,
 			remotePath: destination,
-			isDirectory: task.isDirectory,
+			isDirectory: isDirectory,
 			resume: task.attemptCount > 0,
 			progress: progressHandler(for: id)
 		)
@@ -316,8 +319,16 @@ public final class FileTransferStore: ObservableObject {
 				)
 			)
 		} catch {
-			try? await localFiles.remove(temporary)
-			throw error
+			let original = remoteFileError(from: error)
+			do {
+				try await localFiles.remove(temporary)
+			} catch {
+				throw RemoteFileError.cleanupFailed(
+					original: original,
+					cleanupMessage: error.localizedDescription
+				)
+			}
+			throw original
 		}
 	}
 
@@ -358,10 +369,9 @@ public final class FileTransferStore: ObservableObject {
 			tasks[index].destination = destinationDescription(destination)
 			return destination
 		case .conflict(let destination):
-			tasks[index].status = .conflict
-			tasks[index].conflict = TransferConflict(
+			tasks[index].state = .conflict(TransferConflict(
 				destination: destinationDescription(destination)
-			)
+			))
 			return nil
 		case .cancelled:
 			markCancelled(at: index)
@@ -386,14 +396,14 @@ public final class FileTransferStore: ObservableObject {
 		guard let index = index(of: id), tasks[index].status == .running else {
 			return
 		}
-		tasks[index].progress = tasks[index].progress.advancing(to: progress)
+		tasks[index].state = .running(
+			tasks[index].progress.advancing(to: progress)
+		)
 	}
 
 	private func markFailed(id: TaskId, failure: RemoteFileError) {
 		guard let index = index(of: id) else { return }
-		tasks[index].status = .failed
-		tasks[index].failure = failure
-		tasks[index].error = failure.localizedDescription
+		tasks[index].state = .failed(failure, tasks[index].progress)
 	}
 
 	private func markCancelled(id: TaskId) {
@@ -402,10 +412,7 @@ public final class FileTransferStore: ObservableObject {
 	}
 
 	private func markCancelled(at index: Int) {
-		tasks[index].status = .cancelled
-		tasks[index].failure = nil
-		tasks[index].error = nil
-		tasks[index].conflict = nil
+		tasks[index].state = .cancelled(tasks[index].progress)
 	}
 
 	private func removeFromQueue(_ id: TaskId, hostID: UUID) {
@@ -425,16 +432,41 @@ public final class FileTransferStore: ObservableObject {
 			? stem + suffix
 			: stem + suffix + "." + extensionName
 	}
+
+	private func remoteFileError(from error: Error) -> RemoteFileError {
+		if error is CancellationError { return .cancelled }
+		if let failure = error as? RemoteFileError { return failure }
+		return .transport(message: String(describing: error))
+	}
 }
 
-private enum DestinationPreparation<Destination> {
+enum DestinationPreparation<Destination: Sendable>: Sendable {
 	case ready(Destination)
 	case conflict(Destination)
 	case cancelled
 }
 
-private actor LocalTransferFileCoordinator {
+protocol LocalTransferFileCoordinating: Sendable {
+	func isDirectory(at url: URL) async throws -> Bool
+	func prepareDestination(
+		_ requested: URL,
+		policy: TransferConflictPolicy?
+	) async throws -> DestinationPreparation<URL>
+	func temporaryDestination(for destination: URL) async throws -> URL
+	func publish(
+		temporary: URL,
+		to destination: URL,
+		replacing: Bool
+	) async throws
+	func remove(_ url: URL) async throws
+}
+
+actor LocalTransferFileCoordinator: LocalTransferFileCoordinating {
 	private let fileManager = FileManager.default
+
+	func isDirectory(at url: URL) throws -> Bool {
+		(try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+	}
 
 	func prepareDestination(
 		_ requested: URL,
