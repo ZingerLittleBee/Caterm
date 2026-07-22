@@ -45,6 +45,7 @@ public final class MobileHostStore: ObservableObject {
 	private var accountEpoch: UInt64 = 0
 	private var accountTransitionInProgress = false
 	private var accountResetAwaitingAcknowledgement = false
+	private var exclusiveAccountOperationInProgress = false
 	private var activeAccountOperations = 0
 	private var accountOperationDrainWaiters: [CheckedContinuation<Void, Never>] = []
 	private var publishedRevision: UInt64 = 0
@@ -92,7 +93,7 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	public func add(_ host: SSHHost) async throws {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
 			$0.append(host)
 		}
@@ -101,7 +102,7 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	public func update(_ host: SSHHost) async throws {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
 			guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
 				throw StoreError.hostNotFound
@@ -115,7 +116,11 @@ public final class MobileHostStore: ObservableObject {
 	/// Insert or replace by id and persist. Used by the shell's add/edit
 	/// save callbacks, which can't know whether the form was add or edit.
 	public func upsert(_ host: SSHHost) async throws {
-		try await upsert(host, accountContext: currentAccountContext)
+		let epoch = try writableEpoch()
+		try await upsert(
+			host,
+			accountContext: AccountContext(epoch: epoch)
+		)
 	}
 
 	func upsert(
@@ -136,10 +141,11 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	public func delete(id: UUID) async throws {
+		let epoch = try writableEpoch()
 		try await delete(
 			id: id,
 			enqueueRemoteDeletion: true,
-			accountContext: currentAccountContext
+			accountContext: AccountContext(epoch: epoch)
 		)
 	}
 
@@ -148,19 +154,31 @@ public final class MobileHostStore: ObservableObject {
 	/// single persisting setter is the seam that keeps every UI edit on
 	/// disk without threading store calls through every view.
 	public func replaceAll(_ newHosts: [SSHHost]) async {
-		let epoch = accountEpoch
-		let revision = publishedRevision
 		do {
-			let snapshot = try await persistence.replaceAll(
+			let epoch = try writableEpoch()
+			try await replaceAll(
 				newHosts,
-				expectedEpoch: epoch,
-				expectedRevision: revision
+				accountContext: AccountContext(epoch: epoch)
 			)
-			publish(snapshot, expectedEpoch: epoch)
 		} catch {
 			lastPersistenceFailure = PersistenceFailure(underlyingError: error)
 			return
 		}
+	}
+
+	func replaceAll(
+		_ newHosts: [SSHHost],
+		accountContext: AccountContext
+	) async throws {
+		try requireCurrent(accountContext)
+		let revision = publishedRevision
+		let snapshot = try await persistence.replaceAll(
+			newHosts,
+			expectedEpoch: accountContext.epoch,
+			expectedRevision: revision
+		)
+		try requireCurrent(accountContext)
+		publish(snapshot, expectedEpoch: accountContext.epoch)
 		localMutationsSubject.send()
 	}
 
@@ -198,16 +216,31 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	func beginAccountOperation() throws -> AccountContext {
-		guard !accountTransitionInProgress else {
+		guard !accountTransitionInProgress,
+			!exclusiveAccountOperationInProgress else {
 			throw StoreError.accountTransitionInProgress
 		}
 		activeAccountOperations += 1
 		return currentAccountContext
 	}
 
+	func beginExclusiveAccountOperation() throws -> AccountContext {
+		guard !accountTransitionInProgress,
+			!exclusiveAccountOperationInProgress,
+			activeAccountOperations == 0 else {
+			throw StoreError.accountTransitionInProgress
+		}
+		exclusiveAccountOperationInProgress = true
+		activeAccountOperations = 1
+		return currentAccountContext
+	}
+
 	func endAccountOperation() {
 		precondition(activeAccountOperations > 0)
 		activeAccountOperations -= 1
+		if activeAccountOperations == 0 {
+			exclusiveAccountOperationInProgress = false
+		}
 		guard activeAccountOperations == 0 else { return }
 		let waiters = accountOperationDrainWaiters
 		accountOperationDrainWaiters.removeAll()
@@ -220,6 +253,14 @@ public final class MobileHostStore: ObservableObject {
 		guard isCurrent(accountContext) else {
 			throw StoreError.accountTransitionInProgress
 		}
+	}
+
+	private func writableEpoch() throws -> UInt64 {
+		guard !accountTransitionInProgress,
+			!exclusiveAccountOperationInProgress else {
+			throw StoreError.accountTransitionInProgress
+		}
+		return accountEpoch
 	}
 
 	private func delete(
@@ -276,7 +317,7 @@ extension MobileHostStore: HostCredentialRepository {
 	public func applyRemoteCredentialSource(
 		_ commit: RemoteCredentialMaterialCommit
 	) async throws {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
 			guard let index = $0.firstIndex(where: {
 				$0.id == commit.hostId
@@ -360,7 +401,7 @@ extension MobileHostStore {
 	}
 
 	public func updateLocalHostMetadata(_ host: SSHHost) async throws {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
 			guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
 				throw StoreError.hostNotFound
@@ -376,11 +417,7 @@ extension MobileHostStore {
 	}
 
 	public func deleteLocalHost(id: UUID) async throws {
-		try await delete(
-			id: id,
-			enqueueRemoteDeletion: true,
-			accountContext: currentAccountContext
-		)
+		try await delete(id: id)
 	}
 
 	public func pendingRemoteDeletionIDs() async throws -> [String] {
@@ -388,21 +425,23 @@ extension MobileHostStore {
 	}
 
 	public func recordPendingRemoteDeletion(serverID: String) async throws {
+		let epoch = try writableEpoch()
 		try await persistence.recordDeletion(
 			serverID: serverID,
-			expectedEpoch: accountEpoch
+			expectedEpoch: epoch
 		)
 	}
 
 	public func clearPendingRemoteDeletion(serverID: String) async throws {
+		let epoch = try writableEpoch()
 		try await persistence.clearDeletion(
 			serverID: serverID,
-			expectedEpoch: accountEpoch
+			expectedEpoch: epoch
 		)
 	}
 
 	public func createHostFromRemote(_ remote: RemoteHost) async throws -> UUID {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let result = try await persistence.createFromRemote(
 			remote,
 			expectedEpoch: epoch
@@ -412,7 +451,7 @@ extension MobileHostStore {
 	}
 
 	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) async throws {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let snapshot = try await persistence.updateFromRemote(
 			localID: localID,
 			remote: remote,
@@ -422,7 +461,7 @@ extension MobileHostStore {
 	}
 
 	public func assignServerID(_ serverID: String, to localID: UUID) async throws {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let snapshot = try await persistence.assignServerID(
 			serverID,
 			to: localID,
@@ -432,7 +471,7 @@ extension MobileHostStore {
 	}
 
 	public func markCredentialMaterialSynced(for localID: UUID) async throws {
-		let epoch = accountEpoch
+		let epoch = try writableEpoch()
 		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
 			guard let index = $0.firstIndex(where: { $0.id == localID }) else {
 				throw StoreError.hostNotFound
@@ -443,10 +482,11 @@ extension MobileHostStore {
 	}
 
 	public func deleteHostFromRemote(localID: UUID) async throws {
+		let epoch = try writableEpoch()
 		try await delete(
 			id: localID,
 			enqueueRemoteDeletion: false,
-			accountContext: currentAccountContext
+			accountContext: AccountContext(epoch: epoch)
 		)
 	}
 

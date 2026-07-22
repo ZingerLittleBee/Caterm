@@ -46,6 +46,7 @@ public struct MobileRootView: View {
 	@StateObject private var syncRuntime: MobileHostSyncRuntime
 	@Environment(\.scenePhase) private var scenePhase
 	private let hostSaveCoordinator: MobileHostSaveCoordinator
+	private let backupImportCoordinator: MobileBackupImportCoordinator
 	private let terminalSessionFactory: MobileTerminalSessionFactory
 	private let startObservingAccountChanges: () -> Void
 	@State private var operationError: MobileHostOperationError?
@@ -70,6 +71,9 @@ public struct MobileRootView: View {
 			hostStore: hostStore,
 			credentialWriter: credentialWriter,
 			prepareCredentialSyncForSave: prepareCredentialSyncForSave
+		)
+		self.backupImportCoordinator = MobileBackupImportCoordinator(
+			hostStore: hostStore
 		)
 		self.terminalSessionFactory = terminalSessionFactory
 		self.startObservingAccountChanges = startObservingAccountChanges
@@ -112,6 +116,15 @@ public struct MobileRootView: View {
 			}
 		))
 		.environment(\.mobileTerminalSessionFactory, terminalSessionFactory)
+		.environment(\.mobileBackupImportAction, MobileBackupImportAction(
+			apply: { plan, hosts, snippets in
+				try await backupImportCoordinator.apply(
+					plan: plan,
+					hosts: hosts,
+					snippets: snippets
+				)
+			}
+		))
 		.environment(\.mobileHostSyncState, syncRuntime.state)
 		.refreshable {
 			await syncRuntime.refresh()

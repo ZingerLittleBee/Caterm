@@ -3,9 +3,37 @@ import BackupArchive
 import BackupService
 import KeychainStore
 import ManagedKeyStore
+import SessionStore
 import SnippetSyncClient
 import SSHCommandBuilder
 @testable import CatermMobile
+
+private actor BackupCommitGate {
+	private var isBlocked = false
+	private var entryContinuation: CheckedContinuation<Void, Never>?
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+	func block() async {
+		isBlocked = true
+		entryContinuation?.resume()
+		entryContinuation = nil
+		await withCheckedContinuation { continuation in
+			releaseContinuation = continuation
+		}
+	}
+
+	func waitUntilBlocked() async {
+		guard !isBlocked else { return }
+		await withCheckedContinuation { continuation in
+			entryContinuation = continuation
+		}
+	}
+
+	func release() {
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
+}
 
 @MainActor
 final class MobileBackupServiceTests: XCTestCase {
@@ -133,5 +161,115 @@ final class MobileBackupServiceTests: XCTestCase {
 
 		let target = result.hosts.first { $0.id == targetId }!
 		XCTAssertEqual(target.jumpHostId, bastionId)
+	}
+
+	func test_accountChangeDuringImportRollsBackAllCredentialMaterial() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-hosts-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys
+		)
+		let gate = BackupCommitGate()
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: keychain,
+			managedKeys: managedKeys,
+			beforeCommit: { await gate.block() }
+		)
+		let archiveID = UUID()
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: archiveID,
+				serverId: "account-a-server",
+				name: "account-a",
+				hostname: "account-a.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "keyFile",
+				hasPassphrase: true,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil,
+				password: "account-a-password",
+				passphrase: "account-a-passphrase",
+				privateKey: Data("ACCOUNT-A-KEY".utf8)
+			)]
+		)
+		let plan = MobileBackupService.plan(
+			payload: payload,
+			hosts: [],
+			snippets: [],
+			keychain: keychain
+		)
+		let importTask = Task { @MainActor in
+			do {
+				_ = try await coordinator.apply(
+					plan: plan,
+					hosts: [],
+					snippets: []
+				)
+				return false
+			} catch {
+				return true
+			}
+		}
+
+		await gate.waitUntilBlocked()
+		do {
+			try await store.upsert(Host(
+				name: "concurrent-account-a",
+				hostname: "concurrent.example.com",
+				port: 22,
+				username: "deploy",
+				credential: .agent
+			))
+			XCTFail("Expected exclusive import to reject a concurrent upsert")
+		} catch {
+			XCTAssertEqual(
+				error as? MobileHostStore.StoreError,
+				.accountTransitionInProgress
+			)
+		}
+		do {
+			try await store.delete(id: archiveID)
+			XCTFail("Expected exclusive import to reject a concurrent deletion")
+		} catch {
+			XCTAssertEqual(
+				error as? MobileHostStore.StoreError,
+				.accountTransitionInProgress
+			)
+		}
+		let resetTask = Task { @MainActor in
+			try await store.resetForAccountChange()
+		}
+		await waitUntil { store.isAccountTransitionInProgress }
+		await gate.release()
+
+		let importWasRejected = await importTask.value
+		XCTAssertTrue(importWasRejected)
+		try await resetTask.value
+		try store.finishAccountTransition()
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertTrue(try HostPersistence.load(from: hostsURL).isEmpty)
+		XCTAssertThrowsError(try keychain.get(
+			account: MobileCredentialPlan.passwordAccount(archiveID)
+		))
+		XCTAssertThrowsError(try keychain.get(
+			account: MobileCredentialPlan.keyPassphraseAccount(archiveID)
+		))
+		XCTAssertNil(try managedKeys.read(hostId: archiveID))
+	}
+
+	private func waitUntil(
+		_ predicate: @MainActor () -> Bool
+	) async {
+		for _ in 0..<100 where !predicate() {
+			await Task.yield()
+		}
 	}
 }

@@ -631,6 +631,42 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertTrue(try HostPersistence.load(from: url).isEmpty)
 	}
 
+	func testAccountTransitionRejectsEveryDirectMutationSurface() async throws {
+		let url = tempURL()
+		let store = MobileHostStore(fileURL: url)
+		try await store.add(makeHost("account-a"))
+		try await store.resetForAccountChange()
+		let accountBHost = makeHost("account-b")
+
+		await XCTAssertThrowsErrorAsync {
+			try await store.add(accountBHost)
+		}
+		await XCTAssertThrowsErrorAsync {
+			_ = try await store.createHostFromRemote(RemoteHost(
+				id: "account-b-server",
+				name: "account-b-remote",
+				hostname: "remote.example.com",
+				port: 22,
+				username: "deploy",
+				authType: "agent",
+				createdAt: Date(),
+				updatedAt: Date()
+			))
+		}
+
+		store.binding.wrappedValue = [accountBHost]
+		await waitUntil { store.lastPersistenceFailure != nil }
+
+		XCTAssertEqual(
+			store.lastPersistenceFailure?.underlyingError
+				as? MobileHostStore.StoreError,
+			.accountTransitionInProgress
+		)
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertTrue(try HostPersistence.load(from: url).isEmpty)
+		try store.finishAccountTransition()
+	}
+
 	func testIdentityBoundStateIncludesHostsAndDeletionOutbox() async throws {
 		let url = tempURL()
 		let store = MobileHostStore(fileURL: url)
@@ -754,6 +790,24 @@ final class MobileHostStoreTests: XCTestCase {
 	) async {
 		for _ in 0..<100 where !predicate() {
 			await Task.yield()
+		}
+	}
+
+	private func XCTAssertThrowsErrorAsync(
+		_ expression: @MainActor () async throws -> Void,
+		file: StaticString = #filePath,
+		line: UInt = #line
+	) async {
+		do {
+			try await expression()
+			XCTFail("Expected expression to throw", file: file, line: line)
+		} catch {
+			XCTAssertEqual(
+				error as? MobileHostStore.StoreError,
+				.accountTransitionInProgress,
+				file: file,
+				line: line
+			)
 		}
 	}
 }
