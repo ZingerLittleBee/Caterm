@@ -117,10 +117,9 @@ public struct MobileRootView: View {
 		))
 		.environment(\.mobileTerminalSessionFactory, terminalSessionFactory)
 		.environment(\.mobileBackupImportAction, MobileBackupImportAction(
-			apply: { plan, hosts, snippets in
+			apply: { payload, snippets in
 				try await backupImportCoordinator.apply(
-					plan: plan,
-					hosts: hosts,
+					payload: payload,
 					snippets: snippets
 				)
 			}

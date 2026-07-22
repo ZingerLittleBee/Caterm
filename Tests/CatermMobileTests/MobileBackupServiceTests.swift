@@ -263,17 +263,10 @@ final class MobileBackupServiceTests: XCTestCase {
 				privateKey: Data("ACCOUNT-A-KEY".utf8)
 			)]
 		)
-		let plan = MobileBackupService.plan(
-			payload: payload,
-			hosts: [],
-			snippets: [],
-			keychain: keychain
-		)
 		let importTask = Task { @MainActor in
 			do {
 				_ = try await coordinator.apply(
-					plan: plan,
-					hosts: [],
+					payload: payload,
 					snippets: []
 				)
 				return false
@@ -376,12 +369,6 @@ final class MobileBackupServiceTests: XCTestCase {
 				icon: nil
 			)]
 		)
-		let plan = MobileBackupService.plan(
-			payload: payload,
-			hosts: [],
-			snippets: [],
-			keychain: keychain
-		)
 		let directWrite = Task { @MainActor in
 			try await store.add(directHost)
 		}
@@ -389,8 +376,7 @@ final class MobileBackupServiceTests: XCTestCase {
 		await persistenceGate.waitUntilBlocked()
 		let importTask = Task { @MainActor in
 			try await coordinator.apply(
-				plan: plan,
-				hosts: [],
+				payload: payload,
 				snippets: []
 			)
 		}
@@ -409,6 +395,166 @@ final class MobileBackupServiceTests: XCTestCase {
 			Set(try HostPersistence.load(from: hostsURL).map(\.id)),
 			[directHost.id, archiveID]
 		)
+	}
+
+	func test_importReplansConcurrentSameIDAddWithoutDuplicate() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-same-id-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let persistenceGate = BackupPersistenceGate()
+		let persistence = MobileHostPersistence(
+			hostsURL: hostsURL,
+			hosts: [],
+			beforeMutation: { await persistenceGate.block() }
+		)
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys,
+			persistence: persistence
+		)
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: keychain,
+			managedKeys: managedKeys
+		)
+		let sharedID = UUID()
+		let directHost = Host(
+			id: sharedID,
+			name: "direct",
+			hostname: "direct.example.com",
+			port: 22,
+			username: "deploy",
+			credential: .agent,
+			createdAt: date(1),
+			updatedAt: date(1)
+		)
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: sharedID,
+				serverId: nil,
+				name: "archive",
+				hostname: "archive.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "agent",
+				hasPassphrase: false,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil
+			)]
+		)
+		let preview = MobileBackupService.plan(
+			payload: payload,
+			hosts: [],
+			snippets: [],
+			keychain: keychain
+		)
+		XCTAssertEqual(preview.hosts.first?.kind, .add)
+
+		let directWrite = Task { @MainActor in
+			try await store.add(directHost)
+		}
+		await persistenceGate.waitUntilBlocked()
+		let importTask = Task { @MainActor in
+			try await coordinator.apply(payload: payload, snippets: [])
+		}
+		for _ in 0..<20 { await Task.yield() }
+		await persistenceGate.release()
+		try await directWrite.value
+		_ = try await importTask.value
+
+		XCTAssertEqual(store.hosts.count, 1)
+		XCTAssertEqual(store.hosts.first?.id, sharedID)
+		XCTAssertEqual(store.hosts.first?.name, "archive")
+		let persisted = try HostPersistence.load(from: hostsURL)
+		XCTAssertEqual(persisted.count, 1)
+		XCTAssertEqual(persisted.first?.id, sharedID)
+	}
+
+	func test_importReplansAfterConcurrentNewerLocalUpdate() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-newer-local-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let sharedID = UUID()
+		let original = Host(
+			id: sharedID,
+			name: "original",
+			hostname: "original.example.com",
+			port: 22,
+			username: "deploy",
+			credential: .agent,
+			createdAt: date(1),
+			updatedAt: date(1)
+		)
+		try HostPersistence.save([original], to: hostsURL)
+		let persistenceGate = BackupPersistenceGate()
+		let persistence = MobileHostPersistence(
+			hostsURL: hostsURL,
+			hosts: [original],
+			beforeMutation: { await persistenceGate.block() }
+		)
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys,
+			persistence: persistence
+		)
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: keychain,
+			managedKeys: managedKeys
+		)
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: sharedID,
+				serverId: nil,
+				name: "archive",
+				hostname: "archive.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "agent",
+				hasPassphrase: false,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil
+			)]
+		)
+		let preview = MobileBackupService.plan(
+			payload: payload,
+			hosts: [original],
+			snippets: [],
+			keychain: keychain
+		)
+		XCTAssertEqual(preview.hosts.first?.kind, .update)
+		var newer = original
+		newer.name = "local-newer"
+		newer.hostname = "local-newer.example.com"
+		newer.updatedAt = date(3)
+
+		let directWrite = Task { @MainActor in
+			try await store.update(newer)
+		}
+		await persistenceGate.waitUntilBlocked()
+		let importTask = Task { @MainActor in
+			try await coordinator.apply(payload: payload, snippets: [])
+		}
+		for _ in 0..<20 { await Task.yield() }
+		await persistenceGate.release()
+		try await directWrite.value
+		let result = try await importTask.value
+
+		XCTAssertEqual(result.summary.hostsSkipped, 1)
+		XCTAssertEqual(store.hosts.count, 1)
+		XCTAssertEqual(store.hosts.first?.name, "local-newer")
+		XCTAssertEqual(store.hosts.first?.updatedAt, date(3))
+		let persisted = try HostPersistence.load(from: hostsURL)
+		XCTAssertEqual(persisted.first?.name, "local-newer")
+		XCTAssertEqual(persisted.first?.updatedAt, date(3))
 	}
 
 	func test_rollbackContinuesAfterOneCredentialItemFails() async throws {

@@ -10,8 +10,7 @@ import SwiftUI
 @MainActor
 struct MobileBackupImportAction {
 	let apply: @MainActor (
-		_ plan: BackupMergePlan,
-		_ hosts: [SSHHost],
+		_ payload: BackupPayload,
 		_ snippets: [Snippet]
 	) async throws -> MobileBackupService.ApplyResult
 }
@@ -117,7 +116,7 @@ public enum MobileBackupService {
 		payload: BackupPayload,
 		hosts: [SSHHost],
 		snippets: [Snippet],
-		keychain: KeychainStore
+		keychain: any MobileCredentialStoring
 	) -> BackupMergePlan {
 		BackupMergePlanner.plan(
 			payload: payload,
@@ -134,19 +133,26 @@ public enum MobileBackupService {
 
 	/// Mirror of the desktop `SessionStore.needsCredentialSetup` using the
 	/// shared Keychain account convention.
-	static func needsCredentialSetup(_ host: SSHHost, keychain: KeychainStore) -> Bool {
+	static func needsCredentialSetup(
+		_ host: SSHHost,
+		keychain: any MobileCredentialStoring
+	) -> Bool {
 		switch host.credential {
 		case .agent:
 			return false
 		case .password:
 			return (try? keychain.get(
-				account: MobileCredentialPlan.passwordAccount(host.id))) == nil
+				account: MobileCredentialPlan.passwordAccount(host.id),
+				interaction: .userInitiated
+			)) == nil
 		case let .keyFile(keyPath, hasPassphrase):
 			if !FileManager.default.fileExists(
 				atPath: (keyPath as NSString).expandingTildeInPath) { return true }
 			if hasPassphrase {
 				return (try? keychain.get(
-					account: MobileCredentialPlan.keyPassphraseAccount(host.id))) == nil
+					account: MobileCredentialPlan.keyPassphraseAccount(host.id),
+					interaction: .userInitiated
+				)) == nil
 			}
 			return false
 		}
@@ -441,12 +447,17 @@ final class MobileBackupImportCoordinator {
 	}
 
 	func apply(
-		plan: BackupMergePlan,
-		hosts _: [SSHHost],
+		payload: BackupPayload,
 		snippets: [Snippet]
 	) async throws -> MobileBackupService.ApplyResult {
 		let accountContext = try await hostStore.beginExclusiveAccountOperation()
 		defer { hostStore.endAccountOperation() }
+		let plan = MobileBackupService.plan(
+			payload: payload,
+			hosts: hostStore.hosts,
+			snippets: snippets,
+			keychain: keychain
+		)
 		let credentialHostIDs = Set<UUID>(plan.hosts.compactMap { action in
 			guard action.appliesSecrets else { return nil }
 			return plan.hostIdMapping[action.archiveHost.id]

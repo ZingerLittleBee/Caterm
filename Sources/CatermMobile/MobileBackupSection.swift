@@ -149,8 +149,7 @@ struct MobileBackupSection: View {
 			let result: MobileBackupService.ApplyResult
 			if let backupImportAction {
 				result = try await backupImportAction.apply(
-					pending.plan,
-					hosts,
+					pending.payload,
 					snippets
 				)
 			} else {
