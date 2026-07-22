@@ -296,7 +296,11 @@ public final class MobileHostSyncRuntime: ObservableObject {
 	}
 
 	private func scheduleSync(request: SharedHostSyncRequest) {
-		guard !accountTransitionInProgress, isSignedIn() else { return }
+		guard isSignedIn() else { return }
+		guard !accountTransitionInProgress else {
+			pendingHostRequest = mergedRequest(pendingHostRequest, request)
+			return
+		}
 		Task { @MainActor [weak self] in
 			guard let self else { return }
 			_ = await replaceActiveRun(checkIdentity: false, request: request)

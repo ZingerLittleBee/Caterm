@@ -830,6 +830,73 @@ private func mobileRelatedSyncIdentityGatePreservesActiveHostRequest() async thr
 	#expect(client.snapshotFetchCount() == 2)
 }
 
+@Test("Related sync identity gate queues Host mutations created while gated")
+@MainActor
+private func mobileRelatedSyncIdentityGateQueuesNewHostMutation() async throws {
+	actor IdentityGate {
+		private var entered = false
+		private var continuation: CheckedContinuation<Void, Never>?
+
+		func evaluate() async -> AccountChangeOutcome {
+			entered = true
+			await withCheckedContinuation { continuation = $0 }
+			return .unchanged
+		}
+
+		func waitUntilEntered() async {
+			while !entered { await Task.yield() }
+		}
+
+		func release() {
+			continuation?.resume()
+			continuation = nil
+		}
+	}
+
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(name: "related-gate-mutation", masterKey: master)
+	let identityGate = IdentityGate()
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: { await identityGate.evaluate() },
+			acknowledge: {}
+		),
+		debounceInterval: 0
+	)
+	let gate = Task { @MainActor in await runtime.prepareForRelatedSync() }
+	await identityGate.waitUntilEntered()
+
+	try await device.store.add(SSHHost(
+		name: "Created during gate",
+		hostname: "gate.example.com",
+		username: "ops",
+		credential: .agent
+	))
+	for _ in 0..<20 { await Task.yield() }
+	#expect(client.snapshotFetchCount() == 0)
+
+	await identityGate.release()
+	#expect(await gate.value == .noData)
+	for _ in 0..<1_000 {
+		if client.snapshotFetchCount() == 1 { break }
+		await Task.yield()
+	}
+
+	#expect(client.snapshotFetchCount() == 1)
+}
+
 @Test("Mobile boot composition shares one Host store with the sync runtime")
 @MainActor
 private func mobileBootCompositionUsesSharedRuntime() throws {
