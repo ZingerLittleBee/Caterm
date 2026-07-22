@@ -61,3 +61,17 @@ Write accessible, type-safe, maintainable Swift with explicit intent.
   load-bearing state machines; read the relevant module and its tests
   before changing behavior, and add or extend tests for any change.
 - Run `make test` before committing; keep the suite green.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles map directly to labels with the same names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository with `CONTEXT.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.
