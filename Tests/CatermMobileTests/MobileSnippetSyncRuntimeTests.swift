@@ -223,6 +223,44 @@ final class MobileSnippetSyncRuntimeTests: XCTestCase {
 		XCTAssertEqual(modesAfterPush, [.forceFull, .forceFull])
 	}
 
+	func testTemporaryAccountUnavailabilityKeepsLocalMutationsDurable() async throws {
+		let cloud = MobileSnippetTestCloud()
+		let directory = temporaryDirectory(named: "temporary-account")
+		let store = SnippetStore(directory: directory)
+		try store.load()
+		let client = MobileSnippetTestClient(cloud: cloud)
+		let runtime = makeRuntime(store: store, client: client)
+		let snippet = Snippet(
+			id: UUID(),
+			name: "Saved offline",
+			content: "echo offline",
+			createdAt: .distantPast,
+			updatedAt: .distantPast
+		)
+
+		runtime.beginAccountChangeSuspension()
+		await runtime.drainForAccountChange()
+		runtime.allowLocalMutationsWhileAccountUnavailable()
+		try runtime.upsert(snippet)
+		for _ in 0..<20 { await Task.yield() }
+
+		let fetchCountWhileUnavailable = await client.fetchRequestCount()
+		XCTAssertEqual(fetchCountWhileUnavailable, 0)
+		let reloaded = SnippetStore(directory: directory)
+		try reloaded.load()
+		XCTAssertEqual(reloaded.snippets.map(\.id), [snippet.id])
+		XCTAssertEqual(reloaded.locallyDirtySnippetIDs, [snippet.id])
+
+		runtime.beginAccountChangeSuspension()
+		await runtime.drainForAccountChange()
+		runtime.resumeAfterAccountChange(identityChanged: false)
+		_ = await runtime.receivedCloudKitPushAfterIdentityCheck()
+
+		let fetchCountAfterRecovery = await client.fetchRequestCount()
+		XCTAssertEqual(fetchCountAfterRecovery, 1)
+		XCTAssertFalse(store.locallyDirtySnippetIDs.contains(snippet.id))
+	}
+
 	private func makeRuntime(
 		store: SnippetStore,
 		client: MobileSnippetTestClient

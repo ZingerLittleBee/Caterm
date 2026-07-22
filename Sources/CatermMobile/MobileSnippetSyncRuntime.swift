@@ -32,6 +32,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	private let refreshAccount: () async -> Void
 	private var hasLaunched = false
 	private var accountTransitionInProgress = false
+	private var remoteSyncSuspendedForAccountCheck = false
 	private var pendingResumeMode: SnippetSyncMode?
 
 	public init(
@@ -95,7 +96,8 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	private func receiveCloudKitPush(
 		refreshAccountFirst: Bool
 	) async -> MobileHostSyncExecutionResult {
-		guard !accountTransitionInProgress else { return .cancelled }
+		guard !accountTransitionInProgress,
+			!remoteSyncSuspendedForAccountCheck else { return .cancelled }
 		if refreshAccountFirst { await refreshAccount() }
 		guard isSignedIn() else {
 			sync.stopForceFullTimer()
@@ -143,6 +145,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	public func beginAccountChangeSuspension() {
 		guard !accountTransitionInProgress else { return }
 		accountTransitionInProgress = true
+		remoteSyncSuspendedForAccountCheck = true
 		sync.beginAccountChangeSuspension()
 	}
 
@@ -158,9 +161,17 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 		try store.wipeLocal()
 	}
 
+	public func allowLocalMutationsWhileAccountUnavailable() {
+		guard remoteSyncSuspendedForAccountCheck else { return }
+		accountTransitionInProgress = false
+	}
+
 	public func resumeAfterAccountChange(identityChanged: Bool) {
-		guard accountTransitionInProgress else { return }
-		defer { accountTransitionInProgress = false }
+		guard remoteSyncSuspendedForAccountCheck else { return }
+		defer {
+			accountTransitionInProgress = false
+			remoteSyncSuspendedForAccountCheck = false
+		}
 		guard let mode = sync.resumeRequestAfterAccountChange(
 			identityChanged: identityChanged
 		) else { return }
@@ -170,6 +181,7 @@ public final class MobileSnippetSyncRuntime: ObservableObject {
 	private func synchronize(
 		mode: SnippetSyncMode
 	) async -> MobileHostSyncExecutionResult {
+		guard !remoteSyncSuspendedForAccountCheck else { return .cancelled }
 		let resolvedMode = strongerMode(pendingResumeMode, mode)
 		pendingResumeMode = nil
 		state = .syncing

@@ -289,6 +289,9 @@ public final class MobileAppComposition: ObservableObject {
 			resetRelatedLocalState: {
 				try snippetRuntime.resetLocalStateForAccountChange()
 			},
+			allowRelatedLocalMutationsWhileSuspended: {
+				snippetRuntime.allowLocalMutationsWhileAccountUnavailable()
+			},
 			resumeRelatedSync: { identityChanged in
 				snippetRuntime.resumeAfterAccountChange(
 					identityChanged: identityChanged

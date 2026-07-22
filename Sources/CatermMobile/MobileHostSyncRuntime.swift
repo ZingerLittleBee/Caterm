@@ -41,6 +41,7 @@ public struct MobileAccountIdentityBoundary {
 	let beginRelatedSyncSuspension: @MainActor () -> Void
 	let drainRelatedSync: @MainActor () async -> Void
 	let resetRelatedLocalState: @MainActor () throws -> Void
+	let allowRelatedLocalMutationsWhileSuspended: @MainActor () -> Void
 	let resumeRelatedSync: @MainActor (_ identityChanged: Bool) async -> Void
 
 	public init(
@@ -49,6 +50,7 @@ public struct MobileAccountIdentityBoundary {
 		beginRelatedSyncSuspension: @escaping @MainActor () -> Void = {},
 		drainRelatedSync: @escaping @MainActor () async -> Void = {},
 		resetRelatedLocalState: @escaping @MainActor () throws -> Void = {},
+		allowRelatedLocalMutationsWhileSuspended: @escaping @MainActor () -> Void = {},
 		resumeRelatedSync: @escaping @MainActor (_ identityChanged: Bool) async -> Void = { _ in }
 	) {
 		self.evaluate = evaluate
@@ -56,6 +58,8 @@ public struct MobileAccountIdentityBoundary {
 		self.beginRelatedSyncSuspension = beginRelatedSyncSuspension
 		self.drainRelatedSync = drainRelatedSync
 		self.resetRelatedLocalState = resetRelatedLocalState
+		self.allowRelatedLocalMutationsWhileSuspended =
+			allowRelatedLocalMutationsWhileSuspended
 		self.resumeRelatedSync = resumeRelatedSync
 	}
 }
@@ -255,6 +259,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 			case .temporarilyUnavailable(let message):
 				state = .temporarilyUnavailable(message)
 				remoteSyncSuspendedForAccountCheck = true
+				identityBoundary.allowRelatedLocalMutationsWhileSuspended()
 				accountTransitionInProgress = false
 				return .failed
 			}

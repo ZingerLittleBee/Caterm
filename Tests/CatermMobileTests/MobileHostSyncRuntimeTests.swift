@@ -726,6 +726,7 @@ private func mobileTemporaryAccountFailureKeepsRelatedLaneClosed() async throws 
 	var outcome = AccountChangeOutcome.temporarilyUnavailable("Account unavailable")
 	var beginCount = 0
 	var resumeCount = 0
+	var allowLocalMutationCount = 0
 	let runtime = MobileHostSyncRuntime(
 		hostStore: device.store,
 		syncEngine: device.engine(client),
@@ -737,6 +738,9 @@ private func mobileTemporaryAccountFailureKeepsRelatedLaneClosed() async throws 
 			evaluate: { outcome },
 			acknowledge: {},
 			beginRelatedSyncSuspension: { beginCount += 1 },
+			allowRelatedLocalMutationsWhileSuspended: {
+				allowLocalMutationCount += 1
+			},
 			resumeRelatedSync: { _ in resumeCount += 1 }
 		)
 	)
@@ -745,6 +749,7 @@ private func mobileTemporaryAccountFailureKeepsRelatedLaneClosed() async throws 
 
 	#expect(beginCount == 1)
 	#expect(resumeCount == 0)
+	#expect(allowLocalMutationCount == 1)
 	guard case .temporarilyUnavailable = runtime.state else {
 		Issue.record("Expected account unavailability to remain visible")
 		return
