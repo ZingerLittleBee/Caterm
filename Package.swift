@@ -65,6 +65,11 @@ let package = Package(
             path: "Sources/SessionHistory"
         ),
         .target(
+            name: "HostRepositoryCore",
+            dependencies: ["SSHCommandBuilder", "ServerSyncClient", "MergeDecision"],
+            path: "Sources/HostRepositoryCore"
+        ),
+        .target(
             name: "KnownHostsStore",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
@@ -73,7 +78,7 @@ let package = Package(
         ),
         .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory", "HostRepositoryCore"],
             path: "Sources/SessionStore"
         ),
         .target(
@@ -83,7 +88,7 @@ let package = Package(
         ),
         .target(
             name: "HostSyncStore",
-            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes", "MergeDecision", "SyncScheduler"],
+            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes", "MergeDecision", "SyncScheduler", "HostRepositoryCore"],
             path: "Sources/HostSyncStore"
         ),
         .target(
@@ -166,7 +171,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore"],
             path: "Sources/CatermMobile"
         ),
         .target(
@@ -293,7 +298,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HostSyncStoreTests",
-            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore", "CredentialSyncTypes", "ManagedKeyStore", "CredentialSync"],
+            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore", "CredentialSyncTypes", "ManagedKeyStore", "CredentialSync", "HostRepositoryCore", "CatermMobile"],
             path: "Tests/HostSyncStoreTests"
         ),
         .testTarget(
@@ -303,7 +308,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermMobileTests",
-            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore"],
+            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "ServerSyncClient"],
             path: "Tests/CatermMobileTests"
         ),
         .testTarget(

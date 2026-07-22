@@ -4,6 +4,7 @@ import CredentialSync
 import CredentialSyncStore
 import CredentialSyncTypes
 import Foundation
+import HostRepositoryCore
 import ServerSyncClient
 import SSHCommandBuilder
 import SessionStore
@@ -423,48 +424,34 @@ public final class HostSyncStore: ObservableObject {
             case .incremental: effectiveMode = .incremental
             }
 
-            try await drainPendingRemoteHostDeletions()
-            var batch = try await fetch(effectiveMode)
-            if batch.tokenExpired {
-                // Single retry as forceFull. Token clearing already happened
-                // inside the client.
-                batch = try await fetch(.forceFull)
-            }
-            try Task.checkCancellation()
-
-            let ops: [SyncOperation]
-            switch batch.mode {
-            case .forceFull:
-                ops = HostSyncReconciler.reconcileFullSnapshot(
-                    local: sessionStore.hosts, remote: batch.changedHosts
-                )
-            case .incremental:
-                ops = HostSyncReconciler.reconcileDelta(
-                    local: sessionStore.hosts,
-                    changedHosts: batch.changedHosts,
-                    deletedHostIDs: batch.deletedHostIDs
-                )
-            }
             let credentialOps = credentialEngine.credentialHostIDs().map {
                 SyncOperation.updateRemoteCredentials(localHostId: $0)
             }
-            let allOps = ops + credentialOps
 
             #if DEBUG
             lastAppliedOpsForTesting.removeAll(keepingCapacity: true)
             #endif
-            for op in allOps {
-                try Task.checkCancellation()
+            _ = try await HostSynchronization.synchronize(
+                repository: sessionStore,
+                client: client,
+                mode: effectiveMode,
+                additionalOperations: credentialOps,
+                willApply: { [weak self] operation in
                 #if DEBUG
-                lastAppliedOpsForTesting.append(op)
+                self?.lastAppliedOpsForTesting.append(operation)
                 #endif
-                try await apply(op, credentialBlobs: batch.credentialBlobsByServerId)
-            }
-
-            if let checkpoint = batch.checkpoint {
-                try await client.commitHostCheckpoint(checkpoint)
-                credentialEngine.didCommitCheckpoint()
-            }
+                },
+                afterApply: { [weak self] operation, batch in
+                    guard let self else { return }
+                    try await self.applyCredentialEffects(
+                        for: operation,
+                        credentialBlobs: batch.credentialBlobsByServerId
+                    )
+                },
+                didCommitCheckpoint: { [weak self] in
+                    self?.credentialEngine.didCommitCheckpoint()
+                }
+            )
 
             // Spec §4.2: only update after the op loop completes without
             // throwing. Partial-apply failures must NOT advance freshness.
@@ -488,23 +475,6 @@ public final class HostSyncStore: ObservableObject {
             if failureStateToken != failureStateResetToken { throw error }
             wasFailing = nowFailing
             throw error
-        }
-    }
-
-    private func fetch(_ mode: HostSyncMode) async throws -> HostChangeBatch {
-        switch mode {
-        case .incremental: return try await client.fetchHostChanges()
-        case .forceFull:   return try await client.fetchHostSnapshotAndCheckpoint()
-        }
-    }
-
-    private func drainPendingRemoteHostDeletions() async throws {
-        let pendingServerIDs = try sessionStore.pendingRemoteHostDeletionIDs()
-        for serverID in pendingServerIDs {
-            try Task.checkCancellation()
-            try await client.deleteHost(id: serverID)
-            try Task.checkCancellation()
-            try sessionStore.clearPendingRemoteHostDeletion(serverID: serverID)
         }
     }
 
@@ -546,65 +516,28 @@ public final class HostSyncStore: ObservableObject {
         try? await notificationCenter.add(request)
     }
 
-    private func apply(_ op: SyncOperation,
-                       credentialBlobs: [String: CredentialBlob] = [:]) async throws {
-        // ★ Critical invariant: do NOT insert Task.checkCancellation()
-        // between client.createHost(...) and sessionStore.setServerId(...)
-        // — see spec §4.2.1.
-        switch op {
-        case let .createRemote(localHostId):
-            guard let host = sessionStore.hosts.first(where: { $0.id == localHostId }) else { return }
-            let input = RemoteHostCreateInput(
-                name: host.name, hostname: host.hostname,
-                port: host.port, username: host.username,
-                jumpHostServerId: host.jumpHostServerId,
-                forwards: host.forwards,
-                icon: host.icon,
-                organization: host.organization,
-                metadataUpdatedAt: host.updatedAt
-            )
-            let out = try await client.createHost(input)
-            try sessionStore.setServerId(out.id, for: localHostId)
-
+    private func applyCredentialEffects(
+        for operation: SyncOperation,
+        credentialBlobs: [String: CredentialBlob]
+    ) async throws {
+        switch operation {
         case let .createLocal(remote):
-            try sessionStore.addRemoteHost(remote)
-            // If the snapshot carried a credential blob for this remote, run
-            // it through the credential engine after creating the local host.
-            // `addRemoteHost` allocates a fresh local UUID; look it up by
-            // serverId rather than mutating addRemoteHost's signature.
             if let blob = credentialBlobs[remote.id],
                let local = sessionStore.hosts.last(where: { $0.serverId == remote.id }) {
                 try await credentialEngine.applyRemoteBlob(
                     localHostId: local.id, remote: remote, blob: blob
                 )
             }
-
-        case let .updateRemote(localHostId, serverId):
-            guard let host = sessionStore.hosts.first(where: { $0.id == localHostId }) else { return }
-            let input = RemoteHostUpdateInput(
-                id: serverId, name: host.name, hostname: host.hostname,
-                port: host.port, username: host.username,
-                jumpHostServerId: host.jumpHostServerId,
-                forwards: host.forwards,
-                icon: host.icon,
-                organization: host.organization,
-                metadataUpdatedAt: host.updatedAt
-            )
-            try await client.updateHost(input)
-
         case let .updateLocal(localHostId, remote):
-            try sessionStore.applyRemoteMetadata(localHostId: localHostId, remote: remote)
             if let blob = credentialBlobs[remote.id] {
                 try await credentialEngine.applyRemoteBlob(
                     localHostId: localHostId, remote: remote, blob: blob
                 )
             }
-
-        case let .deleteLocal(localHostId):
-            try await sessionStore.applyRemoteHostDeletion(id: localHostId)
-
         case let .updateRemoteCredentials(localHostId):
             try await credentialEngine.pushLocalCredential(hostId: localHostId)
+        case .createRemote, .updateRemote, .deleteLocal:
+            break
         }
     }
 

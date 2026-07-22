@@ -975,7 +975,8 @@ public final class SessionStore: ObservableObject {
     /// Insert a host fetched from the server. Allocates a fresh local UUID,
     /// stamps `serverId` from `remote.id`, defaults credential to `.password`
     /// (so first connect prompts the user — see needsCredentialSetup).
-    public func addRemoteHost(_ remote: RemoteHost) throws {
+    @discardableResult
+    public func addRemoteHost(_ remote: RemoteHost) throws -> UUID {
         let h = SSHHost(
             id: UUID(),
             serverId: remote.id,
@@ -992,6 +993,7 @@ public final class SessionStore: ObservableObject {
         hosts.append(h)
         backfillJumpHostIds(serverId: remote.id, in: &hosts)
         try HostPersistence.save(hosts, to: hostsURL)
+        return h.id
     }
 
     private func backfillDependentJumpHostServerIds(
