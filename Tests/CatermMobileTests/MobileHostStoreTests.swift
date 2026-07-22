@@ -630,6 +630,24 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertTrue(try HostPersistence.load(from: url).isEmpty)
 	}
 
+	func testIdentityBoundStateIncludesHostsAndDeletionOutbox() async throws {
+		let url = tempURL()
+		let store = MobileHostStore(fileURL: url)
+
+		var hasState = await store.hasIdentityBoundState()
+		XCTAssertFalse(hasState)
+		try await store.add(makeHost("local-account-state"))
+		hasState = await store.hasIdentityBoundState()
+		XCTAssertTrue(hasState)
+
+		try await store.resetForAccountChange()
+		hasState = await store.hasIdentityBoundState()
+		XCTAssertFalse(hasState)
+		try await store.recordPendingRemoteDeletion(serverID: "stale-server-id")
+		hasState = await store.hasIdentityBoundState()
+		XCTAssertTrue(hasState)
+	}
+
 	func testLocalDeleteClearsCredentialsAndPersistsTombstone() async throws {
 		let url = tempURL()
 		let storage = RecordingCredentialStore()

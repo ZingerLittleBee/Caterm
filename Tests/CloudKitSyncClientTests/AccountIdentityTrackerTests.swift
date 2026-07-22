@@ -27,16 +27,32 @@ final class AccountIdentityTrackerTests: XCTestCase {
 		XCTAssertEqual(defaults.string(forKey: "cloudkit.lastKnownUserRecordName"), "USER-A")
 	}
 
-	func testFirstObservationWithExistingTokensCallsResetThenStores() async {
+	func testFirstObservationWithExistingStateRequiresLocalIsolationBeforeAcknowledging() async {
 		let client = SpyClient()
 		let tracker = AccountIdentityTracker(
 			defaults: defaults,
 			currentUserRecordID: { CKRecord.ID(recordName: "USER-A") },
 			tokensExist: { true }
 		)
-		await tracker.handleAccountChange(client: client)
+		let outcome = await tracker.handleAccountChange(client: client)
+
+		XCTAssertEqual(outcome, .identityChanged)
 		XCTAssertTrue(client.didReset)
 		XCTAssertTrue(client.didResetSnippet)
+		XCTAssertTrue(client.didDeleteSubscription)
+		XCTAssertTrue(client.didDeleteSnippetSubscription)
+		XCTAssertNil(defaults.string(forKey: "cloudkit.lastKnownUserRecordName"))
+
+		let relaunchedTracker = AccountIdentityTracker(
+			defaults: defaults,
+			currentUserRecordID: { CKRecord.ID(recordName: "USER-A") },
+			tokensExist: { false }
+		)
+		let retry = await relaunchedTracker.handleAccountChange(client: client)
+		XCTAssertEqual(retry, .identityChanged)
+		XCTAssertNil(defaults.string(forKey: "cloudkit.lastKnownUserRecordName"))
+
+		await relaunchedTracker.acknowledgeIdentityChange()
 		XCTAssertEqual(defaults.string(forKey: "cloudkit.lastKnownUserRecordName"), "USER-A")
 	}
 

@@ -1,4 +1,5 @@
 import KeychainStore
+import SessionStore
 import SSHCommandBuilder
 @testable import CatermMobile
 import XCTest
@@ -244,6 +245,72 @@ final class MobileCredentialWriterTests: XCTestCase {
 			storage.values[MobileCredentialPlan.passwordAccount(host.id)],
 			"second"
 		)
+	}
+
+	@MainActor
+	func testCompleteSaveTransactionCannotCrossAnAccountReset() async throws {
+		actor PreparationGate {
+			var entered = false
+			var continuation: CheckedContinuation<Void, Never>?
+
+			func block() async {
+				entered = true
+				await withCheckedContinuation { continuation = $0 }
+			}
+
+			func waitUntilEntered() async {
+				while !entered { await Task.yield() }
+			}
+
+			func release() {
+				continuation?.resume()
+				continuation = nil
+			}
+		}
+
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-save-account-boundary-\(UUID().uuidString).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let storage = RecordingCredentialStore()
+		let writer = MobileCredentialWriter(storage: storage)
+		let store = MobileHostStore(fileURL: hostsURL)
+		let gate = PreparationGate()
+		let coordinator = MobileHostSaveCoordinator(
+			hostStore: store,
+			credentialWriter: writer,
+			prepareCredentialSyncForSave: { await gate.block() }
+		)
+		let host = SSHHost(
+			name: "Account A",
+			hostname: "a.example.com",
+			username: "deploy",
+			credential: .password,
+			credentialMaterialDirty: true
+		)
+		let staleSave = Task { @MainActor in
+			do {
+				try await coordinator.save(
+					MobileHostDraftPayload(host: host, secret: "account-a-secret")
+				)
+				return false
+			} catch {
+				return true
+			}
+		}
+
+		await gate.waitUntilEntered()
+		XCTAssertEqual(
+			storage.values[MobileCredentialPlan.passwordAccount(host.id)],
+			"account-a-secret"
+		)
+		try await store.resetForAccountChange()
+		await gate.release()
+
+		let staleSaveWasRejected = await staleSave.value
+		XCTAssertTrue(staleSaveWasRejected)
+		XCTAssertTrue(storage.values.isEmpty)
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertTrue(try HostPersistence.load(from: hostsURL).isEmpty)
 	}
 }
 

@@ -74,6 +74,8 @@ public actor AccountIdentityTracker {
 	}
 
 	private static let storageKey = "cloudkit.lastKnownUserRecordName"
+	private static let pendingUnknownIdentityKey =
+		"cloudkit.pendingUnknownUserRecordName"
 	private static let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-account")
 
 	private let defaults: UserDefaults
@@ -118,17 +120,24 @@ public actor AccountIdentityTracker {
 		switch (prior, current) {
 		case (nil, nil):
 			return .unchanged
-		// First observation of an identity with tokens already on disk
-		// means a prior install left CKServerChangeTokens behind. They
-		// belong to whichever account that prior install was signed in
-		// to — possibly different from `new`. Drop them to force a
-		// forceFull pass on first sync of the current account.
 		case (nil, .some(let new)):
-			if await tokensExistProvider() {
-				Self.log.info("first identity observation with existing tokens → resetting host AND snippet")
+			let hasUnknownIdentityState: Bool
+			if defaults.string(forKey: Self.pendingUnknownIdentityKey) != nil {
+				hasUnknownIdentityState = true
+			} else {
+				hasUnknownIdentityState = await tokensExistProvider()
+			}
+			if hasUnknownIdentityState {
+				Self.log.info("first identity observation with existing state → isolating host AND snippet")
+				defaults.set(new, forKey: Self.pendingUnknownIdentityKey)
 				await client.resetHostSyncState()
 				await client.resetSnippetSyncState()
+				try? await client.deleteHostSubscription()
+				try? await client.deleteSnippetSubscription()
+				pendingIdentity = .signedIn(new)
+				return .identityChanged
 			}
+			defaults.removeObject(forKey: Self.pendingUnknownIdentityKey)
 			defaults.set(new, forKey: Self.storageKey)
 			return .firstObservation
 		case (.some(let p), .some(let c)) where p == c:
@@ -159,6 +168,7 @@ public actor AccountIdentityTracker {
 		case .signedOut:
 			defaults.removeObject(forKey: Self.storageKey)
 		}
+		defaults.removeObject(forKey: Self.pendingUnknownIdentityKey)
 		self.pendingIdentity = nil
 	}
 }

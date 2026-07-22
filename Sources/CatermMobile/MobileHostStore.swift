@@ -15,6 +15,10 @@ import SwiftUI
 /// This keeps AppKit isolated while staying format-compatible with desktop.
 @MainActor
 public final class MobileHostStore: ObservableObject {
+	struct AccountContext: Equatable, Sendable {
+		let epoch: UInt64
+	}
+
 	public enum StoreError: Error, Equatable {
 		case hostNotFound
 		case accountTransitionInProgress
@@ -107,7 +111,15 @@ public final class MobileHostStore: ObservableObject {
 	/// Insert or replace by id and persist. Used by the shell's add/edit
 	/// save callbacks, which can't know whether the form was add or edit.
 	public func upsert(_ host: SSHHost) async throws {
-		let epoch = accountEpoch
+		try await upsert(host, accountContext: currentAccountContext)
+	}
+
+	func upsert(
+		_ host: SSHHost,
+		accountContext: AccountContext
+	) async throws {
+		try requireCurrent(accountContext)
+		let epoch = accountContext.epoch
 		let snapshot = try await persistence.mutate(expectedEpoch: epoch) {
 			if let index = $0.firstIndex(where: { $0.id == host.id }) {
 				$0[index] = host
@@ -120,7 +132,11 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	public func delete(id: UUID) async throws {
-		try await delete(id: id, enqueueRemoteDeletion: true)
+		try await delete(
+			id: id,
+			enqueueRemoteDeletion: true,
+			accountContext: currentAccountContext
+		)
 	}
 
 	/// Replace the whole list and persist. The mobile shell mutates hosts
@@ -169,27 +185,53 @@ public final class MobileHostStore: ObservableObject {
 		publishedRevision = snapshot.revision
 	}
 
-	private func delete(id: UUID, enqueueRemoteDeletion: Bool) async throws {
+	var currentAccountContext: AccountContext {
+		AccountContext(epoch: accountEpoch)
+	}
+
+	func isCurrent(_ accountContext: AccountContext) -> Bool {
+		accountContext.epoch == accountEpoch
+	}
+
+	private func requireCurrent(_ accountContext: AccountContext) throws {
+		guard isCurrent(accountContext) else {
+			throw StoreError.accountTransitionInProgress
+		}
+	}
+
+	private func delete(
+		id: UUID,
+		enqueueRemoteDeletion: Bool,
+		accountContext: AccountContext
+	) async throws {
+		try requireCurrent(accountContext)
 		if let credentialWriter {
-			try await credentialWriter.commitDeletion(hostID: id) {
+			try await credentialWriter.commitDeletion(
+				hostID: id,
+				transactionIsCurrent: { self.isCurrent(accountContext) }
+			) {
 				try await self.persistDeletion(
 					id: id,
-					enqueueRemoteDeletion: enqueueRemoteDeletion
+					enqueueRemoteDeletion: enqueueRemoteDeletion,
+					accountContext: accountContext
 				)
 			}
 		} else {
 			try await persistDeletion(
 				id: id,
-				enqueueRemoteDeletion: enqueueRemoteDeletion
+				enqueueRemoteDeletion: enqueueRemoteDeletion,
+				accountContext: accountContext
 			)
 		}
 	}
 
 	private func persistDeletion(
 		id: UUID,
-		enqueueRemoteDeletion: Bool
+		enqueueRemoteDeletion: Bool,
+		accountContext: AccountContext
 	) async throws {
-		let epoch = accountEpoch
+		try requireCurrent(accountContext)
+		let epoch = accountContext.epoch
 		let snapshot = try await persistence.delete(
 			id: id,
 			enqueueRemoteDeletion: enqueueRemoteDeletion,
@@ -284,7 +326,11 @@ extension MobileHostStore {
 	}
 
 	public func deleteLocalHost(id: UUID) async throws {
-		try await delete(id: id, enqueueRemoteDeletion: true)
+		try await delete(
+			id: id,
+			enqueueRemoteDeletion: true,
+			accountContext: currentAccountContext
+		)
 	}
 
 	public func pendingRemoteDeletionIDs() async throws -> [String] {
@@ -347,7 +393,15 @@ extension MobileHostStore {
 	}
 
 	public func deleteHostFromRemote(localID: UUID) async throws {
-		try await delete(id: localID, enqueueRemoteDeletion: false)
+		try await delete(
+			id: localID,
+			enqueueRemoteDeletion: false,
+			accountContext: currentAccountContext
+		)
+	}
+
+	public func hasIdentityBoundState() async -> Bool {
+		await persistence.hasIdentityBoundState()
 	}
 }
 
@@ -506,6 +560,11 @@ actor MobileHostPersistence {
 	func clearDeletion(serverID: String, expectedEpoch: UInt64) throws {
 		try requireWritable(epoch: expectedEpoch)
 		try deletionOutbox.remove(serverID)
+	}
+
+	func hasIdentityBoundState() -> Bool {
+		if !hosts.isEmpty { return true }
+		return ((try? deletionOutbox.pendingIDs()) ?? []).isEmpty == false
 	}
 
 	func commitDeletion(hosts: [SSHHost], serverID: String?) throws {

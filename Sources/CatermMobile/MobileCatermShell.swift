@@ -45,9 +45,8 @@ public struct MobileRootView: View {
 	@StateObject private var hostStore: MobileHostStore
 	@StateObject private var syncRuntime: MobileHostSyncRuntime
 	@Environment(\.scenePhase) private var scenePhase
-	private let credentialWriter: MobileCredentialWriter
+	private let hostSaveCoordinator: MobileHostSaveCoordinator
 	private let terminalSessionFactory: MobileTerminalSessionFactory
-	private let prepareCredentialSyncForSave: () async throws -> Void
 	private let startObservingAccountChanges: () -> Void
 	@State private var operationError: MobileHostOperationError?
 	@State private var snippets: [Snippet]
@@ -67,9 +66,12 @@ public struct MobileRootView: View {
 	) {
 		_hostStore = StateObject(wrappedValue: hostStore)
 		_syncRuntime = StateObject(wrappedValue: syncRuntime)
-		self.credentialWriter = credentialWriter
+		self.hostSaveCoordinator = MobileHostSaveCoordinator(
+			hostStore: hostStore,
+			credentialWriter: credentialWriter,
+			prepareCredentialSyncForSave: prepareCredentialSyncForSave
+		)
 		self.terminalSessionFactory = terminalSessionFactory
-		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
 		self.startObservingAccountChanges = startObservingAccountChanges
 		_snippets = State(initialValue: snippets)
 		_remoteEntries = State(initialValue: remoteEntries)
@@ -86,12 +88,7 @@ public struct MobileRootView: View {
 		.environment(\.mobileHostSave, MobileHostSaveAction(
 			save: { payload in
 				do {
-					try await credentialWriter.commitSave(payload) {
-						if payload.host.credentialMaterialDirty {
-							try await prepareCredentialSyncForSave()
-						}
-						try await hostStore.upsert(payload.host)
-					}
+					try await hostSaveCoordinator.save(payload)
 					return true
 				} catch {
 					operationError = MobileHostOperationError(

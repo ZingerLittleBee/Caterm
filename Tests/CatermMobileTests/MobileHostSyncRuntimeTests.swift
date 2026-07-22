@@ -1,4 +1,5 @@
 import CatermMobileTerminal
+import CloudKit
 import CloudKitSyncClient
 import CredentialSync
 import CredentialSyncStore
@@ -188,6 +189,16 @@ private final class MobileSyncFixtureClient: IncrementalHostSyncClient,
 		}
 		continuation?.resume()
 	}
+}
+
+private actor MobileAccountSensitiveSpy: AccountSensitiveClient {
+	private(set) var hostResetCount = 0
+	private(set) var snippetResetCount = 0
+
+	func resetHostSyncState() async { hostResetCount += 1 }
+	func deleteHostSubscription() async throws {}
+	func resetSnippetSyncState() async { snippetResetCount += 1 }
+	func deleteSnippetSubscription() async throws {}
 }
 
 private final class MobileSyncAccountState: @unchecked Sendable {
@@ -441,6 +452,60 @@ private func mobileAccountTransitionDoesNotMergeAccounts() async throws {
 	#expect(runtime.hostStore === device.store)
 	#expect(!device.store.hosts.contains { $0.name == "Account A only" })
 	#expect(runtime.state != MobileHostSyncState.signedOut)
+}
+
+@Test("Unknown first identity isolates existing mobile account state")
+@MainActor
+private func mobileFirstIdentityDoesNotUploadUnknownLocalState() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let defaultsSuite = "MobileFirstIdentity.\(UUID().uuidString)"
+	let defaults = try #require(UserDefaults(suiteName: defaultsSuite))
+	defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+	let client = MobileSyncFixtureClient()
+	let accountClient = MobileAccountSensitiveSpy()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false,
+		accessGroup: nil
+	)
+	let device = fixture.makeDevice(name: "first-identity", masterKey: master)
+	try await device.store.add(SSHHost(
+		name: "Unknown previous account",
+		hostname: "unknown.example.com",
+		username: "legacy",
+		credential: .agent
+	))
+	let tracker = AccountIdentityTracker(
+		defaults: defaults,
+		currentUserRecordID: { CKRecord.ID(recordName: "ACCOUNT-B") },
+		tokensExist: { await device.store.hasIdentityBoundState() }
+	)
+	let runtime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {},
+		identityBoundary: MobileAccountIdentityBoundary(
+			evaluate: {
+				await tracker.handleAccountChange(client: accountClient)
+			},
+			acknowledge: { await tracker.acknowledgeIdentityChange() }
+		),
+		debounceInterval: 0
+	)
+
+	await runtime.launch()
+	let hostResetCount = await accountClient.hostResetCount
+	let snippetResetCount = await accountClient.snippetResetCount
+
+	#expect(device.store.hosts.isEmpty)
+	#expect(client.snapshotFetchCount() == 1)
+	#expect(hostResetCount == 1)
+	#expect(snippetResetCount == 1)
+	#expect(defaults.string(forKey: "cloudkit.lastKnownUserRecordName") == "ACCOUNT-B")
 }
 
 @Test("Account switch drains a cancelled stale Host fetch before loading B")

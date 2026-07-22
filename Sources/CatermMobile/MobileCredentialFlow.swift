@@ -65,6 +65,10 @@ public enum MobileCredentialPlan {
 /// Applies a `MobileCredentialPlan` to a keychain. Clears are idempotent:
 /// removing an account that was never written is not an error.
 public actor MobileCredentialWriter {
+	public enum AccountTransactionError: Error {
+		case staleAccount
+	}
+
 	public struct TransactionRollbackError: Error {
 		public let originalError: any Error
 		public let rollbackErrors: [any Error]
@@ -97,36 +101,70 @@ public actor MobileCredentialWriter {
 
 	public func commitSave(
 		_ payload: MobileHostDraftPayload,
+		transactionIsCurrent: @escaping @MainActor @Sendable () -> Bool = { true },
 		commit: @MainActor @Sendable () async throws -> Void
 	) async throws {
 		let hostID = payload.host.id
 		await acquireTransaction(for: hostID)
 		defer { releaseTransaction(for: hostID) }
 		try Task.checkCancellation()
+		guard await transactionIsCurrent() else {
+			throw AccountTransactionError.staleAccount
+		}
 		let accounts = Self.accounts(hostID: hostID)
 		let snapshot = try capture(accounts)
+		var mutatedCredentialMaterial = false
 		do {
+			guard await transactionIsCurrent() else {
+				throw AccountTransactionError.staleAccount
+			}
+			mutatedCredentialMaterial = true
 			try apply(MobileCredentialPlan.operations(for: payload))
+			guard await transactionIsCurrent() else {
+				throw AccountTransactionError.staleAccount
+			}
 			try await commit()
 		} catch {
-			try rollback(snapshot, originalError: error)
+			guard mutatedCredentialMaterial else { throw error }
+			if await transactionIsCurrent() {
+				try rollback(snapshot, originalError: error)
+			} else {
+				try discard(accounts, originalError: error)
+			}
 		}
 	}
 
 	public func commitDeletion(
 		hostID: UUID,
+		transactionIsCurrent: @escaping @MainActor @Sendable () -> Bool = { true },
 		commit: @MainActor @Sendable () async throws -> Void
 	) async throws {
 		await acquireTransaction(for: hostID)
 		defer { releaseTransaction(for: hostID) }
 		try Task.checkCancellation()
+		guard await transactionIsCurrent() else {
+			throw AccountTransactionError.staleAccount
+		}
 		let accounts = Self.accounts(hostID: hostID)
 		let snapshot = try capture(accounts)
+		var mutatedCredentialMaterial = false
 		do {
+			guard await transactionIsCurrent() else {
+				throw AccountTransactionError.staleAccount
+			}
+			mutatedCredentialMaterial = true
 			try apply(accounts.map(MobileCredentialOp.clear))
+			guard await transactionIsCurrent() else {
+				throw AccountTransactionError.staleAccount
+			}
 			try await commit()
 		} catch {
-			try rollback(snapshot, originalError: error)
+			guard mutatedCredentialMaterial else { throw error }
+			if await transactionIsCurrent() {
+				try rollback(snapshot, originalError: error)
+			} else {
+				try discard(accounts, originalError: error)
+			}
 		}
 	}
 
@@ -230,6 +268,62 @@ public actor MobileCredentialWriter {
 			)
 		}
 		throw originalError
+	}
+
+	private func discard(
+		_ accounts: [String],
+		originalError: any Error
+	) throws -> Never {
+		var cleanupErrors: [any Error] = []
+		for account in accounts {
+			do {
+				try storage.delete(account: account)
+			} catch KeychainError.notFound {
+				continue
+			} catch {
+				cleanupErrors.append(error)
+			}
+		}
+		guard cleanupErrors.isEmpty else {
+			throw TransactionRollbackError(
+				originalError: originalError,
+				rollbackErrors: cleanupErrors
+			)
+		}
+		throw originalError
+	}
+}
+
+@MainActor
+final class MobileHostSaveCoordinator {
+	private let hostStore: MobileHostStore
+	private let credentialWriter: MobileCredentialWriter
+	private let prepareCredentialSyncForSave: () async throws -> Void
+
+	init(
+		hostStore: MobileHostStore,
+		credentialWriter: MobileCredentialWriter,
+		prepareCredentialSyncForSave: @escaping () async throws -> Void
+	) {
+		self.hostStore = hostStore
+		self.credentialWriter = credentialWriter
+		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
+	}
+
+	func save(_ payload: MobileHostDraftPayload) async throws {
+		let accountContext = hostStore.currentAccountContext
+		try await credentialWriter.commitSave(
+			payload,
+			transactionIsCurrent: { self.hostStore.isCurrent(accountContext) }
+		) {
+			if payload.host.credentialMaterialDirty {
+				try await self.prepareCredentialSyncForSave()
+			}
+			try await self.hostStore.upsert(
+				payload.host,
+				accountContext: accountContext
+			)
+		}
 	}
 }
 

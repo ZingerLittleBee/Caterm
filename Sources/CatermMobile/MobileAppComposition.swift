@@ -168,7 +168,10 @@ public final class MobileAppComposition: ObservableObject {
 			currentIdentity: {
 				await CloudKitAccountIdentityObserver.observe(provider: container)
 			},
-			tokensExist: { await client.hasAnyHostSyncTokens() }
+			tokensExist: {
+				if await client.hasAnyHostSyncTokens() { return true }
+				return await hostStore.hasIdentityBoundState()
+			}
 		)
 		let identityBoundary = MobileAccountIdentityBoundary(
 			evaluate: {
