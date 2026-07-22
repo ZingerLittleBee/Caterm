@@ -40,6 +40,8 @@ struct HostFormView: View {
 	@State private var jumpHostSelection = JumpHostSelection.none
 	@State private var forwards: [PortForward] = []
 	@State private var icon: String? = nil
+	@State private var groupText = ""
+	@State private var tagsText = ""
 
 	var body: some View {
 		let validation = formValidation
@@ -47,6 +49,7 @@ struct HostFormView: View {
 			ScrollView {
 				VStack(alignment: .leading, spacing: 16) {
 					connectionCard(preview: validation.chainPreview)
+					organizationCard
 					authenticationCard
 					portForwardingCard
 					// Theme override only makes sense for an existing host —
@@ -78,8 +81,35 @@ struct HostFormView: View {
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
-		.frame(width: 560, height: 680)
+		.frame(width: 560, height: 720)
 		.onAppear { populate() }
+	}
+
+	private var organizationCard: some View {
+		FormCard("Organization") {
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Group")
+				TextField(
+					"",
+					text: $groupText,
+					prompt: Text("e.g. Production / API")
+				)
+				Text("Use / to create a nested group path.")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+			}
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Tags")
+				TextField(
+					"",
+					text: $tagsText,
+					prompt: Text("e.g. Linux, Critical, On-call")
+				)
+				Text("Separate tags with commas.")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+			}
+		}
 	}
 
 	private func connectionCard(preview: ChainPreviewState) -> some View {
@@ -172,7 +202,7 @@ struct HostFormView: View {
 					.foregroundStyle(.secondary)
 			} else {
 				ForEach($forwards) { $forward in
-					ForwardRuleCard(
+					PortForwardRuleEditor(
 						forward: $forward,
 						onDelete: { deleteForward(forward.id) }
 					)
@@ -416,6 +446,8 @@ struct HostFormView: View {
 		)
 		forwards = host.forwards
 		icon = host.icon
+		groupText = HostOrganizationText.groupText(host.organization)
+		tagsText = HostOrganizationText.tagsText(host.organization)
 	}
 
 	/// Credential as it should be persisted on the host. For a brand-new
@@ -445,6 +477,9 @@ struct HostFormView: View {
 		host.jumpHostServerId = jumpHostReference.serverID
 		host.forwards = forwards
 		host.icon = icon
+		host.organization = HostOrganizationText.makeOrganization(
+			group: groupText, tags: tagsText
+		)
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {
@@ -545,23 +580,28 @@ private struct FormCard<Content: View>: View {
 /// One port-forward rule as a labelled mini-card: kind + required + delete
 /// in the header, then per-field labelled inputs, then the plain-language
 /// explanation. Invalid rules get a red border.
-private struct ForwardRuleCard: View {
+struct PortForwardRuleEditor: View {
 	@Binding var forward: PortForward
 	let onDelete: () -> Void
 
 	/// One-line, jargon-free description of what this rule does, kept in
 	/// sync with the entered values so the user sees the effect at a glance.
 	private var explanation: String {
-		let bind = forward.bindPort
-		let host = forward.remoteHost?.isEmpty == false ? forward.remoteHost! : "localhost"
-		let rport = forward.remotePort ?? bind
+		let bindHost = forward.bindAddress?.isEmpty == false
+			? forward.bindAddress ?? "localhost"
+			: "localhost"
+		let bind = "\(bindHost):\(forward.bindPort)"
+		let host = forward.remoteHost?.isEmpty == false
+			? forward.remoteHost ?? "localhost"
+			: "localhost"
+		let rport = forward.remotePort ?? forward.bindPort
 		switch forward.kind {
 		case .local:
-			return "Opens port \(bind) on this Mac → reaches \(host):\(rport) through the server."
+			return "Opens \(bind) on this Mac → reaches \(host):\(rport) through the server."
 		case .remote:
-			return "Opens port \(bind) on the server → tunnels back to \(host):\(rport) on this Mac."
+			return "Opens \(bind) on the server → tunnels back to \(host):\(rport) on this Mac."
 		case .dynamic:
-			return "Runs a SOCKS proxy on port \(bind) of this Mac (route apps through the server)."
+			return "Runs a SOCKS proxy on \(bind) of this Mac (route apps through the server)."
 		}
 	}
 
@@ -609,6 +649,25 @@ private struct ForwardRuleCard: View {
 				}
 				.buttonStyle(.borderless)
 				.help("Remove this rule")
+			}
+
+			HStack(alignment: .top, spacing: 10) {
+				VStack(alignment: .leading, spacing: 4) {
+					FieldLabel("Label (optional)")
+					TextField("", text: Binding(
+						get: { forward.label ?? "" },
+						set: { forward.label = $0.isEmpty ? nil : $0 }
+					), prompt: Text("e.g. PostgreSQL"))
+				}
+				VStack(alignment: .leading, spacing: 4) {
+					FieldLabel("Bind address")
+					TextField("", text: Binding(
+						get: { forward.bindAddress ?? "" },
+						set: { forward.bindAddress = $0.isEmpty ? nil : $0 }
+					), prompt: Text("localhost"))
+					.frame(width: 140)
+					.help("Leave empty to bind on the SSH default loopback address.")
+				}
 			}
 
 			HStack(alignment: .bottom, spacing: 10) {

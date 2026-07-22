@@ -1,3 +1,4 @@
+import AppKit
 import SessionStore
 import SettingsStore
 import SSHCommandBuilder
@@ -57,18 +58,19 @@ struct TerminalContainerView: View {
 		case .reconnecting(let attempt, let nextRetryAt):
 			ReconnectOverlay(attempt: attempt, nextRetryAt: nextRetryAt, host: host, chain: chain)
 		case .failed(let kind) where shouldShowFailureOverlay(kind):
+			let canEditHost = store.hosts.contains { $0.id == host.id }
 			FailureOverlay(
 				failure: kind,
 				host: host,
 				chain: chain,
 				onRetry: { store.retryTab(tabId: tabId) },
-				onEditHost: {
+				onEditHost: canEditHost ? {
 					NotificationCenter.default.post(
 						name: .catermEditHostRequested,
-						object: nil,
+						object: NSApp.keyWindow,
 						userInfo: [CatermEditHostRequestedKeys.hostId: host.id]
 					)
-				}
+				} : nil
 			)
 		case .idle, .connected, .failed:
 			EmptyView()

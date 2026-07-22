@@ -101,6 +101,7 @@ public enum HostSyncReconciler {
                 || local.jumpHostServerId != incoming.jumpHostServerId
                 || local.forwards != incoming.forwards
                 || local.icon != incoming.icon
+                || local.organization != incoming.organization
                 ? .incoming
                 : .equivalent
         }

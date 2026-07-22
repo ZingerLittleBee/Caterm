@@ -96,7 +96,8 @@ public enum SSHCommandBuilder {
 		askpassPath: String,
 		knownHostsCaterm: String,
 		knownHostsUser: String,
-		installTerminfo: Bool = false
+		installTerminfo: Bool = false,
+		authenticationMode: SSHAuthenticationMode = .configuredCredential
 	) -> Output {
 		_build(
 			host: host,
@@ -105,7 +106,8 @@ public enum SSHCommandBuilder {
 			knownHostsUser: knownHostsUser,
 			installTerminfo: installTerminfo,
 			sshPath: "/usr/bin/ssh",
-			terminfoDump: TerminfoSource.terminfoDump()
+			terminfoDump: TerminfoSource.terminfoDump(),
+			authenticationMode: authenticationMode
 		)
 	}
 
@@ -122,7 +124,8 @@ public enum SSHCommandBuilder {
 		knownHostsUser: String,
 		installTerminfo: Bool,
 		sshPath: String,
-		terminfoDump: String?
+		terminfoDump: String?,
+		authenticationMode: SSHAuthenticationMode = .configuredCredential
 	) -> Output {
 		let sshArg: Arg = sshPath == "/usr/bin/ssh" ? .raw(sshPath) : .quoted(sshPath)
 		var args: [Arg] = [sshArg]
@@ -130,7 +133,8 @@ public enum SSHCommandBuilder {
 		let plan = SSHConnectionPolicy.interactiveHostPlan(
 			for: host,
 			role: .target,
-			knownHostsFiles: [knownHostsCaterm, knownHostsUser]
+			knownHostsFiles: [knownHostsCaterm, knownHostsUser],
+			authenticationMode: authenticationMode
 		)
 		guard let renderedOptions = try? invocationArgs(for: plan.options) else {
 			// The non-throwing legacy API cannot surface config encoding errors.
@@ -206,7 +210,8 @@ public enum SSHCommandBuilder {
 				knownHostsUser: knownHostsUser,
 				installTerminfo: installTerminfo,
 				sshPath: sshPath,
-				terminfoDump: resolvedDump
+				terminfoDump: resolvedDump,
+				authenticationMode: .configuredCredential
 			)
 		}
 		return try buildChain(

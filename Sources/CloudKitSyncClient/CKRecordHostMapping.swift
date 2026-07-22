@@ -18,6 +18,7 @@ public enum CKRecordHostMapping {
 		static let jumpHostServerId = "jumpHostServerId"
 		static let forwards = "forwards"
 		static let icon = "icon"
+		static let organization = "organization"
 		// Credential blob
 		static let credentialBlobState = "credentialBlobState"
 		static let credentialBlobRevision = "credentialBlobRevision"
@@ -49,14 +50,15 @@ public enum CKRecordHostMapping {
 		rec[Field.port] = input.port as CKRecordValue
 		rec[Field.username] = input.username as CKRecordValue
 		rec[Field.authType] = input.authType as CKRecordValue
-		rec[Field.metadataUpdatedAt] = Date() as CKRecordValue
+		rec[Field.metadataUpdatedAt] = input.metadataUpdatedAt as CKRecordValue
 		if let jumpHostServerId = input.jumpHostServerId {
 			rec[Field.jumpHostServerId] = jumpHostServerId as CKRecordValue
 		}
-		rec[Field.forwards] = (try? jsonEncoded(input.forwards)) ?? ("[]" as CKRecordValue)
+		rec[Field.forwards] = jsonEncoded(input.forwards)
 		if let icon = input.icon {
 			rec[Field.icon] = icon as CKRecordValue
 		}
+		rec[Field.organization] = jsonEncoded(input.organization)
 		rec[Field.credentialBlobState] = "none" as CKRecordValue
 		rec[Field.credentialBlobRevision] = Int64(0) as CKRecordValue
 		rec[Field.credentialCryptoVersion] = Int64(1) as CKRecordValue
@@ -76,16 +78,41 @@ public enum CKRecordHostMapping {
 		} else {
 			existing[Field.jumpHostServerId] = nil
 		}
-		existing[Field.forwards] = (try? jsonEncoded(host.forwards)) ?? ("[]" as CKRecordValue)
+		existing[Field.forwards] = jsonEncoded(host.forwards)
 		if let icon = host.icon {
 			existing[Field.icon] = icon as CKRecordValue
 		} else {
 			existing[Field.icon] = nil
 		}
+		existing[Field.organization] = jsonEncoded(host.organization)
 		// `metadataUpdatedAt` was already advanced above to host.updatedAt;
 		// callers (HostSyncStore) MUST bump host.updatedAt on any forwards
 		// mutation, otherwise this push will not be considered newer by
 		// other devices' LWW.
+	}
+
+	/// Applies a complete metadata snapshot received by the sync client.
+	/// Credential fields remain untouched.
+	public static func applyMetadata(
+		into existing: CKRecord,
+		from input: RemoteHostUpdateInput
+	) {
+		if let value = input.name { existing[Field.name] = value as CKRecordValue }
+		if let value = input.hostname { existing[Field.hostname] = value as CKRecordValue }
+		if let value = input.port { existing[Field.port] = value as CKRecordValue }
+		if let value = input.username { existing[Field.username] = value as CKRecordValue }
+		if let value = input.authType { existing[Field.authType] = value as CKRecordValue }
+		if let value = input.metadataUpdatedAt {
+			existing[Field.metadataUpdatedAt] = value as CKRecordValue
+		}
+		existing[Field.jumpHostServerId] = input.jumpHostServerId as CKRecordValue?
+		if let value = input.forwards {
+			existing[Field.forwards] = jsonEncoded(value)
+		}
+		existing[Field.icon] = input.icon as CKRecordValue?
+		if let value = input.organization {
+			existing[Field.organization] = jsonEncoded(value)
+		}
 	}
 
 	/// Used by `.updateRemoteCredentials`. Mutates ONLY credential fields.
@@ -141,6 +168,16 @@ public enum CKRecordHostMapping {
 				return []
 			}
 		}()
+		let organization: HostOrganization = {
+			guard let json = rec[Field.organization] as? String,
+			      let data = json.data(using: .utf8),
+			      let value = try? JSONDecoder().decode(
+					HostOrganization.self, from: data
+			      ) else {
+				return .empty
+			}
+			return value
+		}()
 
 		let host = RemoteHost(
 			id: rec.recordID.recordName,
@@ -153,7 +190,8 @@ public enum CKRecordHostMapping {
 			updatedAt: updatedAt,
 			jumpHostServerId: rec[Field.jumpHostServerId] as? String,
 			forwards: decoded,
-			icon: rec[Field.icon] as? String
+			icon: rec[Field.icon] as? String,
+			organization: organization
 		)
 
 		let blob: CredentialBlob?
@@ -176,7 +214,21 @@ public enum CKRecordHostMapping {
 	}
 }
 
-private func jsonEncoded(_ forwards: [PortForward]) throws -> CKRecordValue {
-	let data = try JSONEncoder().encode(forwards)
-	return (String(data: data, encoding: .utf8) ?? "[]") as CKRecordValue
+private func jsonEncoded(_ forwards: [PortForward]) -> CKRecordValue {
+	jsonEncoded(forwards, fallback: "[]")
+}
+
+private func jsonEncoded(_ organization: HostOrganization) -> CKRecordValue {
+	jsonEncoded(organization, fallback: "{}")
+}
+
+private func jsonEncoded<T: Encodable>(
+	_ value: T,
+	fallback: String
+) -> CKRecordValue {
+	guard let data = try? JSONEncoder().encode(value),
+	      let string = String(data: data, encoding: .utf8) else {
+		return fallback as CKRecordValue
+	}
+	return string as CKRecordValue
 }

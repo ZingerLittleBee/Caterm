@@ -6,18 +6,30 @@ import SSHCommandBuilder
 import SSHCredentialContract
 
 protocol CredentialSecretStoring: Sendable {
-	func get(account: String) throws -> String
+	func get(
+		account: String,
+		interaction: KeychainReadInteraction
+	) throws -> String
 	func set(account: String, secret: String) throws
 	func delete(account: String) throws
 	func deleteAll(prefix: String) throws
+}
+
+extension CredentialSecretStoring {
+	func get(account: String) throws -> String {
+		try get(account: account, interaction: .userInitiated)
+	}
 }
 
 private struct KeychainCredentialSecretStore: CredentialSecretStoring,
 	@unchecked Sendable {
 	let keychain: KeychainStore
 
-	func get(account: String) throws -> String {
-		try keychain.get(account: account)
+	func get(
+		account: String,
+		interaction: KeychainReadInteraction
+	) throws -> String {
+		try keychain.get(account: account, interaction: interaction)
 	}
 
 	func set(account: String, secret: String) throws {
@@ -350,9 +362,27 @@ public actor SessionCredentialMaterialStore {
 		for hostId: UUID,
 		selecting selection: CredentialMaterialSelection
 	) async throws -> StoredCredentialMaterialSnapshot {
+		try await snapshot(
+			for: hostId,
+			selecting: selection,
+			interaction: .userInitiated
+		)
+	}
+
+	/// Reads selected fields without presenting authentication UI when the
+	/// caller is performing unattended work.
+	public func snapshot(
+		for hostId: UUID,
+		selecting selection: CredentialMaterialSelection,
+		interaction: KeychainReadInteraction
+	) async throws -> StoredCredentialMaterialSnapshot {
 		let leaseID = try await acquireLease(for: hostId)
 		defer { releaseLease(for: hostId, id: leaseID) }
-		return try readSnapshot(for: hostId, selecting: selection)
+		return try readSnapshot(
+			for: hostId,
+			selecting: selection,
+			interaction: interaction
+		)
 	}
 
 	/// Acquires a store-wide read boundary. The caller must release it after
@@ -372,7 +402,11 @@ public actor SessionCredentialMaterialStore {
 		guard activeGlobalLease == barrier.id else {
 			throw SessionCredentialMaterialError.invalidReadBarrier
 		}
-		return try readSnapshot(for: hostId, selecting: .all)
+		return try readSnapshot(
+			for: hostId,
+			selecting: .all,
+			interaction: .userInitiated
+		)
 	}
 
 	public func finishReadBarrier(_ barrier: CredentialMaterialReadBarrier) {
@@ -381,17 +415,26 @@ public actor SessionCredentialMaterialStore {
 
 	private func readSnapshot(
 		for hostId: UUID,
-		selecting selection: CredentialMaterialSelection
+		selecting selection: CredentialMaterialSelection,
+		interaction: KeychainReadInteraction
 	) throws -> StoredCredentialMaterialSnapshot {
 		return StoredCredentialMaterialSnapshot(
 			generation: generation(for: hostId),
 			password: selection.contains(.password)
-				? try optionalSecret(account: SSHCredentialContract.account(
-					hostID: hostId, kind: .password))
+				? try optionalSecret(
+					account: SSHCredentialContract.account(
+						hostID: hostId, kind: .password
+					),
+					interaction: interaction
+				)
 				: nil,
 			passphrase: selection.contains(.passphrase)
-				? try optionalSecret(account: SSHCredentialContract.account(
-					hostID: hostId, kind: .keyPassphrase))
+				? try optionalSecret(
+					account: SSHCredentialContract.account(
+						hostID: hostId, kind: .keyPassphrase
+					),
+					interaction: interaction
+				)
 				: nil,
 			managedPrivateKey: selection.contains(.managedPrivateKey)
 				? try managedKeyStore.read(hostId: hostId)
@@ -408,7 +451,8 @@ public actor SessionCredentialMaterialStore {
 	/// the corresponding host source has committed on the main actor.
 	public func beginCredentialSetupCheck(
 		for hostId: UUID,
-		source: CredentialSource
+		source: CredentialSource,
+		interaction: KeychainReadInteraction
 	) async -> CredentialSetupCheck? {
 		let leaseID: UUID
 		do {
@@ -418,25 +462,34 @@ public actor SessionCredentialMaterialStore {
 		}
 
 		let requiresSetup: Bool
-		switch source {
-		case .agent:
-			requiresSetup = false
-		case .password:
-			requiresSetup = !hasSecret(
-				account: SSHCredentialContract.account(
-					hostID: hostId, kind: .password)
-			)
-		case let .keyFile(keyPath, hasPassphrase):
-			if !FileManager.default.fileExists(atPath: keyPath) {
-				requiresSetup = true
-			} else if hasPassphrase {
-				requiresSetup = !hasSecret(
-					account: SSHCredentialContract.account(
-						hostID: hostId, kind: .keyPassphrase)
-				)
-			} else {
+		do {
+			switch source {
+			case .agent:
 				requiresSetup = false
+			case .password:
+				requiresSetup = try !hasSecret(
+					account: SSHCredentialContract.account(
+						hostID: hostId, kind: .password
+					),
+					interaction: interaction
+				)
+			case let .keyFile(keyPath, hasPassphrase):
+				if !FileManager.default.fileExists(atPath: keyPath) {
+					requiresSetup = true
+				} else if hasPassphrase {
+					requiresSetup = try !hasSecret(
+						account: SSHCredentialContract.account(
+							hostID: hostId, kind: .keyPassphrase
+						),
+						interaction: interaction
+					)
+				} else {
+					requiresSetup = false
+				}
 			}
+		} catch {
+			releaseLease(for: hostId, id: leaseID)
+			return nil
 		}
 		return CredentialSetupCheck(
 			requiresSetup: requiresSetup,
@@ -1036,16 +1089,30 @@ public actor SessionCredentialMaterialStore {
 		}
 	}
 
-	private func optionalSecret(account: String) throws -> Data? {
+	private func optionalSecret(
+		account: String,
+		interaction: KeychainReadInteraction = .userInitiated
+	) throws -> Data? {
 		do {
-			return try secrets.get(account: account).data(using: .utf8)
+			return try secrets.get(
+				account: account,
+				interaction: interaction
+			).data(using: .utf8)
 		} catch KeychainError.notFound {
 			return nil
 		}
 	}
 
-	private func hasSecret(account: String) -> Bool {
-		(try? secrets.get(account: account)) != nil
+	private func hasSecret(
+		account: String,
+		interaction: KeychainReadInteraction
+	) throws -> Bool {
+		do {
+			_ = try secrets.get(account: account, interaction: interaction)
+			return true
+		} catch KeychainError.notFound {
+			return false
+		}
 	}
 
 	private func setSecret(_ data: Data, account: String) throws {

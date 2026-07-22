@@ -42,13 +42,16 @@ struct HostListSidebar: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
+	@Environment(\.openWindow) private var openWindow
 	let onOpenTab: (UUID) -> Void
-	@State var selectedHostId: UUID?
-	@State var showingAddSheet = false
-	@State var editingHost: SSHHost?
-	@State var errorMessage: String?
-	@State var pendingCredentialHost: SSHHost?
+	@State private var selectedHostId: UUID?
+	@State private var showingAddSheet = false
+	@State private var editingHost: SSHHost?
+	@State private var errorMessage: String?
+	@State private var pendingCredentialHost: SSHHost?
 	@State private var pendingFanoutDelete: PendingFanoutDelete?
+	@State private var hostQuery = ""
+	@State private var hostWindow: NSWindow?
 
 	private struct PendingFanoutDelete: Identifiable {
 		let host: SSHHost
@@ -58,9 +61,29 @@ struct HostListSidebar: View {
 
 	var body: some View {
 		let chainResolver = ChainResolver(hosts: store.hosts)
+		let visibleHosts = HostSearch.filter(store.hosts, query: hostQuery)
+		let quickDestination = visibleHosts.isEmpty
+			? QuickConnectParser.parse(hostQuery)
+			: nil
 		return VStack(spacing: 0) {
+			HostSearchField(text: $hostQuery) {
+				submitSearch(
+					visibleHosts: visibleHosts,
+					quickDestination: quickDestination
+				)
+			}
+			.frame(height: 22)
+			.padding(.horizontal, 8)
+			.padding(.top, 8)
+			.padding(.bottom, 6)
+
 			List(selection: $selectedHostId) {
-				ForEach(store.hosts) { host in
+				if let quickDestination {
+					QuickConnectRow(destination: quickDestination) {
+						connectOnce(quickDestination)
+					}
+				}
+				ForEach(visibleHosts) { host in
 					HostRow(
 						host: host,
 						chainResolution: chainResolver.resolve(host)
@@ -78,14 +101,14 @@ struct HostListSidebar: View {
 			}
 			.overlay {
 				GeometryReader { proxy in
-					HostListDoubleClickConnector(hosts: store.hosts) { host in
+					HostListDoubleClickConnector(hosts: visibleHosts) { host in
 						connect(host)
 					}
 					.frame(width: proxy.size.width, height: proxy.size.height)
 				}
 			}
 			.overlay {
-				if store.hosts.isEmpty {
+				if store.hosts.isEmpty, quickDestination == nil {
 					VStack(spacing: 8) {
 						Image(systemName: "server.rack")
 							.font(.system(size: 32))
@@ -100,7 +123,15 @@ struct HostListSidebar: View {
 							.foregroundColor(.secondary)
 					}
 					.padding()
+				} else if visibleHosts.isEmpty, quickDestination == nil {
+					ContentUnavailableView.search(text: hostQuery)
 				}
+			}
+			.onChange(of: visibleHosts.map(\.id)) { _, visibleHostIds in
+				guard !visibleHostIds.isEmpty,
+				      selectedHostId.map({ visibleHostIds.contains($0) }) != true
+				else { return }
+				selectedHostId = visibleHostIds.first
 			}
 			.toolbar {
 				ToolbarItem(placement: .primaryAction) {
@@ -200,6 +231,9 @@ struct HostListSidebar: View {
 				.environmentObject(store)
 			}
 			.onReceive(NotificationCenter.default.publisher(for: .catermEditHostRequested)) { note in
+				guard WindowCommandScope.shouldHandle(note, in: hostWindow) else {
+					return
+				}
 				guard let hostId = note.userInfo?[CatermEditHostRequestedKeys.hostId] as? UUID,
 				      let host = store.hosts.first(where: { $0.id == hostId }) else {
 					return
@@ -265,11 +299,17 @@ struct HostListSidebar: View {
 			} message: { pending in
 				Text("\(pending.host.name) is used by \(pending.dependents.count) host(s) as their jump host. Deleting will leave their chain references dangling.")
 			}
-			.onReceive(NotificationCenter.default.publisher(for: .catermAddHost)) { _ in
+			.onReceive(NotificationCenter.default.publisher(for: .catermAddHost)) { note in
+				guard WindowCommandScope.shouldHandle(note, in: hostWindow) else {
+					return
+				}
 				showingAddSheet = true
 			}
 			#if DEBUG
-			.onReceive(NotificationCenter.default.publisher(for: .catermDebugOpenFirstHost)) { _ in
+			.onReceive(NotificationCenter.default.publisher(for: .catermDebugOpenFirstHost)) { note in
+				guard WindowCommandScope.shouldHandle(note, in: hostWindow) else {
+					return
+				}
 				Task { @MainActor in
 					if let target = await debugPickConnectTarget(in: store) {
 						connect(target)
@@ -279,8 +319,72 @@ struct HostListSidebar: View {
 			#endif
 
 			Divider()
+			Button {
+				openWindow(id: HostManagerWindow.id)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "folder")
+					Text("Manage Hosts")
+					Spacer()
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Organizes hosts with groups and tags")
+			Button {
+				openWindow(id: SessionHistoryWindow.id)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "clock.arrow.circlepath")
+					Text("Connection History")
+					Spacer()
+					Text("⇧⌘Y")
+						.foregroundStyle(.tertiary)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Opens locally stored connection metadata")
+			Button {
+				openWindow(id: PortForwardWorkspaceWindow.id)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "arrow.left.arrow.right")
+					Text("Port Forwarding")
+					Spacer()
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Opens forwarding rules for saved hosts")
+			Button {
+				openWindow(id: KnownHostsWindow.id)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "checkmark.shield")
+					Text("Known Hosts")
+					Spacer()
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Audits trusted SSH host keys")
+			Divider()
 			SyncStatusRow()
 		}
+		.background(WindowAccessor(window: $hostWindow))
 	}
 
 	/// Build a `HostSecrets` payload from the optional plain-text secret
@@ -354,6 +458,29 @@ struct HostListSidebar: View {
 		}
 	}
 
+	private func submitSearch(
+		visibleHosts: [SSHHost],
+		quickDestination: QuickConnectDestination?
+	) {
+		let selected = selectedHostId.flatMap { selectedHostId in
+			visibleHosts.first { $0.id == selectedHostId }
+		}
+		if let host = selected ?? visibleHosts.first {
+			connect(host)
+		} else if let quickDestination {
+			connectOnce(quickDestination)
+		}
+	}
+
+	private func connectOnce(_ destination: QuickConnectDestination) {
+		let tabId = store.openTab(
+			host: destination.makeHost(),
+			installTerminfo: preferences.installTerminfoEnabled,
+			authenticationMode: .interactive
+		)
+		onOpenTab(tabId)
+	}
+
 	private func deleteHost(_ host: SSHHost) {
 		let dependents = store.hosts.filter {
 			$0.id != host.id &&
@@ -367,6 +494,38 @@ struct HostListSidebar: View {
 			return
 		}
 		pendingFanoutDelete = PendingFanoutDelete(host: host, dependents: dependents)
+	}
+}
+
+private struct QuickConnectRow: View {
+	let destination: QuickConnectDestination
+	let onConnect: () -> Void
+
+	var body: some View {
+		Button(action: onConnect) {
+			HStack(spacing: 8) {
+				Image(systemName: "bolt.horizontal.circle")
+					.foregroundStyle(.secondary)
+					.frame(width: 20)
+				VStack(alignment: .leading, spacing: 2) {
+					Text("Connect Once")
+						.font(.headline)
+					Text(destination.displayAddress)
+						.font(.caption)
+						.foregroundStyle(.secondary)
+						.lineLimit(1)
+						.truncationMode(.middle)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+			}
+			.frame(maxWidth: .infinity, alignment: .leading)
+			.contentShape(Rectangle())
+			.padding(.vertical, 2)
+		}
+		.buttonStyle(.plain)
+		.help("Connect without saving. OpenSSH will request authentication in the terminal.")
+		.accessibilityLabel("Connect once to \(destination.displayAddress)")
+		.accessibilityHint("Does not save this host")
 	}
 }
 
@@ -478,6 +637,53 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 	}
 }
 
+private struct HostSearchField: NSViewRepresentable {
+	@Binding var text: String
+	let onSubmit: () -> Void
+
+	func makeCoordinator() -> Coordinator {
+		Coordinator(parent: self)
+	}
+
+	func makeNSView(context: Context) -> NSSearchField {
+		let field = NSSearchField()
+		field.placeholderString = "Search hosts or ssh user@host"
+		field.sendsWholeSearchString = true
+		field.target = context.coordinator
+		field.action = #selector(Coordinator.submit(_:))
+		field.delegate = context.coordinator
+		field.identifier = NSUserInterfaceItemIdentifier("hostSearchField")
+		field.setAccessibilityLabel("Search hosts or connect once")
+		return field
+	}
+
+	func updateNSView(_ field: NSSearchField, context: Context) {
+		context.coordinator.parent = self
+		if field.stringValue != text {
+			field.stringValue = text
+		}
+		field.isEnabled = context.environment.isEnabled
+	}
+
+	final class Coordinator: NSObject, NSSearchFieldDelegate {
+		var parent: HostSearchField
+
+		init(parent: HostSearchField) {
+			self.parent = parent
+		}
+
+		func controlTextDidChange(_ notification: Notification) {
+			guard let field = notification.object as? NSSearchField else { return }
+			parent.text = field.stringValue
+		}
+
+		@objc func submit(_ field: NSSearchField) {
+			parent.text = field.stringValue
+			parent.onSubmit()
+		}
+	}
+}
+
 private extension NSView {
 	func descendants<T: NSView>(of type: T.Type) -> [T] {
 		var matches: [T] = []
@@ -554,7 +760,10 @@ struct HostRow: View {
 			source: host.credential,
 			revision: store.credentialAvailabilityRevision
 		)) {
-			let required = await store.needsCredentialSetup(host)
+			let required = await store.needsCredentialSetup(
+				host,
+				interaction: .nonInteractive
+			)
 			guard !Task.isCancelled else { return }
 			needsCredentialSetup = required
 		}

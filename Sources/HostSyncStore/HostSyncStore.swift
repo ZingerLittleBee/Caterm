@@ -423,6 +423,7 @@ public final class HostSyncStore: ObservableObject {
             case .incremental: effectiveMode = .incremental
             }
 
+            try await drainPendingRemoteHostDeletions()
             var batch = try await fetch(effectiveMode)
             if batch.tokenExpired {
                 // Single retry as forceFull. Token clearing already happened
@@ -497,6 +498,16 @@ public final class HostSyncStore: ObservableObject {
         }
     }
 
+    private func drainPendingRemoteHostDeletions() async throws {
+        let pendingServerIDs = try sessionStore.pendingRemoteHostDeletionIDs()
+        for serverID in pendingServerIDs {
+            try Task.checkCancellation()
+            try await client.deleteHost(id: serverID)
+            try Task.checkCancellation()
+            try sessionStore.clearPendingRemoteHostDeletion(serverID: serverID)
+        }
+    }
+
     private func isCancellation(_ error: Error) -> Bool {
         if error is CancellationError { return true }
         if let urlError = error as? URLError, urlError.code == .cancelled { return true }
@@ -548,7 +559,9 @@ public final class HostSyncStore: ObservableObject {
                 port: host.port, username: host.username,
                 jumpHostServerId: host.jumpHostServerId,
                 forwards: host.forwards,
-                icon: host.icon
+                icon: host.icon,
+                organization: host.organization,
+                metadataUpdatedAt: host.updatedAt
             )
             let out = try await client.createHost(input)
             try sessionStore.setServerId(out.id, for: localHostId)
@@ -573,7 +586,9 @@ public final class HostSyncStore: ObservableObject {
                 port: host.port, username: host.username,
                 jumpHostServerId: host.jumpHostServerId,
                 forwards: host.forwards,
-                icon: host.icon
+                icon: host.icon,
+                organization: host.organization,
+                metadataUpdatedAt: host.updatedAt
             )
             try await client.updateHost(input)
 
@@ -586,7 +601,7 @@ public final class HostSyncStore: ObservableObject {
             }
 
         case let .deleteLocal(localHostId):
-            try await sessionStore.deleteHost(id: localHostId)
+            try await sessionStore.applyRemoteHostDeletion(id: localHostId)
 
         case let .updateRemoteCredentials(localHostId):
             try await credentialEngine.pushLocalCredential(hostId: localHostId)

@@ -14,16 +14,18 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
     public let updatedAt: Date
     public let jumpHostServerId: String?
     public let forwards: [PortForward]
-    /// User-chosen SF Symbol name. Synced metadata (device-visible only;
-    /// nil = use the credential-derived default icon). Legacy payloads with
-    /// no `icon` key decode to nil.
+    /// User-chosen SF Symbol name synced with the host metadata. Nil uses the
+    /// credential-derived default icon. Legacy payloads without `icon` decode
+    /// to nil.
     public let icon: String?
+    public let organization: HostOrganization
 
     public init(id: String, name: String, hostname: String, port: Int,
                 username: String, authType: String, createdAt: Date, updatedAt: Date,
                 jumpHostServerId: String? = nil,
                 forwards: [PortForward] = [],
-                icon: String? = nil) {
+                icon: String? = nil,
+                organization: HostOrganization = .empty) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -35,6 +37,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
         self.jumpHostServerId = jumpHostServerId
         self.forwards = forwards
         self.icon = icon
+        self.organization = organization
     }
 
     // Explicit decoder so legacy server payloads (no `forwards` column —
@@ -43,7 +46,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
     // every pull from a current production server (spec §7.1.x forward-compat).
     private enum CodingKeys: String, CodingKey {
         case id, name, hostname, port, username, authType
-        case createdAt, updatedAt, jumpHostServerId, forwards, icon
+        case createdAt, updatedAt, jumpHostServerId, forwards, icon, organization
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,6 +62,9 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
         jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
         forwards = try c.decodeIfPresent([PortForward].self, forKey: .forwards) ?? []
         icon = try c.decodeIfPresent(String.self, forKey: .icon)
+        organization = try c.decodeIfPresent(
+            HostOrganization.self, forKey: .organization
+        ) ?? .empty
     }
     // Synthesized encode(to:) is fine — it writes all keys.
 }
@@ -75,11 +81,15 @@ public struct RemoteHostCreateInput: Codable {
     public let jumpHostServerId: String?
     public let forwards: [PortForward]
     public let icon: String?
+    public let organization: HostOrganization
+    public let metadataUpdatedAt: Date
 
     public init(name: String, hostname: String, port: Int, username: String,
                 jumpHostServerId: String? = nil,
                 forwards: [PortForward] = [],
-                icon: String? = nil) {
+                icon: String? = nil,
+                organization: HostOrganization = .empty,
+                metadataUpdatedAt: Date = Date()) {
         self.name = name
         self.hostname = hostname
         self.port = port
@@ -88,6 +98,8 @@ public struct RemoteHostCreateInput: Codable {
         self.jumpHostServerId = jumpHostServerId
         self.forwards = forwards
         self.icon = icon
+        self.organization = organization
+        self.metadataUpdatedAt = metadataUpdatedAt
     }
 }
 
@@ -103,12 +115,16 @@ public struct RemoteHostUpdateInput: Codable {
     public let jumpHostServerId: String?
     public let forwards: [PortForward]?
     public let icon: String?
+    public let organization: HostOrganization?
+    public let metadataUpdatedAt: Date?
 
     public init(id: String, name: String? = nil, hostname: String? = nil,
                 port: Int? = nil, username: String? = nil,
                 jumpHostServerId: String? = nil,
                 forwards: [PortForward]? = nil,
-                icon: String? = nil) {
+                icon: String? = nil,
+                organization: HostOrganization? = nil,
+                metadataUpdatedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -120,6 +136,8 @@ public struct RemoteHostUpdateInput: Codable {
         self.jumpHostServerId = jumpHostServerId
         self.forwards = forwards
         self.icon = icon
+        self.organization = organization
+        self.metadataUpdatedAt = metadataUpdatedAt
     }
 }
 

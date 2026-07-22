@@ -45,11 +45,18 @@ final class RemoteIconApplyTests: XCTestCase {
 			id: "rid", name: host.name, hostname: host.hostname,
 			port: host.port, username: host.username, authType: "key",
 			createdAt: host.createdAt, updatedAt: Date(),
-			icon: "server.rack"
+			icon: "server.rack",
+			organization: HostOrganization(
+				groupPath: ["Production"], tags: ["Linux"]
+			)
 		)
 		try store.applyRemoteMetadata(localHostId: host.id, remote: remote)
 		XCTAssertEqual(
 			store.hosts.first(where: { $0.id == host.id })?.icon, "server.rack")
+		XCTAssertEqual(
+			store.hosts.first(where: { $0.id == host.id })?.organization,
+			remote.organization
+		)
 	}
 
 	func test_addRemoteHost_carriesIcon() throws {
@@ -57,12 +64,19 @@ final class RemoteIconApplyTests: XCTestCase {
 			id: "rid", name: "h", hostname: "h.example", port: 22,
 			username: "u", authType: "key",
 			createdAt: Date(), updatedAt: Date(),
-			icon: "globe.americas.fill"
+			icon: "globe.americas.fill",
+			organization: HostOrganization(
+				groupPath: ["Staging"], tags: ["On-call"]
+			)
 		)
 		try store.addRemoteHost(remote)
 		XCTAssertEqual(
 			store.hosts.first(where: { $0.serverId == "rid" })?.icon,
 			"globe.americas.fill")
+		XCTAssertEqual(
+			store.hosts.first(where: { $0.serverId == "rid" })?.organization,
+			remote.organization
+		)
 	}
 
 	func test_applyRemoteMetadata_clearsIconWhenRemoteHasNone() throws {

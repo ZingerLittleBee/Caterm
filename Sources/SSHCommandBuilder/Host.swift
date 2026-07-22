@@ -33,10 +33,12 @@ public struct Host: Codable, Identifiable, Hashable {
 	/// field decode to `[]`.
 	public var forwards: [PortForward]
 	/// Optional user-chosen SF Symbol name shown in the sidebar row. `nil`
-	/// falls back to a credential-derived default icon. Device-local (not
-	/// propagated to the server); legacy hosts.json predating this field
-	/// decode to `nil`.
+	/// falls back to a credential-derived default icon. Synced as host metadata;
+	/// legacy hosts.json predating this field decode to `nil`.
 	public var icon: String?
+	/// Synced group hierarchy and tags used to organize large host lists.
+	/// Legacy hosts without this field decode to `.empty`.
+	public var organization: HostOrganization
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
@@ -46,7 +48,8 @@ public struct Host: Codable, Identifiable, Hashable {
 	            jumpHostId: UUID? = nil,
 	            jumpHostServerId: String? = nil,
 	            forwards: [PortForward] = [],
-	            icon: String? = nil) {
+	            icon: String? = nil,
+	            organization: HostOrganization = .empty) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -61,6 +64,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		self.jumpHostServerId = jumpHostServerId
 		self.forwards = forwards
 		self.icon = icon
+		self.organization = organization
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
@@ -73,6 +77,7 @@ public struct Host: Codable, Identifiable, Hashable {
 		case jumpHostId, jumpHostServerId
 		case forwards
 		case icon
+		case organization
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -91,6 +96,9 @@ public struct Host: Codable, Identifiable, Hashable {
 		jumpHostServerId = try c.decodeIfPresent(String.self, forKey: .jumpHostServerId)
 		forwards = try c.decodeIfPresent([PortForward].self, forKey: .forwards) ?? []
 		icon = try c.decodeIfPresent(String.self, forKey: .icon)
+		organization = try c.decodeIfPresent(
+			HostOrganization.self, forKey: .organization
+		) ?? .empty
 	}
 	// Synthesized encode(to:) is fine — it writes all keys.
 }

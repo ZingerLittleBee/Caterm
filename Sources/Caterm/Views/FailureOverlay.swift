@@ -10,7 +10,7 @@ struct FailureOverlay: View {
 	let host: SSHHost
 	let chain: [SSHHost]
 	let onRetry: () -> Void
-	let onEditHost: () -> Void
+	let onEditHost: (() -> Void)?
 
 	private var presentation: FailurePresentation {
 		FailurePresentation.from(failure: failure, host: host)
@@ -70,7 +70,9 @@ struct FailureOverlay: View {
 	private var actions: some View {
 		HStack(spacing: 8) {
 			Button("Retry", action: onRetry).buttonStyle(.borderedProminent)
-			Button("Edit Host", action: onEditHost).buttonStyle(.bordered)
+			if let onEditHost {
+				Button("Edit Host", action: onEditHost).buttonStyle(.bordered)
+			}
 		}
 	}
 }

@@ -78,6 +78,21 @@ final class SSHConnectionPolicyTests: XCTestCase {
 		XCTAssertFalse(lines.contains("PubkeyAuthentication no"))
 	}
 
+	func testInteractiveSessionPolicyLetsOpenSSHChooseAuthentication() throws {
+		let plan = SSHConnectionPolicy.interactiveHostPlan(
+			for: host(.agent),
+			role: .target,
+			knownHostsFiles: ["/caterm/known_hosts", "/user/known_hosts"],
+			authenticationMode: .interactive
+		)
+		let lines = try plan.options.map { try $0.configLine() }
+
+		XCTAssertNil(plan.credentialKind)
+		XCTAssertFalse(lines.contains("BatchMode yes"))
+		XCTAssertFalse(lines.contains(where: { $0.hasPrefix("PreferredAuthentications ") }))
+		XCTAssertFalse(lines.contains(where: { $0.hasPrefix("IdentityFile ") }))
+	}
+
 	func testKnownHostsFilesRemainSeparateAcrossRenderers() throws {
 		let files = [
 			"/Users/alice/Library/Application Support/Caterm/known_hosts",

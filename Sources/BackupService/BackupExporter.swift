@@ -215,6 +215,8 @@ public enum BackupExporter {
 				                  label: f.label)
 			},
 			icon: host.icon,
+			groupPath: host.organization.groupPath,
+			tags: host.organization.tags,
 			password: password,
 			passphrase: passphrase,
 			privateKey: privateKey

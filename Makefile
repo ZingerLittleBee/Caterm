@@ -195,11 +195,6 @@ publish: ## tag + GitHub release + upload notarized artifacts (run after `make r
 	#   (--draft is unsupported: Sparkle's feed reads releases/latest, which skips drafts)
 	bash Scripts/publish-release.sh $(ARGS)
 
-.PHONY: bootstrap-askpass
-bootstrap-askpass: sign ## seed Keychain so signed askpass is in the partition list (skips Always Allow dialog)
-	@CATERM_ASKPASS_STUFF=1 "$(ASKPASS_BIN)" || true
-	@echo "askpass keychain bootstrap done."
-
 .PHONY: test
 test: ## swift test (set CATERM_E2E_DOCKER=1 to include the Docker E2E)
 	swift test

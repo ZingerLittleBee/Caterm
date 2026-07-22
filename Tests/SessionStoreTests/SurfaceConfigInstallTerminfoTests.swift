@@ -45,4 +45,18 @@ final class SurfaceConfigInstallTerminfoTests: XCTestCase {
 		XCTAssertTrue(cfg.command.contains(" -t "), "expected -t flag when installTerminfo: true")
 		XCTAssertTrue(cfg.env.contains(where: { $0.0 == "TERM" && $0.1 == "xterm-ghostty" }))
 	}
+
+	func testInteractiveAuthenticationModeIsSnapshottedAtOpenTime() throws {
+		let store = makeStore()
+		let tabId = store.openTab(
+			host: sampleHost(),
+			authenticationMode: .interactive
+		)
+
+		let cfg = try XCTUnwrap(store.surfaceConfig(for: tabId))
+		XCTAssertFalse(cfg.command.contains("BatchMode=yes"))
+		XCTAssertFalse(cfg.command.contains("PreferredAuthentications"))
+		XCTAssertFalse(cfg.env.contains(where: { $0.0 == "SSH_ASKPASS" }))
+		XCTAssertTrue(store.hosts.isEmpty)
+	}
 }

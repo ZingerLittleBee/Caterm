@@ -10,6 +10,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 	private var store: SessionStore!
 	private var managedKeys: ManagedKeyStore!
 	private var managedKeysURL: URL!
+	private var secrets: InMemoryCredentialSecretStore!
 
 	override func setUp() async throws {
 		try await super.setUp()
@@ -21,8 +22,9 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 		managedKeysURL = hostsURL.deletingLastPathComponent()
 			.appendingPathComponent("managed-\(UUID())")
 		managedKeys = ManagedKeyStore(rootURL: managedKeysURL)
+		secrets = InMemoryCredentialSecretStore()
 		let materialStore = SessionCredentialMaterialStore(
-			secrets: InMemoryCredentialSecretStore(),
+			secrets: secrets,
 			managedKeyStore: managedKeys
 		)
 		store = SessionStore(
@@ -178,6 +180,24 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 
 		let requiresSetup = await availability.value
 		XCTAssertFalse(requiresSetup)
+	}
+
+	func testCredentialAvailabilityUsesRequestedReadInteraction() async throws {
+		let host = SSHHost(
+			name: "availability",
+			hostname: "host.example",
+			username: "root",
+			credential: .password
+		)
+		try store.addHost(host)
+
+		let requiresSetup = await store.needsCredentialSetup(
+			host,
+			interaction: .nonInteractive
+		)
+
+		XCTAssertTrue(requiresSetup)
+		XCTAssertEqual(secrets.readInteractions(), [.nonInteractive])
 	}
 
 	func test_snapshotReturnsCommittedManagedKeyAfterProvisionalRollback() async throws {
@@ -855,10 +875,15 @@ final class InMemoryCredentialSecretStore: CredentialSecretStoring,
 	private var values: [String: String] = [:]
 	private var shouldFailDelete = false
 	private var shouldFailDeleteAll = false
+	private var interactions: [KeychainReadInteraction] = []
 
-	func get(account: String) throws -> String {
+	func get(
+		account: String,
+		interaction: KeychainReadInteraction
+	) throws -> String {
 		lock.lock()
 		defer { lock.unlock() }
+		interactions.append(interaction)
 		guard let value = values[account] else { throw KeychainError.notFound }
 		return value
 	}
@@ -907,5 +932,11 @@ final class InMemoryCredentialSecretStore: CredentialSecretStoring,
 		lock.lock()
 		defer { lock.unlock() }
 		return values.keys.contains { $0.hasPrefix(prefix) }
+	}
+
+	func readInteractions() -> [KeychainReadInteraction] {
+		lock.lock()
+		defer { lock.unlock() }
+		return interactions
 	}
 }

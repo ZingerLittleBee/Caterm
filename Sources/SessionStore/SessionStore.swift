@@ -6,6 +6,7 @@ import os
 import SSHCommandBuilder
 import SSHCredentialContract
 import ServerSyncClient
+import SessionHistory
 
 // We deliberately import Combine (not SwiftUI/AppKit) here so the public `Host`
 // from SSHCommandBuilder doesn't collide with Foundation.NSHost. ObservableObject
@@ -59,6 +60,10 @@ public final class SessionStore: ObservableObject {
         /// at `openTab` time so `runConnection` passes the correct value to
         /// `SSHCommandBuilder.build` when building chain commands.
         public var installTerminfo: Bool = false
+		/// Authentication behavior captured when the tab opens. Saved hosts use
+		/// their configured credential; one-time connections let OpenSSH prompt.
+		public var authenticationMode: SSHAuthenticationMode = .configuredCredential
+		public var historyEntryID: UUID?
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
@@ -66,18 +71,33 @@ public final class SessionStore: ObservableObject {
         }
         /// Convenience initialiser for pre-failed tabs created synchronously
         /// in `openTab` when chain resolution or credential pre-check fails.
-        init(id: UUID, host: SSHHost, failedWith kind: FailureKind) {
+        init(
+			id: UUID,
+			host: SSHHost,
+			failedWith kind: FailureKind,
+			historyEntryID: UUID? = nil
+		) {
             self.id = id
             self.host = host
             self.state = .failed(kind)
+			self.historyEntryID = historyEntryID
         }
         /// Convenience initialiser for happy-path tabs that carry a pre-resolved chain.
-        init(id: UUID, host: SSHHost, resolvedChain: [SSHHost], installTerminfo: Bool = false) {
+        init(
+			id: UUID,
+			host: SSHHost,
+			resolvedChain: [SSHHost],
+			installTerminfo: Bool = false,
+			authenticationMode: SSHAuthenticationMode = .configuredCredential,
+			historyEntryID: UUID? = nil
+		) {
             self.id = id
             self.host = host
             self.state = .idle
             self.resolvedChain = resolvedChain
             self.installTerminfo = installTerminfo
+			self.authenticationMode = authenticationMode
+			self.historyEntryID = historyEntryID
         }
     }
 
@@ -118,8 +138,9 @@ public final class SessionStore: ObservableObject {
 
     /// Combine signal for "user-driven local hosts mutation just persisted".
     /// `HostSyncStore` debounces this to drive auto-sync. Only `addHost`,
-    /// `updateHost`, and `deleteHost` emit — credential-only changes and
-    /// the apply ops from a sync pass deliberately do NOT (spec §3.2).
+    /// `updateHost`, `updateHosts`, and `deleteHost` emit — credential-only
+    /// changes and the apply ops from a sync pass deliberately do NOT
+    /// (spec §3.2).
     private let mutationsForSyncSubject = PassthroughSubject<Void, Never>()
     public var mutationsForSync: AnyPublisher<Void, Never> {
         mutationsForSyncSubject.eraseToAnyPublisher()
@@ -133,6 +154,7 @@ public final class SessionStore: ObservableObject {
 	let keychain: KeychainStore
 	public let credentialMaterialStore: SessionCredentialMaterialStore
 	let managedKeyStore: ManagedKeyStore
+	private var hostDeletionOutbox: HostDeletionOutbox
 
     /// Optional ControlMaster manager used to tear down per-host shared SSH
     /// connections when the last tab for a host closes (after a grace
@@ -147,6 +169,7 @@ public final class SessionStore: ObservableObject {
 
 	private let preflight: PreflightProbing
 	private let configSink: SSHConfigSink
+	private let historyRecorder: SessionHistoryRecording?
 
 	/// Per-tab attempt token — bumped on every `startConnection` invocation
 	/// so a stale async probe outcome from a cancelled retry cannot mutate
@@ -186,7 +209,8 @@ public final class SessionStore: ObservableObject {
 		controlMasterManager: ControlMasterTearDowning? = nil,
 		preflight: PreflightProbing = Preflight(),
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
-		managedKeyStore: ManagedKeyStore = ManagedKeyStore()
+		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
+		historyRecorder: SessionHistoryRecording? = nil
 	) {
 		self.init(
 			askpassPath: askpassPath,
@@ -199,7 +223,8 @@ public final class SessionStore: ObservableObject {
 			preflight: preflight,
 			configSink: configSink,
 			managedKeyStore: managedKeyStore,
-			credentialMaterialStore: nil
+			credentialMaterialStore: nil,
+			historyRecorder: historyRecorder
 		)
 	}
 
@@ -214,7 +239,8 @@ public final class SessionStore: ObservableObject {
 		preflight: PreflightProbing = Preflight(),
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
 		managedKeyStore: ManagedKeyStore,
-		credentialMaterialStore: SessionCredentialMaterialStore?
+		credentialMaterialStore: SessionCredentialMaterialStore?,
+		historyRecorder: SessionHistoryRecording? = nil
 	) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
@@ -223,6 +249,7 @@ public final class SessionStore: ObservableObject {
         self.hostsURL = hostsURL
         self.keychain = keychain
 		self.managedKeyStore = managedKeyStore
+		self.hostDeletionOutbox = HostDeletionOutbox(hostsURL: hostsURL)
 		if let credentialMaterialStore {
 			precondition(
 				credentialMaterialStore.managedKeyStore === managedKeyStore,
@@ -239,6 +266,7 @@ public final class SessionStore: ObservableObject {
         self.controlMasterManager = controlMasterManager
         self.preflight = preflight
         self.configSink = configSink
+		self.historyRecorder = historyRecorder
         do {
             self.hosts = try HostPersistence.load(from: hostsURL)
         } catch {
@@ -265,15 +293,89 @@ public final class SessionStore: ObservableObject {
         mutationsForSyncSubject.send()
     }
 
+    /// Persists a user-driven batch as one atomic hosts.json replacement and
+    /// emits one sync mutation. Device-local credential state is preserved.
+    public func updateHosts(_ updatedHosts: [SSHHost]) throws {
+        guard !updatedHosts.isEmpty else { return }
+        var updatesByID: [UUID: SSHHost] = [:]
+        for host in updatedHosts {
+            updatesByID[host.id] = host
+        }
+
+        let timestamp = Date()
+        var didUpdate = false
+        var next = hosts
+        for index in next.indices {
+            guard var updated = updatesByID[next[index].id] else { continue }
+            updated.credential = next[index].credential
+            updated.credentialMaterialDirty = next[index].credentialMaterialDirty
+            updated.updatedAt = timestamp
+            next[index] = updated
+            didUpdate = true
+        }
+        guard didUpdate else { return }
+
+        try HostPersistence.save(next, to: hostsURL)
+        hosts = next
+        mutationsForSyncSubject.send()
+    }
+
+    public func pendingRemoteHostDeletionIDs() throws -> [String] {
+        try hostDeletionOutbox.pendingIDs()
+    }
+
+    public func clearPendingRemoteHostDeletion(serverID: String) throws {
+        try hostDeletionOutbox.remove(serverID)
+    }
+
     public func deleteHost(id: UUID) async throws {
-        guard hosts.contains(where: { $0.id == id }) else { return }
-		let commit = try await credentialMaterialStore.beginDeletion(for: id)
+        try await deleteHost(id: id, enqueueRemoteDeletion: true)
+    }
+
+    public func applyRemoteHostDeletion(id: UUID) async throws {
+        try await deleteHost(id: id, enqueueRemoteDeletion: false)
+    }
+
+    private func deleteHost(
+        id: UUID,
+        enqueueRemoteDeletion: Bool
+    ) async throws {
+        guard let host = hosts.first(where: { $0.id == id }) else { return }
+        let serverID = enqueueRemoteDeletion ? host.serverId : nil
+        let commit = try await credentialMaterialStore.beginDeletion(for: id)
+        var insertedDeletionIntent = false
+        if let serverID {
+            do {
+                insertedDeletionIntent = try hostDeletionOutbox.insert(serverID)
+            } catch {
+                let outboxError = error
+                do {
+                    try await credentialMaterialStore.rollbackDeletion(commit)
+                } catch {
+                    let rollbackDescription = String(describing: error)
+                    Self.log.error(
+                        "credential deletion rollback failed: \(id, privacy: .public): \(rollbackDescription, privacy: .public)"
+                    )
+                }
+                throw outboxError
+            }
+        }
         var updated = hosts
         updated.removeAll { $0.id == id }
         do {
             try HostPersistence.save(updated, to: hostsURL)
         } catch {
             let persistenceError = error
+            if insertedDeletionIntent, let serverID {
+                do {
+                    try hostDeletionOutbox.remove(serverID)
+                } catch {
+                    let rollbackDescription = String(describing: error)
+                    Self.log.error(
+                        "host deletion outbox rollback failed: \(serverID, privacy: .public): \(rollbackDescription, privacy: .public)"
+                    )
+                }
+            }
             do {
                 try await credentialMaterialStore.rollbackDeletion(commit)
             } catch {
@@ -286,8 +388,10 @@ public final class SessionStore: ObservableObject {
         }
         hosts = updated
         await credentialMaterialStore.finalizeDeletion(commit)
-		credentialAvailabilityRevision &+= 1
-        mutationsForSyncSubject.send()
+        credentialAvailabilityRevision &+= 1
+        if enqueueRemoteDeletion {
+            mutationsForSyncSubject.send()
+        }
     }
 
 	/// Test seam for seeding Keychain-backed connection fixtures. Production
@@ -305,14 +409,27 @@ public final class SessionStore: ObservableObject {
     // MARK: - Tabs
 
     @discardableResult
-    public func openTab(host: SSHHost, installTerminfo: Bool = false) -> UUID {
+    public func openTab(
+		host: SSHHost,
+		installTerminfo: Bool = false,
+		authenticationMode: SSHAuthenticationMode = .configuredCredential
+	) -> UUID {
+		let historyEntryID = beginHistory(for: host)
         // 1. Resolve the jump-host chain. Fail-fast if broken or cyclic.
         let chainResolution = ChainResolver(hosts: hosts).resolve(host)
         guard chainResolution.isComplete else {
             let id = UUID()
             let msg = "Jump host chain is broken — edit host to fix"
-            tabs.append(Tab(id: id, host: host,
-                            failedWith: .networkUnreachable(.other(code: 0, message: msg))))
+			let failure = FailureKind.networkUnreachable(
+				.other(code: 0, message: msg)
+			)
+            tabs.append(Tab(
+				id: id,
+				host: host,
+				failedWith: failure,
+				historyEntryID: historyEntryID
+			))
+			finishHistory(id: historyEntryID, outcome: .failed)
             return id
         }
         let chain = chainResolution.connectionOrder
@@ -332,7 +449,9 @@ public final class SessionStore: ObservableObject {
         controlMasterManager?.register(hostId: host.id, destination: destination)
         let id = UUID()
         tabs.append(Tab(id: id, host: host, resolvedChain: chain,
-                        installTerminfo: installTerminfo))
+						installTerminfo: installTerminfo,
+						authenticationMode: authenticationMode,
+						historyEntryID: historyEntryID))
         startConnection(tabId: id)
         return id
     }
@@ -350,6 +469,10 @@ public final class SessionStore: ObservableObject {
     /// full SSH handshake cost again.
     public func closeTab(tabId: UUID) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+		let historyOutcome: SessionHistoryOutcome = tabs[idx].hadConnected
+			? .completed
+			: .cancelled
+		finishHistory(id: tabs[idx].historyEntryID, outcome: historyOutcome)
         // Cancel any in-flight startConnection probe for this tab so we don't
         // leak the underlying NWConnection while the user moves on.
         pendingStartTasks.removeValue(forKey: tabId)?.cancel()
@@ -427,7 +550,8 @@ public final class SessionStore: ObservableObject {
             askpassPath: askpassPath,
             knownHostsCaterm: knownHostsCaterm,
             knownHostsUser: knownHostsUser,
-            installTerminfo: tab.installTerminfo
+			installTerminfo: tab.installTerminfo,
+			authenticationMode: tab.authenticationMode
         )
         var env = cmd.env
         if let accessGroup {
@@ -624,8 +748,14 @@ public final class SessionStore: ObservableObject {
 		// Clean any ssh_config written by the previous attempt before starting
 		// a fresh connection. Without this the old URL would be leaked when
 		// `startConnection` overwrites `sshConfigURL` with a new value.
-		if let idx = tabs.firstIndex(where: { $0.id == tabId }),
-		   let oldURL = tabs[idx].sshConfigURL {
+		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
+		let previous = tabs[idx]
+		let previousOutcome: SessionHistoryOutcome = previous.hadConnected
+			? .completed
+			: .cancelled
+		finishHistory(id: previous.historyEntryID, outcome: previousOutcome)
+		let historyEntryID = beginHistory(for: previous.host)
+		if let oldURL = previous.sshConfigURL {
 			configSink.cleanup(oldURL)
 			tabs[idx].sshConfigURL = nil
 			tabs[idx].chainOutput = nil
@@ -633,6 +763,8 @@ public final class SessionStore: ObservableObject {
 		update(tabId) {
 			$0.lastFailure = nil
 			$0.state = .idle
+			$0.hadConnected = false
+			$0.historyEntryID = historyEntryID
 		}
 		startConnection(tabId: tabId)
 	}
@@ -715,22 +847,84 @@ public final class SessionStore: ObservableObject {
 
     private func update(_ tabId: UUID, _ mutate: (inout Tab) -> Void) {
         guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
-        var tab = tabs[idx]
+		let previous = tabs[idx]
+		var tab = previous
         mutate(&tab)
         tabs[idx] = tab
+		if !previous.hadConnected, tab.hadConnected {
+			markHistoryConnected(id: tab.historyEntryID)
+		}
+		if case let .failed(failure) = tab.state {
+			if case .failed = previous.state {
+				return
+			}
+			let outcome: SessionHistoryOutcome = failure == .cleanExit
+				? .completed
+				: .failed
+			finishHistory(id: tab.historyEntryID, outcome: outcome)
+		}
     }
+
+	private func beginHistory(for host: SSHHost) -> UUID? {
+		guard let historyRecorder else { return nil }
+		let isSavedHost = hosts.contains(where: { $0.id == host.id })
+		do {
+			return try historyRecorder.begin(
+				host: SessionHistoryHost(
+					savedHostID: isSavedHost ? host.id : nil,
+					displayName: host.name,
+					hostname: host.hostname,
+					port: host.port,
+					username: host.username
+				),
+				connectionKind: isSavedHost ? .savedHost : .oneTime,
+				at: Date()
+			)
+		} catch {
+			Self.log.error("failed to begin session history: \(String(describing: error), privacy: .public)")
+			return nil
+		}
+	}
+
+	private func markHistoryConnected(id: UUID?) {
+		guard let id, let historyRecorder else { return }
+		do {
+			try historyRecorder.markConnected(id: id, at: Date())
+		} catch {
+			Self.log.error("failed to update session history: \(String(describing: error), privacy: .public)")
+		}
+	}
+
+	private func finishHistory(
+		id: UUID?,
+		outcome: SessionHistoryOutcome
+	) {
+		guard let id, let historyRecorder else { return }
+		do {
+			try historyRecorder.finish(id: id, outcome: outcome, at: Date())
+		} catch {
+			Self.log.error("failed to finish session history: \(String(describing: error), privacy: .public)")
+		}
+	}
 
     // MARK: - Sync support (v1.1)
 
     /// True when this host has no usable local credential. Pulled hosts always
     /// fall here (no Keychain item under their local UUID). Local-only `.agent`
     /// hosts are always false. See spec §7.1.2 needsCredentialSetup.
-    public func needsCredentialSetup(_ host: SSHHost) async -> Bool {
+	public func needsCredentialSetup(
+		_ host: SSHHost,
+		interaction: KeychainReadInteraction = .userInitiated
+	) async -> Bool {
 		var source = hosts.first(where: { $0.id == host.id })?.credential
 			?? host.credential
 		while true {
 			guard let check = await credentialMaterialStore
-				.beginCredentialSetupCheck(for: host.id, source: source) else {
+				.beginCredentialSetupCheck(
+					for: host.id,
+					source: source,
+					interaction: interaction
+				) else {
 				return true
 			}
 			guard let currentSource = hosts.first(where: {
@@ -761,8 +955,8 @@ public final class SessionStore: ObservableObject {
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
-    /// Replace metadata fields (name/hostname/port/username/updatedAt/jumpHostServerId)
-    /// without touching credential or serverId. Used when a remote update lands.
+    /// Replaces synced metadata without touching credential or serverId. Used
+    /// when a remote update lands.
     public func applyRemoteMetadata(localHostId: UUID, remote: RemoteHost) throws {
         guard let idx = hosts.firstIndex(where: { $0.id == localHostId }) else { return }
         hosts[idx].name = remote.name
@@ -774,6 +968,7 @@ public final class SessionStore: ObservableObject {
         hosts[idx].jumpHostServerId = remote.jumpHostServerId
         hosts[idx].forwards = remote.forwards
         hosts[idx].icon = remote.icon
+        hosts[idx].organization = remote.organization
         try HostPersistence.save(hosts, to: hostsURL)
     }
 
@@ -791,7 +986,8 @@ public final class SessionStore: ObservableObject {
             jumpHostId: hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id,
             jumpHostServerId: remote.jumpHostServerId,
             forwards: remote.forwards,
-            icon: remote.icon
+            icon: remote.icon,
+            organization: remote.organization
         )
         hosts.append(h)
         backfillJumpHostIds(serverId: remote.id, in: &hosts)

@@ -11,6 +11,7 @@ public enum SnippetStoreError: Error, Equatable {
 private struct SnippetsEnvelope: Codable {
 	let schemaVersion: Int
 	let snippets: [Snippet]
+	let locallyDirtySnippetIDs: [UUID]?
 }
 
 private struct OutboxEnvelope: Codable {
@@ -22,6 +23,9 @@ private struct OutboxEnvelope: Codable {
 public final class SnippetStore: ObservableObject {
 	@Published public private(set) var snippets: [Snippet] = []
 	@Published public private(set) var pendingDeletedSnippetIDs: Set<UUID> = []
+	/// Local edits awaiting a successful CloudKit acknowledgement. Stored in
+	/// snippets.json with the content so a relaunch cannot lose push intent.
+	@Published public private(set) var locallyDirtySnippetIDs: Set<UUID> = []
 
 	private let snippetsURL: URL
 	private let outboxURL: URL
@@ -37,6 +41,7 @@ public final class SnippetStore: ObservableObject {
 		if let data = try? Data(contentsOf: snippetsURL) {
 			let env = try JSONDecoder().decode(SnippetsEnvelope.self, from: data)
 			self.snippets = env.snippets
+			self.locallyDirtySnippetIDs = Set(env.locallyDirtySnippetIDs ?? [])
 		}
 		if let data = try? Data(contentsOf: outboxURL) {
 			let env = try JSONDecoder().decode(OutboxEnvelope.self, from: data)
@@ -45,6 +50,8 @@ public final class SnippetStore: ObservableObject {
 	}
 
 	public func upsert(_ s: Snippet) throws {
+		let originalSnippets = snippets
+		let originalDirtyIDs = locallyDirtySnippetIDs
 		var copy = s
 		if let existingIdx = snippets.firstIndex(where: { $0.id == s.id }) {
 			let existing = snippets[existingIdx]
@@ -55,11 +62,19 @@ public final class SnippetStore: ObservableObject {
 		} else {
 			snippets.append(copy)
 		}
-		try writeSnippets()
+		locallyDirtySnippetIDs.insert(copy.id)
+		do {
+			try writeSnippets()
+		} catch {
+			snippets = originalSnippets
+			locallyDirtySnippetIDs = originalDirtyIDs
+			throw error
+		}
 	}
 
 	public func delete(id: UUID) throws {
 		snippets.removeAll { $0.id == id }
+		locallyDirtySnippetIDs.remove(id)
 		pendingDeletedSnippetIDs.insert(id)
 		try writeSnippets()
 		try writeOutbox()
@@ -73,6 +88,7 @@ public final class SnippetStore: ObservableObject {
 	public func wipeLocal() throws {
 		snippets = []
 		pendingDeletedSnippetIDs = []
+		locallyDirtySnippetIDs = []
 		try writeSnippets()
 		try writeOutbox()
 	}
@@ -89,10 +105,9 @@ public final class SnippetStore: ObservableObject {
 
 	/// Apply a server-authoritative snippet using LWW precedence.
 	///
-	/// Returns `true` when the remote snippet was written (remote wins or new),
-	/// `false` when the local copy is newer under the shared precedence and the
-	/// write was skipped. The caller can use the return value to decide whether to clear
-	/// a dirty flag — it should only clear when `true` (remote was applied).
+	/// Returns `true` when the remote snippet and its clean acknowledgement were
+	/// persisted (remote wins or new), or `false` when the local copy is newer
+	/// under the shared precedence and remains dirty.
 	///
 	/// Precedence order (owned by `SnippetMergePolicy`):
 	///   1. revision (higher wins)
@@ -101,6 +116,8 @@ public final class SnippetStore: ObservableObject {
 	///   4. tie → remote (cloud) wins
 	@discardableResult
 	public func applyRemote(_ s: Snippet) throws -> Bool {
+		let originalSnippets = snippets
+		let originalDirtyIDs = locallyDirtySnippetIDs
 		let index = SnippetMergePolicy.makeIdentityIndex(snippets)
 		if let local = SnippetMergePolicy.match(s, in: index),
 		   let idx = snippets.firstIndex(where: { $0.id == local.id }) {
@@ -111,7 +128,14 @@ public final class SnippetStore: ObservableObject {
 		} else {
 			snippets.append(s)
 		}
-		try writeSnippets()
+		locallyDirtySnippetIDs.remove(s.id)
+		do {
+			try writeSnippets()
+		} catch {
+			snippets = originalSnippets
+			locallyDirtySnippetIDs = originalDirtyIDs
+			throw error
+		}
 		return true
 	}
 
@@ -120,6 +144,7 @@ public final class SnippetStore: ObservableObject {
 	public func applyRemoteTombstone(id: UUID) throws {
 		snippets.removeAll { $0.id == id }
 		pendingDeletedSnippetIDs.remove(id)
+		locallyDirtySnippetIDs.remove(id)
 		try writeSnippets()
 		try writeOutbox()
 	}
@@ -127,7 +152,13 @@ public final class SnippetStore: ObservableObject {
 	// MARK: - Persistence
 
 	private func writeSnippets() throws {
-		let env = SnippetsEnvelope(schemaVersion: Self.schemaVersion, snippets: snippets)
+		let env = SnippetsEnvelope(
+			schemaVersion: Self.schemaVersion,
+			snippets: snippets,
+			locallyDirtySnippetIDs: locallyDirtySnippetIDs.sorted {
+				$0.uuidString < $1.uuidString
+			}
+		)
 		try atomicWrite(JSONEncoder().encode(env), to: snippetsURL)
 	}
 

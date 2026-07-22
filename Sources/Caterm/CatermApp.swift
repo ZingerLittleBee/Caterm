@@ -14,6 +14,7 @@ import SFTPCommandBuilder
 import SSHCommandBuilder
 import SSHCredentialContract
 import ServerSyncClient
+import SessionHistory
 import SessionStore
 import SettingsStore
 import SettingsSyncStore
@@ -26,6 +27,7 @@ import TerminalEngine
 struct CatermApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
   @StateObject var store: SessionStore
+  @StateObject private var historyStore: SessionHistoryStore
   @StateObject var syncStore: HostSyncStore
   @StateObject var preferences: SyncPreferences
   @StateObject var fileTransferStore: FileTransferStore
@@ -54,7 +56,12 @@ struct CatermApp: App {
     self.cloudSyncDisabled = cloudSyncDisabled
     try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
     let mngs = ManagedKeyStore()
-    let session = makeStore(managedKeyStore: mngs)
+    let history = makeSessionHistoryStore()
+    let session = makeStore(
+      managedKeyStore: mngs,
+      historyRecorder: history
+    )
+    _historyStore = StateObject(wrappedValue: history)
     let surfaceRegistry = SurfaceRegistry()
     _surfaceRegistry = StateObject(wrappedValue: surfaceRegistry)
     let cloudSync = CloudSyncBootstrap.make(disabled: cloudSyncDisabled)
@@ -310,6 +317,7 @@ struct CatermApp: App {
         }
       }
       .environmentObject(store)
+      .environmentObject(historyStore)
       .environmentObject(syncStore)  // NEW (v1.4)
       .environmentObject(preferences)  // NEW (v1.4)
       .environmentObject(fileTransferStore)
@@ -318,7 +326,24 @@ struct CatermApp: App {
       .environmentObject(surfaceRegistry)
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
-      .background(OpenTabBridge(store: store))
+      .background(
+        SyncSettingsCommandBridge {
+          let preferencesWindow = PreferencesWindowController.shared
+          preferencesWindow.use(settingsStore: settingsStore)
+          preferencesWindow.syncEnvironment = SyncEnvironment(
+            authSession: icloudSession,
+            syncStore: syncStore,
+            preferences: preferences,
+            credentialSync: credentialSync,
+            credentialSyncCoordinator: credentialSyncCoordinator,
+            sessionStore: store,
+            snippetStore: snippetStore,
+            bookmarkStore: remoteBookmarks
+          )
+          preferencesWindow.activate(.cloudSync)
+          preferencesWindow.showAndActivate()
+        }
+      )
       // .task closure is sync — syncIfSignedIn() returns immediately;
       // the actual sync work runs as an unstructured Task owned by
       // HostSyncStore's scheduler (NOT by this .task modifier). View
@@ -361,52 +386,9 @@ struct CatermApp: App {
         guard !cloudSyncDisabled else { return }
         accountChangeSyncCoordinator.enqueue()
       }
-      .onReceive(
-        NotificationCenter.default
-          .publisher(for: .catermOpenSyncSettings)
-      ) { _ in
-        // Sync settings now live as a tab inside the Preferences
-        // window (Task 25). SyncStatusRow still posts this
-        // notification when the user clicks the indicator; route
-        // it through to the unified Preferences surface.
-        let preferencesWindow = PreferencesWindowController.shared
-        preferencesWindow.use(settingsStore: settingsStore)
-        preferencesWindow.syncEnvironment = SyncEnvironment(
-          authSession: icloudSession,
-          syncStore: syncStore,
-          preferences: preferences,
-          credentialSync: credentialSync,
-          credentialSyncCoordinator: credentialSyncCoordinator,
-          sessionStore: store,
-          snippetStore: snippetStore,
-          bookmarkStore: remoteBookmarks
-        )
-        preferencesWindow.activate(.cloudSync)
-        preferencesWindow.showAndActivate()
-      }
     }
     .commands {
-      // ⌘N opens a fresh LandingView window; ⌘T opens a fresh
-      // LandingView as a new *tab* (macOS auto-tabs new windows when
-      // `allowsAutomaticWindowTabbing` is on — AppDelegate). Both route
-      // through `.catermNewWindow` → `OpenTabBridge` →
-      // `openWindow(value: UUID())`, which renders LandingView (the
-      // host-selection sidebar). "New Host…" keeps the explicit
-      // add-host sheet but no longer owns ⌘T.
-      CommandGroup(replacing: .newItem) {
-        Button("New Window") {
-          NotificationCenter.default.post(name: .catermNewWindow, object: nil)
-        }
-        .keyboardShortcut("n", modifiers: .command)
-        Button("New Tab") {
-          NotificationCenter.default.post(name: .catermNewWindow, object: nil)
-        }
-        .keyboardShortcut("t", modifiers: .command)
-        Button("New Host…") {
-          NotificationCenter.default.post(name: .catermAddHost, object: nil)
-        }
-        .keyboardShortcut("t", modifiers: [.command, .shift])
-      }
+      CatermWindowCommands()
       // ⌘, opens the unified Preferences window (Task 25).
       // "Edit Advanced Config…" inside General still reveals the TOML
       // config in Finder for power users, so no functionality is lost.
@@ -473,12 +455,14 @@ struct CatermApp: App {
         }
         .keyboardShortcut("b", modifiers: .command)
       }
-      // ⌘⇧F toggles the per-window Files drawer. The notification is
-      // observed by `MainWindow`; broadcasting via NotificationCenter
-      // avoids threading window-local @State through App scene.
+      // ⌘⇧F toggles the key window's Files drawer. The target window travels
+      // with the notification so background tabs ignore the command.
       CommandGroup(after: .toolbar) {
         Button("Toggle Files Drawer") {
-          NotificationCenter.default.post(name: .toggleFileDrawer, object: nil)
+          NotificationCenter.default.post(
+            name: .toggleFileDrawer,
+            object: NSApp.keyWindow
+          )
         }
         .keyboardShortcut("f", modifiers: [.command, .shift])
       }
@@ -516,44 +500,86 @@ struct CatermApp: App {
         CommandMenu("Debug") {
           Button("Open Tab for First Host") {
             NotificationCenter.default.post(
-              name: .catermDebugOpenFirstHost, object: nil
+              name: .catermDebugOpenFirstHost,
+              object: NSApp.keyWindow
             )
           }
           .keyboardShortcut("o", modifiers: [.control, .option, .command])
         }
       #endif
     }
+    Window("Connection History", id: SessionHistoryWindow.id) {
+      SessionHistoryView()
+        .environmentObject(store)
+        .environmentObject(historyStore)
+        .environmentObject(preferences)
+    }
+    .defaultSize(width: 840, height: 520)
+    Window("Hosts", id: HostManagerWindow.id) {
+      HostManagerView()
+        .environmentObject(store)
+        .environmentObject(preferences)
+    }
+    .defaultSize(width: 1040, height: 620)
+    Window("Port Forwarding", id: PortForwardWorkspaceWindow.id) {
+      PortForwardWorkspaceView()
+        .environmentObject(store)
+        .environmentObject(preferences)
+    }
+    .defaultSize(width: 860, height: 520)
+    Window("Known Hosts", id: KnownHostsWindow.id) {
+      KnownHostsManagerView(
+        catermURL: URL(fileURLWithPath: store.knownHostsCaterm),
+        userURL: URL(fileURLWithPath: store.knownHostsUser)
+      )
+    }
+    .defaultSize(width: 920, height: 520)
   }
 }
 
 extension Notification.Name {
   static let catermAddHost = Notification.Name("CatermAddHostNotification")
-  static let catermNewWindow = Notification.Name("CatermNewWindowNotification")
 }
 
-/// Invisible bridge view that lets us call `openWindow(value:)` (which needs
-/// `@Environment(\.openWindow)` from inside a SwiftUI View) in response to
-/// the `.catermNewWindow` notification (⌘N).
-///
-/// Tab opening from the host list is NOT routed through here — it goes
-/// through `HostListSidebar.onOpenTab`, so the owning window can decide
-/// whether to swap its own tab identity (Landing case) or spawn a sibling
-/// (MainWindow case). Routing it through a global notification used to
-/// always spawn a sibling, which left the Landing window around as a blank
-/// tab next to the new SSH terminal tab.
-struct OpenTabBridge: View {
-  @Environment(\.openWindow) var openWindow
-  let store: SessionStore
+/// App-wide window commands use SwiftUI's scene action directly. A
+/// NotificationCenter bridge here would be mounted once per WindowGroup
+/// scene, so one menu action would be multiplied by the number of live tabs.
+struct CatermWindowCommands: Commands {
+  @Environment(\.openWindow) private var openWindow
 
-  var body: some View {
-    Color.clear
-      .frame(width: 0, height: 0)
-      .onReceive(NotificationCenter.default.publisher(for: .catermNewWindow)) { _ in
-        // A fresh UUID that is not in store.tabs causes WindowGroup to
-        // render LandingView rather than MainWindow — effectively a new
-        // blank window in the tab bar.
+  var body: some Commands {
+    CommandGroup(replacing: .newItem) {
+      Button("New Window") {
         openWindow(value: UUID())
       }
+      .keyboardShortcut("n", modifiers: .command)
+      Button("New Tab") {
+        openWindow(value: UUID())
+      }
+      .keyboardShortcut("t", modifiers: .command)
+      Button("New Host…") {
+        NotificationCenter.default.post(
+          name: .catermAddHost,
+          object: NSApp.keyWindow
+        )
+      }
+      .keyboardShortcut("t", modifiers: [.command, .shift])
+    }
+    CommandGroup(after: .toolbar) {
+      Button("Connection History") {
+        openWindow(id: SessionHistoryWindow.id)
+      }
+      .keyboardShortcut("y", modifiers: [.command, .shift])
+      Button("Manage Hosts") {
+        openWindow(id: HostManagerWindow.id)
+      }
+      Button("Port Forwarding") {
+        openWindow(id: PortForwardWorkspaceWindow.id)
+      }
+      Button("Known Hosts") {
+        openWindow(id: KnownHostsWindow.id)
+      }
+    }
   }
 }
 
@@ -621,16 +647,24 @@ struct LandingView: View {
 }
 
 @MainActor
-private func makeStore(managedKeyStore: ManagedKeyStore) -> SessionStore {
+private func makeStore(
+  managedKeyStore: ManagedKeyStore,
+  historyRecorder: SessionHistoryRecording
+) -> SessionStore {
   let supportDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     .appendingPathComponent("Caterm", isDirectory: true)
   try? FileManager.default.createDirectory(
     at: supportDir,
     withIntermediateDirectories: true)
-  let knownCaterm = supportDir.appendingPathComponent("known_hosts").path
-  let knownUser = ("~/.ssh/known_hosts" as NSString).expandingTildeInPath
-  let hostsURL = supportDir.appendingPathComponent("hosts.json")
+  let environment = ProcessInfo.processInfo.environment
+  let knownCaterm = environment["CATERM_KNOWN_HOSTS_PATH"]
+    ?? supportDir.appendingPathComponent("known_hosts").path
+  let knownUser = environment["CATERM_USER_KNOWN_HOSTS_PATH"]
+    ?? ("~/.ssh/known_hosts" as NSString).expandingTildeInPath
+  let hostsURL = environment["CATERM_HOSTS_PATH"]
+    .map(URL.init(fileURLWithPath:))
+    ?? supportDir.appendingPathComponent("hosts.json")
 
   // Dev: askpass binary path can be overridden via env. In a packaged .app
   // it would sit alongside the main binary in Contents/MacOS/.
@@ -659,5 +693,30 @@ private func makeStore(managedKeyStore: ManagedKeyStore) -> SessionStore {
     hostsURL: hostsURL,
     keychain: keychain,
     controlMasterManager: ControlMasterManager.shared,
-    managedKeyStore: managedKeyStore)
+    managedKeyStore: managedKeyStore,
+    historyRecorder: historyRecorder)
+}
+
+@MainActor
+private func makeSessionHistoryStore() -> SessionHistoryStore {
+  let environment = ProcessInfo.processInfo.environment
+  let fileURL: URL
+  if let overridePath = environment["CATERM_SESSION_HISTORY_PATH"] {
+    fileURL = URL(fileURLWithPath: overridePath)
+  } else {
+    let supportDirectory = FileManager.default
+      .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+      .first
+      ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    fileURL = supportDirectory
+      .appendingPathComponent("Caterm", isDirectory: true)
+      .appendingPathComponent("session-history.json")
+  }
+  let store = SessionHistoryStore(fileURL: fileURL)
+  do {
+    try store.load(recoveringAt: Date())
+  } catch {
+    NSLog("[CatermApp] Session history load failed: %@", String(describing: error))
+  }
+  return store
 }

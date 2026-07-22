@@ -61,8 +61,19 @@ let package = Package(
             path: "Sources/SyncScheduler"
         ),
         .target(
+            name: "SessionHistory",
+            path: "Sources/SessionHistory"
+        ),
+        .target(
+            name: "KnownHostsStore",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/KnownHostsStore"
+        ),
+        .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory"],
             path: "Sources/SessionStore"
         ),
         .target(
@@ -146,7 +157,7 @@ let package = Package(
         ),
         .target(
             name: "CredentialSync",
-            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore"],
+            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore", "KeychainStore"],
             path: "Sources/CredentialSync"
         ),
         .target(
@@ -187,6 +198,8 @@ let package = Package(
                 "SSHCommandBuilder",
                 "SSHCredentialContract",
                 "SessionStore",
+                "SessionHistory",
+                "KnownHostsStore",
                 "KeychainStore",
                 "ConfigStore",
                 "ServerSyncClient",
@@ -250,8 +263,13 @@ let package = Package(
         ),
         .testTarget(
             name: "SessionStoreTests",
-            dependencies: ["SessionStore", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder"],
+            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder"],
             path: "Tests/SessionStoreTests"
+        ),
+        .testTarget(
+            name: "SessionHistoryTests",
+            dependencies: ["SessionHistory"],
+            path: "Tests/SessionHistoryTests"
         ),
         .testTarget(
             name: "ConfigStoreTests",
@@ -354,8 +372,13 @@ let package = Package(
             path: "Tests/HostKeyProvisioningTests"
         ),
         .testTarget(
+            name: "KnownHostsStoreTests",
+            dependencies: ["KnownHostsStore"],
+            path: "Tests/KnownHostsStoreTests"
+        ),
+        .testTarget(
             name: "CredentialSyncTests",
-            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "CredentialSyncStore"],
+            dependencies: ["CredentialSync", "ManagedKeyStore", "KeychainStore", "SessionStore", "ServerSyncClient", "SSHCommandBuilder", "SSHCredentialContract", "CredentialSyncTypes", "CredentialSyncStore"],
             path: "Tests/CredentialSyncTests"
         ),
         .testTarget(

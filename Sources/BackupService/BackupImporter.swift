@@ -57,6 +57,9 @@ public enum BackupImporter {
 				local.username = a.username
 				local.forwards = a.forwards.map(portForward(from:))
 				local.icon = a.icon
+				local.organization = HostOrganization(
+					groupPath: a.groupPath ?? [], tags: a.tags ?? []
+				)
 				try sessionStore.updateHost(local)
 				summary.hostsUpdated += 1
 			case .credentialsOnly:
@@ -173,7 +176,10 @@ public enum BackupImporter {
 			createdAt: a.createdAt,
 			updatedAt: a.updatedAt,
 			forwards: a.forwards.map(portForward(from:)),
-			icon: a.icon
+			icon: a.icon,
+			organization: HostOrganization(
+				groupPath: a.groupPath ?? [], tags: a.tags ?? []
+			)
 		)
 	}
 
