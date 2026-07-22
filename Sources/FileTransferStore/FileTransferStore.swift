@@ -11,23 +11,30 @@ public final class FileTransferStore: ObservableObject {
 
 	private let clientForHost: ClientFactory
 	private let localFiles: any LocalTransferFileCoordinating
+	private let didComplete: @Sendable (TransferTask) async -> Void
 	private var perHostQueues: [UUID: [TaskId]] = [:]
 	private var perHostBusy: Set<UUID> = []
 	private var perHostHost: [UUID: SSHHost] = [:]
 	private var runningJobs: [TaskId: Task<Void, Never>] = [:]
 
 	/// Creates a transport-independent transfer coordinator.
-	public init(clientForHost: @escaping ClientFactory) {
+	public init(
+		clientForHost: @escaping ClientFactory,
+		didComplete: @escaping @Sendable (TransferTask) async -> Void = { _ in }
+	) {
 		self.clientForHost = clientForHost
 		localFiles = LocalTransferFileCoordinator()
+		self.didComplete = didComplete
 	}
 
 	init(
 		clientForHost: @escaping ClientFactory,
-		localFiles: any LocalTransferFileCoordinating
+		localFiles: any LocalTransferFileCoordinating,
+		didComplete: @escaping @Sendable (TransferTask) async -> Void = { _ in }
 	) {
 		self.clientForHost = clientForHost
 		self.localFiles = localFiles
+		self.didComplete = didComplete
 	}
 
 	/// Preserves the existing macOS composition while adapting OpenSSH SFTP
@@ -126,11 +133,13 @@ public final class FileTransferStore: ObservableObject {
 	}
 
 	public func retry(_ id: TaskId) {
-		guard let index = index(of: id), tasks[index].status == .failed else {
+		guard let index = index(of: id),
+			[.failed, .cancelled].contains(tasks[index].status) else {
 			return
 		}
 		tasks[index].state = .pending
 		tasks[index].attemptCount += 1
+		tasks[index].conflictPolicy = nil
 		perHostQueues[tasks[index].hostId, default: []].append(id)
 		kick(tasks[index].hostId)
 	}
@@ -202,7 +211,6 @@ public final class FileTransferStore: ObservableObject {
 			case .download:
 				try await executeDownload(id: id, client: client)
 			}
-			try Task.checkCancellation()
 			guard let completedIndex = self.index(of: id),
 			      tasks[completedIndex].status == .running else {
 				return
@@ -210,9 +218,16 @@ public final class FileTransferStore: ObservableObject {
 			tasks[completedIndex].state = .completed(
 				tasks[completedIndex].progress
 			)
+			await didComplete(tasks[completedIndex])
 		} catch is CancellationError {
 			markCancelled(id: id)
 		} catch RemoteFileError.cancelled {
+			markCancelled(id: id)
+		} catch RemoteFileError.cleanupFailed(
+			let original,
+			let cleanupMessage
+		) where original == .cancelled {
+			NSLog("[FileTransferStore] Cancel cleanup failed: \(cleanupMessage)")
 			markCancelled(id: id)
 		} catch let failure as RemoteFileError {
 			markFailed(id: id, failure: failure)
@@ -249,6 +264,7 @@ public final class FileTransferStore: ObservableObject {
 			remotePath: destination,
 			isDirectory: isDirectory,
 			resume: task.attemptCount > 0,
+			replaceExisting: task.conflictPolicy == .replace,
 			progress: progressHandler(for: id)
 		)
 		advanceProgress(

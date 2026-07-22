@@ -520,6 +520,7 @@ private actor MutationMobileRemoteFileSession: MobileRemoteFileSession {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		throw RemoteFileError.unsupported(operation: "upload")
@@ -590,6 +591,7 @@ private actor SuspendedMutationMobileRemoteFileSession: MobileRemoteFileSession 
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		throw RemoteFileError.unsupported(operation: "upload")
@@ -631,6 +633,7 @@ private actor StubMobileRemoteFileSession: MobileRemoteFileSession {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		throw RemoteFileError.unsupported(operation: "upload")
@@ -695,6 +698,7 @@ private actor PathAwareMobileRemoteFileSession: MobileRemoteFileSession {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		throw RemoteFileError.unsupported(operation: "upload")

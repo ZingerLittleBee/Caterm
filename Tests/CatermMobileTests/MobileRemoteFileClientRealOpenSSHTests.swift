@@ -6,6 +6,92 @@ import SSHCommandBuilder
 import XCTest
 
 final class MobileRemoteFileClientRealOpenSSHTests: XCTestCase {
+	func testPublicClientTransfersBytesAndReportsProgress() async throws {
+		let fixture = try Self.fixture()
+		let knownHostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-public-transfer-\(UUID().uuidString).json")
+		let client = makeClient(fixture: fixture, knownHostsURL: knownHostsURL)
+		let remotePath = "\(fixture.directory)/public-transfer-\(UUID().uuidString.lowercased()).bin"
+		let workspace = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-public-transfer-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: workspace) }
+		let source = workspace.appendingPathComponent("source.bin")
+		let destination = workspace.appendingPathComponent("destination.bin")
+		let bytes = Data((0..<(384 * 1_024)).map { UInt8($0 % 239) })
+		try bytes.write(to: source)
+		let progress = PublicProgressRecorder()
+
+		do {
+			let upload = try await client.upload(
+				localURL: source,
+				remotePath: remotePath,
+				isDirectory: false,
+				resume: false,
+				replaceExisting: false,
+				progress: { await progress.append($0) }
+			)
+			await client.disconnect()
+			let reconnected = makeClient(
+				fixture: fixture,
+				knownHostsURL: knownHostsURL
+			)
+			let download = try await reconnected.download(
+				remotePath: remotePath,
+				localURL: destination,
+				isDirectory: false,
+				resume: false,
+				progress: { await progress.append($0) }
+			)
+
+			XCTAssertEqual(upload.bytesTransferred, Int64(bytes.count))
+			XCTAssertEqual(download.bytesTransferred, Int64(bytes.count))
+			XCTAssertEqual(try Data(contentsOf: destination), bytes)
+			let isMonotonic = await progress.isMonotonic()
+			XCTAssertTrue(isMonotonic)
+			try await reconnected.delete(remotePath, isDirectory: false)
+			await reconnected.disconnect()
+		} catch {
+			try? await client.delete(remotePath, isDirectory: false)
+			await client.disconnect()
+			throw error
+		}
+	}
+
+	func testPublicClientMapsLocalAndRemoteTransferFailures() async throws {
+		let fixture = try Self.fixture()
+		let knownHostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-public-errors-\(UUID().uuidString).json")
+		let client = makeClient(fixture: fixture, knownHostsURL: knownHostsURL)
+		let workspace = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-public-errors-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: workspace) }
+		_ = try await client.list(fixture.directory)
+
+		await assertRemoteError(.localIO(message: ""), matchingCaseOnly: true) {
+			_ = try await client.upload(
+				localURL: workspace.appendingPathComponent("missing.bin"),
+				remotePath: "\(fixture.directory)/missing.bin",
+				isDirectory: false,
+				resume: false,
+				replaceExisting: false,
+				progress: { _ in }
+			)
+		}
+		let missingRemote = "\(fixture.directory)/missing-\(UUID().uuidString).bin"
+		await assertRemoteError(.notFound(path: missingRemote)) {
+			_ = try await client.download(
+				remotePath: missingRemote,
+				localURL: workspace.appendingPathComponent("download.bin"),
+				isDirectory: false,
+				resume: false,
+				progress: { _ in }
+			)
+		}
+		await client.disconnect()
+	}
+
 	func testPublicClientMutationsSurviveDisconnectAndReconnect() async throws {
 		let fixture = try Self.fixture()
 		let knownHostsURL = FileManager.default.temporaryDirectory
@@ -57,6 +143,26 @@ final class MobileRemoteFileClientRealOpenSSHTests: XCTestCase {
 		)
 	}
 
+	private func assertRemoteError(
+		_ expected: RemoteFileError,
+		matchingCaseOnly: Bool = false,
+		operation: () async throws -> Void
+	) async {
+		do {
+			try await operation()
+			XCTFail("Expected \(expected)")
+		} catch let error as RemoteFileError {
+			if matchingCaseOnly,
+				case .localIO = expected,
+				case .localIO = error {
+				return
+			}
+			XCTAssertEqual(error, expected)
+		} catch {
+			XCTFail("Expected \(expected), got \(error)")
+		}
+	}
+
 	private struct Fixture {
 		let hostname: String
 		let port: Int
@@ -80,5 +186,21 @@ final class MobileRemoteFileClientRealOpenSSHTests: XCTestCase {
 			password: environment["CATERM_SFTP_PASSWORD"] ?? "caterm-e2e",
 			directory: environment["CATERM_SFTP_DIRECTORY"] ?? "/config/sftp-fixture"
 		)
+	}
+}
+
+private actor PublicProgressRecorder {
+	private var updates: [TransferProgress] = []
+
+	func append(_ update: TransferProgress) {
+		updates.append(update)
+	}
+
+	func isMonotonic() -> Bool {
+		let grouped = updates.split { $0.bytesTransferred == 0 }
+		return grouped.allSatisfy { group in
+			let values = group.map(\.bytesTransferred)
+			return values == values.sorted()
+		}
 	}
 }

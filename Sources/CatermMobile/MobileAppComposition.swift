@@ -3,6 +3,7 @@ import CloudKit
 import CloudKitSyncClient
 import CredentialSync
 import CredentialSyncStore
+import FileTransferStore
 import Foundation
 import KeychainStore
 import ManagedKeyStore
@@ -26,6 +27,8 @@ public final class MobileAppComposition: ObservableObject {
 	public let syncCoordinator: MobileSyncCoordinator
 	public let terminalSessionFactory: MobileTerminalSessionFactory
 	public let remoteFileClientFactory: MobileRemoteFileClientFactory
+	public let fileTransferStore: FileTransferStore
+	public let transferWorkspace: MobileTransferWorkspace
 	public let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
 
 	public init(
@@ -39,6 +42,7 @@ public final class MobileAppComposition: ObservableObject {
 		cloudSyncAvailable: Bool = true,
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		remoteFileClientFactory: MobileRemoteFileClientFactory = .unavailable,
+		transferWorkspace: MobileTransferWorkspace? = nil,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		startObservingAccountChanges: @escaping () -> Void = {}
 	) {
@@ -57,6 +61,29 @@ public final class MobileAppComposition: ObservableObject {
 		)
 		self.terminalSessionFactory = terminalSessionFactory
 		self.remoteFileClientFactory = remoteFileClientFactory
+		let workspace = transferWorkspace ?? MobileTransferWorkspace(
+			rootURL: FileManager.default.temporaryDirectory
+				.appendingPathComponent("CatermTransfers", isDirectory: true)
+		)
+		self.transferWorkspace = workspace
+		self.fileTransferStore = FileTransferStore(
+			clientForHost: { host in
+				MobileDeferredRemoteFileClient(
+					host: host,
+					factory: remoteFileClientFactory
+				)
+			},
+			didComplete: { task in
+				guard task.kind == .upload else { return }
+				do {
+					try await workspace.removeCompletedUpload(
+						at: URL(fileURLWithPath: task.source)
+					)
+				} catch {
+					NSLog("[MobileAppComposition] Upload cleanup failed: \(error)")
+				}
+			}
+		)
 		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
 	}
 
@@ -185,6 +212,7 @@ public final class MobileAppComposition: ObservableObject {
 				settingsSync: nil,
 				terminalSessionFactory: terminalFactory,
 				remoteFileClientFactory: remoteFileFactory,
+				transferWorkspace: makeTransferWorkspace(),
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
 						transactionIsCurrent: transactionIsCurrent
@@ -234,6 +262,7 @@ public final class MobileAppComposition: ObservableObject {
 				cloudSyncAvailable: simulatorSyncStatusWasRequested,
 				terminalSessionFactory: terminalFactory,
 				remoteFileClientFactory: remoteFileFactory,
+				transferWorkspace: makeTransferWorkspace(),
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
 						transactionIsCurrent: transactionIsCurrent
@@ -335,6 +364,7 @@ public final class MobileAppComposition: ObservableObject {
 			settingsSync: settingsSync,
 			terminalSessionFactory: terminalFactory,
 			remoteFileClientFactory: remoteFileFactory,
+			transferWorkspace: makeTransferWorkspace(),
 			prepareCredentialSyncForSave: { transactionIsCurrent in
 				try await credentialSyncCoordinator.enable(
 					transactionIsCurrent: transactionIsCurrent
@@ -348,6 +378,20 @@ public final class MobileAppComposition: ObservableObject {
 
 	private static var simulatorSyncStatusWasRequested: Bool {
 		MobileSimulatorSyncScenario.current != nil
+	}
+
+	private static func makeTransferWorkspace() -> MobileTransferWorkspace {
+		let documents = FileManager.default.urls(
+			for: .documentDirectory,
+			in: .userDomainMask
+		).first ?? FileManager.default.temporaryDirectory
+		return MobileTransferWorkspace(
+			rootURL: documents.appendingPathComponent(
+				"Caterm Transfers",
+				isDirectory: true
+			),
+			purgeOrphanedUploads: true
+		)
 	}
 
 	private static func makeTerminalFactory(

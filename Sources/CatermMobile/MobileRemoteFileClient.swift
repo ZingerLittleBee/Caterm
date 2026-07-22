@@ -70,9 +70,34 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
-		throw RemoteFileError.unsupported(operation: "upload")
+		guard !isDirectory else {
+			throw RemoteFileError.unsupported(operation: "directory upload")
+		}
+		_ = resume
+		do {
+			let client = try await connectedClient()
+			let transferred = try await client.upload(
+				localURL: localURL,
+				remotePath: remotePath,
+				replaceExisting: replaceExisting,
+				progress: { update in
+					await progress(TransferProgress(
+						bytesTransferred: update.bytesTransferred,
+						totalBytes: update.totalBytes
+					))
+				}
+			)
+			return RemoteFileTransferResult(bytesTransferred: transferred)
+		} catch {
+			if Self.invalidatesSession(error) {
+				client?.close()
+				client = nil
+			}
+			throw map(error, path: remotePath)
+		}
 	}
 
 	public func download(
@@ -82,7 +107,30 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 		resume: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
-		throw RemoteFileError.unsupported(operation: "download")
+		guard !isDirectory else {
+			throw RemoteFileError.unsupported(operation: "directory download")
+		}
+		_ = resume
+		do {
+			let client = try await connectedClient()
+			let transferred = try await client.download(
+				remotePath: remotePath,
+				localURL: localURL,
+				progress: { update in
+					await progress(TransferProgress(
+						bytesTransferred: update.bytesTransferred,
+						totalBytes: update.totalBytes
+					))
+				}
+			)
+			return RemoteFileTransferResult(bytesTransferred: transferred)
+		} catch {
+			if Self.invalidatesSession(error) {
+				client?.close()
+				client = nil
+			}
+			throw map(error, path: remotePath)
+		}
 	}
 
 	public func createDirectory(_ path: String) async throws {
@@ -127,6 +175,13 @@ public actor MobileRemoteFileClient: MobileRemoteFileSession {
 			.directoryNotEmpty(path: path)
 		case MobileSFTPError.disconnected:
 			.sessionUnavailable
+		case MobileSFTPError.localIO(let message):
+			.localIO(message: message)
+		case MobileSFTPError.cleanupFailed(let original, let cleanupMessage):
+			.cleanupFailed(
+				original: map(original, path: path),
+				cleanupMessage: cleanupMessage
+			)
 		case MobileSSHTrustError.changed(let endpoint):
 			.hostKeyChanged(endpoint: endpoint)
 		case MobileSSHTrustError.persistenceFailed(let endpoint):

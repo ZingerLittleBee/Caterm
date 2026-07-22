@@ -43,8 +43,10 @@ public actor RemoteFileSystem: RemoteFileClient {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
+		_ = replaceExisting
 		try await ensureAlive()
 		let total = localByteCount(at: localURL)
 		await progress(TransferProgress(bytesTransferred: 0, totalBytes: total))

@@ -3,6 +3,19 @@ import Foundation
 import XCTest
 
 final class MobileSFTPCodecTests: XCTestCase {
+	func testDecodesFileDataResponse() throws {
+		var payload = Data()
+		payload.append(contentsOf: [0, 0, 0, 4])
+		payload.append(Data("data".utf8))
+
+		let response = try MobileSFTPCodec.decodeResponse(type: 103, payload: payload)
+
+		guard case .data(let bytes) = response else {
+			return XCTFail("Expected an SFTP DATA response")
+		}
+		XCTAssertEqual(bytes, Data("data".utf8))
+	}
+
 	func testDecodesNameAttributesFromSFTPV3Response() throws {
 		var payload = Data()
 		payload.appendUInt32(1)

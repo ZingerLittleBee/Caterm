@@ -102,6 +102,29 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertEqual(try partialFiles().count, 1)
 	}
 
+	func testCancellationCleanupFailureKeepsStableCancelledState() async throws {
+		let source = temporaryDirectory.appendingPathComponent("cancel.bin")
+		try Data("bytes".utf8).write(to: source)
+		let client = RecordingRemoteFileClient(
+			downloadData: Data(),
+			uploadFailure: .cleanupFailed(
+				original: .cancelled,
+				cleanupMessage: "cleanup host unavailable"
+			)
+		)
+		let store = makeStore(client: client)
+
+		let id = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: makeHost()
+		).first)
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .cancelled)
+		XCTAssertNil(store.task(id: id)?.failure)
+	}
+
 	func testDownloadReplacePublishesCompleteBytesOverExistingDestination() async throws {
 		let destination = temporaryDirectory.appendingPathComponent("replace.txt")
 		try Data("old".utf8).write(to: destination)
@@ -221,6 +244,74 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertEqual(callsAfterRetry, 2)
 	}
 
+	func testRetryRequiresExplicitChoiceWhenUploadMayAlreadyBeCommitted() async throws {
+		let local = temporaryDirectory.appendingPathComponent("ambiguous.txt")
+		try Data("complete".utf8).write(to: local)
+		let client = CommitThenFailUploadClient()
+		let store = makeStore(client: client)
+		let id = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [local],
+			remoteDir: "/remote",
+			host: makeHost(),
+			conflictPolicy: .keepBoth
+		).first)
+
+		try await store.waitIdle()
+		XCTAssertEqual(store.task(id: id)?.status, .failed)
+
+		store.retry(id)
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .conflict)
+		XCTAssertEqual(store.task(id: id)?.destination, "/remote/ambiguous.txt")
+		let calls = await client.uploadCalls()
+		XCTAssertEqual(calls, 1)
+	}
+
+	func testCancelledTransferCanStartFreshAttempt() async throws {
+		let client = SuspendingRemoteFileClient()
+		let store = makeStore(client: client)
+		let id = try XCTUnwrap(store.enqueueDownload(
+			remotePaths: ["/remote/cancelled.txt"],
+			localDir: temporaryDirectory,
+			host: makeHost()
+		).first)
+		await client.waitUntilStarted()
+		store.cancel(id)
+		try await store.waitIdle()
+		XCTAssertEqual(store.task(id: id)?.status, .cancelled)
+
+		store.retry(id)
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .completed)
+		XCTAssertEqual(store.task(id: id)?.attemptCount, 1)
+	}
+
+	func testCancellationAfterAtomicPublishKeepsTransferCompleted() async throws {
+		let callback = AsyncCallbackBox()
+		let client = RecordingRemoteFileClient(downloadData: Data("complete".utf8))
+		let store = FileTransferStore(
+			clientForHost: { _ in client },
+			localFiles: PublishCancellingLocalFiles(callback: callback)
+		)
+		let destination = temporaryDirectory.appendingPathComponent("committed.txt")
+		let id = try XCTUnwrap(store.enqueueDownload(
+			remotePaths: ["/remote/committed.txt"],
+			localDir: temporaryDirectory,
+			host: makeHost()
+		).first)
+		await callback.install {
+			await MainActor.run { store.cancel(id) }
+		}
+
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .completed)
+		XCTAssertEqual(try Data(contentsOf: destination), Data("complete".utf8))
+		XCTAssertTrue(try partialFiles().isEmpty)
+	}
+
 	func testProgressNeverMovesBackward() {
 		let initial = TransferProgress(bytesTransferred: 12, totalBytes: 20)
 		XCTAssertEqual(
@@ -334,9 +425,64 @@ private actor MetadataFailingLocalFiles: LocalTransferFileCoordinating {
 	}
 }
 
+private actor AsyncCallbackBox {
+	private var callback: (@Sendable () async -> Void)?
+
+	func install(_ callback: @escaping @Sendable () async -> Void) {
+		self.callback = callback
+	}
+
+	func run() async {
+		while callback == nil { await Task.yield() }
+		await callback?()
+	}
+}
+
+private actor PublishCancellingLocalFiles: LocalTransferFileCoordinating {
+	private let base = LocalTransferFileCoordinator()
+	private let callback: AsyncCallbackBox
+
+	init(callback: AsyncCallbackBox) {
+		self.callback = callback
+	}
+
+	func isDirectory(at url: URL) async throws -> Bool {
+		try await base.isDirectory(at: url)
+	}
+
+	func prepareDestination(
+		_ requested: URL,
+		policy: TransferConflictPolicy?
+	) async throws -> DestinationPreparation<URL> {
+		try await base.prepareDestination(requested, policy: policy)
+	}
+
+	func temporaryDestination(for destination: URL) async throws -> URL {
+		try await base.temporaryDestination(for: destination)
+	}
+
+	func publish(
+		temporary: URL,
+		to destination: URL,
+		replacing: Bool
+	) async throws {
+		try await base.publish(
+			temporary: temporary,
+			to: destination,
+			replacing: replacing
+		)
+		await callback.run()
+	}
+
+	func remove(_ url: URL) async throws {
+		try await base.remove(url)
+	}
+}
+
 private actor RecordingRemoteFileClient: RemoteFileClient {
 	private let downloadData: Data
 	private var downloadFailure: RemoteFileError?
+	private let uploadFailure: RemoteFileError?
 	private let existingRemotePaths: Set<String>
 	private(set) var downloadCallCount = 0
 	private var uploadedDestinations: [String] = []
@@ -344,10 +490,12 @@ private actor RecordingRemoteFileClient: RemoteFileClient {
 	init(
 		downloadData: Data,
 		downloadFailure: RemoteFileError? = nil,
+		uploadFailure: RemoteFileError? = nil,
 		existingRemotePaths: Set<String> = []
 	) {
 		self.downloadData = downloadData
 		self.downloadFailure = downloadFailure
+		self.uploadFailure = uploadFailure
 		self.existingRemotePaths = existingRemotePaths
 	}
 
@@ -383,9 +531,11 @@ private actor RecordingRemoteFileClient: RemoteFileClient {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		uploadedDestinations.append(remotePath)
+		if let uploadFailure { throw uploadFailure }
 		let size = (try? localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
 		return RemoteFileTransferResult(bytesTransferred: Int64(size))
 	}
@@ -405,6 +555,50 @@ private actor RecordingRemoteFileClient: RemoteFileClient {
 		))
 		if let downloadFailure { throw downloadFailure }
 		return RemoteFileTransferResult(bytesTransferred: Int64(downloadData.count))
+	}
+}
+
+private actor CommitThenFailUploadClient: RemoteFileClient {
+	private var committedPaths: Set<String> = []
+	private var uploadCallCount = 0
+
+	func uploadCalls() -> Int { uploadCallCount }
+	func list(_ path: String) async throws -> [RemoteEntry] { [] }
+	func stat(_ path: String) async throws -> RemoteEntry? {
+		guard committedPaths.contains(path) else { return nil }
+		return RemoteEntry(
+			name: (path as NSString).lastPathComponent,
+			isDirectory: false,
+			size: 8,
+			mtime: nil,
+			mode: 0
+		)
+	}
+	func createDirectory(_ path: String) async throws {}
+	func rename(from: String, to: String) async throws {}
+	func delete(_ path: String, isDirectory: Bool) async throws {}
+
+	func upload(
+		localURL: URL,
+		remotePath: String,
+		isDirectory: Bool,
+		resume: Bool,
+		replaceExisting: Bool,
+		progress: @escaping TransferProgressHandler
+	) async throws -> RemoteFileTransferResult {
+		uploadCallCount += 1
+		committedPaths.insert(remotePath)
+		throw RemoteFileError.transport(message: "commit acknowledgement lost")
+	}
+
+	func download(
+		remotePath: String,
+		localURL: URL,
+		isDirectory: Bool,
+		resume: Bool,
+		progress: @escaping TransferProgressHandler
+	) async throws -> RemoteFileTransferResult {
+		throw RemoteFileError.unsupported(operation: "download")
 	}
 }
 
@@ -429,6 +623,7 @@ private actor SuspendingRemoteFileClient: RemoteFileClient {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		RemoteFileTransferResult(bytesTransferred: 0)

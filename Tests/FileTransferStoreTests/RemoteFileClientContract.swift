@@ -26,6 +26,7 @@ enum RemoteFileClientContract {
 			remotePath: "/remote/file.txt",
 			isDirectory: false,
 			resume: false,
+			replaceExisting: false,
 			progress: { update in await progress.append(update) }
 		)
 		let download = try await client.download(

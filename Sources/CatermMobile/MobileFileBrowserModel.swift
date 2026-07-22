@@ -679,7 +679,7 @@ public struct MobileFileBrowserModel: Equatable {
 	}
 }
 
-private extension String {
+extension String {
 	func appendingRemotePathComponent(_ component: String) -> String {
 		let trimmedComponent = component.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
 		guard !trimmedComponent.isEmpty else { return self }

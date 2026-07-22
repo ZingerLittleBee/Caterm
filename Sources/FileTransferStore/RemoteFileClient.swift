@@ -98,6 +98,7 @@ public protocol RemoteFileClient: Sendable {
 		remotePath: String,
 		isDirectory: Bool,
 		resume: Bool,
+		replaceExisting: Bool,
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult
 	func download(

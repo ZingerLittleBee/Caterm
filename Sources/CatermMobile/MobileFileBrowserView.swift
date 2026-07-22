@@ -1,22 +1,32 @@
 import FileTransferStore
 import SSHCommandBuilder
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct MobileFileBrowserView: View {
 	let hosts: [SSHHost]
 	let transfers: [TransferTask]
+	let transferStore: FileTransferStore?
+	let transferWorkspace: MobileTransferWorkspace?
 	@StateObject private var controller: MobileFileBrowserController
 	@State private var prompt: MobileFilePrompt?
 	@State private var nameInput = ""
+	@State private var showingUploadImporter = false
+	@State private var uploadContext: MobileFileActionContext?
+	@State private var transferFailure: MobileTransferFailure?
 
 	public init(
 		hosts: [SSHHost] = [],
 		clientFactory: MobileRemoteFileClientFactory = .unavailable,
 		entries: [RemoteEntry] = [],
-		transfers: [TransferTask] = []
+		transfers: [TransferTask] = [],
+		transferStore: FileTransferStore? = nil,
+		transferWorkspace: MobileTransferWorkspace? = nil
 	) {
 		self.hosts = hosts
 		self.transfers = transfers
+		self.transferStore = transferStore
+		self.transferWorkspace = transferWorkspace
 		_controller = StateObject(wrappedValue: MobileFileBrowserController(
 			factory: clientFactory,
 			entries: entries
@@ -45,10 +55,18 @@ public struct MobileFileBrowserView: View {
 				}
 			}
 
-			if !transfers.isEmpty {
+			if let transferStore {
+				MobileTransferQueueSection(store: transferStore, hosts: hosts)
+			} else if !transfers.isEmpty {
 				Section("Transfers") {
 					ForEach(transfers) { task in
-						MobileTransferRow(task: task)
+						MobileTransferRow(
+							task: task,
+							hostName: hosts.first { $0.id == task.hostId }?.name,
+							onCancel: {},
+							onRetry: {},
+							onResolveConflict: { _ in }
+						)
 					}
 				}
 			}
@@ -57,6 +75,17 @@ public struct MobileFileBrowserView: View {
 		.toolbar {
 			ToolbarItem(placement: .primaryAction) {
 				Menu {
+					Button {
+						guard let host = selectedHost,
+							let context = controller.actionContext(host: host),
+							transferStore != nil,
+							transferWorkspace != nil else { return }
+						uploadContext = context
+						showingUploadImporter = true
+					} label: {
+						Label("Upload Files", systemImage: "arrow.up.doc")
+					}
+					.accessibilityLabel("Upload Files to \(controller.model.path)")
 					Button {
 						guard let host = selectedHost,
 							let context = controller.actionContext(host: host) else { return }
@@ -103,6 +132,12 @@ public struct MobileFileBrowserView: View {
 			guard let host = selectedHost else { return }
 			await controller.refresh(host: host)
 		}
+		.fileImporter(
+			isPresented: $showingUploadImporter,
+			allowedContentTypes: [.item],
+			allowsMultipleSelection: true,
+			onCompletion: handleUploadSelection
+		)
 		.alert(promptTitle, isPresented: promptIsPresented, presenting: prompt) { prompt in
 			switch prompt {
 			case .createFolder(let context):
@@ -137,6 +172,13 @@ public struct MobileFileBrowserView: View {
 			if let failure = controller.mutationFailure {
 				Text("\(failure.message)\n\n\(failure.recoverySuggestion)")
 			}
+		}
+		.alert(item: $transferFailure) { failure in
+			Alert(
+				title: Text(failure.title),
+				message: Text(failure.message),
+				dismissButton: .default(Text("OK"))
+			)
 		}
 	}
 
@@ -221,12 +263,24 @@ public struct MobileFileBrowserView: View {
 			.buttonStyle(.plain)
 			.accessibilityLabel("Open folder \(entry.name)")
 		} else {
-			MobileRemoteEntryRow(entry: entry)
+			Button {
+				requestDownload(entry)
+			} label: {
+				MobileRemoteEntryRow(entry: entry)
+			}
+			.buttonStyle(.plain)
+			.accessibilityLabel("Download file \(entry.name)")
 		}
 	}
 
 	@ViewBuilder
 	private func entryActions(_ entry: RemoteEntry) -> some View {
+		if entry.type == .file {
+			Button { requestDownload(entry) } label: {
+				Label("Download", systemImage: "arrow.down.doc")
+			}
+			.accessibilityLabel("Download file \(entry.name)")
+		}
 		Button { requestRename(entry) } label: {
 			Label("Rename", systemImage: "pencil")
 		}
@@ -250,6 +304,65 @@ public struct MobileFileBrowserView: View {
 		guard let host = selectedHost,
 			let context = controller.actionContext(host: host) else { return }
 		prompt = .delete(context, entry)
+	}
+
+	private func requestDownload(_ entry: RemoteEntry) {
+		guard entry.type == .file,
+			let host = selectedHost,
+			let context = controller.actionContext(host: host),
+			let transferStore,
+			let transferWorkspace else { return }
+		let remotePath = context.parentPath.appendingRemotePathComponent(entry.name)
+		Task {
+			do {
+				let directory = try await transferWorkspace.downloadsDirectory()
+				_ = transferStore.enqueueDownload(
+					remotePaths: [remotePath],
+					localDir: directory,
+					host: context.host
+				)
+			} catch {
+				transferFailure = MobileTransferFailure(
+					title: "Couldn’t Start Download",
+					error: error
+				)
+			}
+		}
+	}
+
+	private func handleUploadSelection(_ result: Result<[URL], Error>) {
+		guard let context = uploadContext,
+			let transferStore,
+			let transferWorkspace else {
+			uploadContext = nil
+			return
+		}
+		uploadContext = nil
+		switch result {
+		case .success(let urls):
+			Task {
+				do {
+					let staged = try await transferWorkspace.stageUploads(urls)
+					_ = transferStore.enqueueUpload(
+						localPaths: staged,
+						remoteDir: context.parentPath,
+						host: context.host
+					)
+				} catch {
+					transferFailure = MobileTransferFailure(
+						title: "Couldn’t Start Upload",
+						error: error
+					)
+				}
+			}
+		case .failure(let error):
+			if (error as NSError).code != NSUserCancelledError {
+				transferFailure = MobileTransferFailure(
+					title: "Couldn’t Select Files",
+					error: error
+				)
+			}
+		}
 	}
 
 	private func createFolder(context: MobileFileActionContext) {
@@ -377,7 +490,6 @@ private struct MobileRemoteEntryRow: View {
 			}
 		}
 		.contentShape(Rectangle())
-		.accessibilityElement(children: .combine)
 	}
 
 	private var iconName: String {
@@ -394,21 +506,105 @@ private struct MobileRemoteEntryRow: View {
 	}
 }
 
-private struct MobileTransferRow: View {
-	let task: TransferTask
+private struct MobileTransferQueueSection: View {
+	@ObservedObject var store: FileTransferStore
+	let hosts: [SSHHost]
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 4) {
-			Label(title, systemImage: task.kind == .upload ? "arrow.up.doc" : "arrow.down.doc")
-			Text(task.destination)
+		transferSection("Active Transfers", tasks: active)
+		transferSection("Failed Transfers", tasks: failed)
+		transferSection("Completed Transfers", tasks: completed)
+		transferSection("Cancelled Transfers", tasks: cancelled)
+	}
+
+	@ViewBuilder
+	private func transferSection(_ title: String, tasks: [TransferTask]) -> some View {
+		if !tasks.isEmpty {
+			Section(title) {
+				ForEach(tasks) { task in transferRow(task) }
+			}
+		}
+	}
+
+	private func transferRow(_ task: TransferTask) -> some View {
+		MobileTransferRow(
+			task: task,
+			hostName: hosts.first { $0.id == task.hostId }?.name,
+			onCancel: { store.cancel(task.id) },
+			onRetry: { store.retry(task.id) },
+			onResolveConflict: { store.resolveConflict(task.id, policy: $0) }
+		)
+	}
+
+	private var active: [TransferTask] {
+		store.tasks.filter { [.pending, .running, .conflict].contains($0.status) }
+	}
+
+	private var failed: [TransferTask] {
+		store.tasks.filter { $0.status == .failed }
+	}
+
+	private var completed: [TransferTask] {
+		store.tasks.filter { $0.status == .completed }
+	}
+
+	private var cancelled: [TransferTask] {
+		store.tasks.filter { $0.status == .cancelled }
+	}
+}
+
+private struct MobileTransferRow: View {
+	let task: TransferTask
+	let hostName: String?
+	let onCancel: () -> Void
+	let onRetry: () -> Void
+	let onResolveConflict: (TransferConflictPolicy) -> Void
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 8) {
+			HStack {
+				Label(title, systemImage: task.kind == .upload ? "arrow.up.doc" : "arrow.down.doc")
+				Spacer()
+				Text(stateTitle)
+					.font(.caption)
+					.foregroundStyle(stateColor)
+			}
+			Text(hostName ?? task.hostId.uuidString)
+				.font(.caption)
+				.foregroundStyle(.secondary)
+			Text("From: \(task.source)")
+				.font(.caption2)
+				.foregroundStyle(.secondary)
+				.lineLimit(1)
+			Text("To: \(task.destination)")
 				.font(.caption)
 				.foregroundStyle(.secondary)
 				.lineLimit(1)
+			if task.status == .running {
+				ProgressView(
+					value: Double(task.progress.bytesTransferred),
+					total: Double(task.progress.totalBytes ?? max(task.progress.bytesTransferred, 1))
+				)
+				Text(progressDescription)
+					.font(.caption2)
+					.foregroundStyle(.secondary)
+			}
+			if let failure = task.failure {
+				Text(failure.localizedDescription)
+					.font(.caption)
+					.foregroundStyle(.red)
+			}
+			controls
 		}
-		.accessibilityElement(children: .combine)
+		.accessibilityElement(children: .contain)
 	}
 
 	private var title: String {
+		let name = (task.destination as NSString).lastPathComponent
+		return task.kind == .upload ? "Upload \(name)" : "Download \(name)"
+	}
+
+	private var stateTitle: String {
 		switch task.status {
 		case .pending: "Pending"
 		case .running: "Running"
@@ -417,5 +613,81 @@ private struct MobileTransferRow: View {
 		case .failed: "Failed"
 		case .cancelled: "Cancelled"
 		}
+	}
+
+	private var stateColor: Color {
+		switch task.status {
+		case .completed: .green
+		case .failed: .red
+		case .cancelled: .secondary
+		case .conflict: .orange
+		case .pending, .running: .accentColor
+		}
+	}
+
+	private var progressDescription: String {
+		let transferred = ByteCountFormatter.string(
+			fromByteCount: task.progress.bytesTransferred,
+			countStyle: .file
+		)
+		guard let total = task.progress.totalBytes else { return transferred }
+		return "\(transferred) of \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))"
+	}
+
+	@ViewBuilder
+	private var controls: some View {
+		switch task.status {
+		case .pending, .running:
+			Button("Cancel", role: .destructive, action: onCancel)
+				.buttonStyle(.bordered)
+		case .conflict:
+			ViewThatFits(in: .horizontal) {
+				conflictControls(axis: .horizontal)
+				conflictControls(axis: .vertical)
+			}
+		case .failed, .cancelled:
+			Button("Retry", action: onRetry)
+				.buttonStyle(.borderedProminent)
+		case .completed where task.kind == .download:
+			ShareLink(item: URL(fileURLWithPath: task.destination)) {
+				Label("Share Download", systemImage: "square.and.arrow.up")
+			}
+			.buttonStyle(.bordered)
+		case .completed:
+			EmptyView()
+		}
+	}
+
+	private func conflictControls(axis: Axis) -> some View {
+		Group {
+			if axis == .horizontal {
+				HStack {
+					conflictButtons
+				}
+			} else {
+				VStack(alignment: .leading) {
+					conflictButtons
+				}
+			}
+		}
+		.buttonStyle(.bordered)
+	}
+
+	@ViewBuilder
+	private var conflictButtons: some View {
+		Button("Replace") { onResolveConflict(.replace) }
+		Button("Keep Both") { onResolveConflict(.keepBoth) }
+		Button("Cancel", role: .cancel) { onResolveConflict(.cancel) }
+	}
+}
+
+private struct MobileTransferFailure: Identifiable {
+	let id = UUID()
+	let title: String
+	let message: String
+
+	init(title: String, error: Error) {
+		self.title = title
+		self.message = error.localizedDescription
 	}
 }

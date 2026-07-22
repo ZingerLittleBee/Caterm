@@ -37,7 +37,9 @@ public struct MobileCatermShell: View {
 			transfers: $transfers,
 			settingsStore: nil,
 			terminalPreferences: .storedDefaults,
-			remoteFileClientFactory: .unavailable
+			remoteFileClientFactory: .unavailable,
+			fileTransferStore: nil,
+			transferWorkspace: nil
 		)
 	}
 }
@@ -57,6 +59,8 @@ public struct MobileRootView: View {
 	private let backupImportCoordinator: MobileBackupImportCoordinator
 	private let terminalSessionFactory: MobileTerminalSessionFactory
 	private let remoteFileClientFactory: MobileRemoteFileClientFactory
+	private let fileTransferStore: FileTransferStore
+	private let transferWorkspace: MobileTransferWorkspace
 	@State private var operationError: MobileHostOperationError?
 	@State private var remoteEntries: [RemoteEntry]
 	@State private var transfers: [TransferTask]
@@ -70,6 +74,8 @@ public struct MobileRootView: View {
 		syncCoordinator: MobileSyncCoordinator,
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		remoteFileClientFactory: MobileRemoteFileClientFactory,
+		fileTransferStore: FileTransferStore,
+		transferWorkspace: MobileTransferWorkspace,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		remoteEntries: [RemoteEntry] = [],
 		transfers: [TransferTask] = []
@@ -89,6 +95,8 @@ public struct MobileRootView: View {
 		)
 		self.terminalSessionFactory = terminalSessionFactory
 		self.remoteFileClientFactory = remoteFileClientFactory
+		self.fileTransferStore = fileTransferStore
+		self.transferWorkspace = transferWorkspace
 		_remoteEntries = State(initialValue: remoteEntries)
 		_transfers = State(initialValue: transfers)
 	}
@@ -101,7 +109,9 @@ public struct MobileRootView: View {
 			transfers: $transfers,
 			settingsStore: settingsStore,
 			terminalPreferences: terminalPreferences,
-			remoteFileClientFactory: remoteFileClientFactory
+			remoteFileClientFactory: remoteFileClientFactory,
+			fileTransferStore: fileTransferStore,
+			transferWorkspace: transferWorkspace
 		)
 		.environment(\.mobileHostSave, MobileHostSaveAction(
 			save: { payload in
@@ -369,6 +379,8 @@ struct MobileShellBody: View {
 	let settingsStore: SettingsStore?
 	let terminalPreferences: MobileTerminalPreferences
 	let remoteFileClientFactory: MobileRemoteFileClientFactory
+	let fileTransferStore: FileTransferStore?
+	let transferWorkspace: MobileTransferWorkspace?
 	@State private var selection: MobileShellSelection?
 	@State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
 	@State private var showingAddHost = false
@@ -383,7 +395,9 @@ struct MobileShellBody: View {
 					transfers: $transfers,
 					settingsStore: settingsStore,
 					terminalPreferences: terminalPreferences,
-					remoteFileClientFactory: remoteFileClientFactory
+					remoteFileClientFactory: remoteFileClientFactory,
+					fileTransferStore: fileTransferStore,
+					transferWorkspace: transferWorkspace
 				)
 			} else {
 				NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
@@ -401,7 +415,9 @@ struct MobileShellBody: View {
 						transfers: $transfers,
 						settingsStore: settingsStore,
 						terminalPreferences: terminalPreferences,
-						remoteFileClientFactory: remoteFileClientFactory
+						remoteFileClientFactory: remoteFileClientFactory,
+						fileTransferStore: fileTransferStore,
+						transferWorkspace: transferWorkspace
 					)
 				}
 				.sheet(isPresented: $showingAddHost) {
@@ -447,6 +463,8 @@ private struct MobileCompactShell: View {
 	let settingsStore: SettingsStore?
 	let terminalPreferences: MobileTerminalPreferences
 	let remoteFileClientFactory: MobileRemoteFileClientFactory
+	let fileTransferStore: FileTransferStore?
+	let transferWorkspace: MobileTransferWorkspace?
 	@State private var showingAddHost = false
 
 	var body: some View {
@@ -481,7 +499,9 @@ private struct MobileCompactShell: View {
 					hosts: hosts,
 					clientFactory: remoteFileClientFactory,
 					entries: remoteEntries,
-					transfers: transfers
+					transfers: transfers,
+					transferStore: fileTransferStore,
+					transferWorkspace: transferWorkspace
 				)
 			}
 			.tabItem { Label("Files", systemImage: "folder") }
@@ -566,6 +586,8 @@ private struct MobileShellDetail: View {
 	let settingsStore: SettingsStore?
 	let terminalPreferences: MobileTerminalPreferences
 	let remoteFileClientFactory: MobileRemoteFileClientFactory
+	let fileTransferStore: FileTransferStore?
+	let transferWorkspace: MobileTransferWorkspace?
 
 	var body: some View {
 		switch selection {
@@ -637,7 +659,9 @@ private struct MobileShellDetail: View {
 				hosts: hosts,
 				clientFactory: remoteFileClientFactory,
 				entries: remoteEntries,
-				transfers: transfers
+				transfers: transfers,
+				transferStore: fileTransferStore,
+				transferWorkspace: transferWorkspace
 			)
 		case .settings:
 			MobileSettingsView(

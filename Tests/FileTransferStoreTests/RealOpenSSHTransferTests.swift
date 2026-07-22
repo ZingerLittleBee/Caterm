@@ -55,6 +55,7 @@ final class RealOpenSSHTransferTests: XCTestCase {
 				remotePath: remotePath,
 				isDirectory: false,
 				resume: false,
+				replaceExisting: false,
 				progress: { _ in }
 			)
 			XCTAssertEqual(upload.bytesTransferred, Int64(payload.count))
