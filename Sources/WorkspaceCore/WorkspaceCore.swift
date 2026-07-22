@@ -38,6 +38,25 @@ public struct PaneID: Hashable, Sendable, Identifiable, Codable {
 	}
 }
 
+public struct SplitID: Hashable, Sendable, Identifiable, Codable {
+	public let rawValue: UUID
+	public var id: UUID { rawValue }
+
+	public init(rawValue: UUID = UUID()) {
+		self.rawValue = rawValue
+	}
+
+	public init(from decoder: Decoder) throws {
+		let container = try decoder.singleValueContainer()
+		rawValue = try container.decode(UUID.self)
+	}
+
+	public func encode(to encoder: Encoder) throws {
+		var container = encoder.singleValueContainer()
+		try container.encode(rawValue)
+	}
+}
+
 public struct OneTimeConnectionDescriptor: Codable, Hashable, Sendable {
 	public enum ValidationError: Swift.Error, Equatable, Sendable {
 		case emptyDisplayName
@@ -145,32 +164,167 @@ public enum WorkspaceHostReference: Hashable, Sendable, Codable {
 	}
 }
 
-public struct WorkspacePane: Codable, Hashable, Sendable, Identifiable {
-	public let id: PaneID
-	public let host: WorkspaceHostReference
+public enum WorkspacePaneContent: Codable, Hashable, Sendable {
+	case host(WorkspaceHostReference)
+	case hostPicker
 
-	public init(id: PaneID = PaneID(), host: WorkspaceHostReference) {
-		self.id = id
-		self.host = host
+	private enum Kind: String, Codable {
+		case host
+		case hostPicker
+	}
+
+	private enum CodingKeys: String, CodingKey {
+		case kind
+		case host
+	}
+
+	public init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		switch try container.decode(Kind.self, forKey: .kind) {
+		case .host:
+			self = .host(try container.decode(WorkspaceHostReference.self, forKey: .host))
+		case .hostPicker:
+			self = .hostPicker
+		}
+	}
+
+	public func encode(to encoder: Encoder) throws {
+		var container = encoder.container(keyedBy: CodingKeys.self)
+		switch self {
+		case .host(let host):
+			try container.encode(Kind.host, forKey: .kind)
+			try container.encode(host, forKey: .host)
+		case .hostPicker:
+			try container.encode(Kind.hostPicker, forKey: .kind)
+		}
 	}
 }
 
-public enum WorkspaceTopology: Codable, Hashable, Sendable {
+public struct WorkspacePane: Codable, Hashable, Sendable, Identifiable {
+	public let id: PaneID
+	public let content: WorkspacePaneContent
+
+	public var host: WorkspaceHostReference? {
+		guard case .host(let host) = content else { return nil }
+		return host
+	}
+
+	public init(id: PaneID = PaneID(), host: WorkspaceHostReference) {
+		self.id = id
+		content = .host(host)
+	}
+
+	public init(id: PaneID = PaneID(), content: WorkspacePaneContent) {
+		self.id = id
+		self.content = content
+	}
+
+	private enum CodingKeys: String, CodingKey {
+		case id
+		case content
+		case host
+	}
+
+	public init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		id = try container.decode(PaneID.self, forKey: .id)
+		if let content = try container.decodeIfPresent(
+			WorkspacePaneContent.self,
+			forKey: .content
+		) {
+			self.content = content
+		} else {
+			content = .host(
+				try container.decode(WorkspaceHostReference.self, forKey: .host)
+			)
+		}
+	}
+
+	public func encode(to encoder: Encoder) throws {
+		var container = encoder.container(keyedBy: CodingKeys.self)
+		try container.encode(id, forKey: .id)
+		try container.encode(content, forKey: .content)
+	}
+}
+
+public enum WorkspaceSplitAxis: String, Codable, Hashable, Sendable {
+	case horizontal
+	case vertical
+}
+
+public struct WorkspaceSplit: Codable, Hashable, Sendable, Identifiable {
+	public enum ValidationError: Swift.Error, Equatable, Sendable {
+		case nonFiniteRatio
+	}
+
+	public static let minimumRatio = 0.15
+	public static let maximumRatio = 0.85
+
+	public let id: SplitID
+	public let axis: WorkspaceSplitAxis
+	public let ratio: Double
+	public let first: WorkspaceTopology
+	public let second: WorkspaceTopology
+
+	public init(
+		id: SplitID = SplitID(),
+		axis: WorkspaceSplitAxis,
+		ratio: Double = 0.5,
+		first: WorkspaceTopology,
+		second: WorkspaceTopology
+	) {
+		self.id = id
+		self.axis = axis
+		self.ratio = ratio.isFinite
+			? min(max(ratio, Self.minimumRatio), Self.maximumRatio)
+			: 0.5
+		self.first = first
+		self.second = second
+	}
+
+	private enum CodingKeys: String, CodingKey {
+		case id
+		case axis
+		case ratio
+		case first
+		case second
+	}
+
+	public init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		let ratio = try container.decode(Double.self, forKey: .ratio)
+		guard ratio.isFinite else { throw ValidationError.nonFiniteRatio }
+		self.init(
+			id: try container.decode(SplitID.self, forKey: .id),
+			axis: try container.decode(WorkspaceSplitAxis.self, forKey: .axis),
+			ratio: ratio,
+			first: try container.decode(WorkspaceTopology.self, forKey: .first),
+			second: try container.decode(WorkspaceTopology.self, forKey: .second)
+		)
+	}
+}
+
+public indirect enum WorkspaceTopology: Codable, Hashable, Sendable {
 	case pane(WorkspacePane)
+	case split(WorkspaceSplit)
 
 	private enum Kind: String, Codable {
 		case pane
+		case split
 	}
 
 	private enum CodingKeys: String, CodingKey {
 		case kind
 		case pane
+		case split
 	}
 
 	public var panes: [WorkspacePane] {
 		switch self {
 		case .pane(let pane):
 			[pane]
+		case .split(let split):
+			split.first.panes + split.second.panes
 		}
 	}
 
@@ -182,6 +336,24 @@ public enum WorkspaceTopology: Codable, Hashable, Sendable {
 		panes.count
 	}
 
+	public var splitIDs: [SplitID] {
+		switch self {
+		case .pane:
+			[]
+		case .split(let split):
+			[split.id] + split.first.splitIDs + split.second.splitIDs
+		}
+	}
+
+	public var split: WorkspaceSplit? {
+		guard case .split(let split) = self else { return nil }
+		return split
+	}
+
+	public func pane(id paneID: PaneID) -> WorkspacePane? {
+		panes.first(where: { $0.id == paneID })
+	}
+
 	public func contains(_ paneID: PaneID) -> Bool {
 		paneIDs.contains(paneID)
 	}
@@ -191,6 +363,8 @@ public enum WorkspaceTopology: Codable, Hashable, Sendable {
 		switch try container.decode(Kind.self, forKey: .kind) {
 		case .pane:
 			self = .pane(try container.decode(WorkspacePane.self, forKey: .pane))
+		case .split:
+			self = .split(try container.decode(WorkspaceSplit.self, forKey: .split))
 		}
 	}
 
@@ -200,6 +374,9 @@ public enum WorkspaceTopology: Codable, Hashable, Sendable {
 		case .pane(let pane):
 			try container.encode(Kind.pane, forKey: .kind)
 			try container.encode(pane, forKey: .pane)
+		case .split(let split):
+			try container.encode(Kind.split, forKey: .kind)
+			try container.encode(split, forKey: .split)
 		}
 	}
 }
@@ -213,10 +390,12 @@ public struct Workspace: Codable, Hashable, Sendable, Identifiable {
 	public enum ValidationError: Swift.Error, Equatable, Sendable {
 		case unsupportedVersion(Int)
 		case duplicatePaneIdentity
+		case duplicateSplitIdentity
 		case activePaneNotFound
+		case versionOneContainsSplitState
 	}
 
-	public static let currentVersion = 1
+	public static let currentVersion = 2
 
 	public let version: Int
 	public let id: WorkspaceID
@@ -260,7 +439,7 @@ public struct Workspace: Codable, Hashable, Sendable, Identifiable {
 		)
 	}
 
-	private init(
+	init(
 		validatedVersion: Int,
 		id: WorkspaceID,
 		topology: WorkspaceTopology,
@@ -309,15 +488,25 @@ public struct Workspace: Codable, Hashable, Sendable, Identifiable {
 		topology: WorkspaceTopology,
 		activePaneID: PaneID
 	) throws {
-		guard version == currentVersion else {
+		guard (1...currentVersion).contains(version) else {
 			throw ValidationError.unsupportedVersion(version)
 		}
 		let paneIDs = topology.paneIDs
 		guard Set(paneIDs).count == paneIDs.count else {
 			throw ValidationError.duplicatePaneIdentity
 		}
+		let splitIDs = topology.splitIDs
+		guard Set(splitIDs).count == splitIDs.count else {
+			throw ValidationError.duplicateSplitIdentity
+		}
 		guard topology.contains(activePaneID) else {
 			throw ValidationError.activePaneNotFound
+		}
+		if version == 1 {
+			guard splitIDs.isEmpty,
+			      topology.panes.allSatisfy({ $0.host != nil }) else {
+				throw ValidationError.versionOneContainsSplitState
+			}
 		}
 	}
 

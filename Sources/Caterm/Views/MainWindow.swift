@@ -184,12 +184,14 @@ struct MainWindow: View {
 							.navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
 					} detail: {
 						Group {
-							if let activeSessionID,
-							   store.tabs.contains(where: { $0.id == activeSessionID }) {
-								TerminalContainerView(tabId: activeSessionID)
-									.padding(.trailing, drawerTotal)
-							} else {
+							if restorationStatus == .pending {
 								workspaceRestorationPlaceholder
+							} else {
+								WorkspacePaneTreeView(
+									workspace: $workspace,
+									restorationMessage: restorationMessage
+								)
+								.padding(.trailing, drawerTotal)
 							}
 						}
 						.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -274,6 +276,15 @@ struct MainWindow: View {
 			pendingUploadURLs = urls
 			showUploadSheet = true
 		}
+		.onReceive(NotificationCenter.default
+			.publisher(for: .catermWorkspaceCommand)) { note in
+			guard WindowCommandScope.shouldHandle(note, in: hostWindow),
+			      let command = note.userInfo?[WorkspaceCommandNotificationKey.command]
+				as? WorkspaceCommand else {
+				return
+			}
+			handleWorkspaceCommand(command)
+		}
 		.sheet(isPresented: $showUploadSheet) {
 			SimpleTextSheet(
 				title: "Upload to remote directory",
@@ -298,8 +309,13 @@ struct MainWindow: View {
 		}
 		.background(
 			WorkspaceWindowLifecycleObserver(window: $hostWindow) {
-				if let activeSessionID {
-					surfaceRegistry.unregister(activeSessionID)
+				for pane in workspace.topology.panes {
+					if let sessionID = workspaceCoordinator.sessionID(
+						for: pane.id,
+						in: workspace
+					) {
+						surfaceRegistry.unregister(sessionID)
+					}
 				}
 				workspaceCoordinator.closeWorkspace(workspace.id)
 			}
@@ -322,14 +338,29 @@ struct MainWindow: View {
 		}
 		.task(id: workspace.id) {
 			do {
-				let sessionID = try workspaceCoordinator.ensureSession(
+				try workspaceCoordinator.ensureSessions(
 					for: workspace,
 					installTerminfo: preferences.installTerminfoEnabled
 				)
-				restorationStatus = sessionID == nil ? .missingHost : .ready
+				let hasMissingHost = workspace.topology.panes.contains { pane in
+					pane.host != nil
+						&& workspaceCoordinator.sessionID(for: pane.id, in: workspace) == nil
+				}
+				restorationStatus = hasMissingHost ? .missingHost : .ready
 			} catch {
 				restorationStatus = .failed(error.localizedDescription)
 			}
+		}
+	}
+
+	private var restorationMessage: String? {
+		switch restorationStatus {
+		case .pending, .ready:
+			nil
+		case .missingHost:
+			"This Workspace is safe, but one of its saved Hosts is no longer available."
+		case .failed(let message):
+			message
 		}
 	}
 
@@ -359,6 +390,33 @@ struct MainWindow: View {
 			presentingPalette = true
 		case .files:
 			fileDrawerOpen.toggle()
+		}
+	}
+
+	private func handleWorkspaceCommand(_ command: WorkspaceCommand) {
+		do {
+			switch try command.applying(to: workspace) {
+			case .update(let updated):
+				workspace = updated
+			case .close(let result):
+				guard !result.shouldCloseWindow, let updated = result.workspace else {
+					hostWindow?.performClose(nil)
+					return
+				}
+				if let sessionID = workspaceCoordinator.sessionID(
+					for: result.closedPaneID,
+					in: workspace
+				) {
+					surfaceRegistry.unregister(sessionID)
+				}
+				workspaceCoordinator.closePane(
+					result.closedPaneID,
+					in: workspace.id
+				)
+				workspace = updated
+			}
+		} catch {
+			restorationStatus = .failed(error.localizedDescription)
 		}
 	}
 

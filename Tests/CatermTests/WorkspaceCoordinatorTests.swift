@@ -37,7 +37,7 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 			installTerminfo: false
 		)
 
-		let descriptor = try XCTUnwrap(workspace.topology.panes.first?.host.oneTime)
+		let descriptor = try XCTUnwrap(workspace.topology.panes.first?.host?.oneTime)
 		XCTAssertEqual(descriptor.displayName, host.name)
 		XCTAssertEqual(descriptor.hostname, host.hostname)
 		XCTAssertEqual(descriptor.port, host.port)
@@ -149,6 +149,114 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(tab.host.port, 2222)
 		XCTAssertEqual(tab.host.username, "tester")
 		XCTAssertEqual(tab.authenticationMode, .interactive)
+	}
+
+	func testSplittingWorkspaceRetainsExistingSessionWithoutCreatingPickerSession() throws {
+		let store = makeStore()
+		let host = makeHost(name: "first")
+		try store.addHost(host)
+		let coordinator = WorkspaceCoordinator(sessionStore: store)
+		let original = try coordinator.openSavedHost(host, installTerminfo: false)
+		let originalSessionID = try XCTUnwrap(coordinator.sessionID(for: original))
+
+		let split = try original.splittingActivePane(.right)
+
+		XCTAssertEqual(store.tabs.map(\.id), [originalSessionID])
+		XCTAssertEqual(
+			coordinator.sessionID(for: original.activePaneID, in: split),
+			originalSessionID
+		)
+		XCTAssertNil(coordinator.sessionID(for: split.activePaneID, in: split))
+	}
+
+	func testConnectingPickerPaneCreatesIndependentSavedHostSession() throws {
+		let store = makeStore()
+		let firstHost = makeHost(name: "first")
+		let secondHost = makeHost(name: "second")
+		try store.addHost(firstHost)
+		try store.addHost(secondHost)
+		let coordinator = WorkspaceCoordinator(sessionStore: store)
+		let original = try coordinator.openSavedHost(firstHost, installTerminfo: false)
+		let firstSessionID = try XCTUnwrap(coordinator.sessionID(for: original))
+		let split = try original.splittingActivePane(.down)
+
+		let connected = try coordinator.connectSavedHost(
+			secondHost,
+			to: split.activePaneID,
+			in: split,
+			installTerminfo: true
+		)
+
+		let secondSessionID = try XCTUnwrap(
+			coordinator.sessionID(for: connected.activePaneID, in: connected)
+		)
+		XCTAssertNotEqual(firstSessionID, secondSessionID)
+		XCTAssertEqual(store.tabs.map(\.id), [firstSessionID, secondSessionID])
+		XCTAssertEqual(store.tabs.last?.host.id, secondHost.id)
+		XCTAssertEqual(store.tabs.last?.installTerminfo, true)
+		XCTAssertEqual(
+			coordinator.sessionID(for: original.activePaneID, in: connected),
+			firstSessionID
+		)
+	}
+
+	func testRestoringSplitCreatesFreshSessionsForHostsAndSkipsPicker() throws {
+		let store = makeStore()
+		let firstHost = makeHost(name: "first")
+		let secondHost = makeHost(name: "second")
+		try store.addHost(firstHost)
+		try store.addHost(secondHost)
+		let coordinator = WorkspaceCoordinator(sessionStore: store)
+		let firstPaneID = PaneID(rawValue: UUID())
+		let secondPaneID = PaneID(rawValue: UUID())
+		let pickerPaneID = PaneID(rawValue: UUID())
+		let first = Workspace.onePane(
+			paneID: firstPaneID,
+			host: .saved(id: firstHost.id)
+		)
+		let two = try first.splittingActivePane(.right, newPaneID: secondPaneID)
+		let connected = try two.assigningHost(.saved(id: secondHost.id), to: secondPaneID)
+		let three = try connected.splittingActivePane(.down, newPaneID: pickerPaneID)
+
+		try coordinator.ensureSessions(for: three, installTerminfo: false)
+
+		XCTAssertEqual(store.tabs.count, 2)
+		XCTAssertNotNil(coordinator.sessionID(for: firstPaneID, in: three))
+		XCTAssertNotNil(coordinator.sessionID(for: secondPaneID, in: three))
+		XCTAssertNil(coordinator.sessionID(for: pickerPaneID, in: three))
+	}
+
+	func testClosingPaneClosesOnlyItsMappedSession() throws {
+		let store = makeStore()
+		let firstHost = makeHost(name: "first")
+		let secondHost = makeHost(name: "second")
+		try store.addHost(firstHost)
+		try store.addHost(secondHost)
+		let coordinator = WorkspaceCoordinator(sessionStore: store)
+		let original = try coordinator.openSavedHost(firstHost, installTerminfo: false)
+		let firstPaneID = original.activePaneID
+		let firstSessionID = try XCTUnwrap(coordinator.sessionID(for: original))
+		let split = try original.splittingActivePane(.right)
+		let connected = try coordinator.connectSavedHost(
+			secondHost,
+			to: split.activePaneID,
+			in: split,
+			installTerminfo: false
+		)
+		let secondPaneID = connected.activePaneID
+		let secondSessionID = try XCTUnwrap(
+			coordinator.sessionID(for: secondPaneID, in: connected)
+		)
+
+		coordinator.closePane(secondPaneID, in: connected.id)
+
+		XCTAssertEqual(store.tabs.map(\.id), [firstSessionID])
+		XCTAssertEqual(
+			coordinator.sessionID(for: firstPaneID, in: connected),
+			firstSessionID
+		)
+		XCTAssertNil(coordinator.sessionID(for: secondPaneID, in: connected))
+		XCTAssertNotEqual(firstSessionID, secondSessionID)
 	}
 
 	private func makeStore() -> SessionStore {

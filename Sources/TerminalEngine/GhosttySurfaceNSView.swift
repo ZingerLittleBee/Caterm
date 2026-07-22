@@ -12,8 +12,12 @@ public final class GhosttySurfaceNSView: NSView {
 
 	private let pendingCommand: String?
 	private let pendingEnv: [(String, String)]
+	private let createsSurfaceOnAttach: Bool
 	private var didCreateSurface = false
 	private var backgroundTransparencyEnabled = false
+	private var paneFocusRequested = true
+
+	public var onFirstResponderChange: ((Bool) -> Void)?
 
 	/// Last shape libghostty asked us to render. Updated by
 	/// `GhosttySurface.onMouseShape`; consumed by `cursorUpdate(with:)` to
@@ -43,9 +47,18 @@ public final class GhosttySurfaceNSView: NSView {
 	/// path, libghostty must not re-emit it.
 	var imeConsumedThisEvent: Bool = false
 
-	public init(command: String?, env: [(String, String)] = []) {
+	public convenience init(command: String?, env: [(String, String)] = []) {
+		self.init(command: command, env: env, createsSurfaceOnAttach: true)
+	}
+
+	init(
+		command: String?,
+		env: [(String, String)] = [],
+		createsSurfaceOnAttach: Bool
+	) {
 		self.pendingCommand = command
 		self.pendingEnv = env
+		self.createsSurfaceOnAttach = createsSurfaceOnAttach
 		super.init(frame: .zero)
 		translatesAutoresizingMaskIntoConstraints = false
 		wantsLayer = true
@@ -65,6 +78,10 @@ public final class GhosttySurfaceNSView: NSView {
 	public override func viewDidMoveToWindow() {
 		super.viewDidMoveToWindow()
 		applyBackgroundTransparency()
+		guard createsSurfaceOnAttach else {
+			requestPaneFocusIfNeeded()
+			return
+		}
 		guard !didCreateSurface, window != nil else { return }
 		do {
 			let surface = try GhosttySurface(
@@ -94,10 +111,10 @@ public final class GhosttySurfaceNSView: NSView {
 				}
 			}
 			wireURLHandlers()
-			window?.makeFirstResponder(self)
+			requestPaneFocusIfNeeded()
 			propagateSize()
 			applyBackgroundTransparency()
-			surface.setFocus(true)
+			surface.setFocus(window?.firstResponder === self)
 		} catch {
 			// Surfacing this through the UI is Task 1.4's job; for the smoke
 			// path we just log and let the window stay blank.
@@ -112,13 +129,37 @@ public final class GhosttySurfaceNSView: NSView {
 	}
 
 	public override func becomeFirstResponder() -> Bool {
-		surface?.setFocus(true)
-		return super.becomeFirstResponder()
+		let accepted = super.becomeFirstResponder()
+		if accepted {
+			surface?.setFocus(true)
+			onFirstResponderChange?(true)
+		}
+		return accepted
 	}
 
 	public override func resignFirstResponder() -> Bool {
-		surface?.setFocus(false)
-		return super.resignFirstResponder()
+		let accepted = super.resignFirstResponder()
+		if accepted {
+			surface?.setFocus(false)
+			onFirstResponderChange?(false)
+		}
+		return accepted
+	}
+
+	public func setPaneFocusRequested(_ requested: Bool) {
+		paneFocusRequested = requested
+		if !requested, window?.firstResponder === self {
+			window?.makeFirstResponder(nil)
+			return
+		}
+		requestPaneFocusIfNeeded()
+	}
+
+	private func requestPaneFocusIfNeeded() {
+		guard paneFocusRequested,
+		      let window,
+		      window.firstResponder !== self else { return }
+		window.makeFirstResponder(self)
 	}
 
 	public override func keyDown(with event: NSEvent) {

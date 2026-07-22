@@ -32,6 +32,7 @@ extension GhosttySurfaceNSView {
 	// MARK: - Button events
 
 	public override func mouseDown(with event: NSEvent) {
+		activatePaneBeforeMouseInput()
 		forwardButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT)
 	}
 
@@ -40,6 +41,7 @@ extension GhosttySurfaceNSView {
 	}
 
 	public override func rightMouseDown(with event: NSEvent) {
+		activatePaneBeforeMouseInput()
 		forwardButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT)
 	}
 
@@ -48,6 +50,7 @@ extension GhosttySurfaceNSView {
 	}
 
 	public override func otherMouseDown(with event: NSEvent) {
+		activatePaneBeforeMouseInput()
 		forwardButton(event, GHOSTTY_MOUSE_PRESS, ghosttyMouseButton(buttonNumber: event.buttonNumber))
 	}
 
@@ -81,6 +84,12 @@ extension GhosttySurfaceNSView {
 	}
 
 	// MARK: - Private helpers
+
+	private func activatePaneBeforeMouseInput() {
+		if window?.firstResponder !== self {
+			window?.makeFirstResponder(self)
+		}
+	}
 
 	private func forwardButton(
 		_ event: NSEvent,

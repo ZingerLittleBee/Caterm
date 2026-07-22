@@ -57,19 +57,97 @@ final class WorkspaceCoordinator: ObservableObject {
 		for workspace: Workspace,
 		installTerminfo: Bool
 	) throws -> UUID? {
-		if let existing = sessionID(for: workspace) {
-			return existing
-		}
+		try ensureSessions(for: workspace, installTerminfo: installTerminfo)
+		return sessionID(for: workspace)
+	}
 
-		if runtime.sessionID(for: workspace.activePaneID, in: workspace.id) != nil {
-			runtime.unbind(paneID: workspace.activePaneID, in: workspace.id)
-			runtimeRevision &+= 1
+	func ensureSessions(
+		for workspace: Workspace,
+		installTerminfo: Bool
+	) throws {
+		for pane in workspace.topology.panes {
+			guard sessionID(for: pane.id, in: workspace) == nil else { continue }
+			if runtime.sessionID(for: pane.id, in: workspace.id) != nil {
+				runtime.unbind(paneID: pane.id, in: workspace.id)
+				runtimeRevision &+= 1
+			}
+			guard let hostReference = pane.host,
+			      let resolved = resolve(hostReference) else {
+				continue
+			}
+			_ = try openSession(
+				for: workspace,
+				paneID: pane.id,
+				host: resolved.host,
+				installTerminfo: installTerminfo,
+				authenticationMode: resolved.authenticationMode
+			)
 		}
+	}
 
-		guard let pane = workspace.topology.panes.first else { return nil }
+	func connectSavedHost(
+		_ host: SSHHost,
+		to paneID: PaneID,
+		in workspace: Workspace,
+		installTerminfo: Bool
+	) throws -> Workspace {
+		let updated = try workspace.assigningHost(.saved(id: host.id), to: paneID)
+		_ = try openSession(
+			for: updated,
+			paneID: paneID,
+			host: host,
+			installTerminfo: installTerminfo,
+			authenticationMode: .configuredCredential
+		)
+		return updated
+	}
+
+	func connectOneTimeHost(
+		_ host: SSHHost,
+		to paneID: PaneID,
+		in workspace: Workspace,
+		installTerminfo: Bool
+	) throws -> Workspace {
+		let descriptor = try OneTimeConnectionDescriptor(
+			displayName: host.name,
+			hostname: host.hostname,
+			port: host.port,
+			username: host.username
+		)
+		let updated = try workspace.assigningHost(.oneTime(descriptor), to: paneID)
+		_ = try openSession(
+			for: updated,
+			paneID: paneID,
+			host: host,
+			installTerminfo: installTerminfo,
+			authenticationMode: .interactive
+		)
+		return updated
+	}
+
+	func sessionID(for paneID: PaneID, in workspace: Workspace) -> UUID? {
+		guard let sessionID = runtime.sessionID(for: paneID, in: workspace.id) else {
+			return nil
+		}
+		return sessionStore.tabs.contains(where: { $0.id == sessionID })
+			? sessionID
+			: nil
+	}
+
+	func closePane(_ paneID: PaneID, in workspaceID: WorkspaceID) {
+		guard let sessionID = runtime.unbind(paneID: paneID, in: workspaceID) else {
+			return
+		}
+		sessionStore.closeTab(tabId: sessionID)
+		runtimeRevision &+= 1
+	}
+
+	private func resolve(
+		_ hostReference: WorkspaceHostReference
+	) -> (host: SSHHost, authenticationMode: SSHAuthenticationMode)? {
 		let host: SSHHost
 		let authenticationMode: SSHAuthenticationMode
-		switch pane.host {
+		switch hostReference {
 		case .saved(let hostID):
 			guard let savedHost = sessionStore.hosts.first(where: { $0.id == hostID }) else {
 				return nil
@@ -86,25 +164,11 @@ final class WorkspaceCoordinator: ObservableObject {
 			)
 			authenticationMode = .interactive
 		}
-
-		return try openSession(
-			for: workspace,
-			host: host,
-			installTerminfo: installTerminfo,
-			authenticationMode: authenticationMode
-		)
+		return (host, authenticationMode)
 	}
 
 	func sessionID(for workspace: Workspace) -> UUID? {
-		guard let sessionID = runtime.sessionID(
-			for: workspace.activePaneID,
-			in: workspace.id
-		) else {
-			return nil
-		}
-		return sessionStore.tabs.contains(where: { $0.id == sessionID })
-			? sessionID
-			: nil
+		sessionID(for: workspace.activePaneID, in: workspace)
 	}
 
 	func closeWorkspace(_ workspaceID: WorkspaceID) {
@@ -125,6 +189,7 @@ final class WorkspaceCoordinator: ObservableObject {
 		let workspace = Workspace.onePane(host: reference)
 		_ = try openSession(
 			for: workspace,
+			paneID: workspace.activePaneID,
 			host: host,
 			installTerminfo: installTerminfo,
 			authenticationMode: authenticationMode
@@ -134,6 +199,7 @@ final class WorkspaceCoordinator: ObservableObject {
 
 	private func openSession(
 		for workspace: Workspace,
+		paneID: PaneID,
 		host: SSHHost,
 		installTerminfo: Bool,
 		authenticationMode: SSHAuthenticationMode
@@ -146,7 +212,7 @@ final class WorkspaceCoordinator: ObservableObject {
 		do {
 			try runtime.bind(
 				sessionID: sessionID,
-				to: workspace.activePaneID,
+				to: paneID,
 				in: workspace
 			)
 		} catch let error as WorkspaceRuntimeMap.Error {

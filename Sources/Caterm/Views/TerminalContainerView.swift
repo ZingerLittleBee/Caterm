@@ -16,6 +16,18 @@ struct TerminalContainerView: View {
 	@EnvironmentObject var settingsStore: SettingsStore
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	let tabId: UUID
+	let isFocused: Bool
+	let onFocus: () -> Void
+
+	init(
+		tabId: UUID,
+		isFocused: Bool = true,
+		onFocus: @escaping () -> Void = {}
+	) {
+		self.tabId = tabId
+		self.isFocused = isFocused
+		self.onFocus = onFocus
+	}
 
 	private var backgroundTransparencyEnabled: Bool {
 		(settingsStore.settings.global.windowOpacity ?? 1.0) < 0.999
@@ -36,10 +48,12 @@ struct TerminalContainerView: View {
 	private func surfaceOrPlaceholder(for tab: SessionStore.Tab) -> some View {
 		switch tab.state {
 		case .authenticating, .connected, .reconnecting:
-			TerminalSurfaceRepresentable(
-				tabId: tabId,
-				backgroundTransparencyEnabled: backgroundTransparencyEnabled
-			)
+				TerminalSurfaceRepresentable(
+					tabId: tabId,
+					backgroundTransparencyEnabled: backgroundTransparencyEnabled,
+					isFocused: isFocused,
+					onFocus: onFocus
+				)
 			.id("\(tabId)-\(tab.surfaceGeneration)")
 
 		case .idle, .preflight, .failed:
@@ -104,6 +118,8 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
 	let tabId: UUID
 	let backgroundTransparencyEnabled: Bool
+	let isFocused: Bool
+	let onFocus: () -> Void
 
 	/// Owns the unstructured connect-probe `Task` so it is tied to this
 	/// representable's lifetime. Without this the probe outlived a torn-down
@@ -135,10 +151,12 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		guard let cfg = store.surfaceConfig(for: tabId) else {
 			let view = GhosttySurfaceNSView(command: nil)
 			view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
+			configureFocus(for: view)
 			return view
 		}
 		let view = GhosttySurfaceNSView(command: cfg.command, env: cfg.env)
 		view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
+		configureFocus(for: view)
 
 		let capturedTabId = tabId
 		// The surface generation this representable was created for. If the
@@ -203,5 +221,15 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 		return view
 	}
 
-	func updateNSView(_: GhosttySurfaceNSView, context _: Context) {}
+	func updateNSView(_ view: GhosttySurfaceNSView, context _: Context) {
+		configureFocus(for: view)
+	}
+
+	private func configureFocus(for view: GhosttySurfaceNSView) {
+		view.onFirstResponderChange = { focused in
+			guard focused else { return }
+			onFocus()
+		}
+		view.setPaneFocusRequested(isFocused)
+	}
 }

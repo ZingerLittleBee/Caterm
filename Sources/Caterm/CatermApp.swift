@@ -465,6 +465,61 @@ struct CatermApp: App {
         }
         .keyboardShortcut("f", modifiers: [.command, .shift])
       }
+      CommandMenu("Pane") {
+        Button("Split Right") {
+          WorkspaceCommandDispatcher.post(.splitRight)
+        }
+        .keyboardShortcut("d", modifiers: .command)
+
+        Button("Split Down") {
+          WorkspaceCommandDispatcher.post(.splitDown)
+        }
+        .keyboardShortcut("d", modifiers: [.command, .shift])
+
+        Divider()
+
+        Button("Focus Left Pane") {
+          WorkspaceCommandDispatcher.post(.focusLeft)
+        }
+        .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+
+        Button("Focus Right Pane") {
+          WorkspaceCommandDispatcher.post(.focusRight)
+        }
+        .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+
+        Button("Focus Pane Above") {
+          WorkspaceCommandDispatcher.post(.focusUp)
+        }
+        .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+
+        Button("Focus Pane Below") {
+          WorkspaceCommandDispatcher.post(.focusDown)
+        }
+        .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+
+        Button("Focus Previous Pane") {
+          WorkspaceCommandDispatcher.post(.focusPrevious)
+        }
+        .keyboardShortcut("[", modifiers: [.command, .option])
+
+        Button("Focus Next Pane") {
+          WorkspaceCommandDispatcher.post(.focusNext)
+        }
+        .keyboardShortcut("]", modifiers: [.command, .option])
+
+        Divider()
+
+        Button("Toggle Focus Mode") {
+          WorkspaceCommandDispatcher.post(.toggleFocusMode)
+        }
+        .keyboardShortcut(.return, modifiers: [.command, .shift])
+
+        Button("Close Pane") {
+          WorkspaceCommandDispatcher.post(.closePane)
+        }
+        .keyboardShortcut("w", modifiers: [.command, .option])
+      }
       // Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
       // These post notifications that `SnippetCommandObserver` picks up
       // in the key window only, avoiding multi-window broadcast.
