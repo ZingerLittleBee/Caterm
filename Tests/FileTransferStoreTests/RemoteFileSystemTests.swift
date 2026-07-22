@@ -79,7 +79,10 @@ final class RemoteFileSystemTests: XCTestCase {
 
 	func testListPreservesConsecutiveSpacesInFilename() async throws {
 		let runner = FakeSFTPRunner()
-		runner.nextStdout = "-rw-r--r-- 1 user staff 4 Jul 22 10:00 report  final.txt\n"
+		runner.nextStdout =
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00 report  final.txt\n" +
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00  leading.txt\n" +
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00 trailing.txt \n"
 		let fs = RemoteFileSystem(
 			host: makeHost(),
 			controlPath: URL(fileURLWithPath: "/sock"),
@@ -90,9 +93,52 @@ final class RemoteFileSystemTests: XCTestCase {
 
 		let entries = try await fs.list("/remote")
 
-		XCTAssertEqual(entries.map(\.name), ["report  final.txt"])
+		XCTAssertEqual(
+			entries.map(\.name),
+			["report  final.txt", " leading.txt", "trailing.txt "]
+		)
 		let match = try await fs.stat("/remote/report  final.txt")
 		XCTAssertEqual(match?.name, "report  final.txt")
+	}
+
+	@MainActor
+	func testUploadConflictPreservesLeadingAndTrailingSpaces() async throws {
+		let runner = FakeSFTPRunner()
+		runner.nextStdout =
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00  leading.txt\n" +
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00 trailing.txt \n"
+		let host = makeHost()
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: host,
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let localDirectory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-space-conflict-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: localDirectory,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: localDirectory) }
+		let localURLs = [" leading.txt", "trailing.txt "].map {
+			localDirectory.appendingPathComponent($0)
+		}
+		for url in localURLs { try Data("new".utf8).write(to: url) }
+		let store = FileTransferStore(clientForHost: { _ in client })
+
+		let ids = store.enqueueUpload(
+			localPaths: localURLs,
+			remoteDir: "/remote",
+			host: host
+		)
+		try await store.waitIdle()
+
+		XCTAssertEqual(ids.map { store.task(id: $0)?.status }, [.conflict, .conflict])
+		XCTAssertFalse(runner.invocations.contains {
+			$0.scriptStdin.contains("put ")
+		})
 	}
 
 	@MainActor

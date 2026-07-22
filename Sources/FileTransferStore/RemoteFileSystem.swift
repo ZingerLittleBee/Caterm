@@ -174,8 +174,9 @@ func parseLsOutput(_ stdout: String) throws -> [RemoteEntry] {
 	// Skip lines that don't match (sftp prompts, blank lines, ".", "..").
 	var out: [RemoteEntry] = []
 	for raw in stdout.split(separator: "\n") {
-		let line = raw.trimmingCharacters(in: .whitespaces)
-		if line.isEmpty || line.hasPrefix("sftp>") { continue }
+		let line = String(raw)
+		let normalized = line.trimmingCharacters(in: .whitespaces)
+		if normalized.isEmpty || normalized.hasPrefix("sftp>") { continue }
 		guard let (metadata, filename) = splitLsMetadataAndFilename(line) else {
 			continue
 		}
@@ -212,9 +213,8 @@ private func splitLsMetadataAndFilename(
 		fields.append(line[start..<index])
 	}
 
-	while index < line.endIndex, line[index].isWhitespace {
-		index = line.index(after: index)
-	}
+	guard index < line.endIndex, line[index].isWhitespace else { return nil }
+	index = line.index(after: index)
 	guard index < line.endIndex else { return nil }
 	return (fields, line[index...])
 }
