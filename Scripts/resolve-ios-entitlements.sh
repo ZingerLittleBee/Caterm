@@ -67,6 +67,9 @@ fi
 cp "$TEMPLATE" "$OUTPUT"
 "$PB" -c "Set :application-identifier $EXPECTED_APP_ID" "$OUTPUT"
 "$PB" -c "Set :aps-environment $APS_ENVIRONMENT" "$OUTPUT"
+"$PB" -c "Delete :com.apple.developer.team-identifier" \
+  "$OUTPUT" >/dev/null 2>&1 || true
+"$PB" -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$OUTPUT"
 "$PB" -c \
   "Set :com.apple.developer.ubiquity-kvstore-identifier $EXPECTED_APP_ID" \
   "$OUTPUT"

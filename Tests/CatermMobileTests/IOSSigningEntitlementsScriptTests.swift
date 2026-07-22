@@ -15,6 +15,10 @@ final class IOSSigningEntitlementsScriptTests: XCTestCase {
 		let entitlements = try readPlist(result.outputURL)
 		XCTAssertEqual(entitlements["aps-environment"] as? String, "development")
 		XCTAssertEqual(
+			entitlements["com.apple.developer.team-identifier"] as? String,
+			teamID
+		)
+		XCTAssertEqual(
 			entitlements["com.apple.developer.icloud-container-environment"] as? String,
 			"Development"
 		)
@@ -29,6 +33,10 @@ final class IOSSigningEntitlementsScriptTests: XCTestCase {
 		XCTAssertEqual(result.status, 0, result.output)
 		let entitlements = try readPlist(result.outputURL)
 		XCTAssertEqual(entitlements["aps-environment"] as? String, "production")
+		XCTAssertEqual(
+			entitlements["com.apple.developer.team-identifier"] as? String,
+			teamID
+		)
 		XCTAssertEqual(
 			entitlements["com.apple.developer.icloud-container-environment"] as? String,
 			"Production"
