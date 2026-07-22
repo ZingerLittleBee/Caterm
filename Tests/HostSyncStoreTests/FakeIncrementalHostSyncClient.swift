@@ -37,7 +37,9 @@ final class FakeIncrementalHostSyncClient: IncrementalHostSyncClient, @unchecked
     // MARK: - Credential push
 
     private(set) var pushCredentialCalls: [PushCredentialCall] = []
+    private(set) var pushCredentialAttemptServerIDs: [String] = []
     var pushCredentialError: Error?
+    var pushCredentialErrorsByServerID: [String: Error] = [:]
     var pushCredentialReturn: Int64 = 1
     /// Plan C / Task 20 — when set, push throws ONLY when the current call's
     /// 0-based index equals this value. Lets tests simulate "first host
@@ -45,7 +47,11 @@ final class FakeIncrementalHostSyncClient: IncrementalHostSyncClient, @unchecked
     var pushCredentialFailAtIndex: Int?
 
     func pushHostCredentialBlob(serverId: String, blob: CredentialBlob) async throws -> Int64 {
+        pushCredentialAttemptServerIDs.append(serverId)
         let callIndex = pushCredentialCalls.count
+        if let error = pushCredentialErrorsByServerID[serverId] {
+            throw error
+        }
         if let failAt = pushCredentialFailAtIndex, callIndex == failAt {
             throw pushCredentialError ?? NSError(
                 domain: "FakeIncrementalHostSyncClient.pushCredential",

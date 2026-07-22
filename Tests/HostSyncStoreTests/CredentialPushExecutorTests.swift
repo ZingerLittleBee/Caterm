@@ -207,36 +207,56 @@ final class CredentialPushExecutorTests: XCTestCase {
         )
     }
 
-	func test_missingRemoteDuringIncrementalCredentialPushRetriesFullSnapshot() async throws {
+	func test_missingRemoteDuringIncrementalCredentialPushRetriesFullSnapshotWithoutRepeatingSuccessfulPushes() async throws {
 		prefsStore.mutate { $0.state = .enabled }
-		let host = makeDirtyHost()
-		try sessionStore.setServerId("rec-1", for: host.id)
-		try sessionStore.setHostSecret("p1", hostId: host.id, kind: .password)
+		let survivingHost = makeDirtyHost(name: "surviving")
+		let deletedHost = makeDirtyHost(name: "deleted")
+		try sessionStore.setServerId("rec-surviving", for: survivingHost.id)
+		try sessionStore.setServerId("rec-deleted", for: deletedHost.id)
+		try sessionStore.setHostSecret(
+			"p1", hostId: survivingHost.id, kind: .password
+		)
+		try sessionStore.setHostSecret(
+			"p2", hostId: deletedHost.id, kind: .password
+		)
 		try await stageMasterKey()
 		fakeClient.preferredModeOverride = .incremental
+		let incrementalCheckpoint = FakeCheckpoint(id: UUID())
+		let fullCheckpoint = FakeCheckpoint(id: UUID())
+		let survivingRemote = makeRemoteHostMatchingLocal(
+			serverId: "rec-surviving", host: survivingHost
+		)
+		let deletedRemote = makeRemoteHostMatchingLocal(
+			serverId: "rec-deleted", host: deletedHost
+		)
 		fakeClient.fetchSnapshotResult = HostChangeBatch(
-			changedHosts: [],
+			changedHosts: [survivingRemote, deletedRemote],
 			deletedHostIDs: [],
-			checkpoint: nil,
+			checkpoint: incrementalCheckpoint,
 			tokenExpired: false,
 			mode: .incremental
 		)
 		fakeClient.fetchSnapshotResultRetry = HostChangeBatch(
-			changedHosts: [],
+			changedHosts: [survivingRemote],
 			deletedHostIDs: [],
-			checkpoint: nil,
+			checkpoint: fullCheckpoint,
 			tokenExpired: false,
 			mode: .forceFull
 		)
-		fakeClient.pushCredentialError = ServerSyncError.remoteHostNotFound(
-			serverID: "rec-1"
-		)
+		fakeClient.pushCredentialErrorsByServerID["rec-deleted"] =
+			ServerSyncError.remoteHostNotFound(serverID: "rec-deleted")
 
 		let sut = makeStore()
 		try await sut.sync()
 
 		XCTAssertEqual(fakeClient.fetchModes, [.incremental, .forceFull])
-		XCTAssertFalse(sessionStore.hosts.contains(where: { $0.id == host.id }))
+		XCTAssertEqual(fakeClient.commitCalls.map(\.id), [fullCheckpoint.id])
+		XCTAssertEqual(
+			fakeClient.pushCredentialAttemptServerIDs,
+			["rec-surviving", "rec-deleted"]
+		)
+		XCTAssertTrue(sessionStore.hosts.contains(where: { $0.id == survivingHost.id }))
+		XCTAssertFalse(sessionStore.hosts.contains(where: { $0.id == deletedHost.id }))
 		XCTAssertNil(sut.lastSyncErrorKind)
 	}
 
@@ -256,9 +276,9 @@ final class CredentialPushExecutorTests: XCTestCase {
     }
 
     @discardableResult
-    private func makeDirtyHost() -> SSHHost {
+    private func makeDirtyHost(name: String = "dirty") -> SSHHost {
         let host = SSHHost(
-            name: "dirty",
+            name: name,
             hostname: "h",
             port: 22,
             username: "u",
