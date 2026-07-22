@@ -49,9 +49,8 @@ final class MobileCredentialPlanTests: XCTestCase {
 	}
 }
 
-@MainActor
 final class MobileCredentialWriterTests: XCTestCase {
-	func testApplyWritesAndIsIdempotentOnClear() throws {
+	func testApplyWritesAndIsIdempotentOnClear() async throws {
 		let kc = KeychainStore(
 			service: "com.caterm.test.\(UUID().uuidString)", accessGroup: nil)
 		let writer = MobileCredentialWriter(keychain: kc)
@@ -59,15 +58,52 @@ final class MobileCredentialWriterTests: XCTestCase {
 		                username: "deploy", credential: .password)
 
 		// Clearing a never-written account must not throw.
-		try writer.apply(MobileHostDraftPayload(host: h, secret: "s3cret"))
+		try await writer.apply(MobileHostDraftPayload(host: h, secret: "s3cret"))
 		XCTAssertEqual(try kc.get(account: "\(h.id.uuidString).password"), "s3cret")
 
 		// Switching to agent clears the stored password.
 		var agentHost = h
 		agentHost.credential = .agent
-		try writer.apply(MobileHostDraftPayload(host: agentHost, secret: nil))
+		try await writer.apply(MobileHostDraftPayload(host: agentHost, secret: nil))
 		XCTAssertThrowsError(try kc.get(account: "\(h.id.uuidString).password"))
 
-		try? kc.deleteAll(prefix: "\(h.id.uuidString).")
+		try await writer.clearAll(hostId: h.id)
+	}
+
+	func testSaveActionReportsAsyncSaveAndDeleteOutcomes() async {
+		actor Recorder {
+			var savedHostIDs: [UUID] = []
+			var deletedHostIDs: [UUID] = []
+
+			func recordSave(_ id: UUID) { savedHostIDs.append(id) }
+			func recordDelete(_ id: UUID) { deletedHostIDs.append(id) }
+		}
+		let recorder = Recorder()
+		let host = SSHHost(
+			name: "Box",
+			hostname: "box.example.com",
+			username: "deploy",
+			credential: .agent
+		)
+		let action = MobileHostSaveAction(
+			save: { payload in
+				await recorder.recordSave(payload.host.id)
+				return true
+			},
+			deleteHost: { hostID in
+				await recorder.recordDelete(hostID)
+				return true
+			}
+		)
+
+		let saved = await action.save(MobileHostDraftPayload(host: host, secret: nil))
+		let deleted = await action.deleteHost(host.id)
+		let savedHostIDs = await recorder.savedHostIDs
+		let deletedHostIDs = await recorder.deletedHostIDs
+
+		XCTAssertTrue(saved)
+		XCTAssertTrue(deleted)
+		XCTAssertEqual(savedHostIDs, [host.id])
+		XCTAssertEqual(deletedHostIDs, [host.id])
 	}
 }

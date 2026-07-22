@@ -1,13 +1,16 @@
 import Foundation
 import ServerSyncClient
 
+public enum HostSynchronizationError: Error, Equatable {
+	case localHostMissing(UUID)
+}
+
 @MainActor
 public enum HostSynchronization {
 	public typealias OperationHook = @MainActor (
 		SyncOperation,
 		HostChangeBatch
 	) async throws -> Void
-	public typealias OperationObserver = @MainActor (SyncOperation) -> Void
 	public typealias CheckpointObserver = @MainActor () -> Void
 
 	@discardableResult
@@ -16,7 +19,6 @@ public enum HostSynchronization {
 		client: any IncrementalHostSyncClient,
 		mode: HostSyncMode,
 		additionalOperations: [SyncOperation] = [],
-		willApply: OperationObserver? = nil,
 		afterApply: OperationHook? = nil,
 		didCommitCheckpoint: CheckpointObserver? = nil
 	) async throws -> [SyncOperation] {
@@ -47,7 +49,6 @@ public enum HostSynchronization {
 		let operations = reconciled + additionalOperations
 		for operation in operations {
 			try Task.checkCancellation()
-			willApply?(operation)
 			try await apply(
 				operation,
 				repository: repository,
@@ -96,7 +97,9 @@ public enum HostSynchronization {
 		case .createRemote(let localHostID):
 			guard let host = repository.hostSnapshot.first(where: {
 				$0.id == localHostID
-			}) else { return }
+			}) else {
+				throw HostSynchronizationError.localHostMissing(localHostID)
+			}
 			let output = try await client.createHost(RemoteHostCreateInput(
 				name: host.name,
 				hostname: host.hostname,
@@ -118,7 +121,9 @@ public enum HostSynchronization {
 		case .updateRemote(let localHostID, let serverID):
 			guard let host = repository.hostSnapshot.first(where: {
 				$0.id == localHostID
-			}) else { return }
+			}) else {
+				throw HostSynchronizationError.localHostMissing(localHostID)
+			}
 			try await client.updateHost(RemoteHostUpdateInput(
 				id: serverID,
 				name: host.name,

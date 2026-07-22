@@ -12,16 +12,28 @@ import SwiftUI
 struct CatermMobileApp: App {
 	var body: some Scene {
 		WindowGroup {
-			MobileRootView(
-				hostStore: MobileHostStore(fileURL: Self.hostsURL),
-				credentialWriter: MobileCredentialWriter(
-					keychain: KeychainStore(
-						service: MobileCredentialWriter.defaultService,
-						accessGroup: nil
-					)
-				)
-			)
+			Self.makeRootView()
 		}
+	}
+
+	@MainActor
+	private static func makeRootView() -> MobileRootView {
+		let credentialWriter = MobileCredentialWriter(
+			keychain: KeychainStore(
+				service: MobileCredentialWriter.defaultService,
+				accessGroup: nil
+			)
+		)
+		let hostStore = MobileHostStore(
+			fileURL: hostsURL,
+			credentialCleanup: { hostID in
+				try await credentialWriter.clearAll(hostId: hostID)
+			}
+		)
+		return MobileRootView(
+			hostStore: hostStore,
+			credentialWriter: credentialWriter
+		)
 	}
 
 	private static var hostsURL: URL {

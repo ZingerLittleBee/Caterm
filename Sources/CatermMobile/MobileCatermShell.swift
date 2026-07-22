@@ -1,4 +1,5 @@
 import CatermMobileTerminal
+import Combine
 import FileTransferStore
 import SnippetSyncClient
 import SSHCommandBuilder
@@ -42,6 +43,7 @@ public struct MobileCatermShell: View {
 public struct MobileRootView: View {
 	@StateObject private var hostStore: MobileHostStore
 	private let credentialWriter: MobileCredentialWriter
+	@State private var operationError: MobileHostOperationError?
 	@State private var snippets: [Snippet]
 	@State private var remoteEntries: [RemoteEntry]
 	@State private var transfers: [TransferTask]
@@ -69,13 +71,56 @@ public struct MobileRootView: View {
 		)
 		.environment(\.mobileHostSave, MobileHostSaveAction(
 			save: { payload in
-				try? hostStore.upsert(payload.host)
-				try? credentialWriter.apply(payload)
+				do {
+					try await credentialWriter.apply(payload)
+					try hostStore.upsert(payload.host)
+					return true
+				} catch {
+					operationError = MobileHostOperationError(
+						title: "Couldn’t Save Host",
+						error: error
+					)
+					return false
+				}
 			},
-			deleteCredentials: { id in
-				credentialWriter.clearAll(hostId: id)
+			deleteHost: { id in
+				do {
+					try await hostStore.delete(id: id)
+					return true
+				} catch {
+					operationError = MobileHostOperationError(
+						title: "Couldn’t Delete Host",
+						error: error
+					)
+					return false
+				}
 			}
 		))
+		.alert(item: $operationError) { failure in
+			Alert(
+				title: Text(failure.title),
+				message: Text(failure.message),
+				dismissButton: .default(Text("OK"))
+			)
+		}
+		.onReceive(hostStore.$lastPersistenceFailure.compactMap { $0 }) { failure in
+			operationError = MobileHostOperationError(
+				title: "Couldn’t Save Hosts",
+				error: failure.underlyingError
+			)
+			hostStore.clearPersistenceFailure()
+		}
+	}
+}
+
+private struct MobileHostOperationError: Identifiable {
+	let id = UUID()
+	let title: String
+	let message: String
+
+	init(title: String, error: any Error) {
+		self.title = title
+		self.message = error.localizedDescription
 	}
 }
 
@@ -119,12 +164,16 @@ struct MobileShellBody: View {
 					NavigationStack {
 						MobileHostFormView(mode: .add, allHosts: hosts) { payload in
 							if let hostSave {
-								hostSave.save(payload)
+								Task { @MainActor in
+									guard await hostSave.save(payload) else { return }
+									selection = .host(payload.host.id)
+									showingAddHost = false
+								}
 							} else {
 								hosts.append(payload.host)
+								selection = .host(payload.host.id)
+								showingAddHost = false
 							}
-							selection = .host(payload.host.id)
-							showingAddHost = false
 						}
 					}
 				}
@@ -243,8 +292,16 @@ private struct MobileShellDetail: View {
 						}
 					},
 					onDelete: {
-						hosts.removeAll { $0.id == id }
-						hostSave?.deleteCredentials(id)
+						if let hostSave {
+							Task { @MainActor in
+								if await hostSave.deleteHost(id) {
+									selection = nil
+								}
+							}
+						} else {
+							hosts.removeAll { $0.id == id }
+							selection = nil
+						}
 					},
 					onUpdate: { updated in
 						if let index = hosts.firstIndex(where: { $0.id == updated.id }) {

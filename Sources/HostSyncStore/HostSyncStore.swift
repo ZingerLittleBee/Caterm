@@ -104,10 +104,6 @@ public final class HostSyncStore: ObservableObject {
     private let userDefaults: UserDefaults
 
     #if DEBUG
-    /// Test-only seam: mirrors the ops applied during the most recent
-    /// `performSync()` cycle. Reset at the start of the op-loop and
-    /// appended to as each op is dispatched.
-    internal private(set) var lastAppliedOpsForTesting: [SyncOperation] = []
     internal var decryptAndApplyInvocations: [
         (localHostId: UUID, revision: Int64)
     ] {
@@ -428,19 +424,11 @@ public final class HostSyncStore: ObservableObject {
                 SyncOperation.updateRemoteCredentials(localHostId: $0)
             }
 
-            #if DEBUG
-            lastAppliedOpsForTesting.removeAll(keepingCapacity: true)
-            #endif
             _ = try await HostSynchronization.synchronize(
                 repository: sessionStore,
                 client: client,
                 mode: effectiveMode,
                 additionalOperations: credentialOps,
-                willApply: { [weak self] operation in
-                #if DEBUG
-                self?.lastAppliedOpsForTesting.append(operation)
-                #endif
-                },
                 afterApply: { [weak self] operation, batch in
                     guard let self else { return }
                     try await self.applyCredentialEffects(

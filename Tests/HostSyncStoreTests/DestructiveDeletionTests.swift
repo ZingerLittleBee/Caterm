@@ -196,13 +196,6 @@ final class DestructiveDeletionTests: XCTestCase {
         let sut = makeStore()
         try await sut.sync()
 
-        XCTAssertFalse(
-            sut.lastAppliedOpsForTesting.contains(where: { op in
-                if case .updateRemoteCredentials = op { return true }
-                return false
-            }),
-            "destructive in-progress must skip the dirty-scan op queue"
-        )
         XCTAssertEqual(fakeClient.pushCredentialCalls.count, 1,
                        "only the destructive tombstone for the pending host")
         XCTAssertEqual(fakeClient.pushCredentialCalls[0].blob.state, .tombstone)

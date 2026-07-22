@@ -73,16 +73,18 @@ public struct MobileHostsView: View {
 		.sheet(isPresented: $showingAddHost) {
 			NavigationStack {
 				MobileHostFormView(mode: .add, allHosts: hosts) { payload in
-					saveHost(payload)
-					showingAddHost = false
-				}
+					saveHost(payload) {
+						showingAddHost = false
+					}
+			}
 			}
 		}
 		.sheet(item: $editingHost) { host in
 			NavigationStack {
 				MobileHostFormView(mode: .edit(host), allHosts: hosts) { payload in
-					saveHost(payload)
-					editingHost = nil
+					saveHost(payload) {
+						editingHost = nil
+					}
 				}
 			}
 		}
@@ -140,19 +142,32 @@ public struct MobileHostsView: View {
 		return SSHTerminalSession(host: host, transport: transport)
 	}
 
-	private func saveHost(_ payload: MobileHostDraftPayload) {
+	private func saveHost(
+		_ payload: MobileHostDraftPayload,
+		onSuccess: @escaping @MainActor () -> Void = {}
+	) {
 		if let hostSave {
-			hostSave.save(payload)
+			Task { @MainActor in
+				guard await hostSave.save(payload) else { return }
+				onSuccess()
+			}
 		} else if let index = hosts.firstIndex(where: { $0.id == payload.host.id }) {
 			hosts[index] = payload.host
+			onSuccess()
 		} else {
 			hosts.append(payload.host)
+			onSuccess()
 		}
 	}
 
 	private func deleteHost(id: UUID) {
-		hosts.removeAll { $0.id == id }
-		hostSave?.deleteCredentials(id)
+		if let hostSave {
+			Task { @MainActor in
+				_ = await hostSave.deleteHost(id)
+			}
+		} else {
+			hosts.removeAll { $0.id == id }
+		}
 	}
 
 	private var filteredHosts: [SSHHost] {
@@ -278,11 +293,14 @@ struct MobileHostDetailView: View {
 			NavigationStack {
 				MobileHostFormView(mode: .edit(host), allHosts: [host]) { payload in
 					if let hostSave {
-						hostSave.save(payload)
+						Task { @MainActor in
+							guard await hostSave.save(payload) else { return }
+							showingEdit = false
+						}
 					} else {
 						onUpdate(payload.host)
+						showingEdit = false
 					}
-					showingEdit = false
 				}
 			}
 		}

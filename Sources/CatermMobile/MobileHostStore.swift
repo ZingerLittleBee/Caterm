@@ -18,12 +18,28 @@ public final class MobileHostStore: ObservableObject {
 
 	@Published public private(set) var hosts: [SSHHost]
 
+	public struct DeletionRollbackError: Error {
+		public let originalError: any Error
+		public let rollbackErrors: [any Error]
+	}
+
+	public struct PersistenceFailure: Error, Identifiable {
+		public let id = UUID()
+		public let underlyingError: any Error
+	}
+
 	private let fileURL: URL
+	private let credentialCleanup: @Sendable (UUID) async throws -> Void
 	private let localMutationsSubject = PassthroughSubject<Void, Never>()
 	private var deletionOutbox: HostDeletionOutbox
+	@Published public private(set) var lastPersistenceFailure: PersistenceFailure?
 
-	public init(fileURL: URL) {
+	public init(
+		fileURL: URL,
+		credentialCleanup: @escaping @Sendable (UUID) async throws -> Void = { _ in }
+	) {
 		self.fileURL = fileURL
+		self.credentialCleanup = credentialCleanup
 		self.hosts = (try? HostPersistence.load(from: fileURL)) ?? []
 		self.deletionOutbox = HostDeletionOutbox(hostsURL: fileURL)
 	}
@@ -61,8 +77,8 @@ public final class MobileHostStore: ObservableObject {
 		localMutationsSubject.send()
 	}
 
-	public func delete(id: UUID) throws {
-		try delete(id: id, enqueueRemoteDeletion: true)
+	public func delete(id: UUID) async throws {
+		try await delete(id: id, enqueueRemoteDeletion: true)
 	}
 
 	/// Replace the whole list and persist. The mobile shell mutates hosts
@@ -73,10 +89,15 @@ public final class MobileHostStore: ObservableObject {
 		do {
 			try persist(newHosts)
 		} catch {
+			lastPersistenceFailure = PersistenceFailure(underlyingError: error)
 			return
 		}
 		hosts = newHosts
 		localMutationsSubject.send()
+	}
+
+	public func clearPersistenceFailure() {
+		lastPersistenceFailure = nil
 	}
 
 	/// `Binding` view of the host list whose setter persists. Feed this to
@@ -92,7 +113,7 @@ public final class MobileHostStore: ObservableObject {
 		try HostPersistence.save(hosts, to: fileURL)
 	}
 
-	private func delete(id: UUID, enqueueRemoteDeletion: Bool) throws {
+	private func delete(id: UUID, enqueueRemoteDeletion: Bool) async throws {
 		guard let host = hosts.first(where: { $0.id == id }) else { return }
 		let serverID = enqueueRemoteDeletion ? host.serverId : nil
 		let inserted = try serverID.map { try deletionOutbox.insert($0) } ?? false
@@ -101,8 +122,32 @@ public final class MobileHostStore: ObservableObject {
 		do {
 			try persist(updated)
 		} catch {
+			try rollbackDeletionIntent(
+				originalError: error,
+				insertedServerID: inserted ? serverID : nil
+			)
+		}
+		do {
+			try await credentialCleanup(id)
+		} catch {
+			var rollbackErrors: [any Error] = []
+			do {
+				try persist(hosts)
+			} catch {
+				rollbackErrors.append(error)
+			}
 			if inserted, let serverID {
-				try? deletionOutbox.remove(serverID)
+				do {
+					try deletionOutbox.remove(serverID)
+				} catch {
+					rollbackErrors.append(error)
+				}
+			}
+			guard rollbackErrors.isEmpty else {
+				throw DeletionRollbackError(
+					originalError: error,
+					rollbackErrors: rollbackErrors
+				)
 			}
 			throw error
 		}
@@ -110,6 +155,22 @@ public final class MobileHostStore: ObservableObject {
 		if enqueueRemoteDeletion {
 			localMutationsSubject.send()
 		}
+	}
+
+	private func rollbackDeletionIntent(
+		originalError: any Error,
+		insertedServerID: String?
+	) throws -> Never {
+		guard let insertedServerID else { throw originalError }
+		do {
+			try deletionOutbox.remove(insertedServerID)
+		} catch {
+			throw DeletionRollbackError(
+				originalError: originalError,
+				rollbackErrors: [error]
+			)
+		}
+		throw originalError
 	}
 
 }
@@ -140,7 +201,7 @@ extension MobileHostStore: HostRepository {
 	}
 
 	public func deleteLocalHost(id: UUID) async throws {
-		try delete(id: id, enqueueRemoteDeletion: true)
+		try await delete(id: id, enqueueRemoteDeletion: true)
 	}
 
 	public func pendingRemoteDeletionIDs() throws -> [String] {
@@ -152,69 +213,31 @@ extension MobileHostStore: HostRepository {
 	}
 
 	public func createHostFromRemote(_ remote: RemoteHost) throws -> UUID {
-		let host = SSHHost(
-			serverId: remote.id,
-			name: remote.name,
-			hostname: remote.hostname,
-			port: remote.port,
-			username: remote.username,
-			credential: .password,
-			createdAt: remote.createdAt,
-			updatedAt: remote.updatedAt,
-			jumpHostId: hosts.first(where: {
-				$0.serverId == remote.jumpHostServerId
-			})?.id,
-			jumpHostServerId: remote.jumpHostServerId,
-			forwards: remote.forwards,
-			icon: remote.icon,
-			organization: remote.organization
-		)
-		var updated = hosts
-		updated.append(host)
-		for index in updated.indices where
-			updated[index].jumpHostServerId == remote.id {
-			updated[index].jumpHostId = host.id
-		}
-		try persist(updated)
-		hosts = updated
-		return host.id
+		let result = HostRepositoryProjection.inserting(remote, into: hosts)
+		try persist(result.hosts)
+		hosts = result.hosts
+		return result.localID
 	}
 
 	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) throws {
-		guard let index = hosts.firstIndex(where: { $0.id == localID }) else {
+		guard let updated = HostRepositoryProjection.applying(
+			remote,
+			to: localID,
+			in: hosts
+		) else {
 			throw StoreError.hostNotFound
 		}
-		var updated = hosts
-		updated[index].name = remote.name
-		updated[index].hostname = remote.hostname
-		updated[index].port = remote.port
-		updated[index].username = remote.username
-		updated[index].updatedAt = remote.updatedAt
-		updated[index].jumpHostId = updated.first(where: {
-			$0.serverId == remote.jumpHostServerId
-		})?.id
-		updated[index].jumpHostServerId = remote.jumpHostServerId
-		updated[index].forwards = remote.forwards
-		updated[index].icon = remote.icon
-		updated[index].organization = remote.organization
 		try persist(updated)
 		hosts = updated
 	}
 
 	public func assignServerID(_ serverID: String, to localID: UUID) throws {
-		guard let index = hosts.firstIndex(where: { $0.id == localID }) else {
+		guard let updated = HostRepositoryProjection.assigning(
+			serverID: serverID,
+			to: localID,
+			in: hosts
+		) else {
 			throw StoreError.hostNotFound
-		}
-		var updated = hosts
-		let timestamp = Date()
-		updated[index].serverId = serverID
-		updated[index].updatedAt = timestamp
-		for childIndex in updated.indices where
-			updated[childIndex].id != localID &&
-			updated[childIndex].jumpHostId == localID &&
-			updated[childIndex].jumpHostServerId != serverID {
-			updated[childIndex].jumpHostServerId = serverID
-			updated[childIndex].updatedAt = timestamp
 		}
 		try persist(updated)
 		hosts = updated
@@ -232,6 +255,6 @@ extension MobileHostStore: HostRepository {
 	}
 
 	public func deleteHostFromRemote(localID: UUID) async throws {
-		try delete(id: localID, enqueueRemoteDeletion: false)
+		try await delete(id: localID, enqueueRemoteDeletion: false)
 	}
 }

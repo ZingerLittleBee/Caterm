@@ -53,8 +53,7 @@ public enum MobileCredentialPlan {
 
 /// Applies a `MobileCredentialPlan` to a keychain. Clears are idempotent:
 /// removing an account that was never written is not an error.
-@MainActor
-public struct MobileCredentialWriter {
+public actor MobileCredentialWriter {
 	public static let defaultService = SSHCredentialContract.keychainService
 
 	private let keychain: KeychainStore
@@ -79,8 +78,8 @@ public struct MobileCredentialWriter {
 	}
 
 	/// Remove every secret for a host (called when the host is deleted).
-	public func clearAll(hostId: UUID) {
-		try? keychain.deleteAll(
+	public func clearAll(hostId: UUID) throws {
+		try keychain.deleteAll(
 			prefix: SSHCredentialContract.accountPrefix(hostID: hostId)
 		)
 	}
@@ -90,15 +89,15 @@ public struct MobileCredentialWriter {
 /// credential material. When absent (array-backed previews/tests) the
 /// shell falls back to in-memory binding mutation and drops secrets.
 public struct MobileHostSaveAction {
-	public let save: (MobileHostDraftPayload) -> Void
-	public let deleteCredentials: (UUID) -> Void
+	public let save: @MainActor (MobileHostDraftPayload) async -> Bool
+	public let deleteHost: @MainActor (UUID) async -> Bool
 
 	public init(
-		save: @escaping (MobileHostDraftPayload) -> Void,
-		deleteCredentials: @escaping (UUID) -> Void
+		save: @escaping @MainActor (MobileHostDraftPayload) async -> Bool,
+		deleteHost: @escaping @MainActor (UUID) async -> Bool
 	) {
 		self.save = save
-		self.deleteCredentials = deleteCredentials
+		self.deleteHost = deleteHost
 	}
 }
 

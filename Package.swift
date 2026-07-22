@@ -277,6 +277,11 @@ let package = Package(
             path: "Tests/SessionHistoryTests"
         ),
         .testTarget(
+            name: "HostRepositoryCoreTests",
+            dependencies: ["HostRepositoryCore", "ServerSyncClient", "SSHCommandBuilder", "SessionStore", "CatermMobile", "KeychainStore"],
+            path: "Tests/HostRepositoryCoreTests"
+        ),
+        .testTarget(
             name: "ConfigStoreTests",
             dependencies: ["ConfigStore", "SettingsStore"],
             path: "Tests/ConfigStoreTests"
@@ -298,7 +303,7 @@ let package = Package(
         ),
         .testTarget(
             name: "HostSyncStoreTests",
-            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore", "CredentialSyncTypes", "ManagedKeyStore", "CredentialSync", "HostRepositoryCore", "CatermMobile"],
+            dependencies: ["HostSyncStore", "ServerSyncClient", "SessionStore", "SSHCommandBuilder", "KeychainStore", "CredentialSyncStore", "CredentialSyncTypes", "ManagedKeyStore", "CredentialSync"],
             path: "Tests/HostSyncStoreTests"
         ),
         .testTarget(

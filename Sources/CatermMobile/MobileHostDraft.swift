@@ -95,8 +95,10 @@ public struct MobileHostDraft: Equatable {
 		}
 
 		var host: SSHHost
+		let previousCredential: CredentialSource?
 		switch mode {
 		case .add:
+			previousCredential = nil
 			host = SSHHost(
 				name: resolvedName(username: trimmedUsername, hostname: trimmedHostname),
 				hostname: trimmedHostname,
@@ -105,6 +107,7 @@ public struct MobileHostDraft: Equatable {
 				credential: credentialSource
 			)
 		case .edit(let existing):
+			previousCredential = existing.credential
 			host = existing
 			host.name = resolvedName(username: trimmedUsername, hostname: trimmedHostname)
 			host.hostname = trimmedHostname
@@ -118,6 +121,9 @@ public struct MobileHostDraft: Equatable {
 			allHosts.first(where: { $0.id == id })?.serverId
 		}
 		host.forwards = forwards
+		if secret != nil || previousCredential.map({ $0 != credentialSource }) == true {
+			host.credentialMaterialDirty = true
+		}
 		return MobileHostDraftPayload(host: host, secret: secret)
 	}
 

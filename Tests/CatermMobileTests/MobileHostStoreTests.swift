@@ -8,6 +8,24 @@ import SSHCommandBuilder
 import Testing
 import XCTest
 
+private actor CredentialCleanupRecorder {
+	enum Failure: Error {
+		case rejected
+	}
+
+	private(set) var hostIDs: [UUID] = []
+	private var shouldFail = false
+
+	func setShouldFail(_ value: Bool) {
+		shouldFail = value
+	}
+
+	func clear(hostID: UUID) throws {
+		if shouldFail { throw Failure.rejected }
+		hostIDs.append(hostID)
+	}
+}
+
 private enum HostRepositoryPlatform: Sendable {
 	case macOS
 	case iOS
@@ -438,7 +456,24 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.map(\.id), [host.id])
 	}
 
-	func testDeleteRemovesAndPersists() throws {
+	func testBindingPersistenceFailureIsPublishedWithoutMutatingHosts() throws {
+		let directoryURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-hosts-directory-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: directoryURL,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: directoryURL) }
+		let store = MobileHostStore(fileURL: directoryURL)
+		let host = makeHost("cannot-persist")
+
+		store.binding.wrappedValue = [host]
+
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertNotNil(store.lastPersistenceFailure)
+	}
+
+	func testDeleteRemovesAndPersists() async throws {
 		let url = tempURL()
 		let store = MobileHostStore(fileURL: url)
 		let a = makeHost("a")
@@ -446,9 +481,92 @@ final class MobileHostStoreTests: XCTestCase {
 		try store.add(a)
 		try store.add(b)
 
-		try store.delete(id: a.id)
+		try await store.delete(id: a.id)
 
 		XCTAssertEqual(store.hosts.map(\.id), [b.id])
 		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.map(\.id), [b.id])
+	}
+
+	func testLocalDeleteClearsCredentialsAndPersistsTombstone() async throws {
+		let url = tempURL()
+		let recorder = CredentialCleanupRecorder()
+		let store = MobileHostStore(
+			fileURL: url,
+			credentialCleanup: { hostID in
+				try await recorder.clear(hostID: hostID)
+			}
+		)
+		let host = SSHHost(
+			serverId: "server-prod",
+			name: "prod",
+			hostname: "prod.example.com",
+			username: "deploy",
+			credential: .password
+		)
+		try store.add(host)
+
+		try await store.deleteLocalHost(id: host.id)
+
+		let clearedHostIDs = await recorder.hostIDs
+		XCTAssertEqual(clearedHostIDs, [host.id])
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertEqual(try store.pendingRemoteDeletionIDs(), ["server-prod"])
+	}
+
+	func testRemoteDeleteClearsCredentialsWithoutCreatingTombstone() async throws {
+		let url = tempURL()
+		let recorder = CredentialCleanupRecorder()
+		let store = MobileHostStore(
+			fileURL: url,
+			credentialCleanup: { hostID in
+				try await recorder.clear(hostID: hostID)
+			}
+		)
+		let host = SSHHost(
+			serverId: "server-prod",
+			name: "prod",
+			hostname: "prod.example.com",
+			username: "deploy",
+			credential: .password
+		)
+		try store.add(host)
+
+		try await store.deleteHostFromRemote(localID: host.id)
+
+		let clearedHostIDs = await recorder.hostIDs
+		XCTAssertEqual(clearedHostIDs, [host.id])
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertTrue(try store.pendingRemoteDeletionIDs().isEmpty)
+	}
+
+	func testCredentialCleanupFailureLeavesHostAndTombstoneUnchanged() async throws {
+		let url = tempURL()
+		let recorder = CredentialCleanupRecorder()
+		await recorder.setShouldFail(true)
+		let store = MobileHostStore(
+			fileURL: url,
+			credentialCleanup: { hostID in
+				try await recorder.clear(hostID: hostID)
+			}
+		)
+		let host = SSHHost(
+			serverId: "server-prod",
+			name: "prod",
+			hostname: "prod.example.com",
+			username: "deploy",
+			credential: .password
+		)
+		try store.add(host)
+
+		do {
+			try await store.deleteLocalHost(id: host.id)
+			XCTFail("Expected credential cleanup to fail")
+		} catch CredentialCleanupRecorder.Failure.rejected {
+			// Expected.
+		}
+
+		XCTAssertEqual(store.hosts.map(\.id), [host.id])
+		XCTAssertTrue(try store.pendingRemoteDeletionIDs().isEmpty)
+		XCTAssertEqual(try HostPersistence.load(from: url).map(\.id), [host.id])
 	}
 }

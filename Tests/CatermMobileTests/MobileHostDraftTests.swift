@@ -19,6 +19,43 @@ final class MobileHostDraftTests: XCTestCase {
 		XCTAssertEqual(payload.host.username, "deploy")
 		XCTAssertEqual(payload.host.credential, .password)
 		XCTAssertEqual(payload.secret, "pw")
+		XCTAssertTrue(payload.host.credentialMaterialDirty)
+	}
+
+	func testChangingCredentialSourceMarksMaterialDirtyWithoutNewSecret() throws {
+		let existing = SSHHost(
+			id: UUID(),
+			name: "Box",
+			hostname: "box.example.com",
+			username: "deploy",
+			credential: .password,
+			credentialMaterialDirty: false
+		)
+		var draft = MobileHostDraft(host: existing)
+		draft.credential = .agent
+
+		let payload = try draft.build(mode: .edit(existing), allHosts: [])
+
+		XCTAssertEqual(payload.host.credential, .agent)
+		XCTAssertNil(payload.secret)
+		XCTAssertTrue(payload.host.credentialMaterialDirty)
+	}
+
+	func testMetadataOnlyEditPreservesCleanCredentialMaterial() throws {
+		let existing = SSHHost(
+			id: UUID(),
+			name: "Old",
+			hostname: "box.example.com",
+			username: "deploy",
+			credential: .password,
+			credentialMaterialDirty: false
+		)
+		var draft = MobileHostDraft(host: existing)
+		draft.label = "New"
+
+		let payload = try draft.build(mode: .edit(existing), allHosts: [])
+
+		XCTAssertFalse(payload.host.credentialMaterialDirty)
 	}
 
 	func testBlankLabelFallsBackToUserAtHost() throws {

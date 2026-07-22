@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import HostRepositoryCore
 import KeychainStore
 import ManagedKeyStore
 import os
@@ -948,28 +949,25 @@ public final class SessionStore: ObservableObject {
 
     /// Replace the `serverId` of an existing host in-memory and persist.
     public func setServerId(_ serverId: String, for hostId: UUID) throws {
-        guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
-        hosts[idx].serverId = serverId
-        hosts[idx].updatedAt = Date()
-        backfillDependentJumpHostServerIds(parentId: hostId, serverId: serverId, in: &hosts)
-        try HostPersistence.save(hosts, to: hostsURL)
+        guard let updated = HostRepositoryProjection.assigning(
+            serverID: serverId,
+            to: hostId,
+            in: hosts
+        ) else { return }
+        try HostPersistence.save(updated, to: hostsURL)
+        hosts = updated
     }
 
     /// Replaces synced metadata without touching credential or serverId. Used
     /// when a remote update lands.
     public func applyRemoteMetadata(localHostId: UUID, remote: RemoteHost) throws {
-        guard let idx = hosts.firstIndex(where: { $0.id == localHostId }) else { return }
-        hosts[idx].name = remote.name
-        hosts[idx].hostname = remote.hostname
-        hosts[idx].port = remote.port
-        hosts[idx].username = remote.username
-        hosts[idx].updatedAt = remote.updatedAt
-        hosts[idx].jumpHostId = hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id
-        hosts[idx].jumpHostServerId = remote.jumpHostServerId
-        hosts[idx].forwards = remote.forwards
-        hosts[idx].icon = remote.icon
-        hosts[idx].organization = remote.organization
-        try HostPersistence.save(hosts, to: hostsURL)
+        guard let updated = HostRepositoryProjection.applying(
+            remote,
+            to: localHostId,
+            in: hosts
+        ) else { return }
+        try HostPersistence.save(updated, to: hostsURL)
+        hosts = updated
     }
 
     /// Insert a host fetched from the server. Allocates a fresh local UUID,
@@ -977,43 +975,10 @@ public final class SessionStore: ObservableObject {
     /// (so first connect prompts the user — see needsCredentialSetup).
     @discardableResult
     public func addRemoteHost(_ remote: RemoteHost) throws -> UUID {
-        let h = SSHHost(
-            id: UUID(),
-            serverId: remote.id,
-            name: remote.name, hostname: remote.hostname,
-            port: remote.port, username: remote.username,
-            credential: .password,
-            createdAt: remote.createdAt, updatedAt: remote.updatedAt,
-            jumpHostId: hosts.first(where: { $0.serverId == remote.jumpHostServerId })?.id,
-            jumpHostServerId: remote.jumpHostServerId,
-            forwards: remote.forwards,
-            icon: remote.icon,
-            organization: remote.organization
-        )
-        hosts.append(h)
-        backfillJumpHostIds(serverId: remote.id, in: &hosts)
-        try HostPersistence.save(hosts, to: hostsURL)
-        return h.id
-    }
-
-    private func backfillDependentJumpHostServerIds(
-        parentId: UUID,
-        serverId: String,
-        in hosts: inout [SSHHost]
-    ) {
-        for idx in hosts.indices {
-            guard hosts[idx].id != parentId, hosts[idx].jumpHostId == parentId else { continue }
-            guard hosts[idx].jumpHostServerId != serverId else { continue }
-            hosts[idx].jumpHostServerId = serverId
-            hosts[idx].updatedAt = Date()
-        }
-    }
-
-    private func backfillJumpHostIds(serverId: String, in hosts: inout [SSHHost]) {
-        guard let parentId = hosts.first(where: { $0.serverId == serverId })?.id else { return }
-        for idx in hosts.indices where hosts[idx].jumpHostServerId == serverId {
-            hosts[idx].jumpHostId = parentId
-        }
+        let result = HostRepositoryProjection.inserting(remote, into: hosts)
+        try HostPersistence.save(result.hosts, to: hostsURL)
+        hosts = result.hosts
+        return result.localID
     }
 
     /// Replace the credential overlay for an existing host. Does NOT bump
