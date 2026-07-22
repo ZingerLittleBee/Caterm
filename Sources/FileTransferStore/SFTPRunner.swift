@@ -30,7 +30,21 @@ public struct UnavailableSFTPRunner: SFTPRunner {
 public struct SystemSFTPRunner: SFTPRunner {
 	public init() {}
 	public func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
+		let cancellation = SFTPProcessCancellation()
+		return try await withTaskCancellationHandler {
+			try Task.checkCancellation()
+			return try await run(inv, cancellation: cancellation)
+		} onCancel: {
+			cancellation.cancel()
+		}
+	}
+
+	private func run(
+		_ inv: SFTPInvocation,
+		cancellation: SFTPProcessCancellation
+	) async throws -> (stdout: String, exit: Int32) {
 		try await withCheckedThrowingContinuation { (cont: CheckedContinuation<(String, Int32), Error>) in
+			let continuation = SFTPContinuationGate(cont)
 			let proc = Process()
 			proc.executableURL = URL(fileURLWithPath: inv.argv[0])
 			proc.arguments = Array(inv.argv.dropFirst())
@@ -46,16 +60,98 @@ public struct SystemSFTPRunner: SFTPRunner {
 			proc.standardError = stdoutPipe // merge for parsing simplicity
 			proc.terminationHandler = { p in
 				let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-				cont.resume(returning: (String(data: data, encoding: .utf8) ?? "", p.terminationStatus))
+				cancellation.clear(process: p)
+				if cancellation.isCancelled {
+					continuation.resume(throwing: CancellationError())
+				} else {
+					continuation.resume(returning: (
+						String(data: data, encoding: .utf8) ?? "",
+						p.terminationStatus
+					))
+				}
+			}
+			guard cancellation.install(proc) else {
+				continuation.resume(throwing: CancellationError())
+				return
 			}
 			do {
 				try proc.run()
-				stdinPipe.fileHandleForWriting.write(inv.scriptStdin.data(using: .utf8) ?? Data())
+				if cancellation.isCancelled {
+					proc.terminate()
+					return
+				}
+				stdinPipe.fileHandleForWriting.write(
+					inv.scriptStdin.data(using: .utf8) ?? Data()
+				)
 				try stdinPipe.fileHandleForWriting.close()
 			} catch {
-				cont.resume(throwing: error)
+				cancellation.clear(process: proc)
+				continuation.resume(throwing: error)
 			}
 		}
+	}
+}
+
+private final class SFTPProcessCancellation: @unchecked Sendable {
+	private let lock = NSLock()
+	private var process: Process?
+	private var cancelled = false
+
+	var isCancelled: Bool {
+		lock.lock()
+		defer { lock.unlock() }
+		return cancelled
+	}
+
+	func install(_ process: Process) -> Bool {
+		lock.lock()
+		defer { lock.unlock() }
+		guard !cancelled else { return false }
+		self.process = process
+		return true
+	}
+
+	func cancel() {
+		lock.lock()
+		cancelled = true
+		let process = process
+		lock.unlock()
+		if process?.isRunning == true {
+			process?.terminate()
+		}
+	}
+
+	func clear(process: Process) {
+		lock.lock()
+		if self.process === process {
+			self.process = nil
+		}
+		lock.unlock()
+	}
+}
+
+private final class SFTPContinuationGate: @unchecked Sendable {
+	private let lock = NSLock()
+	private var continuation: CheckedContinuation<(String, Int32), Error>?
+
+	init(_ continuation: CheckedContinuation<(String, Int32), Error>) {
+		self.continuation = continuation
+	}
+
+	func resume(returning value: (String, Int32)) {
+		resume(with: .success(value))
+	}
+
+	func resume(throwing error: Error) {
+		resume(with: .failure(error))
+	}
+
+	private func resume(with result: Result<(String, Int32), Error>) {
+		lock.lock()
+		let continuation = continuation
+		self.continuation = nil
+		lock.unlock()
+		continuation?.resume(with: result)
 	}
 }
 

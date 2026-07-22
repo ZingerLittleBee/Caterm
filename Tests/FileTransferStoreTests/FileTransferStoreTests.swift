@@ -40,7 +40,10 @@ final class FileTransferStoreTests: XCTestCase {
 		)
 		XCTAssertEqual(ids.count, 3)
 		try await store.waitIdle()
-		let kinds = runner.calls.map { $0.scriptStdin }.map { String($0.prefix(3)) }
+		let kinds = runner.calls
+			.map(\.scriptStdin)
+			.filter { $0.hasPrefix("put") }
+			.map { String($0.prefix(3)) }
 		XCTAssertEqual(kinds, ["put", "put", "put"])
 		for id in ids {
 			XCTAssertEqual(store.task(id: id)?.status, .completed)
@@ -59,7 +62,10 @@ final class FileTransferStoreTests: XCTestCase {
 		_ = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/a")], remoteDir: "/", host: h1)
 		_ = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/b")], remoteDir: "/", host: h2)
 		try await store.waitIdle()
-		XCTAssertEqual(runner.calls.count, 2)
+		XCTAssertEqual(
+			runner.calls.filter { $0.scriptStdin.hasPrefix("put") }.count,
+			2
+		)
 	}
 
 	func testRetryUsesResumeFlag() async throws {
@@ -105,6 +111,13 @@ final class FileTransferStoreTests: XCTestCase {
 
 	func testDeadControlMasterFailsBeforeInvokingSFTP() async throws {
 		let runner = ScriptedRunner()
+		let localDirectory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-dead-master-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: localDirectory,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: localDirectory) }
 		let store = FileTransferStore(
 			controlPathFor: { _ in URL(fileURLWithPath: "/sock") },
 			credentialsFor: { _ in defaultCreds() },
@@ -113,7 +126,7 @@ final class FileTransferStoreTests: XCTestCase {
 		)
 		let ids = store.enqueueDownload(
 			remotePaths: ["/remote/file"],
-			localDir: URL(fileURLWithPath: "/local"),
+			localDir: localDirectory,
 			host: makeHost()
 		)
 

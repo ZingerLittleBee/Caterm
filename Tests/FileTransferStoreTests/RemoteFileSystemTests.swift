@@ -7,9 +7,17 @@ final class RemoteFileSystemTests: XCTestCase {
 	final class FakeSFTPRunner: SFTPRunner, @unchecked Sendable {
 		var nextStdout: String = ""
 		var nextExit: Int32 = 0
+		var scriptedResults: [(String, Int32)] = []
+		var error: Error?
 		var lastInvocation: SFTPInvocation?
+		var invocations: [SFTPInvocation] = []
 		func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
+			if let error { throw error }
 			lastInvocation = inv
+			invocations.append(inv)
+			if !scriptedResults.isEmpty {
+				return scriptedResults.removeFirst()
+			}
 			return (nextStdout, nextExit)
 		}
 	}
@@ -38,7 +46,7 @@ final class RemoteFileSystemTests: XCTestCase {
 		do {
 			_ = try await fs.list("/")
 			XCTFail("expected throw")
-		} catch RemoteFileSystemError.sessionGone {
+		} catch RemoteFileError.sessionUnavailable {
 			// expected
 		} catch {
 			XCTFail("got \(error)")
@@ -79,10 +87,103 @@ final class RemoteFileSystemTests: XCTestCase {
 		do {
 			try await fs.mkdir("/srv/new")
 			XCTFail()
-		} catch let RemoteFileSystemError.subprocessFailed(code, _) {
-			XCTAssertEqual(code, 1)
+		} catch let RemoteFileError.permissionDenied(message) {
+			XCTAssertTrue(message.contains("permission denied"))
 		} catch {
 			XCTFail("got \(error)")
 		}
+	}
+
+	func testPublicClientContractCoversListingStatMutationsAndTransfers() async throws {
+		let listing = "-rw-r--r-- 1 user staff 4 Jul 22 10:00 file.txt\n"
+		let runner = FakeSFTPRunner()
+		runner.scriptedResults = [
+			(listing, 0),
+			(listing, 0),
+			("", 0),
+			("", 0),
+			("", 0),
+			("", 0),
+			(listing, 0),
+			("", 0),
+		]
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let local = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-client-contract-\(UUID().uuidString)")
+		try Data("data".utf8).write(to: local)
+		defer { try? FileManager.default.removeItem(at: local) }
+		let progress = ProgressRecorder()
+
+		let entries = try await client.list("/remote")
+		let metadata = try await client.stat("/remote/file.txt")
+		XCTAssertEqual(entries.map(\.name), ["file.txt"])
+		XCTAssertEqual(metadata?.size, 4)
+		try await client.createDirectory("/remote/new")
+		try await client.rename(from: "/remote/new", to: "/remote/renamed")
+		try await client.delete("/remote/renamed", isDirectory: true)
+		let upload = try await client.upload(
+			localURL: local,
+			remotePath: "/remote/file.txt",
+			isDirectory: false,
+			resume: false,
+			progress: { update in await progress.append(update) }
+		)
+		let download = try await client.download(
+			remotePath: "/remote/file.txt",
+			localURL: local.appendingPathExtension("download"),
+			isDirectory: false,
+			resume: false,
+			progress: { update in await progress.append(update) }
+		)
+		let progressUpdates = await progress.values()
+
+		XCTAssertEqual(upload.bytesTransferred, 4)
+		XCTAssertEqual(download.bytesTransferred, 4)
+		XCTAssertEqual(progressUpdates.last?.bytesTransferred, 4)
+		let scripts = runner.invocations.map(\.scriptStdin)
+		XCTAssertTrue(scripts.contains { $0.hasPrefix("mkdir") })
+		XCTAssertTrue(scripts.contains { $0.hasPrefix("rename") })
+		XCTAssertTrue(scripts.contains { $0.hasPrefix("rmdir") })
+		XCTAssertTrue(scripts.contains { $0.hasPrefix("put") })
+		XCTAssertTrue(scripts.contains { $0.hasPrefix("get") })
+	}
+
+	func testPublicClientMapsRunnerCancellationToTypedFailure() async {
+		let runner = FakeSFTPRunner()
+		runner.error = CancellationError()
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+
+		do {
+			_ = try await client.list("/")
+			XCTFail("Expected cancellation")
+		} catch RemoteFileError.cancelled {
+			// Expected.
+		} catch {
+			XCTFail("Unexpected error: \(error)")
+		}
+	}
+}
+
+private actor ProgressRecorder {
+	private var updates: [TransferProgress] = []
+
+	func append(_ update: TransferProgress) {
+		updates.append(update)
+	}
+
+	func values() -> [TransferProgress] {
+		updates
 	}
 }

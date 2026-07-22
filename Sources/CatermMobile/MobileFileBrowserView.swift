@@ -178,6 +178,7 @@ private struct MobileTransferRow: View {
 		switch task.status {
 		case .pending: "Pending"
 		case .running: "Running"
+		case .conflict: "Needs Destination Choice"
 		case .completed: "Completed"
 		case .failed: "Failed"
 		case .cancelled: "Cancelled"

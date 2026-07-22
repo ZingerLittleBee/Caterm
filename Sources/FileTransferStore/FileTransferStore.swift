@@ -5,150 +5,502 @@ import SSHCommandBuilder
 
 @MainActor
 public final class FileTransferStore: ObservableObject {
+	public typealias ClientFactory = (SSHHost) -> any RemoteFileClient
+
 	@Published public private(set) var tasks: [TransferTask] = []
 
-	private let controlPathFor: (UUID) -> URL
-	private let credentialsFor: (UUID) -> SFTPCredentials
-	private let runner: SFTPRunner
-	private let liveness: ControlMasterLiveness
+	private let clientForHost: ClientFactory
+	private let localFiles = LocalTransferFileCoordinator()
 	private var perHostQueues: [UUID: [TaskId]] = [:]
 	private var perHostBusy: Set<UUID> = []
 	private var perHostHost: [UUID: SSHHost] = [:]
+	private var runningJobs: [TaskId: Task<Void, Never>] = [:]
 
-	public init(controlPathFor: @escaping (UUID) -> URL,
-	            credentialsFor: @escaping (UUID) -> SFTPCredentials,
-	            runner: SFTPRunner = DefaultSFTPRunner(),
-	            liveness: ControlMasterLiveness) {
-		self.controlPathFor = controlPathFor
-		self.credentialsFor = credentialsFor
-		self.runner = runner
-		self.liveness = liveness
+	/// Creates a transport-independent transfer coordinator.
+	public init(clientForHost: @escaping ClientFactory) {
+		self.clientForHost = clientForHost
 	}
 
-	public func task(id: TaskId) -> TransferTask? { tasks.first { $0.id == id } }
+	/// Preserves the existing macOS composition while adapting OpenSSH SFTP
+	/// behind the shared remote-file contract.
+	public convenience init(
+		controlPathFor: @escaping (UUID) -> URL,
+		credentialsFor: @escaping (UUID) -> SFTPCredentials,
+		runner: SFTPRunner = DefaultSFTPRunner(),
+		liveness: ControlMasterLiveness
+	) {
+		self.init { host in
+			RemoteFileSystem(
+				host: host,
+				controlPath: controlPathFor(host.id),
+				credentials: credentialsFor(host.id),
+				runner: runner,
+				liveness: liveness
+			)
+		}
+	}
 
-	public func enqueueUpload(localPaths: [URL], remoteDir: String, host: SSHHost) -> [TaskId] {
+	public func task(id: TaskId) -> TransferTask? {
+		tasks.first { $0.id == id }
+	}
+
+	public func enqueueUpload(
+		localPaths: [URL],
+		remoteDir: String,
+		host: SSHHost,
+		conflictPolicy: TransferConflictPolicy? = nil
+	) -> [TaskId] {
 		var ids: [TaskId] = []
 		perHostHost[host.id] = host
-		for p in localPaths {
-			let isDir = (try? p.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-			let dest = (remoteDir as NSString).appendingPathComponent(p.lastPathComponent)
-			let t = TransferTask(id: UUID(), kind: .upload, hostId: host.id,
-			                     source: p.path, destination: dest, isDirectory: isDir,
-			                     status: .pending, error: nil)
-			tasks.append(t)
-			perHostQueues[host.id, default: []].append(t.id)
-			ids.append(t.id)
+		for path in localPaths {
+			let isDirectory = (try? path.resourceValues(
+				forKeys: [.isDirectoryKey]
+			).isDirectory) ?? false
+			let destination = (remoteDir as NSString)
+				.appendingPathComponent(path.lastPathComponent)
+			let task = TransferTask(
+				id: UUID(),
+				kind: .upload,
+				hostId: host.id,
+				source: path.path,
+				destination: destination,
+				isDirectory: isDirectory,
+				status: .pending,
+				error: nil,
+				conflictPolicy: conflictPolicy
+			)
+			tasks.append(task)
+			perHostQueues[host.id, default: []].append(task.id)
+			ids.append(task.id)
 		}
 		kick(host.id)
 		return ids
 	}
 
-	public func enqueueDownload(remotePaths: [String], localDir: URL, host: SSHHost) -> [TaskId] {
+	public func enqueueDownload(
+		remotePaths: [String],
+		localDir: URL,
+		host: SSHHost,
+		conflictPolicy: TransferConflictPolicy? = nil
+	) -> [TaskId] {
 		var ids: [TaskId] = []
 		perHostHost[host.id] = host
-		for r in remotePaths {
-			let dest = localDir.appendingPathComponent((r as NSString).lastPathComponent)
-			let t = TransferTask(id: UUID(), kind: .download, hostId: host.id,
-			                     source: r, destination: dest.path, isDirectory: false,
-			                     status: .pending, error: nil)
-			tasks.append(t)
-			perHostQueues[host.id, default: []].append(t.id)
-			ids.append(t.id)
+		for remotePath in remotePaths {
+			let destination = localDir.appendingPathComponent(
+				(remotePath as NSString).lastPathComponent
+			)
+			let task = TransferTask(
+				id: UUID(),
+				kind: .download,
+				hostId: host.id,
+				source: remotePath,
+				destination: destination.path,
+				isDirectory: false,
+				status: .pending,
+				error: nil,
+				conflictPolicy: conflictPolicy
+			)
+			tasks.append(task)
+			perHostQueues[host.id, default: []].append(task.id)
+			ids.append(task.id)
 		}
 		kick(host.id)
 		return ids
 	}
 
 	public func cancel(_ id: TaskId) {
-		guard let idx = tasks.firstIndex(where: { $0.id == id }) else { return }
-		if tasks[idx].status == .pending {
-			tasks[idx].status = .cancelled
-			if var q = perHostQueues[tasks[idx].hostId] {
-				q.removeAll { $0 == id }
-				perHostQueues[tasks[idx].hostId] = q
-			}
+		guard let index = index(of: id) else { return }
+		switch tasks[index].status {
+		case .pending:
+			removeFromQueue(id, hostID: tasks[index].hostId)
+			markCancelled(at: index)
+		case .running:
+			runningJobs[id]?.cancel()
+		case .conflict:
+			markCancelled(at: index)
+		case .completed, .failed, .cancelled:
+			break
 		}
-		// Mid-running cancel: future iteration; v1 only cancels pending.
 	}
 
 	public func retry(_ id: TaskId) {
-		guard let idx = tasks.firstIndex(where: { $0.id == id }),
-		      tasks[idx].status == .failed else { return }
-		tasks[idx].status = .pending
-		perHostQueues[tasks[idx].hostId, default: []].append(id)
-		kick(tasks[idx].hostId)
+		guard let index = index(of: id), tasks[index].status == .failed else {
+			return
+		}
+		tasks[index].status = .pending
+		tasks[index].failure = nil
+		tasks[index].error = nil
+		tasks[index].conflict = nil
+		tasks[index].progress = TransferProgress(
+			bytesTransferred: 0,
+			totalBytes: nil
+		)
+		tasks[index].attemptCount += 1
+		perHostQueues[tasks[index].hostId, default: []].append(id)
+		kick(tasks[index].hostId)
+	}
+
+	public func resolveConflict(
+		_ id: TaskId,
+		policy: TransferConflictPolicy
+	) {
+		guard let index = index(of: id), tasks[index].status == .conflict else {
+			return
+		}
+		if policy == .cancel {
+			markCancelled(at: index)
+			return
+		}
+		tasks[index].conflictPolicy = policy
+		tasks[index].conflict = nil
+		tasks[index].status = .pending
+		perHostQueues[tasks[index].hostId, default: []].append(id)
+		kick(tasks[index].hostId)
 	}
 
 	public func waitIdle() async throws {
-		// Tests-only: spin until all queues are empty and no host is busy.
-		while perHostBusy.isEmpty == false || perHostQueues.values.contains(where: { !$0.isEmpty }) {
-			try await Task.sleep(nanoseconds: 5_000_000)
+		while !perHostBusy.isEmpty || perHostQueues.values.contains(where: {
+			!$0.isEmpty
+		}) {
+			try await Task.sleep(for: .milliseconds(5))
 		}
 	}
 
-	private func kick(_ hostId: UUID) {
-		guard !perHostBusy.contains(hostId) else { return }
-		guard let q = perHostQueues[hostId], let next = q.first else { return }
-		perHostBusy.insert(hostId)
-		perHostQueues[hostId]?.removeFirst()
-		guard let idx = tasks.firstIndex(where: { $0.id == next }) else {
-			perHostBusy.remove(hostId); return
+	private func kick(_ hostID: UUID) {
+		guard !perHostBusy.contains(hostID),
+		      let next = perHostQueues[hostID]?.first else {
+			return
 		}
-		tasks[idx].status = .running
-		let task = tasks[idx]
-		Task {
-			await runTask(task)
-			self.perHostBusy.remove(hostId)
-			self.kick(hostId)
+		perHostQueues[hostID]?.removeFirst()
+		guard let index = index(of: next) else {
+			kick(hostID)
+			return
 		}
+
+		perHostBusy.insert(hostID)
+		tasks[index].status = .running
+		let job = Task { [weak self] in
+			guard let self else { return }
+			await self.runTask(id: next)
+			self.runningJobs[next] = nil
+			self.perHostBusy.remove(hostID)
+			self.kick(hostID)
+		}
+		runningJobs[next] = job
 	}
 
-	private func runTask(_ t: TransferTask) async {
-		guard let host = perHostHost[t.hostId] else {
-			if let i = tasks.firstIndex(where: { $0.id == t.id }) {
-				tasks[i].status = .failed
-				tasks[i].error = "missing host registration"
-			}
+	private func runTask(id: TaskId) async {
+		guard let index = index(of: id),
+		      let host = perHostHost[tasks[index].hostId] else {
+			markFailed(
+				id: id,
+				failure: .invalidResponse(message: "Missing Host registration")
+			)
 			return
 		}
-		guard await liveness.isAlive(hostId: t.hostId) else {
-			if let index = tasks.firstIndex(where: { $0.id == t.id }) {
-				tasks[index].status = .failed
-				tasks[index].error = "SSH session is no longer available"
-			}
-			return
-		}
-		let controlPath = controlPathFor(t.hostId)
-		let creds = credentialsFor(t.hostId)
-		let resume = t.error != nil  // retry path
-		let op: SFTPOperation
-		switch t.kind {
-		case .upload:
-			op = .put(localPath: URL(fileURLWithPath: t.source),
-			          remotePath: t.destination, recursive: t.isDirectory, resume: resume)
-		case .download:
-			op = .get(remotePath: t.source,
-			          localPath: URL(fileURLWithPath: t.destination), recursive: t.isDirectory, resume: resume)
-		}
+
+		let client = clientForHost(host)
 		do {
-			let inv = try SFTPCommandBuilder.invocation(
-				host: host, controlPath: controlPath, credentials: creds, operation: op)
-			let (out, code) = try await runner.run(inv)
-			if let i = self.tasks.firstIndex(where: { $0.id == t.id }) {
-				if code == 0 {
-					self.tasks[i].status = .completed
-					self.tasks[i].error = nil
-				} else {
-					self.tasks[i].status = .failed
-					self.tasks[i].error = String(out.suffix(1024))
-				}
+			try Task.checkCancellation()
+			switch tasks[index].kind {
+			case .upload:
+				try await executeUpload(id: id, client: client)
+			case .download:
+				try await executeDownload(id: id, client: client)
 			}
+			try Task.checkCancellation()
+			guard let completedIndex = self.index(of: id),
+			      tasks[completedIndex].status == .running else {
+				return
+			}
+			tasks[completedIndex].status = .completed
+			tasks[completedIndex].failure = nil
+			tasks[completedIndex].error = nil
+		} catch is CancellationError {
+			markCancelled(id: id)
+		} catch RemoteFileError.cancelled {
+			markCancelled(id: id)
+		} catch let failure as RemoteFileError {
+			markFailed(id: id, failure: failure)
 		} catch {
-			if let i = self.tasks.firstIndex(where: { $0.id == t.id }) {
-				self.tasks[i].status = .failed
-				self.tasks[i].error = "\(error)"
+			markFailed(
+				id: id,
+				failure: .transport(message: String(describing: error))
+			)
+		}
+	}
+
+	private func executeUpload(
+		id: TaskId,
+		client: any RemoteFileClient
+	) async throws {
+		guard let task = task(id: id) else { return }
+		let preparation = try await prepareRemoteDestination(
+			task.destination,
+			policy: task.conflictPolicy,
+			client: client
+		)
+		guard let destination = apply(preparation, to: id) else { return }
+		let result = try await client.upload(
+			localURL: URL(fileURLWithPath: task.source),
+			remotePath: destination,
+			isDirectory: task.isDirectory,
+			resume: task.attemptCount > 0,
+			progress: progressHandler(for: id)
+		)
+		advanceProgress(
+			id: id,
+			to: TransferProgress(
+				bytesTransferred: result.bytesTransferred,
+				totalBytes: result.bytesTransferred
+			)
+		)
+	}
+
+	private func executeDownload(
+		id: TaskId,
+		client: any RemoteFileClient
+	) async throws {
+		guard let task = task(id: id) else { return }
+		let requested = URL(fileURLWithPath: task.destination)
+		let preparation: DestinationPreparation<URL>
+		do {
+			preparation = try await localFiles.prepareDestination(
+				requested,
+				policy: task.conflictPolicy
+			)
+		} catch {
+			throw RemoteFileError.localIO(message: String(describing: error))
+		}
+		guard let destination = apply(preparation, to: id) else { return }
+
+		let temporary: URL
+		do {
+			temporary = try await localFiles.temporaryDestination(for: destination)
+		} catch {
+			throw RemoteFileError.localIO(message: String(describing: error))
+		}
+
+		do {
+			let result: RemoteFileTransferResult
+			do {
+				result = try await client.download(
+					remotePath: task.source,
+					localURL: temporary,
+					isDirectory: task.isDirectory,
+					resume: false,
+					progress: progressHandler(for: id)
+				)
+			} catch is CancellationError {
+				throw CancellationError()
+			} catch let failure as RemoteFileError {
+				throw failure
+			} catch {
+				throw RemoteFileError.transport(message: String(describing: error))
 			}
+			try Task.checkCancellation()
+			do {
+				try await localFiles.publish(
+					temporary: temporary,
+					to: destination,
+					replacing: task.conflictPolicy == .replace
+				)
+			} catch {
+				throw RemoteFileError.localIO(message: String(describing: error))
+			}
+			advanceProgress(
+				id: id,
+				to: TransferProgress(
+					bytesTransferred: result.bytesTransferred,
+					totalBytes: result.bytesTransferred
+				)
+			)
+		} catch {
+			try? await localFiles.remove(temporary)
+			throw error
+		}
+	}
+
+	private func prepareRemoteDestination(
+		_ requested: String,
+		policy: TransferConflictPolicy?,
+		client: any RemoteFileClient
+	) async throws -> DestinationPreparation<String> {
+		guard try await client.stat(requested) != nil else {
+			return .ready(requested)
+		}
+		switch policy {
+		case nil:
+			return .conflict(requested)
+		case .cancel:
+			return .cancelled
+		case .replace:
+			return .ready(requested)
+		case .keepBoth:
+			var sequence = 2
+			while true {
+				let candidate = keepBothRemotePath(requested, sequence: sequence)
+				if try await client.stat(candidate) == nil {
+					return .ready(candidate)
+				}
+				sequence += 1
+			}
+		}
+	}
+
+	private func apply<Destination>(
+		_ preparation: DestinationPreparation<Destination>,
+		to id: TaskId
+	) -> Destination? {
+		guard let index = index(of: id) else { return nil }
+		switch preparation {
+		case .ready(let destination):
+			tasks[index].destination = destinationDescription(destination)
+			return destination
+		case .conflict(let destination):
+			tasks[index].status = .conflict
+			tasks[index].conflict = TransferConflict(
+				destination: destinationDescription(destination)
+			)
+			return nil
+		case .cancelled:
+			markCancelled(at: index)
+			return nil
+		}
+	}
+
+	private func destinationDescription<Destination>(
+		_ destination: Destination
+	) -> String {
+		if let url = destination as? URL { return url.path }
+		return String(describing: destination)
+	}
+
+	private func progressHandler(for id: TaskId) -> TransferProgressHandler {
+		{ [weak self] progress in
+			await self?.advanceProgress(id: id, to: progress)
+		}
+	}
+
+	private func advanceProgress(id: TaskId, to progress: TransferProgress) {
+		guard let index = index(of: id), tasks[index].status == .running else {
+			return
+		}
+		tasks[index].progress = tasks[index].progress.advancing(to: progress)
+	}
+
+	private func markFailed(id: TaskId, failure: RemoteFileError) {
+		guard let index = index(of: id) else { return }
+		tasks[index].status = .failed
+		tasks[index].failure = failure
+		tasks[index].error = failure.localizedDescription
+	}
+
+	private func markCancelled(id: TaskId) {
+		guard let index = index(of: id) else { return }
+		markCancelled(at: index)
+	}
+
+	private func markCancelled(at index: Int) {
+		tasks[index].status = .cancelled
+		tasks[index].failure = nil
+		tasks[index].error = nil
+		tasks[index].conflict = nil
+	}
+
+	private func removeFromQueue(_ id: TaskId, hostID: UUID) {
+		perHostQueues[hostID]?.removeAll { $0 == id }
+	}
+
+	private func index(of id: TaskId) -> Int? {
+		tasks.firstIndex { $0.id == id }
+	}
+
+	private func keepBothRemotePath(_ path: String, sequence: Int) -> String {
+		let value = path as NSString
+		let extensionName = value.pathExtension
+		let stem = value.deletingPathExtension
+		let suffix = " \(sequence)"
+		return extensionName.isEmpty
+			? stem + suffix
+			: stem + suffix + "." + extensionName
+	}
+}
+
+private enum DestinationPreparation<Destination> {
+	case ready(Destination)
+	case conflict(Destination)
+	case cancelled
+}
+
+private actor LocalTransferFileCoordinator {
+	private let fileManager = FileManager.default
+
+	func prepareDestination(
+		_ requested: URL,
+		policy: TransferConflictPolicy?
+	) throws -> DestinationPreparation<URL> {
+		guard fileManager.fileExists(atPath: requested.path) else {
+			return .ready(requested)
+		}
+		switch policy {
+		case nil:
+			return .conflict(requested)
+		case .cancel:
+			return .cancelled
+		case .replace:
+			return .ready(requested)
+		case .keepBoth:
+			return .ready(uniqueDestination(for: requested))
+		}
+	}
+
+	func temporaryDestination(for destination: URL) throws -> URL {
+		let parent = destination.deletingLastPathComponent()
+		guard fileManager.fileExists(atPath: parent.path) else {
+			throw CocoaError(.fileNoSuchFile)
+		}
+		return parent.appendingPathComponent(
+			".\(destination.lastPathComponent).caterm-partial-\(UUID().uuidString)"
+		)
+	}
+
+	func publish(
+		temporary: URL,
+		to destination: URL,
+		replacing: Bool
+	) throws {
+		if replacing, fileManager.fileExists(atPath: destination.path) {
+			_ = try fileManager.replaceItemAt(
+				destination,
+				withItemAt: temporary,
+				backupItemName: nil,
+				options: []
+			)
+		} else {
+			try fileManager.moveItem(at: temporary, to: destination)
+		}
+	}
+
+	func remove(_ url: URL) throws {
+		guard fileManager.fileExists(atPath: url.path) else { return }
+		try fileManager.removeItem(at: url)
+	}
+
+	private func uniqueDestination(for requested: URL) -> URL {
+		let extensionName = requested.pathExtension
+		let stem = requested.deletingPathExtension().lastPathComponent
+		let parent = requested.deletingLastPathComponent()
+		var sequence = 2
+		while true {
+			let name = extensionName.isEmpty
+				? "\(stem) \(sequence)"
+				: "\(stem) \(sequence).\(extensionName)"
+			let candidate = parent.appendingPathComponent(name)
+			if !fileManager.fileExists(atPath: candidate.path) {
+				return candidate
+			}
+			sequence += 1
 		}
 	}
 }

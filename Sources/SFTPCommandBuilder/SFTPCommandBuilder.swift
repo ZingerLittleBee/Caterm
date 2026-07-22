@@ -5,6 +5,12 @@ public struct SFTPInvocation: Equatable {
 	public let argv: [String]
 	public let environment: [String: String]
 	public let scriptStdin: String
+
+	public init(argv: [String], environment: [String: String], scriptStdin: String) {
+		self.argv = argv
+		self.environment = environment
+		self.scriptStdin = scriptStdin
+	}
 }
 
 public enum SFTPOperation {

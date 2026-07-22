@@ -1,6 +1,6 @@
 import Foundation
 
-public struct RemoteEntry: Equatable, Identifiable {
+public struct RemoteEntry: Equatable, Identifiable, Sendable {
 	public var id: String { name }
 	public let name: String
 	public let isDirectory: Bool
@@ -17,8 +17,5 @@ public struct RemoteEntry: Equatable, Identifiable {
 	}
 }
 
-public enum RemoteFileSystemError: Error {
-	case sessionGone
-	case subprocessFailed(exitCode: Int32, stderrTail: String)
-	case parseFailed(String)
-}
+@available(*, deprecated, renamed: "RemoteFileError")
+public typealias RemoteFileSystemError = RemoteFileError

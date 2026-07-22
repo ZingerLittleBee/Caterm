@@ -307,7 +307,7 @@ struct FileDrawerView: View {
 		do {
 			self.entries = try await fs.list(path)
 			self.error = nil
-		} catch RemoteFileSystemError.sessionGone {
+		} catch RemoteFileError.sessionUnavailable {
 			self.error = "Reconnect host to browse files"
 		} catch {
 			self.error = "\(error)"
