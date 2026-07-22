@@ -56,6 +56,7 @@ public struct MobileAccountIdentityBoundary {
 @MainActor
 public final class MobileHostSyncRuntime: ObservableObject {
 	@Published public private(set) var state: MobileHostSyncState = .checkingAccount
+	@Published public private(set) var identityRevision: UInt64 = 0
 
 	public let hostStore: MobileHostStore
 	private let syncEngine: SharedHostSyncEngine
@@ -233,6 +234,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 					relatedIdentityChanged = true
 					await identityBoundary.acknowledge()
 					try hostStore.finishAccountTransition()
+					identityRevision &+= 1
 					guard generationIsCurrent(generation) else { return .cancelled }
 					if resolvedRequest != nil { resolvedRequest = .forceFull }
 				} catch {

@@ -40,6 +40,7 @@ struct CatermMobileApp: App {
 				snippetSyncRuntime: composition.snippetSyncRuntime,
 				settingsStore: composition.settingsStore,
 				syncCoordinator: composition.syncCoordinator,
+				transferLifecycle: composition.transferLifecycle,
 				terminalSessionFactory: composition.terminalSessionFactory,
 				remoteFileClientFactory: composition.remoteFileClientFactory,
 				fileTransferStore: composition.fileTransferStore,

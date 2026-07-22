@@ -54,6 +54,7 @@ public struct MobileRootView: View {
 	@StateObject private var snippetSyncRuntime: MobileSnippetSyncRuntime
 	@StateObject private var settingsStore: SettingsStore
 	@StateObject private var syncCoordinator: MobileSyncCoordinator
+	private let transferLifecycle: MobileTransferLifecycleCoordinator
 	@Environment(\.scenePhase) private var scenePhase
 	private let hostSaveCoordinator: MobileHostSaveCoordinator
 	private let backupImportCoordinator: MobileBackupImportCoordinator
@@ -64,6 +65,7 @@ public struct MobileRootView: View {
 	@State private var operationError: MobileHostOperationError?
 	@State private var remoteEntries: [RemoteEntry]
 	@State private var transfers: [TransferTask]
+	@State private var transferSceneID = UUID()
 
 	public init(
 		hostStore: MobileHostStore,
@@ -72,6 +74,7 @@ public struct MobileRootView: View {
 		snippetSyncRuntime: MobileSnippetSyncRuntime,
 		settingsStore: SettingsStore,
 		syncCoordinator: MobileSyncCoordinator,
+		transferLifecycle: MobileTransferLifecycleCoordinator,
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		remoteFileClientFactory: MobileRemoteFileClientFactory,
 		fileTransferStore: FileTransferStore,
@@ -85,6 +88,7 @@ public struct MobileRootView: View {
 		_snippetSyncRuntime = StateObject(wrappedValue: snippetSyncRuntime)
 		_settingsStore = StateObject(wrappedValue: settingsStore)
 		_syncCoordinator = StateObject(wrappedValue: syncCoordinator)
+		self.transferLifecycle = transferLifecycle
 		self.hostSaveCoordinator = MobileHostSaveCoordinator(
 			hostStore: hostStore,
 			credentialWriter: credentialWriter,
@@ -127,10 +131,15 @@ public struct MobileRootView: View {
 				}
 			},
 			deleteHost: { id in
+				guard let removal = await fileTransferStore.prepareForHostRemoval(id) else {
+					return false
+				}
 				do {
 					try await hostStore.delete(id: id)
+					await fileTransferStore.commitHostRemoval(removal)
 					return true
 				} catch {
+					fileTransferStore.abortHostRemoval(removal)
 					operationError = MobileHostOperationError(
 						title: "Couldn’t Delete Host",
 						error: error
@@ -173,18 +182,20 @@ public struct MobileRootView: View {
 		.task {
 			await syncCoordinator.launch()
 		}
-		.onChange(of: scenePhase) { _, phase in
-			guard phase == .active else { return }
-			Task {
-				await syncCoordinator.becameActive()
-			}
+		.onAppear {
+			transferLifecycle.updateScene(
+				transferSceneID,
+				state: transferSceneState(scenePhase)
+			)
 		}
-		.onReceive(
-			NotificationCenter.default.publisher(for: .catermICloudAccountChanged)
-		) { _ in
-			Task {
-				await syncCoordinator.accountChanged()
-			}
+		.onDisappear {
+			transferLifecycle.unregisterScene(transferSceneID)
+		}
+		.onChange(of: scenePhase) { _, phase in
+			transferLifecycle.updateScene(
+				transferSceneID,
+				state: transferSceneState(phase)
+			)
 		}
 		.alert(item: $operationError) { failure in
 			Alert(
@@ -229,6 +240,15 @@ public struct MobileRootView: View {
 				? .native
 				: .custom
 		)
+	}
+
+	private func transferSceneState(_ phase: ScenePhase) -> MobileTransferSceneState {
+		switch phase {
+		case .active: .active
+		case .inactive: .inactive
+		case .background: .background
+		@unknown default: .background
+		}
 	}
 
 	private var mobileSyncAction: MobileSyncAction? {

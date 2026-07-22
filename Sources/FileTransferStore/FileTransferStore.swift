@@ -3,38 +3,84 @@ import Foundation
 import SFTPCommandBuilder
 import SSHCommandBuilder
 
+public struct TransferLifecycleInterruption: Equatable, Sendable {
+	public enum Reason: Equatable, Sendable {
+		case background
+	}
+
+	public let reason: Reason
+	public let transferCount: Int
+
+	public init(reason: Reason, transferCount: Int) {
+		self.reason = reason
+		self.transferCount = max(0, transferCount)
+	}
+}
+
+public struct TransferEnqueueContext: Equatable, Sendable {
+	public let hostID: UUID
+	public let generation: UInt64
+
+	public init(hostID: UUID, generation: UInt64) {
+		self.hostID = hostID
+		self.generation = generation
+	}
+}
+
+public struct TransferHostRemovalContext: Equatable, Sendable {
+	public let hostID: UUID
+	public let revision: UInt64
+
+	public init(hostID: UUID, revision: UInt64) {
+		self.hostID = hostID
+		self.revision = revision
+	}
+}
+
 @MainActor
 public final class FileTransferStore: ObservableObject {
 	public typealias ClientFactory = (SSHHost) -> any RemoteFileClient
 
 	@Published public private(set) var tasks: [TransferTask] = []
+	@Published public private(set) var lifecycleInterruption: TransferLifecycleInterruption?
 
 	private let clientForHost: ClientFactory
 	private let localFiles: any LocalTransferFileCoordinating
 	private let didComplete: @Sendable (TransferTask) async -> Void
+	private let didDiscard: @Sendable (TransferTask) async -> Void
 	private var perHostQueues: [UUID: [TaskId]] = [:]
 	private var perHostBusy: Set<UUID> = []
 	private var perHostHost: [UUID: SSHHost] = [:]
 	private var runningJobs: [TaskId: Task<Void, Never>] = [:]
+	private var transferGeneration: UInt64 = 0
+	private var drainingHostIDs: Set<UUID> = []
+	private var removedHostIDs: Set<UUID> = []
+	private var hostRemovalRevisions: [UUID: UInt64] = [:]
+	private var accountResetInProgress = false
+	private var admissionSuspended = false
 
 	/// Creates a transport-independent transfer coordinator.
 	public init(
 		clientForHost: @escaping ClientFactory,
-		didComplete: @escaping @Sendable (TransferTask) async -> Void = { _ in }
+		didComplete: @escaping @Sendable (TransferTask) async -> Void = { _ in },
+		didDiscard: @escaping @Sendable (TransferTask) async -> Void = { _ in }
 	) {
 		self.clientForHost = clientForHost
 		localFiles = LocalTransferFileCoordinator()
 		self.didComplete = didComplete
+		self.didDiscard = didDiscard
 	}
 
 	init(
 		clientForHost: @escaping ClientFactory,
 		localFiles: any LocalTransferFileCoordinating,
-		didComplete: @escaping @Sendable (TransferTask) async -> Void = { _ in }
+		didComplete: @escaping @Sendable (TransferTask) async -> Void = { _ in },
+		didDiscard: @escaping @Sendable (TransferTask) async -> Void = { _ in }
 	) {
 		self.clientForHost = clientForHost
 		self.localFiles = localFiles
 		self.didComplete = didComplete
+		self.didDiscard = didDiscard
 	}
 
 	/// Preserves the existing macOS composition while adapting OpenSSH SFTP
@@ -60,12 +106,19 @@ public final class FileTransferStore: ObservableObject {
 		tasks.first { $0.id == id }
 	}
 
+	public func captureEnqueueContext(for hostID: UUID) -> TransferEnqueueContext? {
+		guard transfersAreAllowed(for: hostID) else { return nil }
+		return TransferEnqueueContext(hostID: hostID, generation: transferGeneration)
+	}
+
 	public func enqueueUpload(
 		localPaths: [URL],
 		remoteDir: String,
 		host: SSHHost,
-		conflictPolicy: TransferConflictPolicy? = nil
+		conflictPolicy: TransferConflictPolicy? = nil,
+		expectedContext: TransferEnqueueContext? = nil
 	) -> [TaskId] {
+		guard accepts(expectedContext, for: host.id) else { return [] }
 		var ids: [TaskId] = []
 		perHostHost[host.id] = host
 		for path in localPaths {
@@ -92,8 +145,10 @@ public final class FileTransferStore: ObservableObject {
 		remotePaths: [String],
 		localDir: URL,
 		host: SSHHost,
-		conflictPolicy: TransferConflictPolicy? = nil
+		conflictPolicy: TransferConflictPolicy? = nil,
+		expectedContext: TransferEnqueueContext? = nil
 	) -> [TaskId] {
+		guard accepts(expectedContext, for: host.id) else { return [] }
 		var ids: [TaskId] = []
 		perHostHost[host.id] = host
 		for remotePath in remotePaths {
@@ -134,7 +189,8 @@ public final class FileTransferStore: ObservableObject {
 
 	public func retry(_ id: TaskId) {
 		guard let index = index(of: id),
-			[.failed, .cancelled].contains(tasks[index].status) else {
+			[.failed, .cancelled].contains(tasks[index].status),
+			transfersAreAllowed(for: tasks[index].hostId) else {
 			return
 		}
 		tasks[index].state = .pending
@@ -155,10 +211,136 @@ public final class FileTransferStore: ObservableObject {
 			markCancelled(at: index)
 			return
 		}
+		guard transfersAreAllowed(for: tasks[index].hostId) else { return }
 		tasks[index].conflictPolicy = policy
 		tasks[index].state = .pending
 		perHostQueues[tasks[index].hostId, default: []].append(id)
 		kick(tasks[index].hostId)
+	}
+
+	/// iOS does not promise indefinite background transport execution. All
+	/// unfinished work is cancelled at the background boundary while completed
+	/// tasks remain untouched and are never replayed on foreground return.
+	@discardableResult
+	public func interruptForBackground() -> Int {
+		admissionSuspended = true
+		advanceGeneration()
+		let activeIDs = tasks.compactMap { task in
+			[.pending, .running, .conflict].contains(task.status) ? task.id : nil
+		}
+		guard !activeIDs.isEmpty else { return 0 }
+		lifecycleInterruption = TransferLifecycleInterruption(
+			reason: .background,
+			transferCount: activeIDs.count
+		)
+		for id in activeIDs { cancel(id) }
+		return activeIDs.count
+	}
+
+	/// Reconciles state owned by the foreground scene without re-enqueueing any
+	/// operation. An orphaned running marker is conservatively cancelled.
+	public func reconcileAfterForeground() {
+		admissionSuspended = false
+		for index in tasks.indices where tasks[index].status == .running {
+			if runningJobs[tasks[index].id] == nil {
+				markCancelled(at: index)
+			}
+		}
+	}
+
+	public func acknowledgeLifecycleInterruption() {
+		lifecycleInterruption = nil
+	}
+
+	public func discard(_ id: TaskId) async {
+		guard let task = task(id: id),
+			[.completed, .failed, .cancelled].contains(task.status) else {
+			return
+		}
+		removeFromQueue(id, hostID: task.hostId)
+		tasks.removeAll { $0.id == id }
+		await didDiscard(task)
+	}
+
+	public func prepareForHostRemoval(
+		_ hostID: UUID
+	) async -> TransferHostRemovalContext? {
+		guard let context = beginHostRemoval(hostID) else { return nil }
+		await drainHostRemoval(context)
+		return context
+	}
+
+	public func beginHostRemoval(
+		_ hostID: UUID
+	) -> TransferHostRemovalContext? {
+		guard !removedHostIDs.contains(hostID) else { return nil }
+		let revision: UInt64
+		if drainingHostIDs.insert(hostID).inserted {
+			advanceGeneration()
+			revision = nextHostRemovalRevision(for: hostID)
+		} else {
+			revision = hostRemovalRevisions[hostID] ?? 0
+		}
+		cancelTasks { $0.hostId == hostID }
+		return TransferHostRemovalContext(hostID: hostID, revision: revision)
+	}
+
+	public func drainHostRemoval(_ context: TransferHostRemovalContext) async {
+		guard hostRemovalRevisions[context.hostID] == context.revision else { return }
+		await waitForRunningJobs { $0.hostId == context.hostID }
+	}
+
+	public func commitHostRemoval(_ hostID: UUID) async {
+		guard let context = await prepareForHostRemoval(hostID) else { return }
+		await commitHostRemoval(context)
+	}
+
+	public func commitHostRemoval(_ context: TransferHostRemovalContext) async {
+		guard hostRemovalRevisions[context.hostID] == context.revision,
+			drainingHostIDs.contains(context.hostID) else {
+			return
+		}
+		let discarded = removeCurrentTasks { $0.hostId == context.hostID }
+		perHostQueues[context.hostID] = nil
+		perHostHost[context.hostID] = nil
+		removedHostIDs.insert(context.hostID)
+		drainingHostIDs.remove(context.hostID)
+		for task in discarded {
+			await didDiscard(task)
+		}
+	}
+
+	public func abortHostRemoval(_ context: TransferHostRemovalContext) {
+		guard hostRemovalRevisions[context.hostID] == context.revision else { return }
+		drainingHostIDs.remove(context.hostID)
+	}
+
+	public func restoreHost(_ hostID: UUID) {
+		_ = nextHostRemovalRevision(for: hostID)
+		drainingHostIDs.remove(hostID)
+		removedHostIDs.remove(hostID)
+	}
+
+	public func discardTasks(forHost hostID: UUID) async {
+		await commitHostRemoval(hostID)
+	}
+
+	public func resetForAccountChange() async {
+		guard !accountResetInProgress else { return }
+		accountResetInProgress = true
+		advanceGeneration()
+		cancelTasks { _ in true }
+		await waitForRunningJobs { _ in true }
+		let discarded = removeCurrentTasks { _ in true }
+		perHostQueues.removeAll()
+		perHostHost.removeAll()
+		drainingHostIDs.removeAll()
+		removedHostIDs.removeAll()
+		lifecycleInterruption = nil
+		accountResetInProgress = false
+		for task in discarded {
+			await didDiscard(task)
+		}
 	}
 
 	public func waitIdle() async throws {
@@ -170,7 +352,8 @@ public final class FileTransferStore: ObservableObject {
 	}
 
 	private func kick(_ hostID: UUID) {
-		guard !perHostBusy.contains(hostID),
+		guard transfersAreAllowed(for: hostID),
+		      !perHostBusy.contains(hostID),
 		      let next = perHostQueues[hostID]?.first else {
 			return
 		}
@@ -190,6 +373,59 @@ public final class FileTransferStore: ObservableObject {
 			self.kick(hostID)
 		}
 		runningJobs[next] = job
+	}
+
+	private func cancelTasks(
+		where shouldDiscard: (TransferTask) -> Bool
+	) {
+		for task in tasks where shouldDiscard(task)
+			&& [.pending, .running, .conflict].contains(task.status) {
+			cancel(task.id)
+		}
+	}
+
+	private func waitForRunningJobs(
+		where shouldWait: (TransferTask) -> Bool
+	) async {
+		let matching = tasks.filter(shouldWait)
+		for task in matching {
+			await runningJobs[task.id]?.value
+		}
+	}
+
+	private func removeCurrentTasks(
+		where shouldDiscard: (TransferTask) -> Bool
+	) -> [TransferTask] {
+		let matching = tasks.filter(shouldDiscard)
+		let ids = Set(matching.map(\.id))
+		tasks.removeAll { ids.contains($0.id) }
+		return matching
+	}
+
+	private func accepts(
+		_ context: TransferEnqueueContext?,
+		for hostID: UUID
+	) -> Bool {
+		guard transfersAreAllowed(for: hostID) else { return false }
+		guard let context else { return true }
+		return context.hostID == hostID && context.generation == transferGeneration
+	}
+
+	private func transfersAreAllowed(for hostID: UUID) -> Bool {
+		!admissionSuspended
+			&& !accountResetInProgress
+			&& !drainingHostIDs.contains(hostID)
+			&& !removedHostIDs.contains(hostID)
+	}
+
+	private func advanceGeneration() {
+		transferGeneration &+= 1
+	}
+
+	private func nextHostRemovalRevision(for hostID: UUID) -> UInt64 {
+		let revision = (hostRemovalRevisions[hostID] ?? 0) &+ 1
+		hostRemovalRevisions[hostID] = revision
+		return revision
 	}
 
 	private func runTask(id: TaskId) async {

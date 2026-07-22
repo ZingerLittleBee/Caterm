@@ -534,6 +534,7 @@ private func mobileAccountTransitionDoesNotMergeAccounts() async throws {
 		debounceInterval: 0
 	)
 	await runtime.launch()
+	#expect(runtime.identityRevision == 0)
 	account.set(identity: "account-b", signedIn: true)
 	client.switchToEmptyAccount()
 	await runtime.accountDidChange()
@@ -541,6 +542,7 @@ private func mobileAccountTransitionDoesNotMergeAccounts() async throws {
 	#expect(runtime.hostStore === device.store)
 	#expect(!device.store.hosts.contains { $0.name == "Account A only" })
 	#expect(runtime.state != MobileHostSyncState.signedOut)
+	#expect(runtime.identityRevision == 1)
 }
 
 @Test("Unknown first identity isolates existing mobile account state")
@@ -810,6 +812,7 @@ private func mobileTemporaryAccountFailureKeepsRelatedLaneClosed() async throws 
 	await runtime.launch()
 
 	#expect(beginCount == 1)
+	#expect(runtime.identityRevision == 0)
 	#expect(resumeCount == 0)
 	#expect(allowLocalMutationCount == 1)
 	guard case .temporarilyUnavailable = runtime.state else {
@@ -822,6 +825,7 @@ private func mobileTemporaryAccountFailureKeepsRelatedLaneClosed() async throws 
 
 	#expect(beginCount == 2)
 	#expect(resumeCount == 1)
+	#expect(runtime.identityRevision == 0)
 }
 
 @Test("Related sync identity gate does not run a Host pass")

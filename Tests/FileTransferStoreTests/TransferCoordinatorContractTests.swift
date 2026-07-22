@@ -312,6 +312,243 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertTrue(try partialFiles().isEmpty)
 	}
 
+	func testBackgroundInterruptionCancelsRunningWorkWithoutForegroundReplay() async throws {
+		let client = SuspendingRemoteFileClient()
+		let store = makeStore(client: client)
+		let id = try XCTUnwrap(store.enqueueDownload(
+			remotePaths: ["/remote/background.bin"],
+			localDir: temporaryDirectory,
+			host: makeHost()
+		).first)
+		await client.waitUntilStarted()
+
+		XCTAssertEqual(store.interruptForBackground(), 1)
+		try await store.waitIdle()
+		store.reconcileAfterForeground()
+
+		XCTAssertEqual(store.task(id: id)?.status, .cancelled)
+		XCTAssertEqual(
+			store.lifecycleInterruption,
+			TransferLifecycleInterruption(reason: .background, transferCount: 1)
+		)
+		XCTAssertTrue(try partialFiles().isEmpty)
+		let calls = await client.downloadCalls()
+		XCTAssertEqual(calls, 1)
+	}
+
+	func testBackgroundInterruptionNeverReplaysCompletedTransfer() async throws {
+		let client = RecordingRemoteFileClient(downloadData: Data("complete".utf8))
+		let store = makeStore(client: client)
+		let id = try XCTUnwrap(store.enqueueDownload(
+			remotePaths: ["/remote/completed.bin"],
+			localDir: temporaryDirectory,
+			host: makeHost()
+		).first)
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.interruptForBackground(), 0)
+		let foregroundProbeHostID = UUID()
+		XCTAssertNil(store.captureEnqueueContext(for: foregroundProbeHostID))
+		store.reconcileAfterForeground()
+		XCTAssertNotNil(store.captureEnqueueContext(for: foregroundProbeHostID))
+
+		XCTAssertEqual(store.task(id: id)?.status, .completed)
+		let calls = await client.downloadCalls()
+		XCTAssertEqual(calls, 1)
+	}
+
+	func testBackgroundInvalidatesFilePreparationThatHasNotEnqueuedYet() throws {
+		let store = makeStore(
+			client: RecordingRemoteFileClient(downloadData: Data())
+		)
+		let host = makeHost()
+		let context = try XCTUnwrap(store.captureEnqueueContext(for: host.id))
+		let source = temporaryDirectory.appendingPathComponent("staged.txt")
+		try Data("staged".utf8).write(to: source)
+
+		XCTAssertEqual(store.interruptForBackground(), 0)
+		let ids = store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: host,
+			expectedContext: context
+		)
+
+		XCTAssertTrue(ids.isEmpty)
+		XCTAssertTrue(store.tasks.isEmpty)
+	}
+
+	func testHostRemovalBlocksConcurrentEnqueueUntilAbort() async throws {
+		let store = makeStore(
+			client: RecordingRemoteFileClient(
+				downloadData: Data(),
+				uploadFailure: .sessionUnavailable
+			)
+		)
+		let host = makeHost()
+		let staleContext = try XCTUnwrap(store.captureEnqueueContext(for: host.id))
+		let source = temporaryDirectory.appendingPathComponent("host-delete.txt")
+		try Data("payload".utf8).write(to: source)
+		let retainedID = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: host,
+			expectedContext: staleContext
+		).first)
+		try await store.waitIdle()
+
+		let preparedRemoval = await store.prepareForHostRemoval(host.id)
+		let removal = try XCTUnwrap(preparedRemoval)
+		XCTAssertEqual(store.task(id: retainedID)?.status, .failed)
+		XCTAssertNil(store.captureEnqueueContext(for: host.id))
+		XCTAssertTrue(store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: host,
+			expectedContext: staleContext
+		).isEmpty)
+
+		store.abortHostRemoval(removal)
+		XCTAssertEqual(store.task(id: retainedID)?.status, .failed)
+		let freshContext = try XCTUnwrap(store.captureEnqueueContext(for: host.id))
+		XCTAssertEqual(store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: host,
+			expectedContext: freshContext
+		).count, 1)
+	}
+
+	func testCommittedHostRemovalRejectsStaleAndUnscopedEnqueues() async throws {
+		let store = makeStore(
+			client: RecordingRemoteFileClient(downloadData: Data())
+		)
+		let host = makeHost()
+		let context = try XCTUnwrap(store.captureEnqueueContext(for: host.id))
+		let source = temporaryDirectory.appendingPathComponent("removed-host.txt")
+		try Data("payload".utf8).write(to: source)
+
+		await store.commitHostRemoval(host.id)
+
+		XCTAssertNil(store.captureEnqueueContext(for: host.id))
+		XCTAssertTrue(store.enqueueUpload(
+			localPaths: [source], remoteDir: "/remote", host: host
+		).isEmpty)
+		XCTAssertTrue(store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: host,
+			expectedContext: context
+		).isEmpty)
+	}
+
+	func testRestoredHostInvalidatesStaleRemovalCommit() async throws {
+		let cleanup = DiscardedTransferRecorder()
+		let client = RecordingRemoteFileClient(
+			downloadData: Data(),
+			uploadFailure: .sessionUnavailable
+		)
+		let store = FileTransferStore(
+			clientForHost: { _ in client },
+			didDiscard: { await cleanup.record($0) }
+		)
+		let host = makeHost()
+		let source = temporaryDirectory.appendingPathComponent("restored-host.txt")
+		try Data("payload".utf8).write(to: source)
+		let taskID = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [source], remoteDir: "/remote", host: host
+		).first)
+		try await store.waitIdle()
+		let preparedRemoval = await store.prepareForHostRemoval(host.id)
+		let removal = try XCTUnwrap(preparedRemoval)
+
+		store.restoreHost(host.id)
+		await store.commitHostRemoval(removal)
+
+		XCTAssertEqual(store.task(id: taskID)?.status, .failed)
+		XCTAssertNotNil(store.captureEnqueueContext(for: host.id))
+		let discardedIDs = await cleanup.taskIDs()
+		XCTAssertTrue(discardedIDs.isEmpty)
+	}
+
+	func testAccountResetInvalidatesPendingPreparationContext() async throws {
+		let store = makeStore(
+			client: RecordingRemoteFileClient(downloadData: Data())
+		)
+		let host = makeHost()
+		let context = try XCTUnwrap(store.captureEnqueueContext(for: host.id))
+		let source = temporaryDirectory.appendingPathComponent("old-account.txt")
+		try Data("payload".utf8).write(to: source)
+
+		await store.resetForAccountChange()
+
+		XCTAssertTrue(store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: host,
+			expectedContext: context
+		).isEmpty)
+		XCTAssertNotNil(store.captureEnqueueContext(for: host.id))
+	}
+
+	func testHostRemovalDiscardsTasksAndInvokesPayloadCleanup() async throws {
+		let cleanup = DiscardedTransferRecorder()
+		let client = RecordingRemoteFileClient(
+			downloadData: Data(),
+			uploadFailure: .sessionUnavailable
+		)
+		let store = FileTransferStore(
+			clientForHost: { _ in client },
+			didDiscard: { await cleanup.record($0) }
+		)
+		let host = makeHost()
+		let source = temporaryDirectory.appendingPathComponent("host-removal.bin")
+		try Data("payload".utf8).write(to: source)
+		let id = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [source],
+			remoteDir: "/remote",
+			host: host
+		).first)
+		try await store.waitIdle()
+		XCTAssertEqual(store.task(id: id)?.status, .failed)
+
+		await store.discardTasks(forHost: host.id)
+
+		XCTAssertNil(store.task(id: id))
+		let discarded = await cleanup.taskIDs()
+		XCTAssertEqual(discarded, [id])
+	}
+
+	func testAccountResetDiscardsTasksAcrossHostsWithoutReplay() async throws {
+		let cleanup = DiscardedTransferRecorder()
+		let client = RecordingRemoteFileClient(
+			downloadData: Data(),
+			uploadFailure: .sessionUnavailable
+		)
+		let store = FileTransferStore(
+			clientForHost: { _ in client },
+			didDiscard: { await cleanup.record($0) }
+		)
+		let source = temporaryDirectory.appendingPathComponent("account-reset.bin")
+		try Data("payload".utf8).write(to: source)
+		let firstHost = makeHost()
+		let secondHost = makeHost()
+		let firstID = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [source], remoteDir: "/a", host: firstHost
+		).first)
+		let secondID = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [source], remoteDir: "/b", host: secondHost
+		).first)
+		try await store.waitIdle()
+
+		await store.resetForAccountChange()
+		store.reconcileAfterForeground()
+
+		XCTAssertTrue(store.tasks.isEmpty)
+		let discarded = Set(await cleanup.taskIDs())
+		XCTAssertEqual(discarded, Set([firstID, secondID]))
+	}
+
 	func testProgressNeverMovesBackward() {
 		let initial = TransferProgress(bytesTransferred: 12, totalBytes: 20)
 		XCTAssertEqual(
@@ -612,6 +849,8 @@ private actor SuspendingRemoteFileClient: RemoteFileClient {
 		}
 	}
 
+	func downloadCalls() -> Int { downloadCallCount }
+
 	func list(_ path: String) async throws -> [RemoteEntry] { [] }
 	func stat(_ path: String) async throws -> RemoteEntry? { nil }
 	func createDirectory(_ path: String) async throws {}
@@ -649,4 +888,14 @@ private actor SuspendingRemoteFileClient: RemoteFileClient {
 			try await Task.sleep(for: .seconds(1))
 		}
 	}
+}
+
+private actor DiscardedTransferRecorder {
+	private var ids: [TaskId] = []
+
+	func record(_ task: TransferTask) {
+		ids.append(task.id)
+	}
+
+	func taskIDs() -> [TaskId] { ids }
 }

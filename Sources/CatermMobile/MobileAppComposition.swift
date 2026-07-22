@@ -1,6 +1,7 @@
 import CatermMobileTerminal
 import CloudKit
 import CloudKitSyncClient
+import Combine
 import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
@@ -29,7 +30,10 @@ public final class MobileAppComposition: ObservableObject {
 	public let remoteFileClientFactory: MobileRemoteFileClientFactory
 	public let fileTransferStore: FileTransferStore
 	public let transferWorkspace: MobileTransferWorkspace
+	public let transferLifecycle: MobileTransferLifecycleCoordinator
 	public let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
+	private var transferCancellables: Set<AnyCancellable> = []
+	private var knownTransferHostIDs: Set<UUID>
 
 	public init(
 		hostStore: MobileHostStore,
@@ -47,18 +51,20 @@ public final class MobileAppComposition: ObservableObject {
 		startObservingAccountChanges: @escaping () -> Void = {}
 	) {
 		self.hostStore = hostStore
+		self.knownTransferHostIDs = Set(hostStore.hosts.map(\.id))
 		self.credentialWriter = credentialWriter
 		self.syncRuntime = syncRuntime
 		self.snippetStore = snippetStore
 		self.snippetSyncRuntime = snippetSyncRuntime
 		self.settingsStore = settingsStore
-		self.syncCoordinator = MobileSyncCoordinator(
+		let syncCoordinator = MobileSyncCoordinator(
 			hostRuntime: syncRuntime,
 			snippetRuntime: snippetSyncRuntime,
 			settingsSync: settingsSync,
 			isAvailable: cloudSyncAvailable,
 			startObservingAccountChanges: startObservingAccountChanges
 		)
+		self.syncCoordinator = syncCoordinator
 		self.terminalSessionFactory = terminalSessionFactory
 		self.remoteFileClientFactory = remoteFileClientFactory
 		let workspace = transferWorkspace ?? MobileTransferWorkspace(
@@ -66,25 +72,80 @@ public final class MobileAppComposition: ObservableObject {
 				.appendingPathComponent("CatermTransfers", isDirectory: true)
 		)
 		self.transferWorkspace = workspace
-		self.fileTransferStore = FileTransferStore(
+		let cleanupTransferPayload: @Sendable (TransferTask) async -> Void = { task in
+			guard task.kind == .upload else { return }
+			do {
+				try await workspace.removeUploadPayload(
+					at: URL(fileURLWithPath: task.source)
+				)
+			} catch {
+				NSLog("[MobileAppComposition] Upload cleanup failed: \(error)")
+			}
+		}
+		let fileTransferStore = FileTransferStore(
 			clientForHost: { host in
 				MobileDeferredRemoteFileClient(
 					host: host,
 					factory: remoteFileClientFactory
 				)
 			},
-			didComplete: { task in
-				guard task.kind == .upload else { return }
-				do {
-					try await workspace.removeCompletedUpload(
-						at: URL(fileURLWithPath: task.source)
-					)
-				} catch {
-					NSLog("[MobileAppComposition] Upload cleanup failed: \(error)")
-				}
-			}
+			didComplete: cleanupTransferPayload,
+			didDiscard: cleanupTransferPayload
+		)
+		self.fileTransferStore = fileTransferStore
+		self.transferLifecycle = MobileTransferLifecycleCoordinator(
+			store: fileTransferStore,
+			becameActive: { await syncCoordinator.becameActive() }
 		)
 		self.prepareCredentialSyncForSave = prepareCredentialSyncForSave
+		bindGlobalTransferEvents()
+	}
+
+	private func bindGlobalTransferEvents() {
+		NotificationCenter.default.publisher(for: .catermICloudAccountChanged)
+			.sink { [weak self] _ in
+				guard let self else { return }
+				Task { await self.syncCoordinator.accountChanged() }
+			}
+			.store(in: &transferCancellables)
+
+		syncRuntime.$identityRevision
+			.dropFirst()
+			.sink { [weak self] _ in
+				guard let self else { return }
+				Task { await self.fileTransferStore.resetForAccountChange() }
+			}
+			.store(in: &transferCancellables)
+
+		hostStore.$hosts
+			.sink { [weak self] hosts in self?.hostsDidChange(hosts) }
+			.store(in: &transferCancellables)
+	}
+
+	private func hostsDidChange(_ hosts: [SSHHost]) {
+		let currentHostIDs = Set(hosts.map(\.id))
+		for hostID in currentHostIDs.subtracting(knownTransferHostIDs) {
+			fileTransferStore.restoreHost(hostID)
+		}
+		let removedHostIDs = knownTransferHostIDs.subtracting(currentHostIDs)
+		knownTransferHostIDs = currentHostIDs
+		for hostID in removedHostIDs {
+			guard let removal = fileTransferStore.beginHostRemoval(hostID) else {
+				continue
+			}
+			Task { [weak self] in
+				guard let self,
+					!self.knownTransferHostIDs.contains(hostID) else {
+					return
+				}
+				await self.fileTransferStore.drainHostRemoval(removal)
+				guard !self.knownTransferHostIDs.contains(hostID) else {
+					self.fileTransferStore.abortHostRemoval(removal)
+					return
+				}
+				await self.fileTransferStore.commitHostRemoval(removal)
+			}
+		}
 	}
 
 	public static func live(

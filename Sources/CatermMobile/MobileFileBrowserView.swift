@@ -12,6 +12,7 @@ public struct MobileFileBrowserView: View {
 	@State private var prompt: MobileFilePrompt?
 	@State private var nameInput = ""
 	@State private var showingUploadImporter = false
+	@State private var isUploadDropTargeted = false
 	@State private var uploadContext: MobileFileActionContext?
 	@State private var transferFailure: MobileTransferFailure?
 
@@ -55,17 +56,23 @@ public struct MobileFileBrowserView: View {
 				}
 			}
 
-			if let transferStore {
-				MobileTransferQueueSection(store: transferStore, hosts: hosts)
+			if let transferStore, let transferWorkspace {
+				MobileTransferQueueSection(
+					store: transferStore,
+					hosts: hosts,
+					workspace: transferWorkspace
+				)
 			} else if !transfers.isEmpty {
 				Section("Transfers") {
 					ForEach(transfers) { task in
 						MobileTransferRow(
 							task: task,
 							hostName: hosts.first { $0.id == task.hostId }?.name,
+							export: nil,
 							onCancel: {},
 							onRetry: {},
-							onResolveConflict: { _ in }
+							onResolveConflict: { _ in },
+							onDiscard: {}
 						)
 					}
 				}
@@ -138,6 +145,28 @@ public struct MobileFileBrowserView: View {
 			allowsMultipleSelection: true,
 			onCompletion: handleUploadSelection
 		)
+		.dropDestination(for: URL.self) { urls, _ in
+			handleUploadDrop(urls)
+		} isTargeted: { isTargeted in
+			isUploadDropTargeted = isTargeted
+		}
+		.overlay {
+			if isUploadDropTargeted {
+				ContentUnavailableView(
+					canAcceptUploadDrop ? "Drop Files to Upload" : "Upload Unavailable",
+					systemImage: canAcceptUploadDrop ? "arrow.up.doc.fill" : "nosign",
+					description: Text(
+						canAcceptUploadDrop
+							? "Files are uploaded to \(controller.model.path). Folders are not supported yet."
+							: "Connect to a Host and open a writable folder before dropping files."
+					)
+				)
+				.padding()
+				.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+				.padding()
+				.allowsHitTesting(false)
+			}
+		}
 		.alert(promptTitle, isPresented: promptIsPresented, presenting: prompt) { prompt in
 			switch prompt {
 			case .createFolder(let context):
@@ -313,13 +342,15 @@ public struct MobileFileBrowserView: View {
 			let transferStore,
 			let transferWorkspace else { return }
 		let remotePath = context.parentPath.appendingRemotePathComponent(entry.name)
+		let actions = MobileTransferActions(
+			store: transferStore,
+			workspace: transferWorkspace
+		)
 		Task {
 			do {
-				let directory = try await transferWorkspace.downloadsDirectory()
-				_ = transferStore.enqueueDownload(
+				_ = try await actions.download(
 					remotePaths: [remotePath],
-					localDir: directory,
-					host: context.host
+					context: context
 				)
 			} catch {
 				transferFailure = MobileTransferFailure(
@@ -340,21 +371,7 @@ public struct MobileFileBrowserView: View {
 		uploadContext = nil
 		switch result {
 		case .success(let urls):
-			Task {
-				do {
-					let staged = try await transferWorkspace.stageUploads(urls)
-					_ = transferStore.enqueueUpload(
-						localPaths: staged,
-						remoteDir: context.parentPath,
-						host: context.host
-					)
-				} catch {
-					transferFailure = MobileTransferFailure(
-						title: "Couldn’t Start Upload",
-						error: error
-					)
-				}
-			}
+			startUploads(urls, context: context, store: transferStore, workspace: transferWorkspace)
 		case .failure(let error):
 			if (error as NSError).code != NSUserCancelledError {
 				transferFailure = MobileTransferFailure(
@@ -363,6 +380,63 @@ public struct MobileFileBrowserView: View {
 				)
 			}
 		}
+	}
+
+	private var canAcceptUploadDrop: Bool {
+		guard let selectedHost, let transferActions else { return false }
+		return transferActions.canEnqueue(for: selectedHost.id)
+			&& controller.state == .loaded
+			&& controller.mutation == nil
+			&& transferStore != nil
+			&& transferWorkspace != nil
+	}
+
+	private func handleUploadDrop(_ urls: [URL]) -> Bool {
+		guard canAcceptUploadDrop,
+			let host = selectedHost,
+			let context = controller.actionContext(host: host),
+			let transferStore,
+			let transferWorkspace else {
+			transferFailure = MobileTransferFailure(
+				title: "Can’t Upload Here",
+				message: "Connect to a Host and open a writable folder before dropping files."
+			)
+			return false
+		}
+		startUploads(
+			urls,
+			context: context,
+			store: transferStore,
+			workspace: transferWorkspace
+		)
+		return true
+	}
+
+	private func startUploads(
+		_ urls: [URL],
+		context: MobileFileActionContext,
+		store: FileTransferStore,
+		workspace: MobileTransferWorkspace
+	) {
+		let actions = MobileTransferActions(store: store, workspace: workspace)
+		Task {
+			do {
+				_ = try await actions.upload(sourceURLs: urls, context: context)
+			} catch {
+				transferFailure = MobileTransferFailure(
+					title: "Couldn’t Start Upload",
+					error: error
+				)
+			}
+		}
+	}
+
+	private var transferActions: MobileTransferActions? {
+		guard let transferStore, let transferWorkspace else { return nil }
+		return MobileTransferActions(
+			store: transferStore,
+			workspace: transferWorkspace
+		)
 	}
 
 	private func createFolder(context: MobileFileActionContext) {
@@ -509,12 +583,29 @@ private struct MobileRemoteEntryRow: View {
 private struct MobileTransferQueueSection: View {
 	@ObservedObject var store: FileTransferStore
 	let hosts: [SSHHost]
+	let workspace: MobileTransferWorkspace
+	@State private var exports: [TaskId: MobileTransferExport] = [:]
 
 	var body: some View {
+		lifecycleSection
 		transferSection("Active Transfers", tasks: active)
 		transferSection("Failed Transfers", tasks: failed)
 		transferSection("Completed Transfers", tasks: completed)
 		transferSection("Cancelled Transfers", tasks: cancelled)
+	}
+
+	@ViewBuilder
+	private var lifecycleSection: some View {
+		if let interruption = store.lifecycleInterruption {
+			Section("Transfer Interruption") {
+				Label(
+					interruptionMessage(interruption),
+					systemImage: "pause.circle"
+				)
+				.foregroundStyle(.secondary)
+				Button("Dismiss") { store.acknowledgeLifecycleInterruption() }
+			}
+		}
 	}
 
 	@ViewBuilder
@@ -527,13 +618,35 @@ private struct MobileTransferQueueSection: View {
 	}
 
 	private func transferRow(_ task: TransferTask) -> some View {
-		MobileTransferRow(
+		let actions = MobileTransferActions(store: store, workspace: workspace)
+		return MobileTransferRow(
 			task: task,
 			hostName: hosts.first { $0.id == task.hostId }?.name,
-			onCancel: { store.cancel(task.id) },
-			onRetry: { store.retry(task.id) },
-			onResolveConflict: { store.resolveConflict(task.id, policy: $0) }
+			export: exports[task.id],
+			onCancel: { actions.cancel(task.id) },
+			onRetry: { actions.retry(task.id) },
+			onResolveConflict: { actions.resolveConflict(task.id, policy: $0) },
+			onDiscard: { Task { await actions.discard(task.id) } }
 		)
+		.task(id: MobileTransferExportLoadID(task: task)) {
+			guard task.kind == .download, task.status == .completed else {
+				exports[task.id] = nil
+				return
+			}
+			do {
+				exports[task.id] = try await actions.prepareExport(for: task)
+			} catch {
+				NSLog("[MobileTransferQueueSection] Export preparation failed: \(error)")
+				exports[task.id] = nil
+			}
+		}
+	}
+
+	private func interruptionMessage(
+		_ interruption: TransferLifecycleInterruption
+	) -> String {
+		let count = interruption.transferCount
+		return "iOS does not keep SSH transfers running indefinitely in the background. Caterm cancelled \(count) unfinished \(count == 1 ? "transfer" : "transfers"); retry explicitly after returning."
 	}
 
 	private var active: [TransferTask] {
@@ -553,12 +666,26 @@ private struct MobileTransferQueueSection: View {
 	}
 }
 
+private struct MobileTransferExportLoadID: Hashable {
+	let taskID: TaskId
+	let destination: String
+	let isCompletedDownload: Bool
+
+	init(task: TransferTask) {
+		self.taskID = task.id
+		self.destination = task.destination
+		self.isCompletedDownload = task.kind == .download && task.status == .completed
+	}
+}
+
 private struct MobileTransferRow: View {
 	let task: TransferTask
 	let hostName: String?
+	let export: MobileTransferExport?
 	let onCancel: () -> Void
 	let onRetry: () -> Void
 	let onResolveConflict: (TransferConflictPolicy) -> Void
+	let onDiscard: () -> Void
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 8) {
@@ -646,15 +773,41 @@ private struct MobileTransferRow: View {
 				conflictControls(axis: .vertical)
 			}
 		case .failed, .cancelled:
-			Button("Retry", action: onRetry)
-				.buttonStyle(.borderedProminent)
-		case .completed where task.kind == .download:
-			ShareLink(item: URL(fileURLWithPath: task.destination)) {
-				Label("Share Download", systemImage: "square.and.arrow.up")
+			HStack {
+				Button("Retry", action: onRetry)
+					.buttonStyle(.borderedProminent)
+				Button("Remove", role: .destructive, action: onDiscard)
+					.buttonStyle(.bordered)
 			}
-			.buttonStyle(.bordered)
+		case .completed where task.kind == .download:
+			VStack(alignment: .leading, spacing: 6) {
+				if let export {
+					ShareLink(item: export.fileURL) {
+						Label("Share or Save to Files", systemImage: "square.and.arrow.up")
+					}
+					.buttonStyle(.bordered)
+					Label(export.suggestedName, systemImage: "doc")
+						.font(.caption)
+						.padding(.vertical, 6)
+						.contentShape(Rectangle())
+						.draggable(export.fileURL) {
+							Label(export.suggestedName, systemImage: "doc")
+						}
+						.accessibilityLabel("Drag downloaded file \(export.suggestedName)")
+				} else {
+					Label("Downloaded file is unavailable", systemImage: "exclamationmark.triangle")
+						.font(.caption)
+						.foregroundStyle(.secondary)
+				}
+				Button("Remove from Queue", action: onDiscard)
+					.buttonStyle(.bordered)
+				Text("On iPad, drag this completed file into Files or another accepting app.")
+					.font(.caption2)
+					.foregroundStyle(.secondary)
+			}
 		case .completed:
-			EmptyView()
+			Button("Remove from Queue", action: onDiscard)
+				.buttonStyle(.bordered)
 		}
 	}
 
@@ -689,5 +842,10 @@ private struct MobileTransferFailure: Identifiable {
 	init(title: String, error: Error) {
 		self.title = title
 		self.message = error.localizedDescription
+	}
+
+	init(title: String, message: String) {
+		self.title = title
+		self.message = message
 	}
 }

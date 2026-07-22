@@ -98,37 +98,49 @@ public actor MobileDeferredRemoteFileClient: RemoteFileClient {
 public actor MobileTransferWorkspace {
 	private let rootURL: URL
 	private let fileManager: FileManager
+	private let securityScope: MobileSecurityScope
 
 	public init(
 		rootURL: URL,
 		fileManager: FileManager = .default,
-		purgeOrphanedUploads: Bool = false
+		purgeOrphanedUploads: Bool = false,
+		securityScope: MobileSecurityScope = .live
 	) {
 		self.rootURL = rootURL
 		self.fileManager = fileManager
+		self.securityScope = securityScope
 		if purgeOrphanedUploads {
-			let uploads = rootURL.appendingPathComponent("Uploads", isDirectory: true)
-			do {
-				if fileManager.fileExists(atPath: uploads.path) {
-					try fileManager.removeItem(at: uploads)
+			for directoryName in ["Staging", "Payloads"] {
+				let directory = rootURL.appendingPathComponent(
+					directoryName,
+					isDirectory: true
+				)
+				do {
+					if fileManager.fileExists(atPath: directory.path) {
+						try fileManager.removeItem(at: directory)
+					}
+				} catch {
+					NSLog("[MobileTransferWorkspace] Orphan cleanup failed: \(error)")
 				}
-			} catch {
-				NSLog("[MobileTransferWorkspace] Orphan cleanup failed: \(error)")
 			}
 		}
 	}
 
-	public func stageUploads(_ sourceURLs: [URL]) throws -> [URL] {
-		let directory = rootURL.appendingPathComponent("Uploads", isDirectory: true)
-		try fileManager.createDirectory(
-			at: directory,
-			withIntermediateDirectories: true
-		)
-		var staged: [URL] = []
+	/// Copies security-scoped sources through transient staging, then atomically
+	/// promotes them into queue-owned inputs retained for retry until the task is
+	/// completed or discarded.
+	public func importUploadSources(_ sourceURLs: [URL]) throws -> [URL] {
+		let stagingRoot = rootURL.appendingPathComponent("Staging", isDirectory: true)
+		let payloadRoot = rootURL.appendingPathComponent("Payloads", isDirectory: true)
+		for directory in [stagingRoot, payloadRoot] {
+			try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+		}
+		var stagingDirectories: [URL] = []
+		var payloads: [URL] = []
 		do {
 			for source in sourceURLs {
-				let accessed = source.startAccessingSecurityScopedResource()
-				defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+				let accessed = securityScope.start(source)
+				defer { if accessed { securityScope.stop(source) } }
 				let values = try source.resourceValues(forKeys: [
 					.isRegularFileKey,
 					.nameKey,
@@ -137,23 +149,35 @@ public actor MobileTransferWorkspace {
 					throw RemoteFileError.unsupported(operation: "directory upload")
 				}
 				let name = values.name ?? source.lastPathComponent
-				let stagingDirectory = directory.appendingPathComponent(
-					UUID().uuidString,
+				let identifier = UUID().uuidString
+				let stagingDirectory = stagingRoot.appendingPathComponent(
+					identifier,
 					isDirectory: true
 				)
+				stagingDirectories.append(stagingDirectory)
 				try fileManager.createDirectory(
 					at: stagingDirectory,
 					withIntermediateDirectories: true
 				)
-				let destination = stagingDirectory.appendingPathComponent(name)
-				staged.append(destination)
-				try fileManager.copyItem(at: source, to: destination)
+				let stagedFile = stagingDirectory.appendingPathComponent(name)
+				try fileManager.copyItem(at: source, to: stagedFile)
+				let payloadDirectory = payloadRoot.appendingPathComponent(
+					identifier,
+					isDirectory: true
+				)
+				try fileManager.moveItem(at: stagingDirectory, to: payloadDirectory)
+				stagingDirectories.removeAll { $0 == stagingDirectory }
+				payloads.append(payloadDirectory.appendingPathComponent(name))
 			}
-			return staged
+			return payloads
 		} catch {
-			for stagedURL in staged {
+			let cleanupDirectories = stagingDirectories
+				+ payloads.map { $0.deletingLastPathComponent() }
+			for directory in cleanupDirectories {
 				do {
-					try fileManager.removeItem(at: stagedURL.deletingLastPathComponent())
+					if fileManager.fileExists(atPath: directory.path) {
+						try fileManager.removeItem(at: directory)
+					}
 				} catch let cleanupError {
 					NSLog("[MobileTransferWorkspace] Staging rollback failed: \(cleanupError)")
 				}
@@ -163,15 +187,15 @@ public actor MobileTransferWorkspace {
 		}
 	}
 
-	public func removeCompletedUpload(at sourceURL: URL) throws {
-		let uploads = rootURL.appendingPathComponent("Uploads", isDirectory: true)
-		let stagingDirectory = sourceURL.deletingLastPathComponent()
-		guard stagingDirectory.deletingLastPathComponent().standardizedFileURL
-			== uploads.standardizedFileURL else {
+	public func removeUploadPayload(at sourceURL: URL) throws {
+		let payloadRoot = rootURL.appendingPathComponent("Payloads", isDirectory: true)
+		let payloadDirectory = sourceURL.deletingLastPathComponent()
+		guard payloadDirectory.deletingLastPathComponent().standardizedFileURL
+			== payloadRoot.standardizedFileURL else {
 			return
 		}
-		guard fileManager.fileExists(atPath: stagingDirectory.path) else { return }
-		try fileManager.removeItem(at: stagingDirectory)
+		guard fileManager.fileExists(atPath: payloadDirectory.path) else { return }
+		try fileManager.removeItem(at: payloadDirectory)
 	}
 
 	public func downloadsDirectory() throws -> URL {
@@ -181,5 +205,207 @@ public actor MobileTransferWorkspace {
 			withIntermediateDirectories: true
 		)
 		return directory
+	}
+
+	public func prepareExport(
+		for task: TransferTask
+	) throws -> MobileTransferExport {
+		guard task.kind == .download, task.status == .completed else {
+			throw RemoteFileError.unsupported(operation: "export unfinished transfer")
+		}
+		let downloads = rootURL.appendingPathComponent(
+			"Downloads",
+			isDirectory: true
+		).standardizedFileURL
+		let fileURL = URL(fileURLWithPath: task.destination).standardizedFileURL
+		guard fileURL.deletingLastPathComponent() == downloads else {
+			throw RemoteFileError.localIO(
+				message: "The completed download is outside Caterm's export workspace."
+			)
+		}
+		let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .nameKey])
+		guard values.isRegularFile == true else {
+			throw RemoteFileError.notFound(path: fileURL.path)
+		}
+		return MobileTransferExport(
+			fileURL: fileURL,
+			suggestedName: values.name ?? fileURL.lastPathComponent
+		)
+	}
+}
+
+public struct MobileTransferExport: Equatable, Sendable {
+	public let fileURL: URL
+	public let suggestedName: String
+
+	public init(fileURL: URL, suggestedName: String) {
+		self.fileURL = fileURL
+		self.suggestedName = suggestedName
+	}
+}
+
+public struct MobileSecurityScope: Sendable {
+	let start: @Sendable (URL) -> Bool
+	let stop: @Sendable (URL) -> Void
+
+	public static let live = MobileSecurityScope(
+		start: { $0.startAccessingSecurityScopedResource() },
+		stop: { $0.stopAccessingSecurityScopedResource() }
+	)
+
+	init(
+		start: @escaping @Sendable (URL) -> Bool,
+		stop: @escaping @Sendable (URL) -> Void
+	) {
+		self.start = start
+		self.stop = stop
+	}
+}
+
+@MainActor
+public struct MobileTransferActions {
+	private let store: FileTransferStore
+	private let workspace: MobileTransferWorkspace
+
+	public init(store: FileTransferStore, workspace: MobileTransferWorkspace) {
+		self.store = store
+		self.workspace = workspace
+	}
+
+	public func canEnqueue(for hostID: UUID) -> Bool {
+		store.captureEnqueueContext(for: hostID) != nil
+	}
+
+	public func upload(
+		sourceURLs: [URL],
+		context: MobileFileActionContext
+	) async throws -> [TaskId] {
+		guard let enqueueContext = store.captureEnqueueContext(
+			for: context.host.id
+		) else {
+			throw RemoteFileError.sessionUnavailable
+		}
+		let queueInputs = try await workspace.importUploadSources(sourceURLs)
+		let ids = store.enqueueUpload(
+			localPaths: queueInputs,
+			remoteDir: context.parentPath,
+			host: context.host,
+			expectedContext: enqueueContext
+		)
+		guard ids.count == queueInputs.count else {
+			var cleanupFailures: [String] = []
+			for source in queueInputs {
+				do {
+					try await workspace.removeUploadPayload(at: source)
+				} catch {
+					cleanupFailures.append(error.localizedDescription)
+				}
+			}
+			if !cleanupFailures.isEmpty {
+				throw RemoteFileError.cleanupFailed(
+					original: .sessionUnavailable,
+					cleanupMessage: cleanupFailures.joined(separator: "\n")
+				)
+			}
+			throw RemoteFileError.sessionUnavailable
+		}
+		return ids
+	}
+
+	public func download(
+		remotePaths: [String],
+		context: MobileFileActionContext
+	) async throws -> [TaskId] {
+		guard let enqueueContext = store.captureEnqueueContext(
+			for: context.host.id
+		) else {
+			throw RemoteFileError.sessionUnavailable
+		}
+		let directory = try await workspace.downloadsDirectory()
+		let ids = store.enqueueDownload(
+			remotePaths: remotePaths,
+			localDir: directory,
+			host: context.host,
+			expectedContext: enqueueContext
+		)
+		guard ids.count == remotePaths.count else {
+			throw RemoteFileError.sessionUnavailable
+		}
+		return ids
+	}
+
+	public func prepareExport(for task: TransferTask) async throws -> MobileTransferExport {
+		try await workspace.prepareExport(for: task)
+	}
+
+	public func resolveConflict(
+		_ id: TaskId,
+		policy: TransferConflictPolicy
+	) {
+		store.resolveConflict(id, policy: policy)
+	}
+
+	public func cancel(_ id: TaskId) {
+		store.cancel(id)
+	}
+
+	public func retry(_ id: TaskId) {
+		store.retry(id)
+	}
+
+	public func discard(_ id: TaskId) async {
+		await store.discard(id)
+	}
+}
+
+public enum MobileTransferSceneState: Equatable, Sendable {
+	case active
+	case inactive
+	case background
+}
+
+@MainActor
+public final class MobileTransferLifecycleCoordinator {
+	private let store: FileTransferStore
+	private let becameActive: @MainActor () async -> Void
+	private var sceneStates: [UUID: MobileTransferSceneState] = [:]
+	private var applicationIsForeground = false
+
+	public init(
+		store: FileTransferStore,
+		becameActive: @escaping @MainActor () async -> Void = {}
+	) {
+		self.store = store
+		self.becameActive = becameActive
+		store.interruptForBackground()
+	}
+
+	public func updateScene(_ sceneID: UUID, state: MobileTransferSceneState) {
+		sceneStates[sceneID] = state
+		reconcileApplicationState()
+	}
+
+	public func unregisterScene(_ sceneID: UUID) {
+		let removedState = sceneStates.removeValue(forKey: sceneID)
+		guard removedState != nil else { return }
+		reconcileApplicationState(closedScene: true)
+	}
+
+	private func reconcileApplicationState(closedScene: Bool = false) {
+		if sceneStates.values.contains(.active) {
+			guard !applicationIsForeground else { return }
+			applicationIsForeground = true
+			store.reconcileAfterForeground()
+			Task { await becameActive() }
+			return
+		}
+		let allRemainingScenesAreBackground = !sceneStates.isEmpty
+			&& sceneStates.values.allSatisfy { $0 == .background }
+		guard applicationIsForeground,
+			allRemainingScenesAreBackground || (closedScene && sceneStates.isEmpty) else {
+			return
+		}
+		applicationIsForeground = false
+		store.interruptForBackground()
 	}
 }

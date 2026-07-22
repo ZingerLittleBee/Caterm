@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 
+#if os(macOS)
 final class IOSSigningEntitlementsScriptTests: XCTestCase {
 	private let teamID = "TEAM123456"
 	private let bundleID = "app.caterm.mobile"
@@ -123,3 +124,4 @@ final class IOSSigningEntitlementsScriptTests: XCTestCase {
 		)
 	}
 }
+#endif
