@@ -71,3 +71,44 @@ Import semantics — match entities by UUID then server ID, newer side wins
 per entity, and local entities absent from the archive are never deleted.
 _Avoid_: Restore, replace, overwrite (these imply destructive semantics
 the import deliberately does not have)
+
+### Workspaces
+
+**Workspace**:
+A durable group of terminal panes used together for one task. One native
+window tab presents one workspace; changing its presentation does not change
+its pane membership.
+_Avoid_: Tab, layout, split view, session group
+
+**Pane**:
+A position within a workspace that holds one terminal session or an unresolved
+host placeholder.
+_Avoid_: Tab, tile, split
+
+**Workspace presentation**:
+The Focus or Split projection of a workspace. Presentation changes visibility
+and emphasis without creating, closing, or reconnecting terminal sessions.
+_Avoid_: Layout mode, session mode
+
+**Workspace template**:
+A versioned declaration of workspace hosts, pane topology, and initial focus.
+Opening one creates fresh terminal sessions; it never resumes a live process.
+_Avoid_: Saved session, snapshot, session restoration
+
+**Command broadcast**:
+A reviewed command or snippet delivered once to an explicit snapshot of
+eligible panes in one workspace.
+_Avoid_: Global broadcast, input mirroring, broadcast mode
+
+### Cross-device continuity
+
+**Resource continuity**:
+Hosts, credential material, snippets, and compatible settings becoming
+available on another authorized device through sync. It does not include a
+live terminal process, socket, scrollback buffer, or host-trust decision.
+_Avoid_: Session sync, session handoff
+
+**Known host**:
+A device-local SSH host-key observation and trust decision for one endpoint.
+It is distinct from a saved Host and is not authorization for another device.
+_Avoid_: Synced host trust, trusted Host
