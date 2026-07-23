@@ -13,7 +13,15 @@ public enum TransferState: Equatable, Sendable {
 
 public struct TransferTask: Identifiable, Equatable, Sendable {
 	public let id: TaskId
-	public enum Kind: Equatable, Sendable { case upload, download }
+	public enum Kind: Equatable, Sendable {
+		case upload
+		case download
+		case remoteCopy
+	}
+	public enum Route: Equatable, Sendable {
+		case localAndRemote
+		case viaThisMac
+	}
 	public enum Status: Equatable, Sendable {
 		case pending
 		case running
@@ -24,6 +32,7 @@ public struct TransferTask: Identifiable, Equatable, Sendable {
 	}
 	public let kind: Kind
 	public let hostId: UUID
+	public let sourceHostId: UUID?
 	public let source: String
 	public internal(set) var destination: String
 	public internal(set) var isDirectory: Bool
@@ -66,14 +75,26 @@ public struct TransferTask: Identifiable, Equatable, Sendable {
 		failure?.localizedDescription
 	}
 
-	public init(id: TaskId, kind: Kind, hostId: UUID, source: String,
-	            destination: String, isDirectory: Bool,
-	            state: TransferState = .pending,
-	            conflictPolicy: TransferConflictPolicy? = nil,
-	            attemptCount: Int = 0) {
+	public var route: Route {
+		kind == .remoteCopy ? .viaThisMac : .localAndRemote
+	}
+
+	public init(
+		id: TaskId,
+		kind: Kind,
+		hostId: UUID,
+		sourceHostId: UUID? = nil,
+		source: String,
+		destination: String,
+		isDirectory: Bool,
+		state: TransferState = .pending,
+		conflictPolicy: TransferConflictPolicy? = nil,
+		attemptCount: Int = 0
+	) {
 		self.id = id
 		self.kind = kind
 		self.hostId = hostId
+		self.sourceHostId = sourceHostId
 		self.source = source
 		self.destination = destination
 		self.isDirectory = isDirectory
