@@ -54,15 +54,54 @@ final class WindowCommandScopeTests: XCTestCase {
 		)
 	}
 
+	func testUntargetedCommandFallsBackToMainWindowDuringMenuTracking() {
+		let mainWindow = NSObject()
+
+		XCTAssertTrue(
+			WindowCommandScope.shouldHandle(
+				notificationObject: nil,
+				receiverWindow: mainWindow,
+				receiverIsKeyWindow: false,
+				receiverIsMainWindow: true
+			)
+		)
+	}
+
+	func testTargetedCommandRoutesExactlyOnceToSelectedNativeTab() {
+		_ = NSApplication.shared
+		let sourceWindow = makeWindow()
+		let selectedWindow = makeWindow()
+		sourceWindow.addTabbedWindow(selectedWindow, ordered: .above)
+		sourceWindow.tabGroup?.selectedWindow = selectedWindow
+		let notification = Notification(
+			name: .catermWorkspaceCommand,
+			object: sourceWindow
+		)
+
+		let handlers = [sourceWindow, selectedWindow].filter {
+			WindowCommandScope.shouldHandle(notification, in: $0)
+		}
+
+		XCTAssertEqual(handlers.count, 1)
+		XCTAssertTrue(handlers.first.map { $0 === selectedWindow } == true)
+		sourceWindow.close()
+		selectedWindow.close()
+	}
+
+	func testTargetResolverPrefersMainWindowDuringMenuTracking() {
+		let mainWindow = NSObject()
+		let menuTrackingWindow = NSObject()
+		XCTAssertTrue(
+			WindowCommandScope.preferredWindow(
+				mainWindow: mainWindow,
+				keyWindow: menuTrackingWindow
+			) === mainWindow
+		)
+	}
+
 	func testWorkspaceLifecycleCapturesWindowAndHandlesItsActualClose() throws {
 		_ = NSApplication.shared
-		let window = NSWindow(
-			contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
-			styleMask: [.titled, .closable],
-			backing: .buffered,
-			defer: false
-		)
-		window.isReleasedWhenClosed = false
+		let window = makeWindow()
 		let lifecycleView = WorkspaceWindowLifecycleView()
 		var capturedWindow: NSWindow?
 		var closeCount = 0
@@ -82,5 +121,16 @@ final class WindowCommandScopeTests: XCTestCase {
 		lifecycleView.onClose = nil
 		lifecycleView.removeFromSuperview()
 		capturedWindow = nil
+	}
+
+	private func makeWindow() -> NSWindow {
+		let window = NSWindow(
+			contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+			styleMask: [.titled, .closable],
+			backing: .buffered,
+			defer: false
+		)
+		window.isReleasedWhenClosed = false
+		return window
 	}
 }

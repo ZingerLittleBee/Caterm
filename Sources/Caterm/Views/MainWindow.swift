@@ -60,6 +60,7 @@ struct MainWindow: View {
 	@EnvironmentObject var workspaceCoordinator: WorkspaceCoordinator
 	@EnvironmentObject var workspaceTemplateStore: WorkspaceTemplateStore
 	@Environment(\.openWindow) private var openWindow
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 	@StateObject private var bannerState = SettingsBannerState()
 	@StateObject private var broadcastSession = WorkspaceBroadcastSession()
 	@State private var fileDrawerOpen = false
@@ -316,7 +317,10 @@ struct MainWindow: View {
 							.zIndex(10)
 					}
 				}
-				.animation(.easeInOut(duration: 0.22), value: fileDrawerOpen)
+				.animation(
+					WorkspaceMotionPolicy.presentationAnimation(reduceMotion: reduceMotion),
+					value: fileDrawerOpen
+				)
 			}
 		}
 		.frame(minWidth: 1000, minHeight: 600)
@@ -327,6 +331,7 @@ struct MainWindow: View {
 				} label: {
 					Image(systemName: "antenna.radiowaves.left.and.right")
 				}
+				.accessibilityLabel("Review Command Broadcast")
 				.help("Review Command Broadcast")
 				.disabled(broadcastSession.activePlan != nil)
 			}
@@ -342,6 +347,7 @@ struct MainWindow: View {
 				} label: {
 					Image(systemName: "rectangle.stack")
 				}
+				.accessibilityLabel("Workspace Templates")
 				.help("Workspace Templates")
 			}
 			ToolbarItemGroup(placement: .primaryAction) {

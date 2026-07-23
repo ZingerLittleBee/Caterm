@@ -190,6 +190,141 @@ final class NativeWorkspaceSplitViewTests: XCTestCase {
 		XCTAssertEqual(lifecycle.dismantleCount, 0)
 		window.close()
 	}
+
+	func testPaneHostsExposeAndRefreshAccessibleGroupLabels() throws {
+		let original = Workspace.onePane(host: .saved(id: UUID()))
+		let split = try original.splittingActivePane(.right)
+		let coordinator = NativeWorkspaceTreeView.Coordinator { _, _ in }
+		let container = WorkspaceTreeContainerView()
+		var labels = Dictionary(uniqueKeysWithValues: split.topology.panes.enumerated().map {
+			($0.element.id, "Host Local \($0.offset + 1), Connecting, Pane \($0.offset + 1) of 2, Inactive, Not a broadcast receiver")
+		})
+		coordinator.update(
+			container,
+			topology: split.topology,
+			activePaneID: split.activePaneID,
+			presentation: .split,
+			paneAccessibilityLabel: { labels[$0.id] },
+			paneContent: { AnyView(Text($0.id.rawValue.uuidString)) },
+			onRatioChange: { _, _ in }
+		)
+		let hosts = container.descendants.compactMap { $0 as? NSHostingView<AnyView> }
+		let identities = Set(hosts.map(ObjectIdentifier.init))
+		XCTAssertEqual(hosts.count, 2)
+		for host in hosts {
+			XCTAssertTrue(host.isAccessibilityElement())
+			XCTAssertEqual(host.accessibilityRole(), .group)
+			XCTAssertNotNil(host.accessibilityLabel())
+			XCTAssertTrue(host.accessibilityIdentifier().hasPrefix("workspace-pane-"))
+		}
+
+		let activePaneID = split.activePaneID
+		labels[activePaneID] = "Host Local 2, Connected, Pane 2 of 2, Active, Broadcast receiver 1"
+		coordinator.update(
+			container,
+			topology: split.topology,
+			activePaneID: activePaneID,
+			presentation: .split,
+			paneAccessibilityLabel: { labels[$0.id] },
+			paneContent: { AnyView(Text($0.id.rawValue.uuidString)) },
+			onRatioChange: { _, _ in }
+		)
+		let updatedHosts = container.descendants.compactMap { $0 as? NSHostingView<AnyView> }
+		XCTAssertEqual(Set(updatedHosts.map(ObjectIdentifier.init)), identities)
+		XCTAssertTrue(updatedHosts.contains {
+			$0.accessibilityLabel() == "Host Local 2, Connected, Pane 2 of 2, Active, Broadcast receiver 1"
+		})
+	}
+
+	func testFourAndEightPaneTreesKeepStableHostsAcrossWindowResize() throws {
+		for paneCount in [4, 8] {
+			let workspace = try populatedWorkspace(paneCount: paneCount)
+			let lifecycle = ViewLifecycleProbe()
+			let coordinator = NativeWorkspaceTreeView.Coordinator { _, _ in }
+			let container = WorkspaceTreeContainerView(
+				frame: CGRect(x: 0, y: 0, width: 1_000, height: 650)
+			)
+			let window = NSWindow(
+				contentRect: container.frame,
+				styleMask: [.titled, .resizable],
+				backing: .buffered,
+				defer: false
+			)
+			window.isReleasedWhenClosed = false
+			window.contentView = container
+			let content: (WorkspacePane) -> AnyView = { pane in
+				AnyView(
+					LifecycleProbeRepresentable(lifecycle: lifecycle)
+						.id(pane.id)
+				)
+			}
+
+			coordinator.update(
+				container,
+				topology: workspace.topology,
+				activePaneID: workspace.activePaneID,
+				presentation: .split,
+				paneContent: content,
+				onRatioChange: { _, _ in }
+			)
+			container.layoutSubtreeIfNeeded()
+			let originalHosts = container.descendants.compactMap {
+				$0 as? NSHostingView<AnyView>
+			}
+			let originalIdentities = Set(originalHosts.map(ObjectIdentifier.init))
+
+			for size in [
+				CGSize(width: 1_800, height: 1_000),
+				CGSize(width: 1_000, height: 650),
+				CGSize(width: 1_440, height: 900),
+			] {
+				window.setContentSize(size)
+				container.layoutSubtreeIfNeeded()
+				coordinator.update(
+					container,
+					topology: workspace.topology,
+					activePaneID: workspace.activePaneID,
+					presentation: .split,
+					paneContent: content,
+					onRatioChange: { _, _ in }
+				)
+				container.layoutSubtreeIfNeeded()
+
+				let hosts = container.descendants.compactMap {
+					$0 as? NSHostingView<AnyView>
+				}
+				XCTAssertEqual(hosts.count, paneCount)
+				XCTAssertEqual(Set(hosts.map(ObjectIdentifier.init)), originalIdentities)
+				for view in container.descendants {
+					XCTAssertTrue(view.frame.origin.x.isFinite)
+					XCTAssertTrue(view.frame.origin.y.isFinite)
+					XCTAssertTrue(view.frame.width.isFinite)
+					XCTAssertTrue(view.frame.height.isFinite)
+					XCTAssertGreaterThanOrEqual(view.frame.width, 0)
+					XCTAssertGreaterThanOrEqual(view.frame.height, 0)
+				}
+			}
+
+			XCTAssertEqual(originalIdentities.count, paneCount)
+			XCTAssertEqual(lifecycle.makeCount, paneCount)
+			XCTAssertEqual(lifecycle.dismantleCount, 0)
+			window.close()
+		}
+	}
+
+	private func populatedWorkspace(paneCount: Int) throws -> Workspace {
+		var workspace = Workspace.onePane(host: .saved(id: UUID()))
+		for index in 1..<paneCount {
+			workspace = try workspace.splittingActivePane(
+				index.isMultiple(of: 2) ? .down : .right
+			)
+			workspace = try workspace.assigningHost(
+				.saved(id: UUID()),
+				to: workspace.activePaneID
+			)
+		}
+		return workspace
+	}
 }
 
 private extension NSView {

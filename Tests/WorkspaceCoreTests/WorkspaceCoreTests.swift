@@ -106,6 +106,49 @@ final class WorkspaceCoreTests: XCTestCase {
 		), freshSessionID)
 	}
 
+	func testSeveralWindowStatesRestoreStableSafeLayoutWithoutRuntimeContinuity() throws {
+		let firstHostID = UUID()
+		let secondHostID = UUID()
+		var first = Workspace.onePane(host: .saved(id: firstHostID))
+		first = try first.splittingActivePane(.right)
+		first = try first.assigningHost(.saved(id: secondHostID), to: first.activePaneID)
+		let splitID = try XCTUnwrap(first.topology.splitIDs.first)
+		first = try first.updatingSplitRatio(0.37, splitID: splitID)
+		first = first.togglingPresentation()
+		let second = Workspace.onePane(host: .saved(id: UUID()))
+		let landingID = UUID()
+		let states = [
+			WorkspaceWindowState.workspace(first),
+			WorkspaceWindowState.workspace(second),
+			WorkspaceWindowState.landing(id: landingID),
+		]
+		let runtimeSessionIDs = [UUID(), UUID(), UUID()]
+		var runtime = WorkspaceRuntimeMap()
+		for (pane, sessionID) in zip(first.topology.panes, runtimeSessionIDs) {
+			try runtime.bind(sessionID: sessionID, to: pane.id, in: first)
+		}
+
+		let data = try JSONEncoder().encode(states)
+		let body = try XCTUnwrap(String(data: data, encoding: .utf8))
+		let restored = try JSONDecoder().decode(
+			[WorkspaceWindowState].self,
+			from: data
+		)
+
+		XCTAssertEqual(restored.count, 3)
+		XCTAssertEqual(restored[0].workspace?.id, first.id)
+		XCTAssertEqual(restored[0].workspace?.topology, first.topology)
+		XCTAssertEqual(restored[0].workspace?.activePaneID, first.activePaneID)
+		XCTAssertEqual(restored[0].workspace?.presentation, .focus)
+		XCTAssertEqual(restored[1].workspace?.id, second.id)
+		XCTAssertEqual(restored[2], .landing(id: landingID))
+		for sessionID in runtimeSessionIDs {
+			XCTAssertFalse(body.contains(sessionID.uuidString))
+		}
+		XCTAssertTrue(body.contains(firstHostID.uuidString))
+		XCTAssertTrue(body.contains(secondHostID.uuidString))
+	}
+
 	func testRuntimeMapRejectsUnknownPaneAndDuplicateSessionOwnership() throws {
 		let first = Workspace.onePane(host: .saved(id: UUID()))
 		let second = Workspace.onePane(host: .saved(id: UUID()))

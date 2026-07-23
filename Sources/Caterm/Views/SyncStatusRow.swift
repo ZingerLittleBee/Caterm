@@ -64,7 +64,9 @@ struct SyncStatusRow: View {
         case .openSettings:
             popoverPresented = false
             NotificationCenter.default.post(
-                name: .catermOpenSyncSettings, object: NSApp.keyWindow)
+                name: .catermOpenSyncSettings,
+                object: WindowCommandScope.activeTargetWindow
+            )
         case .togglePopover:
             popoverPresented.toggle()
         }
@@ -167,7 +169,9 @@ struct SyncStatusRow: View {
                 Button("Open Settings") {
                     popoverPresented = false
                     NotificationCenter.default.post(
-                        name: .catermOpenSyncSettings, object: NSApp.keyWindow)
+                        name: .catermOpenSyncSettings,
+                        object: WindowCommandScope.activeTargetWindow
+                    )
                 }
 
             case .syncing:

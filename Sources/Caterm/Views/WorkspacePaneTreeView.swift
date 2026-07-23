@@ -14,6 +14,7 @@ struct WorkspacePaneTreeView: View {
 	@EnvironmentObject private var surfaceRegistry: SurfaceRegistry
 	@EnvironmentObject private var preferences: SyncPreferences
 	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
+	@Environment(\.colorSchemeContrast) private var colorSchemeContrast
 	@Binding var workspace: Workspace
 	let restorationMessage: String?
 	let broadcastRecipientMarkers: [PaneID: String]
@@ -45,6 +46,12 @@ struct WorkspacePaneTreeView: View {
 			topology: workspace.topology,
 			activePaneID: workspace.activePaneID,
 			presentation: workspace.presentation,
+			paneAccessibilityLabel: { pane in
+				accessibilityDescriptor(
+					for: pane,
+					isActive: pane.id == workspace.activePaneID
+				).label
+			},
 			paneContent: { pane in
 				environmentWrapped(AnyView(paneView(pane).id(pane.id)))
 			},
@@ -108,7 +115,7 @@ struct WorkspacePaneTreeView: View {
 					RoundedRectangle(cornerRadius: 5, style: .continuous)
 						.stroke(
 							isActive ? Color.accentColor : Color.clear,
-							lineWidth: 2
+							lineWidth: colorSchemeContrast == .increased ? 3 : 2
 						)
 						.padding(2)
 						.allowsHitTesting(false)
@@ -116,41 +123,79 @@ struct WorkspacePaneTreeView: View {
 			}
 			.overlay(alignment: .topTrailing) {
 				if workspace.topology.paneCount > 1, isActive {
-					Text("Active Pane")
+					Label("Active Pane", systemImage: "checkmark.circle.fill")
 						.font(.caption2.weight(.semibold))
-						.foregroundStyle(.white)
+						.foregroundStyle(.primary)
 						.padding(.horizontal, 7)
 						.padding(.vertical, 3)
-						.background(Color.accentColor, in: Capsule())
+						.background(.regularMaterial, in: Capsule())
+						.overlay {
+							Capsule().stroke(Color.accentColor, lineWidth: 2)
+						}
 						.padding(8)
 						.allowsHitTesting(false)
+						.accessibilityHidden(true)
 				}
 			}
 			.overlay(alignment: .topLeading) {
 				if let marker = broadcastRecipientMarkers[pane.id] {
 					Label(marker, systemImage: "antenna.radiowaves.left.and.right")
 						.font(.caption2.weight(.semibold))
-						.foregroundStyle(.black)
+						.foregroundStyle(.primary)
 						.padding(.horizontal, 7)
 						.padding(.vertical, 4)
-						.background(Color.orange, in: Capsule())
+						.background(.regularMaterial, in: Capsule())
+						.overlay {
+							Capsule().stroke(Color.orange, lineWidth: 2)
+						}
 						.padding(8)
 						.allowsHitTesting(false)
+						.accessibilityHidden(true)
 				}
 			}
 			if isCompact {
 				WorkspacePaneRail(pane: pane, onActivate: activate)
 			}
 		}
-		.accessibilityElement(children: .contain)
-		.accessibilityLabel("Terminal Pane")
-		.accessibilityValue(accessibilityValue(for: pane.id, isActive: isActive))
 	}
 
-	private func accessibilityValue(for paneID: PaneID, isActive: Bool) -> String {
-		let focus = isActive ? "Active Pane" : "Inactive Pane"
-		guard let marker = broadcastRecipientMarkers[paneID] else { return focus }
-		return "\(focus), \(marker)"
+	private func accessibilityDescriptor(
+		for pane: WorkspacePane,
+		isActive: Bool
+	) -> WorkspacePaneAccessibilityDescriptor {
+		let panes = workspace.topology.panes
+		let position = (panes.firstIndex(where: { $0.id == pane.id }) ?? 0) + 1
+		let sessionID = workspaceCoordinator.sessionID(for: pane.id, in: workspace)
+		let tab = sessionID.flatMap { sessionID in
+			store.tabs.first(where: { $0.id == sessionID })
+		}
+		let hostName: String
+		if let tab {
+			hostName = tab.host.name
+		} else {
+			switch pane.content {
+			case .hostPicker:
+				hostName = "No Host"
+			case .host(.oneTime(let descriptor)):
+				hostName = descriptor.displayName
+			case .host(.saved(let hostID)):
+				hostName = store.hosts.first(where: { $0.id == hostID })?.name
+					?? "Missing Host"
+			}
+		}
+		let connection = WorkspacePaneAccessibility.connectionLabel(
+			state: tab?.state,
+			hadConnected: tab?.hadConnected ?? false,
+			hasHost: pane.host != nil
+		)
+		return WorkspacePaneAccessibility.descriptor(
+			hostName: hostName,
+			connection: connection,
+			position: position,
+			count: panes.count,
+			isActive: isActive,
+			broadcastMarker: broadcastRecipientMarkers[pane.id]
+		)
 	}
 
 	private var missingSessionView: some View {

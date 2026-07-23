@@ -101,11 +101,24 @@ public final class GhosttySurface {
 	// pointer (`ghostty_surface_t`). To dispatch back to the Swift wrapper
 	// from the static C action callback, we keep a process-wide table.
 
-	private static var registry: [OpaquePointer: GhosttySurface] = [:]
+	private final class WeakSurfaceBox {
+		weak var surface: GhosttySurface?
+
+		init(_ surface: GhosttySurface) {
+			self.surface = surface
+		}
+	}
+
+	private static var registry: [OpaquePointer: WeakSurfaceBox] = [:]
 
 	static func lookup(_ raw: ghostty_surface_t?) -> GhosttySurface? {
 		guard let raw else { return nil }
-		return registry[OpaquePointer(raw)]
+		let key = OpaquePointer(raw)
+		guard let surface = registry[key]?.surface else {
+			registry.removeValue(forKey: key)
+			return nil
+		}
+		return surface
 	}
 
 	public init(
@@ -171,7 +184,7 @@ public final class GhosttySurface {
 		self.envStorage = envBuffer
 		self.envStorageCount = env.count
 
-		Self.registry[OpaquePointer(surfaceHandle)] = self
+		Self.registry[OpaquePointer(surfaceHandle)] = WeakSurfaceBox(self)
 	}
 
 	deinit {

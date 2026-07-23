@@ -6,8 +6,25 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 	let topology: WorkspaceTopology
 	let activePaneID: PaneID
 	let presentation: WorkspacePresentation
+	let paneAccessibilityLabel: (WorkspacePane) -> String?
 	let paneContent: (WorkspacePane) -> AnyView
 	let onRatioChange: (SplitID, Double) -> Void
+
+	init(
+		topology: WorkspaceTopology,
+		activePaneID: PaneID,
+		presentation: WorkspacePresentation,
+		paneAccessibilityLabel: @escaping (WorkspacePane) -> String? = { _ in nil },
+		paneContent: @escaping (WorkspacePane) -> AnyView,
+		onRatioChange: @escaping (SplitID, Double) -> Void
+	) {
+		self.topology = topology
+		self.activePaneID = activePaneID
+		self.presentation = presentation
+		self.paneAccessibilityLabel = paneAccessibilityLabel
+		self.paneContent = paneContent
+		self.onRatioChange = onRatioChange
+	}
 
 	func makeCoordinator() -> Coordinator {
 		Coordinator(onRatioChange: onRatioChange)
@@ -20,6 +37,7 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 			topology: topology,
 			activePaneID: activePaneID,
 			presentation: presentation,
+			paneAccessibilityLabel: paneAccessibilityLabel,
 			paneContent: paneContent,
 			onRatioChange: onRatioChange
 		)
@@ -32,6 +50,7 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 			topology: topology,
 			activePaneID: activePaneID,
 			presentation: presentation,
+			paneAccessibilityLabel: paneAccessibilityLabel,
 			paneContent: paneContent,
 			onRatioChange: onRatioChange
 		)
@@ -52,6 +71,7 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 			topology: WorkspaceTopology,
 			activePaneID: PaneID,
 			presentation: WorkspacePresentation,
+			paneAccessibilityLabel: (WorkspacePane) -> String? = { _ in nil },
 			paneContent: (WorkspacePane) -> AnyView,
 			onRatioChange: @escaping (SplitID, Double) -> Void
 		) {
@@ -60,6 +80,7 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 				for: topology,
 				activePaneID: activePaneID,
 				presentation: presentation,
+				paneAccessibilityLabel: paneAccessibilityLabel,
 				paneContent: paneContent
 			)
 			container.install(root)
@@ -78,6 +99,7 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 			for topology: WorkspaceTopology,
 			activePaneID: PaneID,
 			presentation: WorkspacePresentation,
+			paneAccessibilityLabel: (WorkspacePane) -> String?,
 			paneContent: (WorkspacePane) -> AnyView
 		) -> NSView {
 			switch topology {
@@ -90,6 +112,11 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 					host = NSHostingView(rootView: paneContent(pane))
 					paneHosts[pane.id] = host
 				}
+				configureAccessibility(
+					host,
+					paneID: pane.id,
+					label: paneAccessibilityLabel(pane)
+				)
 				return host
 			case .split(let split):
 				let splitView = splitViews[split.id] ?? ManagedWorkspaceSplitView()
@@ -98,12 +125,14 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 					for: split.first,
 					activePaneID: activePaneID,
 					presentation: presentation,
+					paneAccessibilityLabel: paneAccessibilityLabel,
 					paneContent: paneContent
 				)
 				let second = view(
 					for: split.second,
 					activePaneID: activePaneID,
 					presentation: presentation,
+					paneAccessibilityLabel: paneAccessibilityLabel,
 					paneContent: paneContent
 				)
 				let geometry = displayedGeometry(
@@ -125,6 +154,18 @@ struct NativeWorkspaceTreeView: NSViewRepresentable {
 				)
 				return splitView
 			}
+		}
+
+		private func configureAccessibility(
+			_ host: NSHostingView<AnyView>,
+			paneID: PaneID,
+			label: String?
+		) {
+			guard let label else { return }
+			host.setAccessibilityElement(true)
+			host.setAccessibilityRole(.group)
+			host.setAccessibilityLabel(label)
+			host.setAccessibilityIdentifier("workspace-pane-\(paneID.rawValue.uuidString)")
 		}
 
 		private func displayedGeometry(

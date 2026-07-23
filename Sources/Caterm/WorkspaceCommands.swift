@@ -58,7 +58,7 @@ enum WorkspaceCommandDispatcher {
 	static func post(_ command: WorkspaceCommand) {
 		NotificationCenter.default.post(
 			name: .catermWorkspaceCommand,
-			object: NSApp.keyWindow,
+			object: WindowCommandScope.activeTargetWindow,
 			userInfo: [WorkspaceCommandNotificationKey.command: command]
 		)
 	}

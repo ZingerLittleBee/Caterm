@@ -15,6 +15,7 @@ struct TerminalContainerView: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var settingsStore: SettingsStore
 	@EnvironmentObject var surfaceRegistry: SurfaceRegistry
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 	let tabId: UUID
 	let isFocused: Bool
 	let onFocus: () -> Void
@@ -43,7 +44,7 @@ struct TerminalContainerView: View {
 				stateOverlay(for: tab.state, host: tab.host, chain: tab.resolvedChain)
 			}
 		}
-		.animation(.easeOut(duration: 0.15),
+		.animation(WorkspaceMotionPolicy.statusAnimation(reduceMotion: reduceMotion),
 		           value: store.tabs.first(where: { $0.id == tabId })?.state)
 	}
 
@@ -107,7 +108,7 @@ struct TerminalContainerView: View {
 		return {
 			NotificationCenter.default.post(
 				name: .catermEditHostRequested,
-				object: NSApp.keyWindow,
+				object: WindowCommandScope.activeTargetWindow,
 				userInfo: [CatermEditHostRequestedKeys.hostId: host.id]
 			)
 		}

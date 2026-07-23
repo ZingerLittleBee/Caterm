@@ -3,23 +3,43 @@ import Foundation
 import SwiftUI
 
 enum WindowCommandScope {
+	static var activeTargetWindow: NSWindow? {
+		targetWindow(mainWindow: NSApp.mainWindow, keyWindow: NSApp.keyWindow)
+	}
+
+	static func targetWindow(mainWindow: NSWindow?, keyWindow: NSWindow?) -> NSWindow? {
+		let frontWindow = preferredWindow(mainWindow: mainWindow, keyWindow: keyWindow)
+		return frontWindow?.tabGroup?.selectedWindow ?? frontWindow
+	}
+
+	static func preferredWindow<Window: AnyObject>(
+		mainWindow: Window?,
+		keyWindow: Window?
+	) -> Window? {
+		mainWindow ?? keyWindow
+	}
+
 	static func shouldHandle(
 		notificationObject: AnyObject?,
 		receiverWindow: AnyObject?,
-		receiverIsKeyWindow: Bool
+		receiverIsKeyWindow: Bool,
+		receiverIsMainWindow: Bool = false
 	) -> Bool {
 		guard let receiverWindow else { return false }
 		if let notificationObject {
 			return notificationObject === receiverWindow
 		}
-		return receiverIsKeyWindow
+		return receiverIsKeyWindow || receiverIsMainWindow
 	}
 
 	static func shouldHandle(_ notification: Notification, in window: NSWindow?) -> Bool {
-		shouldHandle(
-			notificationObject: notification.object as AnyObject?,
+		let sourceWindow = notification.object as? NSWindow
+		let targetWindow = sourceWindow?.tabGroup?.selectedWindow ?? sourceWindow
+		return shouldHandle(
+			notificationObject: targetWindow ?? notification.object as AnyObject?,
 			receiverWindow: window,
-			receiverIsKeyWindow: window?.isKeyWindow ?? false
+			receiverIsKeyWindow: window?.isKeyWindow ?? false,
+			receiverIsMainWindow: window?.isMainWindow ?? false
 		)
 	}
 }

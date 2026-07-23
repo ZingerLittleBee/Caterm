@@ -46,6 +46,7 @@ struct FileDrawerView: View {
 					Image(systemName: "chevron.left")
 				}
 				.buttonStyle(.borderless)
+				.accessibilityLabel("Up to Parent Folder")
 				.help("Up to parent folder")
 				.disabled(!canGoUp)
 				.keyboardShortcut(.upArrow, modifiers: [.command])
@@ -61,6 +62,7 @@ struct FileDrawerView: View {
 							  ? "bookmark.fill" : "bookmark")
 					}
 					.buttonStyle(.borderless)
+					.accessibilityLabel("Remote Bookmarks")
 					.help("Bookmarks")
 					.popover(isPresented: $showBookmarks, arrowEdge: .bottom) {
 						RemoteBookmarkPopover(
@@ -79,12 +81,14 @@ struct FileDrawerView: View {
 					Image(systemName: "folder.badge.plus")
 				}
 				.buttonStyle(.borderless)
+				.accessibilityLabel("New Folder")
 				.help("New Folder")
 				.disabled(host == nil || fs == nil)
 				Button { Task { await refresh() } } label: {
 					Image(systemName: "arrow.clockwise")
 				}
 				.buttonStyle(.borderless)
+				.accessibilityLabel("Refresh Files")
 				.help("Refresh")
 			}
 			// Match the List's trailing inset so the refresh button doesn't

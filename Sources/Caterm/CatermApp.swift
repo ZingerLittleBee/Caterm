@@ -466,13 +466,13 @@ struct CatermApp: App {
         }
         .keyboardShortcut("b", modifiers: .command)
       }
-      // ⌘⇧F toggles the key window's Files drawer. The target window travels
+      // ⌘⇧F toggles the active window's Files drawer. The target window travels
       // with the notification so background tabs ignore the command.
       CommandGroup(after: .toolbar) {
         Button("Toggle Files Drawer") {
           NotificationCenter.default.post(
             name: .toggleFileDrawer,
-            object: NSApp.keyWindow
+            object: WindowCommandScope.activeTargetWindow
           )
         }
         .keyboardShortcut("f", modifiers: [.command, .shift])
@@ -482,14 +482,14 @@ struct CatermApp: App {
         Button("Save Workspace as Template…") {
           NotificationCenter.default.post(
             name: .catermSaveWorkspaceTemplate,
-            object: NSApp.keyWindow
+            object: WindowCommandScope.activeTargetWindow
           )
         }
 
         Button("Manage Workspace Templates…") {
           NotificationCenter.default.post(
             name: .catermManageWorkspaceTemplates,
-            object: NSApp.keyWindow
+            object: WindowCommandScope.activeTargetWindow
           )
         }
 
@@ -498,7 +498,7 @@ struct CatermApp: App {
         Button("Review Command Broadcast…") {
           NotificationCenter.default.post(
             name: .catermStartWorkspaceBroadcast,
-            object: NSApp.keyWindow
+            object: WindowCommandScope.activeTargetWindow
           )
         }
         .keyboardShortcut("b", modifiers: [.command, .option])
@@ -506,7 +506,7 @@ struct CatermApp: App {
         Button("Stop Command Broadcast") {
           NotificationCenter.default.post(
             name: .catermStopWorkspaceBroadcast,
-            object: NSApp.keyWindow
+            object: WindowCommandScope.activeTargetWindow
           )
         }
         .keyboardShortcut(".", modifiers: [.command, .option])
@@ -601,7 +601,7 @@ struct CatermApp: App {
           Button("Open Workspace for First Host") {
             NotificationCenter.default.post(
               name: .catermDebugOpenFirstHost,
-              object: NSApp.keyWindow
+              object: WindowCommandScope.activeTargetWindow
             )
           }
           .keyboardShortcut("o", modifiers: [.control, .option, .command])
@@ -671,7 +671,7 @@ struct CatermWindowCommands: Commands {
       Button("New Host…") {
         NotificationCenter.default.post(
           name: .catermAddHost,
-          object: NSApp.keyWindow
+          object: WindowCommandScope.activeTargetWindow
         )
       }
       .keyboardShortcut("t", modifiers: [.command, .shift])
