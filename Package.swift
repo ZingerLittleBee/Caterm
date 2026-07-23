@@ -52,6 +52,16 @@ let package = Package(
             path: "Sources/CredentialIdentityRuntime"
         ),
         .target(
+            name: "CredentialIdentitySync",
+            dependencies: [
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "CredentialSyncStore",
+                "CredentialSyncTypes",
+            ],
+            path: "Sources/CredentialIdentitySync"
+        ),
+        .target(
             name: "SSHCommandBuilder",
             dependencies: ["SSHCredentialContract"],
             path: "Sources/SSHCommandBuilder",
@@ -125,7 +135,7 @@ let package = Package(
         ),
         .target(
             name: "CloudKitSyncClient",
-            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SettingsSyncStore", "SnippetSyncClient"],
+            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "CredentialIdentityStore", "SettingsSyncStore", "SnippetSyncClient"],
             path: "Sources/CloudKitSyncClient"
         ),
         .target(
@@ -323,6 +333,18 @@ let package = Package(
             path: "Tests/CredentialIdentityRuntimeTests"
         ),
         .testTarget(
+            name: "CredentialIdentitySyncTests",
+            dependencies: [
+                "CredentialIdentitySync",
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "CredentialSyncStore",
+                "CredentialSyncTypes",
+                "ManagedKeyStore",
+            ],
+            path: "Tests/CredentialIdentitySyncTests"
+        ),
+        .testTarget(
             name: "SSHCommandBuilderTests",
             dependencies: ["SSHCommandBuilder"],
             path: "Tests/SSHCommandBuilderTests"
@@ -448,7 +470,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CloudKitSyncClientTests",
-            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SnippetSyncClient"],
+            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "CredentialIdentityStore", "SnippetSyncClient"],
             path: "Tests/CloudKitSyncClientTests"
         ),
         .testTarget(
