@@ -61,6 +61,63 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 		              "expected command to contain '\(expectedFlag)', got: \(out.command)")
 	}
 
+	func testChainScopesCertificateAndAgentToTheirHosts() throws {
+		let bastion = host(
+			"bastion",
+			"rh-bastion",
+			cred: .agent
+		)
+		let target = host(
+			"target",
+			"rh-target",
+			jump: "rh-bastion",
+			cred: .keyFile(
+				keyPath: "/managed/key",
+				hasPassphrase: false
+			)
+		)
+		let sink = InMemorySSHConfigSink()
+
+		_ = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [bastion],
+			configSink: sink,
+			askpassPath: "/askpass",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			runtimeIdentities: [
+				bastion.id: .init(
+					identityAgentPath: "/session/bastion.sock"
+				),
+				target.id: .init(
+					certificatePath: "/session/target-cert.pub"
+				),
+			]
+		)
+		let config = try XCTUnwrap(sink.writes.first?.1)
+		let bastionBlock = blockFor(
+			"caterm-h-\(bastion.id.uuidString)",
+			in: config
+		)
+		let targetBlock = blockFor(
+			"caterm-h-\(target.id.uuidString)",
+			in: config
+		)
+
+		XCTAssertTrue(
+			bastionBlock.contains(
+				"IdentityAgent /session/bastion.sock"
+			)
+		)
+		XCTAssertFalse(bastionBlock.contains("CertificateFile"))
+		XCTAssertTrue(
+			targetBlock.contains(
+				"CertificateFile /session/target-cert.pub"
+			)
+		)
+		XCTAssertFalse(targetBlock.contains("IdentityAgent"))
+	}
+
 	func testKnownHostsFilesAreSeparateTokensInGeneratedConfig() throws {
 		let bastion = host("bastion", "rh-bastion")
 		let target = host("target", "rh-target", jump: "rh-bastion")

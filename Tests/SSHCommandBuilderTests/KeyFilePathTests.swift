@@ -38,4 +38,33 @@ final class KeyFilePathTests: XCTestCase {
         // Path quoted exactly once, intact
         XCTAssertTrue(result.command.contains("-i '/Users/My User/.ssh/id_rsa'"))
     }
+
+	func testCertificatePathIsScopedToPreparedIdentity() {
+		let host = Host(
+			id: UUID(),
+			name: "x",
+			hostname: "h",
+			port: 22,
+			username: "u",
+			credential: .keyFile(
+				keyPath: "/managed/key",
+				hasPassphrase: false
+			)
+		)
+		let result = SSHCommandBuilder.build(
+			host: host,
+			askpassPath: "/x",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			runtimeIdentity: .init(
+				certificatePath: "/private/session/user-cert.pub"
+			)
+		)
+
+		XCTAssertTrue(
+			result.command.contains(
+				"CertificateFile=/private/session/user-cert.pub"
+			)
+		)
+	}
 }

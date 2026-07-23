@@ -6,6 +6,19 @@ public enum SSHAuthenticationMode: Sendable, Equatable {
 	case interactive
 }
 
+public struct SSHRuntimeIdentityOptions: Sendable, Equatable {
+	public let certificatePath: String?
+	public let identityAgentPath: String?
+
+	public init(
+		certificatePath: String? = nil,
+		identityAgentPath: String? = nil
+	) {
+		self.certificatePath = certificatePath
+		self.identityAgentPath = identityAgentPath
+	}
+}
+
 package enum SSHOptionKind: Equatable {
 	case option(keyword: String)
 	case identityFile(path: String)
@@ -65,7 +78,8 @@ package enum SSHConnectionPolicy {
 		for host: SSHHost,
 		role: SSHHopRole,
 		knownHostsFiles: [String],
-		authenticationMode: SSHAuthenticationMode = .configuredCredential
+		authenticationMode: SSHAuthenticationMode = .configuredCredential,
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil
 	) -> SSHHostPlan {
 		var options: [SSHOption] = [
 			.option("StrictHostKeyChecking", "accept-new"),
@@ -99,10 +113,23 @@ package enum SSHConnectionPolicy {
 					.option("KbdInteractiveAuthentication", "no"),
 					.identityFile(keyPath),
 				]
+				if let certificatePath = runtimeIdentity?.certificatePath {
+					options.append(
+						.option("CertificateFile", certificatePath)
+					)
+				}
 				credentialKind = hasPassphrase ? .keyPassphrase : nil
 
 			case .agent:
-				options.append(.option("BatchMode", "yes"))
+				options += [
+					.option("BatchMode", "yes"),
+					.option("IdentitiesOnly", "yes"),
+				]
+				if let identityAgentPath = runtimeIdentity?.identityAgentPath {
+					options.append(
+						.option("IdentityAgent", identityAgentPath)
+					)
+				}
 				credentialKind = nil
 			}
 		}
