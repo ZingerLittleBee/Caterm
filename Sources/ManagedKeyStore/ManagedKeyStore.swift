@@ -22,20 +22,28 @@ public actor ManagedKeyStore {
         return support.appendingPathComponent("Caterm/keys", isDirectory: true)
     }
 
-    public nonisolated func path(hostId: UUID) -> URL {
-        rootURL.appendingPathComponent(hostId.uuidString, isDirectory: false)
+    public nonisolated func path(materialID: UUID) -> URL {
+        rootURL.appendingPathComponent(materialID.uuidString, isDirectory: false)
     }
 
-    public nonisolated func read(hostId: UUID) throws -> Data? {
-        let url = path(hostId: hostId)
+    public nonisolated func path(hostId: UUID) -> URL {
+        path(materialID: hostId)
+    }
+
+    public nonisolated func read(materialID: UUID) throws -> Data? {
+        let url = path(materialID: materialID)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try Data(contentsOf: url)
     }
 
-    public func write(hostId: UUID, bytes: Data) throws -> URL {
+    public nonisolated func read(hostId: UUID) throws -> Data? {
+        try read(materialID: hostId)
+    }
+
+    public func write(materialID: UUID, bytes: Data) throws -> URL {
         guard bytes.count <= Self.maxBytes else { throw Error.tooLarge }
         try ensureRoot()
-        let target = path(hostId: hostId)
+        let target = path(materialID: materialID)
 
         // Reject symlink at the target (path-traversal guard).
         let attrs = try? FileManager.default.attributesOfItem(atPath: target.path)
@@ -44,7 +52,7 @@ public actor ManagedKeyStore {
         }
 
         let tmp = rootURL.appendingPathComponent(
-            ".tmp.\(hostId.uuidString).\(UInt64.random(in: .min ... .max))",
+            ".tmp.\(materialID.uuidString).\(UInt64.random(in: .min ... .max))",
             isDirectory: false
         )
         // Reject any tmp path that resolves outside root after symlink resolution.
@@ -71,14 +79,22 @@ public actor ManagedKeyStore {
         return target
     }
 
-    public func delete(hostId: UUID) throws {
+    public func write(hostId: UUID, bytes: Data) throws -> URL {
+        try write(materialID: hostId, bytes: bytes)
+    }
+
+    public func delete(materialID: UUID) throws {
         do {
-            try FileManager.default.removeItem(at: path(hostId: hostId))
+            try FileManager.default.removeItem(at: path(materialID: materialID))
         } catch let error as CocoaError where error.code == .fileNoSuchFile {
             return
         } catch {
             throw Error.deleteFailed(error.localizedDescription)
         }
+    }
+
+    public func delete(hostId: UUID) throws {
+        try delete(materialID: hostId)
     }
 
 	public func wipeAll() throws {
