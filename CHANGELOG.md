@@ -32,9 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in #55.
 - Add reviewed command broadcast with frozen recipients, per-Pane outcomes,
   and no disconnected-session replay.
-- Prepare startup snippets and non-secret Host environment variables with
-  explicit review and reconnect policy. Shipping remains gated on the signed
-  macOS fixture in #57.
+- Add startup snippets and non-secret Host environment variables with explicit
+  review, suppression, and reconnect policy, verified against signed macOS and
+  iOS SSH fixtures.
 - Add reusable credential identities for passwords, keys, and SSH
   certificates. Secure Enclave authentication remains gated on signed
   physical-device proof in #58.

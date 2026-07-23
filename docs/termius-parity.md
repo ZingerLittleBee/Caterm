@@ -63,7 +63,7 @@ The status vocabulary is intentionally strict:
 | Exact restoration and an advertised 16-terminal Workspace limit | **Unverified** | Caterm deliberately advertises no numeric Pane limit. Signed restoration, accessibility, and multi-surface resource evidence remain open in [#55](https://github.com/ZingerLittleBee/Caterm/issues/55). Source-only checks are not treated as runtime proof. |
 | IDE-style autocomplete and shell integration | **Deliberately excluded** | Caterm does not open extra exec channels to collect remote history, working directory, or active-command state. This avoids a hidden compatibility and privacy expansion. Ghostty remains the terminal engine, not a shell telemetry service. |
 | Saved Snippets and explicit terminal paste/run | **Implemented** | Snippets persist and synchronize on macOS and iOS through [`SnippetStore`](../Sources/SnippetStore), [`SnippetSyncClient`](../Sources/SnippetSyncClient), and [`MobileSnippetSyncRuntime.swift`](../Sources/CatermMobile/MobileSnippetSyncRuntime.swift). Store, reconciliation, transport-model, and mobile lifecycle behavior are covered by the mirrored Snippet test targets. |
-| Startup Snippets and per-Host environment variables | **Deferred** | The source model, explicit review policy, and reconnect behavior exist in [`HostAutomation.swift`](../Sources/SSHCommandBuilder/HostAutomation.swift), but signed macOS startup-fixture acceptance remains open in [#57](https://github.com/ZingerLittleBee/Caterm/issues/57). Caterm does not advertise this as shipped parity yet. |
+| Startup Snippets and per-Host environment variables | **Implemented** | [`HostAutomation.swift`](../Sources/SSHCommandBuilder/HostAutomation.swift) provides stable Snippet references, validated non-secret environment metadata, explicit review/suppression, and reconnect policy across macOS and iOS. Signed disposable SSH fixtures verified the full command review, one exact startup execution, an accepted environment value, a rejected value remaining absent, the macOS OpenSSH acceptance-limit warning, and a suppression connection with no automation. |
 | Reviewed multi-Host and multi-Pane Snippet execution | **Implemented** | [`WorkspaceBroadcast`](../Sources/WorkspaceBroadcast) freezes the selected recipients, requires one complete-command review, and reports per-Pane outcomes. The native review surface lives in [`WorkspaceBroadcastViews.swift`](../Sources/Caterm/Views/WorkspaceBroadcastViews.swift), with execution and policy coverage in [`WorkspaceBroadcastTests.swift`](../Tests/WorkspaceBroadcastTests/WorkspaceBroadcastTests.swift). |
 | Synchronized shell command history | **Deliberately excluded** | Caterm records local connection metadata, not terminal commands or output. This is a privacy boundary, not a missing sync lane. [`SessionHistory`](../Sources/SessionHistory) stores Host, timing, state, and outcome only. |
 | Recorded session logs and log bookmarks | **Deliberately excluded** | Caterm does not persist or synchronize terminal output by default. Connection history exists for operational diagnostics, but it is not a replayable terminal log. |
@@ -106,16 +106,16 @@ the roadmap.
   iPhone 17 Pro Simulator and an iPad Pro 13-inch Simulator; Computer Use
   confirmed the compact tab layout and regular-width sidebar/detail layout.
 - `swift build --target Caterm` and focused affected suites pass.
-- The full unsigned `make test` run currently fails in pre-existing Keychain
-  integration paths with `errSecInteractionNotAllowed (-25308)` and then
-  deadlocks in an XCTest async expectation. This is not reported as a green
-  full-suite result.
-- `make run-app` currently reaches development signing and fails with
-  `errSecInternalComponent`. Ad-hoc GUI checks confirm structure only and do
-  not replace a signed shipping-configuration pass.
-- Signed macOS Workspace restoration/accessibility/load proof, signed startup
-  automation, physical-device Secure Enclave proof, and signed desktop SFTP
-  sandbox/process acceptance remain scoped by #55, #57, #58, and #59.
+- The full unfiltered `make test` run remains non-green because suite-composed
+  execution stalls in an XCTest asynchronous wait; focused affected suites
+  pass and isolated suites around the last buffered output also pass.
+- `make run-app` now produces and launches a development-signed application.
+  Its disposable SSH fixture completed the startup-automation acceptance;
+  signed Secure Enclave and desktop SFTP shipping-configuration proof remain
+  separate gates.
+- Signed macOS Workspace restoration/accessibility/load proof, physical-device
+  Secure Enclave proof, and signed desktop SFTP sandbox/process acceptance
+  remain scoped by #55, #58, and #59.
 - No private Host address, account identity, credential, terminal content,
   screenshot, application log, or local fixture is included in this document
   or committed elsewhere by the parity audit.
