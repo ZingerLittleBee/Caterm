@@ -115,6 +115,7 @@ public enum HostSynchronization {
 				icon: host.icon,
 				organization: host.organization,
 				automation: host.automation,
+				credentialIdentity: host.credentialIdentity,
 				metadataUpdatedAt: host.updatedAt
 			))
 			// Do not insert a cancellation point between remote creation and
@@ -162,6 +163,7 @@ public enum HostSynchronization {
 				icon: host.icon,
 				organization: host.organization,
 				automation: host.automation,
+				credentialIdentity: host.credentialIdentity,
 				metadataUpdatedAt: host.updatedAt
 			))
 

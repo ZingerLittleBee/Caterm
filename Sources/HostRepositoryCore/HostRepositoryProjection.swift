@@ -26,7 +26,8 @@ public enum HostRepositoryProjection {
 			forwards: remote.forwards,
 			icon: remote.icon,
 			organization: remote.organization,
-			automation: remote.automation
+			automation: remote.automation,
+			credentialIdentity: remote.credentialIdentity
 		)
 		var updated = hosts
 		updated.append(host)
@@ -59,6 +60,7 @@ public enum HostRepositoryProjection {
 		updated[index].icon = remote.icon
 		updated[index].organization = remote.organization
 		updated[index].automation = remote.automation
+		updated[index].credentialIdentity = remote.credentialIdentity
 		return updated
 	}
 

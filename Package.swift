@@ -43,6 +43,15 @@ let package = Package(
             path: "Sources/CredentialIdentitySecurity"
         ),
         .target(
+            name: "CredentialIdentityRuntime",
+            dependencies: [
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "SSHCommandBuilder",
+            ],
+            path: "Sources/CredentialIdentityRuntime"
+        ),
+        .target(
             name: "SSHCommandBuilder",
             dependencies: ["SSHCredentialContract"],
             path: "Sources/SSHCommandBuilder",
@@ -302,6 +311,16 @@ let package = Package(
                 "ManagedKeyStore",
             ],
             path: "Tests/CredentialIdentitySecurityTests"
+        ),
+        .testTarget(
+            name: "CredentialIdentityRuntimeTests",
+            dependencies: [
+                "CredentialIdentityRuntime",
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "SSHCommandBuilder",
+            ],
+            path: "Tests/CredentialIdentityRuntimeTests"
         ),
         .testTarget(
             name: "SSHCommandBuilderTests",
