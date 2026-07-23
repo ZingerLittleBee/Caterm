@@ -49,6 +49,12 @@ public final class SessionStore: ObservableObject {
 		category: "session-store"
 	)
 
+	public enum HostRepositoryLoadState: Equatable, Sendable {
+		case loading
+		case ready
+		case failed(String)
+	}
+
     public struct Tab: Identifiable {
         public let id: UUID
         public var host: SSHHost
@@ -139,6 +145,8 @@ public final class SessionStore: ObservableObject {
     /// won't trigger persistence.
     @Published public private(set) var hosts: [SSHHost] = []
 	@Published public private(set) var credentialAvailabilityRevision: UInt64 = 0
+	@Published public private(set) var hostRepositoryLoadState:
+		HostRepositoryLoadState = .loading
 
 	public struct SkippedForwardNotice: Identifiable, Equatable, Sendable {
 		public let id: UUID
@@ -325,53 +333,74 @@ public final class SessionStore: ObservableObject {
 		self.credentialIdentityPreparer = credentialIdentityPreparer
 		self.hosts = initialHostsForTesting ?? []
 		Task { [weak self] in
-			try? await self?.prepareHostRepository()
+			await self?.prepareHostRepositoryAtLaunch()
 		}
     }
 
     // MARK: - Host CRUD
 
 	public func prepareHostRepository() async throws {
-		let snapshot = try await hostPersistence.prepare()
-		publish(snapshot)
+		do {
+			let snapshot = try await hostPersistence.prepare()
+			publish(snapshot)
+			hostRepositoryLoadState = .ready
+		} catch {
+			hostRepositoryLoadState = .failed(error.localizedDescription)
+			throw error
+		}
+	}
+
+	private func prepareHostRepositoryAtLaunch() async {
+		do {
+			try await prepareHostRepository()
+		} catch {
+			let message = String(describing: error)
+			Self.log.error(
+				"Failed to prepare Host repository: \(message, privacy: .private)"
+			)
+		}
 	}
 
 	private func publish(_ snapshot: SessionHostPersistence.Snapshot) {
 		guard snapshot.revision >= publishedHostRevision else { return }
 		hosts = snapshot.hosts
 		publishedHostRevision = snapshot.revision
-	}
+    }
 
     public func addHost(_ host: SSHHost) async throws {
-		try validateCredentialIdentityAssignments(in: [host])
-		let snapshot = try await hostPersistence.mutate {
-			$0.append(host)
-		}
-		let didPersist = snapshot.revision > publishedHostRevision
-		publish(snapshot)
-		if didPersist {
-			mutationsForSyncSubject.send()
+		try await withCredentialIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			let snapshot = try await self.hostPersistence.mutate {
+				$0.append(host)
+			}
+			let didPersist = snapshot.revision > self.publishedHostRevision
+			self.publish(snapshot)
+			if didPersist {
+				self.mutationsForSyncSubject.send()
+			}
 		}
     }
 
     public func updateHost(_ host: SSHHost) async throws {
-		try validateCredentialIdentityAssignments(in: [host])
-		let timestamp = Date()
-		let snapshot = try await hostPersistence.mutate {
-			guard let index = $0.firstIndex(where: {
-				$0.id == host.id
-			}) else { return }
-			var updated = host
-			updated.credential = $0[index].credential
-			updated.credentialMaterialDirty =
-				$0[index].credentialMaterialDirty
-			updated.updatedAt = timestamp
-			$0[index] = updated
-		}
-		let didPersist = snapshot.revision > publishedHostRevision
-		publish(snapshot)
-		if didPersist {
-			mutationsForSyncSubject.send()
+		try await withCredentialIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			let timestamp = Date()
+			let snapshot = try await self.hostPersistence.mutate {
+				guard let index = $0.firstIndex(where: {
+					$0.id == host.id
+				}) else { return }
+				var updated = host
+				updated.credential = $0[index].credential
+				updated.credentialMaterialDirty =
+					$0[index].credentialMaterialDirty
+				updated.updatedAt = timestamp
+				$0[index] = updated
+			}
+			let didPersist = snapshot.revision > self.publishedHostRevision
+			self.publish(snapshot)
+			if didPersist {
+				self.mutationsForSyncSubject.send()
+			}
 		}
     }
 
@@ -401,6 +430,7 @@ public final class SessionStore: ObservableObject {
 		      let index = hosts.firstIndex(where: { $0.id == host.id }) else {
 			return
 		}
+		let expectedHostRevision = publishedHostRevision
 		let commit = try await credentialMaterialStore.beginDeletion(
 			for: host.id
 		)
@@ -410,7 +440,9 @@ public final class SessionStore: ObservableObject {
 		updated.updatedAt = Date()
 		let persistedHost = updated
 		do {
-			let snapshot = try await hostPersistence.mutate {
+			let snapshot = try await hostPersistence.mutate(
+				expectedRevision: expectedHostRevision
+			) {
 				guard let currentIndex = $0.firstIndex(where: {
 					$0.id == host.id
 				}) else { return }
@@ -438,28 +470,30 @@ public final class SessionStore: ObservableObject {
     /// emits one sync mutation. Device-local credential state is preserved.
     public func updateHosts(_ updatedHosts: [SSHHost]) async throws {
         guard !updatedHosts.isEmpty else { return }
-		try validateCredentialIdentityAssignments(in: updatedHosts)
-		let updatesByID = updatedHosts.reduce(into: [UUID: SSHHost]()) {
-			$0[$1.id] = $1
-		}
-
-        let timestamp = Date()
-		let snapshot = try await hostPersistence.mutate {
-			for index in $0.indices {
-				guard var updated = updatesByID[$0[index].id] else {
-					continue
-				}
-				updated.credential = $0[index].credential
-				updated.credentialMaterialDirty =
-					$0[index].credentialMaterialDirty
-				updated.updatedAt = timestamp
-				$0[index] = updated
+		try await withCredentialIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: updatedHosts)
+			let updatesByID = updatedHosts.reduce(into: [UUID: SSHHost]()) {
+				$0[$1.id] = $1
 			}
-		}
-		let didPersist = snapshot.revision > publishedHostRevision
-		publish(snapshot)
-		if didPersist {
-			mutationsForSyncSubject.send()
+
+			let timestamp = Date()
+			let snapshot = try await self.hostPersistence.mutate {
+				for index in $0.indices {
+					guard var updated = updatesByID[$0[index].id] else {
+						continue
+					}
+					updated.credential = $0[index].credential
+					updated.credentialMaterialDirty =
+						$0[index].credentialMaterialDirty
+					updated.updatedAt = timestamp
+					$0[index] = updated
+				}
+			}
+			let didPersist = snapshot.revision > self.publishedHostRevision
+			self.publish(snapshot)
+			if didPersist {
+				self.mutationsForSyncSubject.send()
+			}
 		}
     }
 
@@ -1352,23 +1386,27 @@ public final class SessionStore: ObservableObject {
 		remote: RemoteHost
 	) async throws {
 		try await prepareHostRepository()
-        guard let candidate = HostRepositoryProjection.applying(
-            remote,
-            to: localHostId,
-            in: hosts
-        ) else { throw HostSynchronizationError.localHostMissing(localHostId) }
-		try validateCredentialIdentityAssignments(in: candidate)
-		let snapshot = try await hostPersistence.mutate {
-			guard let updated = HostRepositoryProjection.applying(
+		try await withCredentialIdentityTransaction {
+			guard let candidate = HostRepositoryProjection.applying(
 				remote,
 				to: localHostId,
-				in: $0
+				in: self.hosts
 			) else {
 				throw HostSynchronizationError.localHostMissing(localHostId)
 			}
-			$0 = updated
+			try self.validateCredentialIdentityAssignments(in: candidate)
+			let snapshot = try await self.hostPersistence.mutate {
+				guard let updated = HostRepositoryProjection.applying(
+					remote,
+					to: localHostId,
+					in: $0
+				) else {
+					throw HostSynchronizationError.localHostMissing(localHostId)
+				}
+				$0 = updated
+			}
+			self.publish(snapshot)
 		}
-		publish(snapshot)
     }
 
     /// Insert a host fetched from the server. Allocates a fresh local UUID,
@@ -1378,21 +1416,25 @@ public final class SessionStore: ObservableObject {
     public func addRemoteHost(_ remote: RemoteHost) async throws -> UUID {
 		let localID = UUID()
 		try await prepareHostRepository()
-		let candidate = HostRepositoryProjection.inserting(
-			remote,
-			localID: localID,
-			into: hosts
-		)
-		try validateCredentialIdentityAssignments(in: candidate.hosts)
-		let snapshot = try await hostPersistence.mutate {
-			$0 = HostRepositoryProjection.inserting(
+		return try await withCredentialIdentityTransaction {
+			let candidate = HostRepositoryProjection.inserting(
 				remote,
 				localID: localID,
-				into: $0
-			).hosts
+				into: self.hosts
+			)
+			try self.validateCredentialIdentityAssignments(
+				in: candidate.hosts
+			)
+			let snapshot = try await self.hostPersistence.mutate {
+				$0 = HostRepositoryProjection.inserting(
+					remote,
+					localID: localID,
+					into: $0
+				).hosts
+			}
+			self.publish(snapshot)
+			return localID
 		}
-		publish(snapshot)
-        return localID
     }
 
     /// Replace the credential overlay for an existing host. Does NOT bump
@@ -1610,6 +1652,15 @@ public final class SessionStore: ObservableObject {
 				identityID: identityID
 			)
 		}
+	}
+
+	private func withCredentialIdentityTransaction<T>(
+		_ operation: @MainActor () async throws -> T
+	) async throws -> T {
+		guard let credentialIdentityStore else {
+			return try await operation()
+		}
+		return try await credentialIdentityStore.withTransaction(operation)
 	}
 
 	/// Commits the resulting credential reference to main-actor host state after

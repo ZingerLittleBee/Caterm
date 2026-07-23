@@ -1,4 +1,4 @@
-import CredentialIdentityStore
+@testable import CredentialIdentityStore
 import KeychainStore
 import ManagedKeyStore
 import SSHCommandBuilder
@@ -155,6 +155,156 @@ final class CredentialIdentityMigrationTests: XCTestCase {
 		XCTAssertNil(store.hosts.first?.credentialIdentity)
 		XCTAssertFalse(secrets.isEmpty)
 	}
+
+	func testHostAssignmentWaitsForIdentityTransactionAndCannotOrphanHost()
+		async throws {
+		let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+			"identity-assignment-race-\(UUID().uuidString)",
+			isDirectory: true
+		)
+		defer { try? FileManager.default.removeItem(at: root) }
+		let identities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent("identities.json")
+		)
+		let identity = CredentialIdentity(
+			name: "Shared",
+			username: "deploy",
+			source: .password(materialID: CredentialMaterialID())
+		)
+		try await identities.upsert(identity)
+		let managedKeys = ManagedKeyStore(
+			rootURL: root.appendingPathComponent("keys", isDirectory: true)
+		)
+		let store = SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: root.appendingPathComponent("hosts.json"),
+			keychain: KeychainStore(
+				service: "com.caterm.test.identity-assignment-race",
+				accessGroup: nil
+			),
+			managedKeyStore: managedKeys,
+			credentialMaterialStore: SessionCredentialMaterialStore(
+				secrets: MigrationMemorySecretStore(),
+				managedKeyStore: managedKeys
+			),
+			credentialIdentityStore: identities
+		)
+		var host = SSHHost(
+			name: "Production",
+			hostname: "prod.example",
+			username: "deploy",
+			credential: .password
+		)
+		host.credentialIdentity = .init(
+			identityID: identity.id,
+			migrationState: .confirmed
+		)
+		let blocker = MigrationDeletionBlocker()
+		let deletion = Task { @MainActor in
+			try await identities.withTransaction {
+				await blocker.block()
+				try await identities.applyRemoteTombstone(id: identity.id)
+			}
+		}
+		await blocker.waitUntilBlocked()
+		let assignment = Task { @MainActor in
+			try await store.addHost(host)
+		}
+		await identities.waitUntilTransactionIsContended()
+		XCTAssertTrue(store.hosts.isEmpty)
+
+		await blocker.release()
+		try await deletion.value
+		do {
+			try await assignment.value
+			XCTFail("Expected the deleted identity assignment to fail")
+		} catch {
+			XCTAssertEqual(
+				error as? CredentialIdentityStoreError,
+				.identityNotFound(identity.id)
+			)
+		}
+		XCTAssertTrue(store.hosts.isEmpty)
+	}
+
+	func testConfirmMigrationDoesNotOverwriteNewerHostRevision()
+		async throws {
+		let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+			"identity-migration-stale-host-\(UUID().uuidString)",
+			isDirectory: true
+		)
+		defer { try? FileManager.default.removeItem(at: root) }
+		let identities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent("identities.json")
+		)
+		let identity = CredentialIdentity(
+			name: "Shared",
+			username: "deploy",
+			source: .password(materialID: CredentialMaterialID())
+		)
+		try await identities.upsert(identity)
+		let deletionGate = MigrationSecretDeletionGate()
+		let secrets = MigrationMemorySecretStore(
+			deletionGate: deletionGate
+		)
+		let managedKeys = ManagedKeyStore(
+			rootURL: root.appendingPathComponent("keys", isDirectory: true)
+		)
+		let store = SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: root.appendingPathComponent("hosts.json"),
+			keychain: KeychainStore(
+				service: "com.caterm.test.identity-migration-stale-host",
+				accessGroup: nil
+			),
+			managedKeyStore: managedKeys,
+			credentialMaterialStore: SessionCredentialMaterialStore(
+				secrets: secrets,
+				managedKeyStore: managedKeys
+			),
+			credentialIdentityStore: identities
+		)
+		var host = SSHHost(
+			name: "Production",
+			hostname: "prod.example",
+			username: "deploy",
+			credential: .password,
+			credentialIdentity: .init(
+				identityID: identity.id,
+				migrationState: .reversible
+			)
+		)
+		try await store.addHost(host)
+		try await store.setHostCredentialMaterial(
+			secrets: HostSecrets(password: Data("legacy".utf8)),
+			credentialSource: .password,
+			for: host.id
+		)
+		host = try XCTUnwrap(store.hosts.first)
+		host.credentialIdentity?.migrationState = .confirmed
+
+		let migration = Task { @MainActor in
+			try await store.confirmCredentialIdentityMigration(host)
+		}
+		while !deletionGate.hasStarted {
+			await Task.yield()
+		}
+		try await store.setServerId("server-newer", for: host.id)
+		deletionGate.release()
+
+		do {
+			try await migration.value
+			XCTFail("Expected the stale migration snapshot to be rejected")
+		} catch {}
+		XCTAssertEqual(store.hosts.first?.serverId, "server-newer")
+		XCTAssertFalse(secrets.isEmpty)
+	}
 }
 
 private actor MigrationDeletionBlocker {
@@ -186,6 +336,11 @@ private final class MigrationMemorySecretStore: CredentialSecretStoring,
 	@unchecked Sendable {
 	private let lock = NSLock()
 	private var values: [String: String] = [:]
+	private let deletionGate: MigrationSecretDeletionGate?
+
+	init(deletionGate: MigrationSecretDeletionGate? = nil) {
+		self.deletionGate = deletionGate
+	}
 
 	var isEmpty: Bool {
 		lock.withLock { values.isEmpty }
@@ -212,10 +367,40 @@ private final class MigrationMemorySecretStore: CredentialSecretStoring,
 	}
 
 	func deleteAll(prefix: String) throws {
+		deletionGate?.blockUntilReleased()
 		lock.withLock {
 			for account in values.keys where account.hasPrefix(prefix) {
 				values[account] = nil
 			}
 		}
+	}
+}
+
+private final class MigrationSecretDeletionGate: @unchecked Sendable {
+	private let condition = NSCondition()
+	private var started = false
+	private var released = false
+
+	var hasStarted: Bool {
+		condition.lock()
+		defer { condition.unlock() }
+		return started
+	}
+
+	func blockUntilReleased() {
+		condition.lock()
+		started = true
+		condition.broadcast()
+		while !released {
+			condition.wait()
+		}
+		condition.unlock()
+	}
+
+	func release() {
+		condition.lock()
+		released = true
+		condition.broadcast()
+		condition.unlock()
 	}
 }

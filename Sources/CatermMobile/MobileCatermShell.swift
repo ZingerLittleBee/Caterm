@@ -136,6 +136,34 @@ public struct MobileRootView: View {
 			credentialIdentityMaterialStore:
 				credentialIdentityMaterialStore
 		)
+		.overlay {
+			switch hostStore.hostRepositoryLoadState {
+			case .loading:
+				ProgressView("Loading Hosts…")
+					.frame(maxWidth: .infinity, maxHeight: .infinity)
+					.background(.background)
+			case .ready:
+				EmptyView()
+			case .failed:
+				ContentUnavailableView {
+					Label(
+						"Unable to Load Hosts",
+						systemImage: "exclamationmark.triangle"
+					)
+				} description: {
+					Text("Check the saved Host data, then try again.")
+				} actions: {
+					Button("Try Again") {
+						Task {
+							await hostStore.retryHostRepositoryLoad()
+						}
+					}
+					.buttonStyle(.borderedProminent)
+				}
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(.background)
+			}
+		}
 		.environment(\.mobileHostSave, MobileHostSaveAction(
 			save: { payload in
 				do {

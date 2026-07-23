@@ -659,6 +659,7 @@ final class MobileHostStoreTests: XCTestCase {
 		let store = MobileHostStore(fileURL: tempURL())
 		try await store.prepare()
 		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertEqual(store.hostRepositoryLoadState, .ready)
 	}
 
 	func testAddPersistsAndReloadsFromSameFile() async throws {
@@ -731,6 +732,45 @@ final class MobileHostStoreTests: XCTestCase {
 
 		XCTAssertTrue(store.hosts.isEmpty)
 		XCTAssertNotNil(store.lastPersistenceFailure)
+	}
+
+	func testAutomaticLoadFailureIsPublished() async throws {
+		let url = tempURL()
+		try Data("not-json".utf8).write(to: url)
+		let store = MobileHostStore(fileURL: url)
+
+		await waitUntil {
+			if case .failed = store.hostRepositoryLoadState {
+				return true
+			}
+			return false
+		}
+
+		XCTAssertTrue(store.hosts.isEmpty)
+		guard case .failed = store.hostRepositoryLoadState else {
+			return XCTFail("Expected Host repository load failure")
+		}
+		XCTAssertNil(store.lastPersistenceFailure)
+	}
+
+	func testSuccessfulPrepareDoesNotClearSaveFailure() async throws {
+		let url = tempURL()
+		let store = MobileHostStore(fileURL: url)
+		try await store.prepare()
+		try FileManager.default.createDirectory(
+			at: url,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: url) }
+
+		store.binding.wrappedValue = [makeHost("cannot-persist")]
+		await waitUntil { store.lastPersistenceFailure != nil }
+		let failureID = store.lastPersistenceFailure?.id
+
+		try await store.prepare()
+
+		XCTAssertEqual(store.lastPersistenceFailure?.id, failureID)
+		XCTAssertEqual(store.hostRepositoryLoadState, .ready)
 	}
 
 	func testDeleteRemovesAndPersists() async throws {

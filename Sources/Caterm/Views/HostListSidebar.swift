@@ -109,7 +109,18 @@ struct HostListSidebar: View {
 				}
 			}
 			.overlay {
-				if store.hosts.isEmpty, quickDestination == nil {
+				if case .failed = store.hostRepositoryLoadState {
+					ContentUnavailableView(
+						"Unable to Load Hosts",
+						systemImage: "exclamationmark.triangle",
+						description: Text(
+							"Check the saved Host data and relaunch Caterm."
+						)
+					)
+				} else if store.hostRepositoryLoadState == .loading,
+					store.hosts.isEmpty {
+					ProgressView("Loading Hosts…")
+				} else if store.hosts.isEmpty, quickDestination == nil {
 					VStack(spacing: 8) {
 						Image(systemName: "server.rack")
 							.font(.system(size: 32))

@@ -11,6 +11,10 @@ actor SessionHostPersistence {
 		let rollbackErrors: [any Error]
 	}
 
+	enum MutationError: Error, Equatable {
+		case staleSnapshot(expected: UInt64, actual: UInt64)
+	}
+
 	struct Snapshot: Sendable {
 		let hosts: [SSHHost]
 		let revision: UInt64
@@ -36,9 +40,16 @@ actor SessionHostPersistence {
 	}
 
 	func mutate(
+		expectedRevision: UInt64? = nil,
 		_ transform: @Sendable (inout [SSHHost]) throws -> Void
 	) throws -> Snapshot {
 		try ensureLoaded()
+		if let expectedRevision, expectedRevision != revision {
+			throw MutationError.staleSnapshot(
+				expected: expectedRevision,
+				actual: revision
+			)
+		}
 		var updated = hosts
 		try transform(&updated)
 		guard updated != hosts else { return currentSnapshot }

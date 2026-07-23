@@ -26,7 +26,3 @@ public protocol HostRepository: AnyObject {
 	func markCredentialMaterialSynced(for localID: UUID) async throws
 	func deleteHostFromRemote(localID: UUID) async throws
 }
-
-public extension HostRepository {
-	func prepare() async throws {}
-}

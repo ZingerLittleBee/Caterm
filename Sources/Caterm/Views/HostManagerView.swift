@@ -117,7 +117,18 @@ struct HostManagerView: View {
 					if selectedIDs.count == 1 { connect(selectedIDs.first) }
 				}
 				.overlay {
-					if rows.isEmpty {
+					if case .failed = store.hostRepositoryLoadState {
+						ContentUnavailableView(
+							"Unable to Load Hosts",
+							systemImage: "exclamationmark.triangle",
+							description: Text(
+								"Check the saved Host data and relaunch Caterm."
+							)
+						)
+					} else if store.hostRepositoryLoadState == .loading,
+						store.hosts.isEmpty {
+						ProgressView("Loading Hosts…")
+					} else if rows.isEmpty {
 						if store.hosts.isEmpty {
 							ContentUnavailableView(
 								"No Hosts",

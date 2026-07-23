@@ -26,6 +26,12 @@ public final class MobileHostStore: ObservableObject {
 		case staleSnapshot
 	}
 
+	public enum HostRepositoryLoadState: Equatable, Sendable {
+		case loading
+		case ready
+		case failed(String)
+	}
+
 	public struct DeletionRollbackError: Error {
 		public let originalError: any Error
 		public let rollbackErrors: [any Error]
@@ -54,6 +60,8 @@ public final class MobileHostStore: ObservableObject {
 	private var accountOperationDrainWaiters: [CheckedContinuation<Void, Never>] = []
 	private var publishedRevision: UInt64 = 0
 	@Published public private(set) var lastPersistenceFailure: PersistenceFailure?
+	@Published public private(set) var hostRepositoryLoadState:
+		HostRepositoryLoadState = .loading
 
 	public init(
 		fileURL: URL,
@@ -74,7 +82,7 @@ public final class MobileHostStore: ObservableObject {
 		self.hosts = []
 		self.persistence = MobileHostPersistence(hostsURL: fileURL)
 		Task { [weak self] in
-			try? await self?.prepare()
+			await self?.prepareOnLaunch()
 		}
 	}
 
@@ -98,14 +106,33 @@ public final class MobileHostStore: ObservableObject {
 		self.hosts = []
 		self.persistence = persistence
 		Task { [weak self] in
-			try? await self?.prepare()
+			await self?.prepareOnLaunch()
 		}
 	}
 
 	public func prepare() async throws {
-		let epoch = accountEpoch
-		let snapshot = try await persistence.prepare()
-		publish(snapshot, expectedEpoch: epoch)
+		do {
+			let epoch = accountEpoch
+			let snapshot = try await persistence.prepare()
+			publish(snapshot, expectedEpoch: epoch)
+			hostRepositoryLoadState = .ready
+		} catch {
+			hostRepositoryLoadState = .failed(error.localizedDescription)
+			throw error
+		}
+	}
+
+	private func prepareOnLaunch() async {
+		do {
+			try await prepare()
+		} catch {
+			return
+		}
+	}
+
+	public func retryHostRepositoryLoad() async {
+		hostRepositoryLoadState = .loading
+		await prepareOnLaunch()
 	}
 
 	public func add(_ host: SSHHost) async throws {

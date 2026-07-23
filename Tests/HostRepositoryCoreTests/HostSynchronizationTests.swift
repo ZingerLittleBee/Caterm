@@ -27,6 +27,7 @@ private final class DisappearingHostRepository: HostRepository {
 		Empty().eraseToAnyPublisher()
 	}
 
+	func prepare() async throws {}
 	func createLocalHost(_: SSHHost) throws {}
 	func updateLocalHostMetadata(_: SSHHost) throws {}
 	func deleteLocalHost(id _: UUID) async throws {}
@@ -91,6 +92,7 @@ private final class PostCreateDeletingRepository: HostRepository {
 		Empty().eraseToAnyPublisher()
 	}
 
+	func prepare() async throws {}
 	func removeHostDuringRemoteCreate() {
 		hosts.removeAll()
 	}

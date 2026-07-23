@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 import ManagedKeyStore
 @testable import KeychainStore
@@ -40,11 +41,60 @@ final class HostPersistenceTests: XCTestCase {
 		XCTAssertTrue(result.isEmpty)
 	}
 
+	@MainActor
+	func testSessionStoreReportsAutomaticLoadFailure() async throws {
+		try Data("not-json".utf8).write(to: tmpURL)
+		let store = SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: tmpURL,
+			keychain: KeychainStore(
+				service: "com.caterm.test.\(UUID())",
+				accessGroup: nil
+			)
+		)
+		let loadFinished = expectation(description: "Host repository load finished")
+		var cancellable: AnyCancellable?
+		if store.hostRepositoryLoadState == .loading {
+			cancellable = store.$hostRepositoryLoadState
+				.dropFirst()
+				.sink { state in
+					guard state != .loading else { return }
+					loadFinished.fulfill()
+				}
+			await fulfillment(of: [loadFinished], timeout: 1)
+		}
+
+		guard case .failed = store.hostRepositoryLoadState else {
+			return XCTFail("Expected Host repository load failure")
+		}
+		XCTAssertTrue(store.hosts.isEmpty)
+		withExtendedLifetime(cancellable) {}
+	}
+
 	func testFilePermissionsAre0600() async throws {
 		try HostPersistence.save([], to: tmpURL)
 		let attrs = try FileManager.default.attributesOfItem(atPath: tmpURL.path)
 		let perm = attrs[.posixPermissions] as? Int
 		XCTAssertEqual(perm, 0o600)
+	}
+
+	func testSaveRestoresPrivatePermissionsWhenReplacingExistingFile()
+		async throws {
+		try Data("[]".utf8).write(to: tmpURL)
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o644],
+			ofItemAtPath: tmpURL.path
+		)
+
+		try HostPersistence.save([], to: tmpURL)
+
+		let attributes = try FileManager.default.attributesOfItem(
+			atPath: tmpURL.path
+		)
+		XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o600)
 	}
 
 	func testHostDeletionOutboxPersistsWithPrivatePermissions() async throws {

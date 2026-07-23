@@ -35,7 +35,9 @@ public enum HostPersistence {
 			if FileManager.default.fileExists(atPath: url.path) {
 				_ = try FileManager.default.replaceItemAt(
 					url,
-					withItemAt: temporaryURL
+					withItemAt: temporaryURL,
+					backupItemName: nil,
+					options: .usingNewMetadataOnly
 				)
 			} else {
 				try FileManager.default.moveItem(at: temporaryURL, to: url)

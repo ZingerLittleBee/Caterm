@@ -378,6 +378,7 @@ private actor CredentialIdentityPersistence {
 private actor CredentialIdentityTransactionGate {
 	private var isHeld = false
 	private var waiters: [CheckedContinuation<Void, Never>] = []
+	private var contentionObservers: [CheckedContinuation<Void, Never>] = []
 
 	func acquire() async {
 		guard isHeld else {
@@ -386,6 +387,11 @@ private actor CredentialIdentityTransactionGate {
 		}
 		await withCheckedContinuation { continuation in
 			waiters.append(continuation)
+			let observers = contentionObservers
+			contentionObservers.removeAll()
+			for observer in observers {
+				observer.resume()
+			}
 		}
 	}
 
@@ -395,6 +401,13 @@ private actor CredentialIdentityTransactionGate {
 			return
 		}
 		waiters.removeFirst().resume()
+	}
+
+	func waitUntilContended() async {
+		guard waiters.isEmpty else { return }
+		await withCheckedContinuation { continuation in
+			contentionObservers.append(continuation)
+		}
 	}
 }
 
@@ -513,6 +526,10 @@ public final class CredentialIdentityStore: ObservableObject {
 			await transactionGate.release()
 			throw error
 		}
+	}
+
+	func waitUntilTransactionIsContended() async {
+		await transactionGate.waitUntilContended()
 	}
 
 	public func validateAssignment(identityID: UUID) throws {
