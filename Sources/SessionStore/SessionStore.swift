@@ -1,4 +1,6 @@
 import Combine
+import CredentialIdentityRuntime
+import CredentialIdentityStore
 import Foundation
 import HostAutomationRuntime
 import HostRepositoryCore
@@ -49,6 +51,10 @@ public final class SessionStore: ObservableObject {
         /// Empty when the target has no `jumpHostServerId`. Populated at
         /// `openTab` time so `runConnection` and `surfaceConfig` can use it.
         public var resolvedChain: [SSHHost] = []
+		/// Identity metadata captured when the tab opens. Material is resolved
+		/// immediately before process creation, while assignment and identity
+		/// edits only affect tabs opened afterward.
+		public var credentialIdentitySnapshots: [UUID: CredentialIdentity] = [:]
         /// URL of the per-session ssh_config written by `SSHCommandBuilder.build`
         /// for chain connections. Nil for direct (no-jump) connections. Cleaned
         /// up by `closeTab` and `markChildExited`.
@@ -97,6 +103,7 @@ public final class SessionStore: ObservableObject {
 			id: UUID,
 			host: SSHHost,
 			resolvedChain: [SSHHost],
+			credentialIdentitySnapshots: [UUID: CredentialIdentity] = [:],
 			installTerminfo: Bool = false,
 			authenticationMode: SSHAuthenticationMode = .configuredCredential,
 			historyEntryID: UUID? = nil,
@@ -106,6 +113,7 @@ public final class SessionStore: ObservableObject {
             self.host = host
             self.state = .idle
             self.resolvedChain = resolvedChain
+			self.credentialIdentitySnapshots = credentialIdentitySnapshots
             self.installTerminfo = installTerminfo
 			self.authenticationMode = authenticationMode
 			self.historyEntryID = historyEntryID
@@ -186,6 +194,11 @@ public final class SessionStore: ObservableObject {
 	private let preflight: PreflightProbing
 	private let configSink: SSHConfigSink
 	private let historyRecorder: SessionHistoryRecording?
+	private let credentialIdentityStore: CredentialIdentityStore?
+	private let credentialIdentityPreparer:
+		CredentialIdentityConnectionPreparer?
+	private var preparedIdentityConnections:
+		[UUID: PreparedCredentialIdentityConnectionSet] = [:]
 
 	/// Per-tab attempt token — bumped on every `startConnection` invocation
 	/// so a stale async probe outcome from a cancelled retry cannot mutate
@@ -228,7 +241,10 @@ public final class SessionStore: ObservableObject {
 		preflight: PreflightProbing = Preflight(),
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
 		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
-		historyRecorder: SessionHistoryRecording? = nil
+		historyRecorder: SessionHistoryRecording? = nil,
+		credentialIdentityStore: CredentialIdentityStore? = nil,
+		credentialIdentityPreparer:
+			CredentialIdentityConnectionPreparer? = nil
 	) {
 		self.init(
 			askpassPath: askpassPath,
@@ -242,7 +258,9 @@ public final class SessionStore: ObservableObject {
 			configSink: configSink,
 			managedKeyStore: managedKeyStore,
 			credentialMaterialStore: nil,
-			historyRecorder: historyRecorder
+			historyRecorder: historyRecorder,
+			credentialIdentityStore: credentialIdentityStore,
+			credentialIdentityPreparer: credentialIdentityPreparer
 		)
 	}
 
@@ -258,7 +276,10 @@ public final class SessionStore: ObservableObject {
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
 		managedKeyStore: ManagedKeyStore,
 		credentialMaterialStore: SessionCredentialMaterialStore?,
-		historyRecorder: SessionHistoryRecording? = nil
+		historyRecorder: SessionHistoryRecording? = nil,
+		credentialIdentityStore: CredentialIdentityStore? = nil,
+		credentialIdentityPreparer:
+			CredentialIdentityConnectionPreparer? = nil
 	) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
@@ -285,6 +306,8 @@ public final class SessionStore: ObservableObject {
         self.preflight = preflight
         self.configSink = configSink
 		self.historyRecorder = historyRecorder
+		self.credentialIdentityStore = credentialIdentityStore
+		self.credentialIdentityPreparer = credentialIdentityPreparer
         do {
             self.hosts = try HostPersistence.load(from: hostsURL)
         } catch {
@@ -459,6 +482,9 @@ public final class SessionStore: ObservableObject {
             return id
         }
         let chain = chainResolution.connectionOrder
+		let identitySnapshots = credentialIdentitySnapshots(
+			for: chain + [host]
+		)
 
         // 2. Register the tab, then let the async connection task validate
 		// ancestor credentials through the credential-material lease.
@@ -475,6 +501,7 @@ public final class SessionStore: ObservableObject {
         controlMasterManager?.register(hostId: host.id, destination: destination)
         let id = UUID()
         tabs.append(Tab(id: id, host: host, resolvedChain: chain,
+						credentialIdentitySnapshots: identitySnapshots,
 						installTerminfo: installTerminfo,
 						authenticationMode: authenticationMode,
 						historyEntryID: historyEntryID,
@@ -510,9 +537,10 @@ public final class SessionStore: ObservableObject {
         connectionAttempts.removeValue(forKey: tabId)
 		clearSkippedForwardNotices(forTab: tabId)
         // Clean up any per-session ssh_config written for a chained connection.
-        if let configURL = tabs[idx].sshConfigURL {
-            configSink.cleanup(configURL)
-        }
+		if let configURL = tabs[idx].sshConfigURL {
+			configSink.cleanup(configURL)
+		}
+		stopPreparedIdentityConnections(tabId: tabId)
         let hostId = tabs[idx].host.id
         // Capture the closed tab's host snapshot before removal so we can
         // inspect its `forwards` to decide between immediate teardown and
@@ -693,41 +721,104 @@ public final class SessionStore: ObservableObject {
 			return
 		}
 
-		applyIfCurrent(tabId: tabId, token: token) { t in
-			// Capture a validated Output before transitioning to
-			// `.authenticating` so the surface never receives a sentinel
-			// command after a swallowed construction error.
-			do {
-				let output: SSHCommandBuilder.Output
-				if chain.isEmpty {
-					output = try SSHCommandBuilder.buildValidated(
-						host: host,
-						askpassPath: self.askpassPath,
-						knownHostsCaterm: self.knownHostsCaterm,
-						knownHostsUser: self.knownHostsUser,
-						installTerminfo: t.installTerminfo,
-						authenticationMode: t.authenticationMode,
-						automationEnvironment: t.automationController.environment
+		let preparedSet: PreparedCredentialIdentityConnectionSet?
+		do {
+			preparedSet = try await prepareIdentityConnections(
+				tab: tab
+			)
+		} catch {
+			applyIfCurrent(tabId: tabId, token: token) { current in
+				let message =
+					"Credential identity unavailable: \(error)"
+				current.state = .failed(
+					.networkUnreachable(
+						.other(code: 0, message: message)
 					)
-				} else {
-					output = try SSHCommandBuilder.build(
-						host: host,
-						ancestors: chain,
-						configSink: self.configSink,
-						askpassPath: self.askpassPath,
-						knownHostsCaterm: self.knownHostsCaterm,
-						knownHostsUser: self.knownHostsUser,
-						installTerminfo: t.installTerminfo,
-						automationEnvironment: t.automationController.environment
-					)
-				}
-				t.connectionOutput = output
-				t.sshConfigURL = output.configURL
-			} catch {
-				let msg = "Failed to build SSH command: \(error)"
-				t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
-				return
+				)
 			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		guard connectionAttempts[tabId] == token,
+		      let currentTab = tabs.first(where: { $0.id == tabId }) else {
+			preparedSet?.stop()
+			pendingStartTasks.removeValue(forKey: tabId)
+			return
+		}
+
+		let output: SSHCommandBuilder.Output
+		do {
+			let preparedHost = preparedSet?.host(id: host.id) ?? host
+			let preparedChain = chain.map {
+				preparedSet?.host(id: $0.id) ?? $0
+			}
+			if preparedChain.isEmpty {
+				output = try SSHCommandBuilder.buildValidated(
+					host: preparedHost,
+					askpassPath: askpassPath,
+					knownHostsCaterm: knownHostsCaterm,
+					knownHostsUser: knownHostsUser,
+					installTerminfo: currentTab.installTerminfo,
+					authenticationMode:
+						currentTab.authenticationMode,
+					automationEnvironment:
+						currentTab.automationController.environment,
+					credentialLookup:
+						preparedSet?.credentialLookup(id: host.id),
+					runtimeIdentity:
+						preparedSet?.runtimeIdentity(id: host.id)
+				)
+			} else {
+				output = try SSHCommandBuilder.build(
+					host: preparedHost,
+					ancestors: preparedChain,
+					configSink: configSink,
+					askpassPath: askpassPath,
+					knownHostsCaterm: knownHostsCaterm,
+					knownHostsUser: knownHostsUser,
+					installTerminfo: currentTab.installTerminfo,
+					automationEnvironment:
+						currentTab.automationController.environment,
+					credentialLookups:
+						preparedSet?.credentialLookups ?? [:],
+					runtimeIdentities:
+						preparedSet?.runtimeIdentities ?? [:]
+				)
+			}
+		} catch {
+			preparedSet?.stop()
+			applyIfCurrent(tabId: tabId, token: token) { current in
+				let message = "Failed to build SSH command: \(error)"
+				current.state = .failed(
+					.networkUnreachable(
+						.other(code: 0, message: message)
+					)
+				)
+			}
+			if connectionAttempts[tabId] == token {
+				pendingStartTasks.removeValue(forKey: tabId)
+			}
+			return
+		}
+
+		guard connectionAttempts[tabId] == token else {
+			if let configURL = output.configURL {
+				configSink.cleanup(configURL)
+			}
+			preparedSet?.stop()
+			pendingStartTasks.removeValue(forKey: tabId)
+			return
+		}
+		stopPreparedIdentityConnections(tabId: tabId)
+		if let preparedSet {
+			preparedIdentityConnections[tabId] = preparedSet
+		}
+		applyIfCurrent(tabId: tabId, token: token) { t in
+			t.connectionOutput = output
+			t.sshConfigURL = output.configURL
 			t.environmentRequestStatus = t.automationController.environment.isEmpty
 				? .notRequested
 				: .pending(names: t.automationController.environment.map(\.name))
@@ -747,6 +838,58 @@ public final class SessionStore: ObservableObject {
 	                            _ mutate: (inout Tab) -> Void) {
 		guard connectionAttempts[tabId] == token else { return }
 		update(tabId, mutate)
+	}
+
+	private func credentialIdentitySnapshots(
+		for hosts: [SSHHost]
+	) -> [UUID: CredentialIdentity] {
+		guard let credentialIdentityStore else { return [:] }
+		var snapshots: [UUID: CredentialIdentity] = [:]
+		for host in hosts {
+			guard let identityID =
+				host.credentialIdentity?.identityID,
+			      snapshots[identityID] == nil,
+			      let identity = credentialIdentityStore.identity(
+					id: identityID
+			      ) else {
+				continue
+			}
+			snapshots[identityID] = identity
+		}
+		return snapshots
+	}
+
+	private func prepareIdentityConnections(
+		tab: Tab
+	) async throws -> PreparedCredentialIdentityConnectionSet? {
+		guard let credentialIdentityPreparer else { return nil }
+		var prepared: [PreparedCredentialIdentityConnection] = []
+		do {
+			for host in tab.resolvedChain + [tab.host] {
+				let identity = host.credentialIdentity.flatMap {
+					tab.credentialIdentitySnapshots[$0.identityID]
+				}
+				prepared.append(
+					try await credentialIdentityPreparer.prepare(
+						host: host,
+						identity: identity
+					)
+				)
+				try Task.checkCancellation()
+			}
+			return PreparedCredentialIdentityConnectionSet(
+				connections: prepared
+			)
+		} catch {
+			prepared.forEach { $0.stop() }
+			throw error
+		}
+	}
+
+	private func stopPreparedIdentityConnections(tabId: UUID) {
+		preparedIdentityConnections.removeValue(
+			forKey: tabId
+		)?.stop()
 	}
 
 	/// Returns `nil` on success. Returns a `FailureKind` to abort the
@@ -800,6 +943,7 @@ public final class SessionStore: ObservableObject {
 			configSink.cleanup(oldURL)
 			tabs[idx].sshConfigURL = nil
 		}
+		stopPreparedIdentityConnections(tabId: tabId)
 		tabs[idx].connectionOutput = nil
 		update(tabId) {
 			$0.lastFailure = nil
@@ -929,6 +1073,7 @@ public final class SessionStore: ObservableObject {
             }
             tabs[idx].connectionOutput = nil
         }
+		stopPreparedIdentityConnections(tabId: tabId)
         update(tabId) { tab in
             let kind = FailureKind.classify(exitCode: exitCode,
                                             hadConnected: tab.hadConnected)
@@ -1049,6 +1194,9 @@ public final class SessionStore: ObservableObject {
 		_ host: SSHHost,
 		interaction: KeychainReadInteraction = .userInitiated
 	) async -> Bool {
+		if host.credentialIdentity != nil {
+			return false
+		}
 		var source = hosts.first(where: { $0.id == host.id })?.credential
 			?? host.credential
 		while true {
@@ -1394,5 +1542,48 @@ public final class SessionStore: ObservableObject {
 		// avoids HostPersistence.save touching tmp.
 		store.hosts = hosts
 		return store
+	}
+}
+
+private final class PreparedCredentialIdentityConnectionSet {
+	private let connections: [UUID: PreparedCredentialIdentityConnection]
+
+	init(connections: [PreparedCredentialIdentityConnection]) {
+		self.connections = Dictionary(
+			uniqueKeysWithValues: connections.map { ($0.host.id, $0) }
+		)
+	}
+
+	var credentialLookups:
+		[UUID: SSHCommandBuilder.CredentialLookup] {
+		connections.compactMapValues(\.credentialLookup)
+	}
+
+	var runtimeIdentities: [UUID: SSHRuntimeIdentityOptions] {
+		connections.compactMapValues(\.runtimeIdentity)
+	}
+
+	func host(id: UUID) -> SSHHost? {
+		connections[id]?.host
+	}
+
+	func credentialLookup(
+		id: UUID
+	) -> SSHCommandBuilder.CredentialLookup? {
+		connections[id]?.credentialLookup
+	}
+
+	func runtimeIdentity(
+		id: UUID
+	) -> SSHRuntimeIdentityOptions? {
+		connections[id]?.runtimeIdentity
+	}
+
+	func stop() {
+		connections.values.forEach { $0.stop() }
+	}
+
+	deinit {
+		stop()
 	}
 }

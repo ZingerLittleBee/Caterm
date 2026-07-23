@@ -121,7 +121,7 @@ let package = Package(
         ),
         .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory", "HostRepositoryCore", "HostAutomationRuntime"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory", "HostRepositoryCore", "HostAutomationRuntime", "CredentialIdentityStore", "CredentialIdentityRuntime"],
             path: "Sources/SessionStore"
         ),
         .target(
@@ -371,7 +371,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SessionStoreTests",
-            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder", "HostAutomationRuntime"],
+            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder", "HostAutomationRuntime", "CredentialIdentityStore", "CredentialIdentitySecurity", "CredentialIdentityRuntime"],
             path: "Tests/SessionStoreTests"
         ),
         .testTarget(

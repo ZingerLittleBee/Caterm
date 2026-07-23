@@ -5,6 +5,7 @@ import ConfigStore
 import CredentialIdentitySecurity
 import CredentialIdentityStore
 import CredentialIdentitySync
+import CredentialIdentityRuntime
 import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
@@ -79,7 +80,9 @@ struct CatermApp: App {
     let history = makeSessionHistoryStore()
     let session = makeStore(
       managedKeyStore: mngs,
-      historyRecorder: history
+      historyRecorder: history,
+      credentialIdentityStore: identityStore,
+      credentialIdentityMaterialStore: identityMaterialStore
     )
     _historyStore = StateObject(wrappedValue: history)
     let surfaceRegistry = SurfaceRegistry()
@@ -909,7 +912,9 @@ struct LandingView: View {
 @MainActor
 private func makeStore(
   managedKeyStore: ManagedKeyStore,
-  historyRecorder: SessionHistoryRecording
+  historyRecorder: SessionHistoryRecording,
+  credentialIdentityStore: CredentialIdentityStore,
+  credentialIdentityMaterialStore: CredentialIdentityMaterialStore
 ) -> SessionStore {
   let supportDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -954,7 +959,13 @@ private func makeStore(
     keychain: keychain,
     controlMasterManager: ControlMasterManager.shared,
     managedKeyStore: managedKeyStore,
-    historyRecorder: historyRecorder)
+    historyRecorder: historyRecorder,
+    credentialIdentityStore: credentialIdentityStore,
+    credentialIdentityPreparer: CredentialIdentityConnectionPreparer(
+      materialStore: credentialIdentityMaterialStore,
+      managedKeyStore: managedKeyStore
+    )
+  )
 }
 
 @MainActor
