@@ -151,11 +151,24 @@ if let chainJSON = env[SSHCredentialEnvironmentKey.chain.rawValue], !chainJSON.i
         exit(2)
     }
 
-    let account = SSHCredentialContract.account(hostID: hostId, kind: kind)
+    let entry = chain.first { $0.hostId == hostId }
+    let account: String = switch kind {
+    case .password:
+        entry?.passwordAccount
+            ?? SSHCredentialContract.account(hostID: hostId, kind: kind)
+    case .keyPassphrase:
+        entry?.passphraseAccount
+            ?? SSHCredentialContract.account(hostID: hostId, kind: kind)
+    }
     let accessGroup = env[SSHCredentialEnvironmentKey.accessGroup.rawValue]
     let groupTag = accessGroup ?? "<nil>"
-    let store = KeychainStore(service: SSHCredentialContract.keychainService,
-                              accessGroup: accessGroup)
+    let store = KeychainStore(
+        service: entry?.credentialService
+            ?? SSHCredentialContract.keychainService,
+        accessGroup: accessGroup,
+        useDataProtectionKeychain:
+            entry?.useDataProtectionKeychain ?? false
+    )
     do {
         let secret = try store.get(
             account: account,
@@ -186,24 +199,34 @@ if let chainJSON = env[SSHCredentialEnvironmentKey.chain.rawValue], !chainJSON.i
     }
 }
 
-guard let hostId = env[SSHCredentialEnvironmentKey.hostID.rawValue], !hostId.isEmpty else {
-    FileHandle.standardError.write(Data("CATERM_HOST_ID not set\n".utf8))
-    logLine("FAIL exit=1 reason=CATERM_HOST_ID-not-set")
-    exit(1)
-}
+let hostId = env[SSHCredentialEnvironmentKey.hostID.rawValue]
+let explicitAccount =
+    env[SSHCredentialEnvironmentKey.credentialAccount.rawValue]
 guard let rawKind = env[SSHCredentialEnvironmentKey.credentialKind.rawValue],
       let kind = SSHCredentialKind(rawValue: rawKind) else {
     FileHandle.standardError.write(Data("CATERM_ASKPASS_KIND invalid\n".utf8))
-    logLine("FAIL exit=1 reason=CATERM_ASKPASS_KIND-invalid host=\(hostId)")
+    logLine("FAIL exit=1 reason=CATERM_ASKPASS_KIND-invalid host=\(hostId ?? "<none>")")
     exit(1)
 }
 
-let account = SSHCredentialContract.account(hostID: hostId, kind: kind)
+guard explicitAccount != nil || !(hostId ?? "").isEmpty else {
+    FileHandle.standardError.write(Data(
+        "CATERM_HOST_ID or CATERM_ASKPASS_ACCOUNT not set\n".utf8
+    ))
+    logLine("FAIL exit=1 reason=credential-account-not-set")
+    exit(1)
+}
+let account = explicitAccount
+    ?? SSHCredentialContract.account(hostID: hostId ?? "", kind: kind)
 let accessGroup = env[SSHCredentialEnvironmentKey.accessGroup.rawValue]
 let groupTag = accessGroup ?? "<nil>"
 let store = KeychainStore(
-    service: SSHCredentialContract.keychainService,
-    accessGroup: accessGroup
+    service: env[SSHCredentialEnvironmentKey.credentialService.rawValue]
+        ?? SSHCredentialContract.keychainService,
+    accessGroup: accessGroup,
+    useDataProtectionKeychain:
+        env[SSHCredentialEnvironmentKey.dataProtectionKeychain.rawValue]
+            == SSHCredentialContract.dataProtectionKeychainEnabledValue
 )
 
 do {

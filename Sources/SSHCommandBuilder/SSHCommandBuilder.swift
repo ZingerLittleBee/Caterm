@@ -2,6 +2,35 @@ import Foundation
 import SSHCredentialContract
 
 public enum SSHCommandBuilder {
+	public struct CredentialLookup: Equatable, Sendable {
+		public let service: String
+		public let passwordAccount: String?
+		public let passphraseAccount: String?
+		public let useDataProtectionKeychain: Bool
+
+		public init(
+			service: String,
+			passwordAccount: String? = nil,
+			passphraseAccount: String? = nil,
+			useDataProtectionKeychain: Bool
+		) {
+			self.service = service
+			self.passwordAccount = passwordAccount
+			self.passphraseAccount = passphraseAccount
+			self.useDataProtectionKeychain =
+				useDataProtectionKeychain
+		}
+
+		func account(for kind: SSHCredentialKind) -> String? {
+			switch kind {
+			case .password:
+				passwordAccount
+			case .keyPassphrase:
+				passphraseAccount
+			}
+		}
+	}
+
 	public struct Output: Equatable {
 		public let command: String
 		public let env: [(String, String)]
@@ -98,7 +127,8 @@ public enum SSHCommandBuilder {
 		knownHostsUser: String,
 		installTerminfo: Bool = false,
 		authenticationMode: SSHAuthenticationMode = .configuredCredential,
-		automationEnvironment: [HostEnvironmentVariable]? = nil
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookup: CredentialLookup? = nil
 	) -> Output {
 		do {
 			return try buildValidated(
@@ -108,7 +138,8 @@ public enum SSHCommandBuilder {
 				knownHostsUser: knownHostsUser,
 				installTerminfo: installTerminfo,
 				authenticationMode: authenticationMode,
-				automationEnvironment: automationEnvironment
+				automationEnvironment: automationEnvironment,
+				credentialLookup: credentialLookup
 			)
 		} catch {
 			NSLog("[SSHCommandBuilder] failed to build SSH command: \(error)")
@@ -126,7 +157,8 @@ public enum SSHCommandBuilder {
 		knownHostsUser: String,
 		installTerminfo: Bool = false,
 		authenticationMode: SSHAuthenticationMode = .configuredCredential,
-		automationEnvironment: [HostEnvironmentVariable]? = nil
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookup: CredentialLookup? = nil
 	) throws -> Output {
 		try _buildValidated(
 			host: host,
@@ -137,7 +169,8 @@ public enum SSHCommandBuilder {
 			sshPath: "/usr/bin/ssh",
 			terminfoDump: TerminfoSource.terminfoDump(),
 			authenticationMode: authenticationMode,
-			automationEnvironment: automationEnvironment
+			automationEnvironment: automationEnvironment,
+			credentialLookup: credentialLookup
 		)
 	}
 
@@ -156,7 +189,8 @@ public enum SSHCommandBuilder {
 		sshPath: String,
 		terminfoDump: String?,
 		authenticationMode: SSHAuthenticationMode = .configuredCredential,
-		automationEnvironment: [HostEnvironmentVariable]? = nil
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookup: CredentialLookup? = nil
 	) -> Output {
 		do {
 			return try _buildValidated(
@@ -168,7 +202,8 @@ public enum SSHCommandBuilder {
 				sshPath: sshPath,
 				terminfoDump: terminfoDump,
 				authenticationMode: authenticationMode,
-				automationEnvironment: automationEnvironment
+				automationEnvironment: automationEnvironment,
+				credentialLookup: credentialLookup
 			)
 		} catch {
 			NSLog("[SSHCommandBuilder] failed to build test SSH command: \(error)")
@@ -185,7 +220,8 @@ public enum SSHCommandBuilder {
 		sshPath: String,
 		terminfoDump: String?,
 		authenticationMode: SSHAuthenticationMode,
-		automationEnvironment: [HostEnvironmentVariable]?
+		automationEnvironment: [HostEnvironmentVariable]?,
+		credentialLookup: CredentialLookup?
 	) throws -> Output {
 		let sshArg: Arg = sshPath == "/usr/bin/ssh" ? .raw(sshPath) : .quoted(sshPath)
 		var args: [Arg] = [sshArg]
@@ -200,11 +236,23 @@ public enum SSHCommandBuilder {
 
 		var env: [(String, String)] = []
 		if let kind = plan.credentialKind {
-			env = SSHCredentialContract.askpassEnvironment(
-				executable: askpassPath,
-				hostID: host.id,
-				kind: kind
-			)
+			if let credentialLookup,
+			   let account = credentialLookup.account(for: kind) {
+				env = SSHCredentialContract.askpassEnvironment(
+					executable: askpassPath,
+					kind: kind,
+					service: credentialLookup.service,
+					account: account,
+					useDataProtectionKeychain:
+						credentialLookup.useDataProtectionKeychain
+				)
+			} else {
+				env = SSHCredentialContract.askpassEnvironment(
+					executable: askpassPath,
+					hostID: host.id,
+					kind: kind
+				)
+			}
 		}
 
 		let resolvedAutomationEnvironment = try environment(
@@ -263,7 +311,8 @@ public enum SSHCommandBuilder {
 		installTerminfo: Bool = false,
 		sshPath: String = "/usr/bin/ssh",
 		terminfoDump: String? = nil,
-		automationEnvironment: [HostEnvironmentVariable]? = nil
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookups: [UUID: CredentialLookup] = [:]
 	) throws -> Output {
 		// Resolve the terminfo dump from the bundle when not supplied by the
 		// caller. This mirrors the direct-path build overload which always
@@ -279,7 +328,8 @@ public enum SSHCommandBuilder {
 				sshPath: sshPath,
 				terminfoDump: resolvedDump,
 				authenticationMode: .configuredCredential,
-				automationEnvironment: automationEnvironment
+				automationEnvironment: automationEnvironment,
+				credentialLookup: credentialLookups[host.id]
 			)
 		}
 		return try buildChain(
@@ -292,7 +342,8 @@ public enum SSHCommandBuilder {
 			installTerminfo: installTerminfo,
 			sshPath: sshPath,
 			terminfoDump: resolvedDump,
-			automationEnvironment: automationEnvironment
+			automationEnvironment: automationEnvironment,
+			credentialLookups: credentialLookups
 		)
 	}
 
@@ -310,7 +361,8 @@ public enum SSHCommandBuilder {
 		installTerminfo: Bool,
 		sshPath: String,
 		terminfoDump: String?,
-		automationEnvironment: [HostEnvironmentVariable]?
+		automationEnvironment: [HostEnvironmentVariable]?,
+		credentialLookups: [UUID: CredentialLookup]
 	) throws -> Output {
 		// Full hop list in dial order: [deepest ancestor … target]
 		let hops: [SSHHost] = ancestors + [target]
@@ -376,6 +428,13 @@ public enum SSHCommandBuilder {
 				"hostname": hop.hostname,
 				"port": hop.port,
 			]
+			if let lookup = credentialLookups[hop.id] {
+				entry["credentialService"] = lookup.service
+				entry["passwordAccount"] = lookup.passwordAccount
+				entry["passphraseAccount"] = lookup.passphraseAccount
+				entry["useDataProtectionKeychain"] =
+					lookup.useDataProtectionKeychain
+			}
 			if case let .keyFile(keyPath, _) = hop.credential {
 				entry["keyPath"] = keyPath
 			}

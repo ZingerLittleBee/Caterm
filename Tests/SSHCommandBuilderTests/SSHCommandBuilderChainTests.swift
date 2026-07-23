@@ -141,6 +141,55 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 		}
 	}
 
+	func testChainCarriesPerHopIdentityCredentialLocations() throws {
+		let bastion = host("bastion", "rh-bastion")
+		let target = host(
+			"target",
+			"rh-target",
+			jump: "rh-bastion",
+			cred: .keyFile(keyPath: "/managed/key", hasPassphrase: true)
+		)
+		let lookup = SSHCommandBuilder.CredentialLookup(
+			service: "com.caterm.identities",
+			passphraseAccount: "identity.material.passphrase",
+			useDataProtectionKeychain: true
+		)
+		let output = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [bastion],
+			configSink: InMemorySSHConfigSink(),
+			askpassPath: "/askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			terminfoDump: "",
+			credentialLookups: [target.id: lookup]
+		)
+		let json = try XCTUnwrap(
+			output.env.first { $0.0 == "CATERM_CHAIN" }?.1
+		)
+		let entries = try XCTUnwrap(
+			JSONSerialization.jsonObject(with: Data(json.utf8))
+				as? [[String: Any]]
+		)
+		let targetEntry = try XCTUnwrap(entries.first {
+			$0["alias"] as? String
+				== "caterm-h-\(target.id.uuidString)"
+		})
+
+		XCTAssertEqual(
+			targetEntry["credentialService"] as? String,
+			"com.caterm.identities"
+		)
+		XCTAssertEqual(
+			targetEntry["passphraseAccount"] as? String,
+			"identity.material.passphrase"
+		)
+		XCTAssertEqual(
+			targetEntry["useDataProtectionKeychain"] as? Bool,
+			true
+		)
+	}
+
 	func testCATERMChainStatePathTracksConfigFilePath() throws {
 		let bastion = host("bastion", "rh-bastion")
 		let target = host("target", "rh-target", jump: "rh-bastion")

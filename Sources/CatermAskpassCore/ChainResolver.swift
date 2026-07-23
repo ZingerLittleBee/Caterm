@@ -7,15 +7,27 @@ public struct AskpassChainEntry: Decodable, Equatable {
 	public let hostname: String
 	public let port: Int
 	public let keyPath: String?
+	public let credentialService: String?
+	public let passwordAccount: String?
+	public let passphraseAccount: String?
+	public let useDataProtectionKeychain: Bool?
 
 	public init(hostId: String, alias: String, user: String,
-	            hostname: String, port: Int, keyPath: String?) {
+	            hostname: String, port: Int, keyPath: String?,
+	            credentialService: String? = nil,
+	            passwordAccount: String? = nil,
+	            passphraseAccount: String? = nil,
+	            useDataProtectionKeychain: Bool? = nil) {
 		self.hostId = hostId
 		self.alias = alias
 		self.user = user
 		self.hostname = hostname
 		self.port = port
 		self.keyPath = keyPath
+		self.credentialService = credentialService
+		self.passwordAccount = passwordAccount
+		self.passphraseAccount = passphraseAccount
+		self.useDataProtectionKeychain = useDataProtectionKeychain
 	}
 }
 

@@ -34,12 +34,6 @@ public enum CredentialIdentityMaterialStoreError: Error, Equatable {
 }
 
 public actor CredentialIdentityMaterialStore {
-	private enum SecretKind: String, CaseIterable {
-		case password
-		case passphrase
-		case secureEnclaveKey
-	}
-
 	private let secrets: any IdentitySecretStoring
 	private let managedKeys: ManagedKeyStore
 	private let secureEnclave: any SecureEnclaveIdentityKeyProviding
@@ -249,7 +243,11 @@ public actor CredentialIdentityMaterialStore {
 
 	private func delete(materialID: CredentialMaterialID) async throws {
 		var firstError: (any Error)?
-		for kind in SecretKind.allCases {
+		for kind in [
+			CredentialIdentityKeychainContract.SecretKind.password,
+			.passphrase,
+			.secureEnclaveKey,
+		] {
 			do {
 				try secrets.delete(account: account(materialID, kind: kind))
 			} catch {
@@ -273,7 +271,7 @@ public actor CredentialIdentityMaterialStore {
 	private func writeSecret(
 		_ data: Data?,
 		materialID: CredentialMaterialID,
-		kind: SecretKind
+		kind: CredentialIdentityKeychainContract.SecretKind
 	) throws {
 		let account = account(materialID, kind: kind)
 		if let data {
@@ -285,8 +283,11 @@ public actor CredentialIdentityMaterialStore {
 
 	private func account(
 		_ materialID: CredentialMaterialID,
-		kind: SecretKind
+		kind: CredentialIdentityKeychainContract.SecretKind
 	) -> String {
-		"identity.\(materialID.rawValue.uuidString).\(kind.rawValue)"
+		CredentialIdentityKeychainContract.account(
+			materialID: materialID,
+			kind: kind
+		)
 	}
 }

@@ -20,7 +20,7 @@ public final class IdentityKeychainSecretStore: IdentitySecretStoring,
 	private let accessGroup: String?
 
 	public init(
-		service: String = "com.caterm.app.credential-identities",
+		service: String = CredentialIdentityKeychainContract.service,
 		accessGroup: String? = nil
 	) {
 		self.service = service

@@ -39,15 +39,18 @@ private struct SecurityKeychainItemReader: KeychainItemReading {
 public final class KeychainStore {
     public let service: String
     public let accessGroup: String?
+    public let useDataProtectionKeychain: Bool
     private let itemReader: any KeychainItemReading
 
     public convenience init(
         service: String = SSHCredentialContract.keychainService,
-        accessGroup: String?
+        accessGroup: String?,
+        useDataProtectionKeychain: Bool = false
     ) {
         self.init(
             service: service,
             accessGroup: accessGroup,
+            useDataProtectionKeychain: useDataProtectionKeychain,
             itemReader: SecurityKeychainItemReader()
         )
     }
@@ -55,10 +58,12 @@ public final class KeychainStore {
     init(
         service: String,
         accessGroup: String?,
+        useDataProtectionKeychain: Bool = false,
         itemReader: any KeychainItemReading
     ) {
         self.service = service
         self.accessGroup = accessGroup
+        self.useDataProtectionKeychain = useDataProtectionKeychain
         self.itemReader = itemReader
     }
 
@@ -73,7 +78,9 @@ public final class KeychainStore {
 
         var addQuery = baseQuery(account: account)
         addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
+        addQuery[kSecAttrAccessible as String] = useDataProtectionKeychain
+            ? kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            : kSecAttrAccessibleWhenUnlocked
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         if addStatus != errSecSuccess { throw KeychainError.osStatus(addStatus) }
     }
@@ -118,6 +125,11 @@ public final class KeychainStore {
             kSecReturnAttributes as String: true,
         ]
         if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
+        #if os(macOS)
+        if useDataProtectionKeychain {
+            query[kSecUseDataProtectionKeychain as String] = true
+        }
+        #endif
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return }
@@ -150,6 +162,11 @@ public final class KeychainStore {
             kSecAttrAccount as String: account,
         ]
         if let accessGroup { q[kSecAttrAccessGroup as String] = accessGroup }
+        #if os(macOS)
+        if useDataProtectionKeychain {
+            q[kSecUseDataProtectionKeychain as String] = true
+        }
+        #endif
         return q
     }
 }

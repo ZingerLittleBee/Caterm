@@ -64,6 +64,35 @@ final class PasswordPathTests: XCTestCase {
         XCTAssertEqual(envDict["CATERM_ASKPASS_KIND"], "password")
     }
 
+	func testIdentityCredentialLookupUsesExplicitKeychainLocation() throws {
+		let result = try SSHCommandBuilder.buildValidated(
+			host: host,
+			askpassPath: "/x/askpass",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			credentialLookup: .init(
+				service: "com.caterm.identities",
+				passwordAccount: "identity.material.password",
+				useDataProtectionKeychain: true
+			)
+		)
+		let environment = Dictionary(uniqueKeysWithValues: result.env)
+
+		XCTAssertEqual(
+			environment["CATERM_ASKPASS_SERVICE"],
+			"com.caterm.identities"
+		)
+		XCTAssertEqual(
+			environment["CATERM_ASKPASS_ACCOUNT"],
+			"identity.material.password"
+		)
+		XCTAssertEqual(
+			environment["CATERM_ASKPASS_DATA_PROTECTION"],
+			"1"
+		)
+		XCTAssertNil(environment["CATERM_HOST_ID"])
+	}
+
     func testNonDefaultPort() {
         var h = host
         h.port = 2222

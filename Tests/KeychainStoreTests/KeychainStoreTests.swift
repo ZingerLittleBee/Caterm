@@ -131,6 +131,34 @@ final class KeychainStoreTests: XCTestCase {
             reader.lastQuery?[kSecUseAuthenticationContext as String]
         )
     }
+
+	func testDataProtectionReadTargetsDataProtectionKeychain() throws {
+		let reader = CapturingKeychainItemReader(
+			result: KeychainItemReadResult(
+				status: errSecSuccess,
+				value: Data("secret".utf8) as CFData
+			)
+		)
+		let store = KeychainStore(
+			service: testService,
+			accessGroup: nil,
+			useDataProtectionKeychain: true,
+			itemReader: reader
+		)
+
+		XCTAssertEqual(
+			try store.get(account: testAccount),
+			"secret"
+		)
+		#if os(macOS)
+		XCTAssertEqual(
+			reader.lastQuery?[
+				kSecUseDataProtectionKeychain as String
+			] as? Bool,
+			true
+		)
+		#endif
+	}
 }
 
 private final class CapturingKeychainItemReader: KeychainItemReading {
