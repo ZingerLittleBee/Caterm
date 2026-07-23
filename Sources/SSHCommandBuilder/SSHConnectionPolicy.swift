@@ -79,17 +79,17 @@ package enum SSHConnectionPolicy {
 		role: SSHHopRole,
 		knownHostsFiles: [String],
 		authenticationMode: SSHAuthenticationMode = .configuredCredential,
-		runtimeIdentity: SSHRuntimeIdentityOptions? = nil
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil,
+		controlPath: String? = nil
 	) -> SSHHostPlan {
+		let resolvedControlPath = controlPath
+			?? "~/Library/Caches/Caterm/cm/\(host.id.uuidString).sock"
 		var options: [SSHOption] = [
 			.option("StrictHostKeyChecking", "accept-new"),
 			.option("UserKnownHostsFile", knownHostsFiles),
 			.option("ControlMaster", "auto"),
 			.option("ControlPersist", controlPersist),
-			.option(
-				"ControlPath",
-				"~/Library/Caches/Caterm/cm/\(host.id.uuidString).sock"
-			),
+			.option("ControlPath", resolvedControlPath),
 		]
 
 		let credentialKind: SSHCredentialKind?

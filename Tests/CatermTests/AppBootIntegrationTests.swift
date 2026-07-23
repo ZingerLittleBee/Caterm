@@ -188,7 +188,12 @@ final class AppBootIntegrationTests: XCTestCase {
 
 /// Spy that records `register` calls in addition to teardown. Lives at file
 /// scope so the test methods can assert against `registered`.
-private final class ControlMasterIntegrationSpy: ControlMasterTearDowning, @unchecked Sendable {
+private final class ControlMasterIntegrationSpy: ControlMasterManaging, @unchecked Sendable {
+	@MainActor
+	func socketPath(for hostId: UUID) -> URL {
+		URL(fileURLWithPath: "/tmp/\(hostId.uuidString).sock")
+	}
+
 	struct Registration: Equatable {
 		let hostId: UUID
 		let destination: String

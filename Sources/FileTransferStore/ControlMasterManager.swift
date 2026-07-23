@@ -59,7 +59,7 @@ public final class ControlMasterManager {
         self.runner = runner
     }
 
-    public func socketPath(for hostId: UUID) -> URL {
+    public nonisolated func socketPath(for hostId: UUID) -> URL {
         cacheDir.appendingPathComponent("\(hostId.uuidString).sock")
     }
 

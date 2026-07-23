@@ -12,9 +12,14 @@ import XCTest
 @MainActor
 final class CloseTabTeardownTests: XCTestCase {
 
-	private final class RecordingTearDowner: ControlMasterTearDowning, @unchecked Sendable {
+	private final class RecordingTearDowner: ControlMasterManaging, @unchecked Sendable {
 		var tornDown: [UUID] = []
 		var tearDownAllCount = 0
+
+		@MainActor
+		func socketPath(for hostId: UUID) -> URL {
+			URL(fileURLWithPath: "/tmp/\(hostId.uuidString).sock")
+		}
 
 		@MainActor
 		func register(hostId: UUID, destination: String) {}

@@ -26,17 +26,17 @@ public struct SessionStoreCredentialIdentityMigrationError: Error {
 // from SSHCommandBuilder doesn't collide with Foundation.NSHost. ObservableObject
 // lives in Combine. UI types (Caterm executable target) wrap us via @StateObject.
 
-/// Minimal protocol covering the ControlMaster lifecycle hooks SessionStore
-/// needs. Declared in SessionStore to avoid taking a hard dependency on
-/// FileTransferStore. The `Caterm` target supplies the real conformance via
-/// an extension on `ControlMasterManager`.
+/// Minimal protocol covering the ControlMaster path and lifecycle hooks
+/// SessionStore needs. Declared here to avoid taking a hard dependency on
+/// FileTransferStore. The Caterm target supplies the real conformance.
 ///
 /// `register` is synchronous and main-actor-isolated: it just records the
 /// (hostId, destination) tuple so a subsequent `isAlive(hostId:)` check
 /// (in `RemoteFileSystem`) and `tearDown(hostId:)` call (in
 /// `applicationWillTerminate`) have something to act on. Without it, the
 /// file drawer always reports "Reconnect host to browse files".
-public protocol ControlMasterTearDowning: Sendable {
+public protocol ControlMasterManaging: Sendable {
+    @MainActor func socketPath(for hostId: UUID) -> URL
     @MainActor func register(hostId: UUID, destination: String)
     func tearDown(hostId: UUID) async
     func tearDownAll() async
@@ -194,7 +194,7 @@ public final class SessionStore: ObservableObject {
     /// connections when the last tab for a host closes (after a grace
     /// period). Tests can pass a spy implementing the protocol; production
     /// passes `ControlMasterManager.shared` from the Caterm target.
-    private let controlMasterManager: ControlMasterTearDowning?
+    private let controlMasterManager: ControlMasterManaging?
 
     /// Pending teardown work items keyed by host id. We use
     /// `DispatchWorkItem` so a re-opened tab for the same host can cancel
@@ -247,7 +247,7 @@ public final class SessionStore: ObservableObject {
 		accessGroup: String?,
 		hostsURL: URL,
 		keychain: KeychainStore,
-		controlMasterManager: ControlMasterTearDowning? = nil,
+		controlMasterManager: ControlMasterManaging? = nil,
 		preflight: PreflightProbing = Preflight(),
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
 		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
@@ -281,7 +281,7 @@ public final class SessionStore: ObservableObject {
 		accessGroup: String?,
 		hostsURL: URL,
 		keychain: KeychainStore,
-		controlMasterManager: ControlMasterTearDowning? = nil,
+		controlMasterManager: ControlMasterManaging? = nil,
 		preflight: PreflightProbing = Preflight(),
 		configSink: SSHConfigSink = CatermSSHConfigSink(),
 		managedKeyStore: ManagedKeyStore,
@@ -822,6 +822,9 @@ public final class SessionStore: ObservableObject {
 			let preparedChain = chain.map {
 				preparedSet?.host(id: $0.id) ?? $0
 			}
+			let controlPaths = controlPaths(
+				for: preparedChain + [preparedHost]
+			)
 			if preparedChain.isEmpty {
 				output = try SSHCommandBuilder.buildValidated(
 					host: preparedHost,
@@ -836,7 +839,8 @@ public final class SessionStore: ObservableObject {
 					credentialLookup:
 						preparedSet?.credentialLookup(id: host.id),
 					runtimeIdentity:
-						preparedSet?.runtimeIdentity(id: host.id)
+						preparedSet?.runtimeIdentity(id: host.id),
+					controlPath: controlPaths[host.id]
 				)
 			} else {
 				output = try SSHCommandBuilder.build(
@@ -852,7 +856,8 @@ public final class SessionStore: ObservableObject {
 					credentialLookups:
 						preparedSet?.credentialLookups ?? [:],
 					runtimeIdentities:
-						preparedSet?.runtimeIdentities ?? [:]
+						preparedSet?.runtimeIdentities ?? [:],
+					controlPaths: controlPaths
 				)
 			}
 		} catch {
@@ -1572,6 +1577,15 @@ public final class SessionStore: ObservableObject {
 		credentialAvailabilityRevision &+= 1
 	}
 
+	private func controlPaths(for hosts: [SSHHost]) -> [UUID: String] {
+		guard let controlMasterManager else { return [:] }
+		return Dictionary(
+			uniqueKeysWithValues: hosts.map {
+				($0.id, controlMasterManager.socketPath(for: $0.id).path)
+			}
+		)
+	}
+
 	// MARK: - Test helpers (internal — accessible via @testable import)
 
 	/// Inject a `sshConfigURL` onto a tab without going through the async
@@ -1591,6 +1605,8 @@ public final class SessionStore: ObservableObject {
 	internal func populateChainOutputForTest(tabId: UUID, installTerminfo: Bool = false) {
 		guard let idx = tabs.firstIndex(where: { $0.id == tabId }) else { return }
 		do {
+			let hosts = tabs[idx].resolvedChain + [tabs[idx].host]
+			let controlPaths = controlPaths(for: hosts)
 			let output = try SSHCommandBuilder.build(
 				host: tabs[idx].host,
 				ancestors: tabs[idx].resolvedChain,
@@ -1598,7 +1614,8 @@ public final class SessionStore: ObservableObject {
 				askpassPath: askpassPath,
 				knownHostsCaterm: knownHostsCaterm,
 				knownHostsUser: knownHostsUser,
-				installTerminfo: installTerminfo
+				installTerminfo: installTerminfo,
+				controlPaths: controlPaths
 			)
 			tabs[idx].connectionOutput = output
 			tabs[idx].sshConfigURL = output.configURL

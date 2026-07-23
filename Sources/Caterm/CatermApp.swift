@@ -186,14 +186,9 @@ struct CatermApp: App {
     if !cloudSyncDisabled {
       cloudSync.startObservingAccountChanges()
     }
-    // Per-app FileTransferStore. Closures capture plain value types
-    // (URLs / paths) rather than `ControlMasterManager` itself so the
-    // closure body remains nonisolated-callable. Liveness goes through
-    // `ControlMasterManager.shared`'s async `isAlive(hostId:)`, which
-    // crosses isolation properly.
-    let cmDir =
-      (try? CacheDirectories.controlMasterDir())
-      ?? URL(fileURLWithPath: NSTemporaryDirectory())
+    // Terminal sessions, file browsing, and transfers share one
+    // ControlMaster manager so every consumer resolves the exact same socket.
+    let controlMasterManager = ControlMasterManager.shared
     let knownCaterm = URL(fileURLWithPath: session.knownHostsCaterm)
     let knownUser = URL(fileURLWithPath: session.knownHostsUser)
     // SettingsStore: loaded eagerly through `BootSequence.run` so the
@@ -306,7 +301,7 @@ struct CatermApp: App {
     _fileTransferStore = StateObject(
       wrappedValue: FileTransferStore(
         controlPathFor: { hostId in
-          cmDir.appendingPathComponent("\(hostId.uuidString).sock")
+          controlMasterManager.socketPath(for: hostId)
         },
         credentialsFor: { _ in
           SFTPCredentials(
@@ -315,7 +310,7 @@ struct CatermApp: App {
             strictHostKeyChecking: .acceptNew
           )
         },
-        liveness: ControlMasterManager.shared
+        liveness: controlMasterManager
       ))
     // Wire the live-reload pipeline. `LiveReloadDispatcher` posts
     // `catermNewSurfaceBanner` / `catermConfigDiagnostics`; active

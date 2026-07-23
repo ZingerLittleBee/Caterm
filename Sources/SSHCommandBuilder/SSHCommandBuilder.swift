@@ -129,7 +129,8 @@ public enum SSHCommandBuilder {
 		authenticationMode: SSHAuthenticationMode = .configuredCredential,
 		automationEnvironment: [HostEnvironmentVariable]? = nil,
 		credentialLookup: CredentialLookup? = nil,
-		runtimeIdentity: SSHRuntimeIdentityOptions? = nil
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil,
+		controlPath: String? = nil
 	) -> Output {
 		do {
 			return try buildValidated(
@@ -141,7 +142,8 @@ public enum SSHCommandBuilder {
 				authenticationMode: authenticationMode,
 				automationEnvironment: automationEnvironment,
 				credentialLookup: credentialLookup,
-				runtimeIdentity: runtimeIdentity
+				runtimeIdentity: runtimeIdentity,
+				controlPath: controlPath
 			)
 		} catch {
 			NSLog("[SSHCommandBuilder] failed to build SSH command: \(error)")
@@ -161,7 +163,8 @@ public enum SSHCommandBuilder {
 		authenticationMode: SSHAuthenticationMode = .configuredCredential,
 		automationEnvironment: [HostEnvironmentVariable]? = nil,
 		credentialLookup: CredentialLookup? = nil,
-		runtimeIdentity: SSHRuntimeIdentityOptions? = nil
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil,
+		controlPath: String? = nil
 	) throws -> Output {
 		try _buildValidated(
 			host: host,
@@ -174,7 +177,8 @@ public enum SSHCommandBuilder {
 			authenticationMode: authenticationMode,
 			automationEnvironment: automationEnvironment,
 			credentialLookup: credentialLookup,
-			runtimeIdentity: runtimeIdentity
+			runtimeIdentity: runtimeIdentity,
+			controlPath: controlPath
 		)
 	}
 
@@ -195,7 +199,8 @@ public enum SSHCommandBuilder {
 		authenticationMode: SSHAuthenticationMode = .configuredCredential,
 		automationEnvironment: [HostEnvironmentVariable]? = nil,
 		credentialLookup: CredentialLookup? = nil,
-		runtimeIdentity: SSHRuntimeIdentityOptions? = nil
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil,
+		controlPath: String? = nil
 	) -> Output {
 		do {
 			return try _buildValidated(
@@ -209,7 +214,8 @@ public enum SSHCommandBuilder {
 				authenticationMode: authenticationMode,
 				automationEnvironment: automationEnvironment,
 				credentialLookup: credentialLookup,
-				runtimeIdentity: runtimeIdentity
+				runtimeIdentity: runtimeIdentity,
+				controlPath: controlPath
 			)
 		} catch {
 			NSLog("[SSHCommandBuilder] failed to build test SSH command: \(error)")
@@ -228,7 +234,8 @@ public enum SSHCommandBuilder {
 		authenticationMode: SSHAuthenticationMode,
 		automationEnvironment: [HostEnvironmentVariable]?,
 		credentialLookup: CredentialLookup?,
-		runtimeIdentity: SSHRuntimeIdentityOptions?
+		runtimeIdentity: SSHRuntimeIdentityOptions?,
+		controlPath: String?
 	) throws -> Output {
 		let sshArg: Arg = sshPath == "/usr/bin/ssh" ? .raw(sshPath) : .quoted(sshPath)
 		var args: [Arg] = [sshArg]
@@ -238,7 +245,8 @@ public enum SSHCommandBuilder {
 			role: .target,
 			knownHostsFiles: [knownHostsCaterm, knownHostsUser],
 			authenticationMode: authenticationMode,
-			runtimeIdentity: runtimeIdentity
+			runtimeIdentity: runtimeIdentity,
+			controlPath: controlPath
 		)
 		args += try invocationArgs(for: plan.options)
 
@@ -321,7 +329,8 @@ public enum SSHCommandBuilder {
 		terminfoDump: String? = nil,
 		automationEnvironment: [HostEnvironmentVariable]? = nil,
 		credentialLookups: [UUID: CredentialLookup] = [:],
-		runtimeIdentities: [UUID: SSHRuntimeIdentityOptions] = [:]
+		runtimeIdentities: [UUID: SSHRuntimeIdentityOptions] = [:],
+		controlPaths: [UUID: String] = [:]
 	) throws -> Output {
 		// Resolve the terminfo dump from the bundle when not supplied by the
 		// caller. This mirrors the direct-path build overload which always
@@ -339,7 +348,8 @@ public enum SSHCommandBuilder {
 				authenticationMode: .configuredCredential,
 				automationEnvironment: automationEnvironment,
 				credentialLookup: credentialLookups[host.id],
-				runtimeIdentity: runtimeIdentities[host.id]
+				runtimeIdentity: runtimeIdentities[host.id],
+				controlPath: controlPaths[host.id]
 			)
 		}
 		return try buildChain(
@@ -354,7 +364,8 @@ public enum SSHCommandBuilder {
 			terminfoDump: resolvedDump,
 			automationEnvironment: automationEnvironment,
 			credentialLookups: credentialLookups,
-			runtimeIdentities: runtimeIdentities
+			runtimeIdentities: runtimeIdentities,
+			controlPaths: controlPaths
 		)
 	}
 
@@ -374,7 +385,8 @@ public enum SSHCommandBuilder {
 		terminfoDump: String?,
 		automationEnvironment: [HostEnvironmentVariable]?,
 		credentialLookups: [UUID: CredentialLookup],
-		runtimeIdentities: [UUID: SSHRuntimeIdentityOptions]
+		runtimeIdentities: [UUID: SSHRuntimeIdentityOptions],
+		controlPaths: [UUID: String]
 	) throws -> Output {
 		// Full hop list in dial order: [deepest ancestor … target]
 		let hops: [SSHHost] = ancestors + [target]
@@ -389,7 +401,8 @@ public enum SSHCommandBuilder {
 				for: hop,
 				role: index == hops.count - 1 ? .target : .jump,
 				knownHostsFiles: [knownHostsCaterm, knownHostsUser],
-				runtimeIdentity: runtimeIdentities[hop.id]
+				runtimeIdentity: runtimeIdentities[hop.id],
+				controlPath: controlPaths[hop.id]
 			)
 			plans.append(plan)
 

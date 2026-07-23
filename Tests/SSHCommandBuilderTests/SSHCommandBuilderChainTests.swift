@@ -61,6 +61,32 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 		              "expected command to contain '\(expectedFlag)', got: \(out.command)")
 	}
 
+	func testChainUsesExplicitControlPathForEveryHop() throws {
+		let bastion = host("bastion", "rh-bastion")
+		let target = host("target", "rh-target", jump: "rh-bastion")
+		let bastionPath = "/tmp/caterm isolated/\(bastion.id.uuidString).sock"
+		let targetPath = "/tmp/caterm isolated/\(target.id.uuidString).sock"
+		let sink = InMemorySSHConfigSink()
+
+		_ = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [bastion],
+			configSink: sink,
+			askpassPath: "/usr/local/bin/caterm-askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			controlPaths: [
+				bastion.id: bastionPath,
+				target.id: targetPath,
+			]
+		)
+		let config = try XCTUnwrap(sink.writes.first?.1)
+
+		XCTAssertTrue(config.contains("ControlPath \"\(bastionPath)\""))
+		XCTAssertTrue(config.contains("ControlPath \"\(targetPath)\""))
+		XCTAssertFalse(config.contains("~/Library/Caches/Caterm/cm/"))
+	}
+
 	func testChainScopesCertificateAndAgentToTheirHosts() throws {
 		let bastion = host(
 			"bastion",
