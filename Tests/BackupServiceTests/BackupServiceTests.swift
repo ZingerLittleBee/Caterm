@@ -165,13 +165,24 @@ final class BackupServiceTests: XCTestCase {
 		XCTAssertNil(payload.hosts[0].privateKey)
 	}
 
-	func test_hostOrganizationRoundTripsThroughBackup() async throws {
+	func test_hostOrganizationAndAutomationRoundTripThroughBackup() async throws {
 		let organization = HostOrganization(
 			groupPath: ["Production", "API"], tags: ["Linux", "Critical"]
 		)
+		let automation = HostAutomation(
+			isEnabled: true,
+			startupSnippetID: UUID(),
+			environment: [
+				HostEnvironmentVariable(name: "DEPLOY_REGION", value: "west")
+			],
+			reviewPolicy: .always,
+			reconnectPolicy: .everyConnection
+		)
 		let host = Host(
 			name: "web", hostname: "web.example", username: "deploy",
-			credential: .agent, organization: organization
+			credential: .agent,
+			organization: organization,
+			automation: automation
 		)
 		try store.addHost(host)
 
@@ -185,6 +196,8 @@ final class BackupServiceTests: XCTestCase {
 		let archived = try XCTUnwrap(payload.hosts.first)
 		XCTAssertEqual(archived.groupPath, organization.groupPath)
 		XCTAssertEqual(archived.tags, organization.tags)
+		XCTAssertEqual(archived.automation?.startupSnippetID, automation.startupSnippetID)
+		XCTAssertEqual(archived.automation?.environment.map(\.name), ["DEPLOY_REGION"])
 
 		let destination = SessionStore(
 			askpassPath: "/x",
@@ -216,6 +229,7 @@ final class BackupServiceTests: XCTestCase {
 		)
 
 		XCTAssertEqual(destination.hosts.first?.organization, organization)
+		XCTAssertEqual(destination.hosts.first?.automation, automation)
 	}
 
 	func test_export_retriesWhenHostGraphChangesDuringCredentialRead() async throws {

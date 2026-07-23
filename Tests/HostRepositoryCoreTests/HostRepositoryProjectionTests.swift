@@ -43,6 +43,13 @@ private func remoteInsertionResolvesJumpHostIdentities() throws {
 
 @Test("Remote metadata projection preserves device-local credential state")
 private func remoteMetadataProjectionPreservesCredentialState() throws {
+	let automation = HostAutomation(
+		isEnabled: true,
+		startupSnippetID: UUID(),
+		environment: [
+			HostEnvironmentVariable(name: "REGION", value: "west")
+		]
+	)
 	let bastion = SSHHost(
 		serverId: "server-bastion",
 		name: "Bastion",
@@ -67,7 +74,8 @@ private func remoteMetadataProjectionPreservesCredentialState() throws {
 		authType: "password",
 		createdAt: local.createdAt,
 		updatedAt: local.updatedAt.addingTimeInterval(60),
-		jumpHostServerId: "server-bastion"
+		jumpHostServerId: "server-bastion",
+		automation: automation
 	)
 
 	let result = try #require(HostRepositoryProjection.applying(
@@ -83,6 +91,7 @@ private func remoteMetadataProjectionPreservesCredentialState() throws {
 	#expect(updated.jumpHostId == bastion.id)
 	#expect(updated.credential == local.credential)
 	#expect(updated.credentialMaterialDirty)
+	#expect(updated.automation == automation)
 }
 
 @Test("Server identity projection updates dependent Jump Host references atomically")

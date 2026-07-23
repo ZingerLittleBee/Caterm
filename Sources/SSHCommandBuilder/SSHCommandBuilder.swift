@@ -152,6 +152,16 @@ public enum SSHCommandBuilder {
 			)
 		}
 
+		guard let automationEnvironment = try? enabledEnvironment(for: host) else {
+			return Output(command: "/usr/bin/false", env: [])
+		}
+		for variable in automationEnvironment {
+			args += [
+				.raw("-o"),
+				.quoted("SetEnv=\(variable.name)=\(variable.value)"),
+			]
+		}
+
 		args += [.raw("-p"), .raw(String(host.port))]
 
 		let bootstrap = remoteShellBootstrap(
@@ -273,6 +283,12 @@ public enum SSHCommandBuilder {
 			for option in plan.options {
 				lines.append("\t\(try option.configLine())")
 			}
+			if index == hops.count - 1 {
+				for variable in try enabledEnvironment(for: hop) {
+					let assignment = "\(variable.name)=\(variable.value)"
+					lines.append("\tSetEnv \(try SSHConfigQuote.encode(assignment))")
+				}
+			}
 
 			blocks.append(lines.joined(separator: "\n"))
 		}
@@ -332,5 +348,12 @@ public enum SSHCommandBuilder {
 
 		let cmd = cmdParts.joined(separator: " ")
 		return Output(command: cmd, env: env, configURL: configURL)
+	}
+
+	private static func enabledEnvironment(
+		for host: SSHHost
+	) throws -> [HostEnvironmentVariable] {
+		guard host.automation.isEnabled else { return [] }
+		return try host.automation.validated().environment
 	}
 }

@@ -217,6 +217,19 @@ public enum BackupExporter {
 			icon: host.icon,
 			groupPath: host.organization.groupPath,
 			tags: host.organization.tags,
+			automation: BackupHostAutomation(
+				isEnabled: host.automation.isEnabled,
+				startupSnippetID: host.automation.startupSnippetID,
+				environment: host.automation.environment.map {
+					BackupHostEnvironmentVariable(
+						id: $0.id,
+						name: $0.name,
+						value: $0.value
+					)
+				},
+				reviewPolicy: host.automation.reviewPolicy.rawValue,
+				reconnectPolicy: host.automation.reconnectPolicy.rawValue
+			),
 			password: password,
 			passphrase: passphrase,
 			privateKey: privateKey

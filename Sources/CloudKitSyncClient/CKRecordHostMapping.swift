@@ -19,6 +19,7 @@ public enum CKRecordHostMapping {
 		static let forwards = "forwards"
 		static let icon = "icon"
 		static let organization = "organization"
+		static let automation = "automation"
 		// Credential blob
 		static let credentialBlobState = "credentialBlobState"
 		static let credentialBlobRevision = "credentialBlobRevision"
@@ -59,6 +60,7 @@ public enum CKRecordHostMapping {
 			rec[Field.icon] = icon as CKRecordValue
 		}
 		rec[Field.organization] = jsonEncoded(input.organization)
+		rec[Field.automation] = jsonEncoded(input.automation)
 		rec[Field.credentialBlobState] = "none" as CKRecordValue
 		rec[Field.credentialBlobRevision] = Int64(0) as CKRecordValue
 		rec[Field.credentialCryptoVersion] = Int64(1) as CKRecordValue
@@ -85,6 +87,7 @@ public enum CKRecordHostMapping {
 			existing[Field.icon] = nil
 		}
 		existing[Field.organization] = jsonEncoded(host.organization)
+		existing[Field.automation] = jsonEncoded(host.automation)
 		// `metadataUpdatedAt` was already advanced above to host.updatedAt;
 		// callers (HostSyncStore) MUST bump host.updatedAt on any forwards
 		// mutation, otherwise this push will not be considered newer by
@@ -112,6 +115,9 @@ public enum CKRecordHostMapping {
 		existing[Field.icon] = input.icon as CKRecordValue?
 		if let value = input.organization {
 			existing[Field.organization] = jsonEncoded(value)
+		}
+		if let value = input.automation {
+			existing[Field.automation] = jsonEncoded(value)
 		}
 	}
 
@@ -178,6 +184,16 @@ public enum CKRecordHostMapping {
 			}
 			return value
 		}()
+		let automation: HostAutomation = {
+			guard let json = rec[Field.automation] as? String,
+			      let data = json.data(using: .utf8),
+			      let value = try? JSONDecoder().decode(
+					HostAutomation.self, from: data
+			      ) else {
+				return .disabled
+			}
+			return value
+		}()
 
 		let host = RemoteHost(
 			id: rec.recordID.recordName,
@@ -191,7 +207,8 @@ public enum CKRecordHostMapping {
 			jumpHostServerId: rec[Field.jumpHostServerId] as? String,
 			forwards: decoded,
 			icon: rec[Field.icon] as? String,
-			organization: organization
+			organization: organization,
+			automation: automation
 		)
 
 		let blob: CredentialBlob?
@@ -220,6 +237,10 @@ private func jsonEncoded(_ forwards: [PortForward]) -> CKRecordValue {
 
 private func jsonEncoded(_ organization: HostOrganization) -> CKRecordValue {
 	jsonEncoded(organization, fallback: "{}")
+}
+
+private func jsonEncoded(_ automation: HostAutomation) -> CKRecordValue {
+	jsonEncoded(automation, fallback: "{}")
 }
 
 private func jsonEncoded<T: Encodable>(

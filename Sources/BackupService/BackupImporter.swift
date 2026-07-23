@@ -60,6 +60,7 @@ public enum BackupImporter {
 				local.organization = HostOrganization(
 					groupPath: a.groupPath ?? [], tags: a.tags ?? []
 				)
+				local.automation = hostAutomation(from: a.automation)
 				try sessionStore.updateHost(local)
 				summary.hostsUpdated += 1
 			case .credentialsOnly:
@@ -179,8 +180,33 @@ public enum BackupImporter {
 			icon: a.icon,
 			organization: HostOrganization(
 				groupPath: a.groupPath ?? [], tags: a.tags ?? []
-			)
+			),
+			automation: hostAutomation(from: a.automation)
 		)
+	}
+
+	private static func hostAutomation(
+		from backup: BackupHostAutomation?
+	) -> HostAutomation {
+		guard let backup else { return .disabled }
+		let automation = HostAutomation(
+			isEnabled: backup.isEnabled,
+			startupSnippetID: backup.startupSnippetID,
+			environment: backup.environment.map {
+				HostEnvironmentVariable(
+					id: $0.id,
+					name: $0.name,
+					value: $0.value
+				)
+			},
+			reviewPolicy: HostAutomationReviewPolicy(
+				rawValue: backup.reviewPolicy
+			) ?? .always,
+			reconnectPolicy: HostAutomationReconnectPolicy(
+				rawValue: backup.reconnectPolicy
+			) ?? .oncePerSession
+		)
+		return (try? automation.validated()) ?? .disabled
 	}
 
 	/// Credential shape before (or without) secret material. A keyFile

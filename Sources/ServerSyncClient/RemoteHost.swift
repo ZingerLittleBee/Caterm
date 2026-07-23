@@ -19,13 +19,15 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
     /// to nil.
     public let icon: String?
     public let organization: HostOrganization
+    public let automation: HostAutomation
 
     public init(id: String, name: String, hostname: String, port: Int,
                 username: String, authType: String, createdAt: Date, updatedAt: Date,
                 jumpHostServerId: String? = nil,
                 forwards: [PortForward] = [],
                 icon: String? = nil,
-                organization: HostOrganization = .empty) {
+                organization: HostOrganization = .empty,
+                automation: HostAutomation = .disabled) {
         self.id = id
         self.name = name
         self.hostname = hostname
@@ -38,6 +40,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
         self.forwards = forwards
         self.icon = icon
         self.organization = organization
+        self.automation = automation
     }
 
     // Explicit decoder so legacy server payloads (no `forwards` column —
@@ -47,6 +50,7 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, name, hostname, port, username, authType
         case createdAt, updatedAt, jumpHostServerId, forwards, icon, organization
+        case automation
     }
 
     public init(from decoder: Decoder) throws {
@@ -65,6 +69,9 @@ public struct RemoteHost: Codable, Equatable, Identifiable, Sendable {
         organization = try c.decodeIfPresent(
             HostOrganization.self, forKey: .organization
         ) ?? .empty
+        automation = try c.decodeIfPresent(
+            HostAutomation.self, forKey: .automation
+        ) ?? .disabled
     }
     // Synthesized encode(to:) is fine — it writes all keys.
 }
@@ -82,6 +89,7 @@ public struct RemoteHostCreateInput: Codable {
     public let forwards: [PortForward]
     public let icon: String?
     public let organization: HostOrganization
+    public let automation: HostAutomation
     public let metadataUpdatedAt: Date
 
     public init(name: String, hostname: String, port: Int, username: String,
@@ -89,6 +97,7 @@ public struct RemoteHostCreateInput: Codable {
                 forwards: [PortForward] = [],
                 icon: String? = nil,
                 organization: HostOrganization = .empty,
+                automation: HostAutomation = .disabled,
                 metadataUpdatedAt: Date = Date()) {
         self.name = name
         self.hostname = hostname
@@ -99,6 +108,7 @@ public struct RemoteHostCreateInput: Codable {
         self.forwards = forwards
         self.icon = icon
         self.organization = organization
+        self.automation = automation
         self.metadataUpdatedAt = metadataUpdatedAt
     }
 }
@@ -116,6 +126,7 @@ public struct RemoteHostUpdateInput: Codable {
     public let forwards: [PortForward]?
     public let icon: String?
     public let organization: HostOrganization?
+    public let automation: HostAutomation?
     public let metadataUpdatedAt: Date?
 
     public init(id: String, name: String? = nil, hostname: String? = nil,
@@ -124,6 +135,7 @@ public struct RemoteHostUpdateInput: Codable {
                 forwards: [PortForward]? = nil,
                 icon: String? = nil,
                 organization: HostOrganization? = nil,
+                automation: HostAutomation? = nil,
                 metadataUpdatedAt: Date? = nil) {
         self.id = id
         self.name = name
@@ -137,6 +149,7 @@ public struct RemoteHostUpdateInput: Codable {
         self.forwards = forwards
         self.icon = icon
         self.organization = organization
+        self.automation = automation
         self.metadataUpdatedAt = metadataUpdatedAt
     }
 }

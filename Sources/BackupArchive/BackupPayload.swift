@@ -95,6 +95,8 @@ public struct BackupHost: Codable, Equatable {
 	/// Optional for backward compatibility with content-version 1 archives.
 	public var groupPath: [String]?
 	public var tags: [String]?
+	/// Optional for backward compatibility with content-version 1 archives.
+	public var automation: BackupHostAutomation?
 
 	// Secret material (present only when exported with secrets).
 	public var password: String?
@@ -108,6 +110,7 @@ public struct BackupHost: Codable, Equatable {
 		hasPassphrase: Bool, createdAt: Date, updatedAt: Date,
 		jumpHostId: UUID?, forwards: [BackupPortForward], icon: String?,
 		groupPath: [String]? = nil, tags: [String]? = nil,
+		automation: BackupHostAutomation? = nil,
 		password: String? = nil, passphrase: String? = nil,
 		privateKey: Data? = nil
 	) {
@@ -126,9 +129,44 @@ public struct BackupHost: Codable, Equatable {
 		self.icon = icon
 		self.groupPath = groupPath
 		self.tags = tags
+		self.automation = automation
 		self.password = password
 		self.passphrase = passphrase
 		self.privateKey = privateKey
+	}
+}
+
+public struct BackupHostAutomation: Codable, Equatable {
+	public var isEnabled: Bool
+	public var startupSnippetID: UUID?
+	public var environment: [BackupHostEnvironmentVariable]
+	public var reviewPolicy: String
+	public var reconnectPolicy: String
+
+	public init(
+		isEnabled: Bool,
+		startupSnippetID: UUID? = nil,
+		environment: [BackupHostEnvironmentVariable] = [],
+		reviewPolicy: String,
+		reconnectPolicy: String
+	) {
+		self.isEnabled = isEnabled
+		self.startupSnippetID = startupSnippetID
+		self.environment = environment
+		self.reviewPolicy = reviewPolicy
+		self.reconnectPolicy = reconnectPolicy
+	}
+}
+
+public struct BackupHostEnvironmentVariable: Codable, Equatable {
+	public var id: UUID
+	public var name: String
+	public var value: String
+
+	public init(id: UUID, name: String, value: String) {
+		self.id = id
+		self.name = name
+		self.value = value
 	}
 }
 

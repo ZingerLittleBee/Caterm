@@ -39,6 +39,9 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 	/// Synced group hierarchy and tags used to organize large host lists.
 	/// Legacy hosts without this field decode to `.empty`.
 	public var organization: HostOrganization
+	/// Explicit, non-secret startup behavior. Snippet identity and environment
+	/// values sync as Host metadata; credential material remains separate.
+	public var automation: HostAutomation
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
@@ -49,7 +52,8 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 	            jumpHostServerId: String? = nil,
 	            forwards: [PortForward] = [],
 	            icon: String? = nil,
-	            organization: HostOrganization = .empty) {
+	            organization: HostOrganization = .empty,
+	            automation: HostAutomation = .disabled) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -65,6 +69,7 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 		self.forwards = forwards
 		self.icon = icon
 		self.organization = organization
+		self.automation = automation
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
@@ -78,6 +83,7 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 		case forwards
 		case icon
 		case organization
+		case automation
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -99,6 +105,9 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 		organization = try c.decodeIfPresent(
 			HostOrganization.self, forKey: .organization
 		) ?? .empty
+		automation = try c.decodeIfPresent(
+			HostAutomation.self, forKey: .automation
+		) ?? .disabled
 	}
 	// Synthesized encode(to:) is fine — it writes all keys.
 }
