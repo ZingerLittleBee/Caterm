@@ -36,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   review, suppression, and reconnect policy, verified against signed macOS and
   iOS SSH fixtures.
 - Add reusable credential identities for passwords, keys, and SSH
-  certificates. Secure Enclave authentication remains gated on signed
-  physical-device proof in #58.
+  certificates. Signed physical-device acceptance verifies Secure Enclave
+  identity creation, restart restoration, and authentication to a disposable
+  OpenSSH fixture without exporting private key material.
 - Prepare a native dual-pane File Transfer window for local/remote and
   cross-Host copies through the Mac, plus external-editor upload-back with
   explicit review and conflict protection. Shipping remains gated on the

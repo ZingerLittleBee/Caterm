@@ -1,6 +1,6 @@
 # Termius Individual-User Parity Matrix
 
-Last verified: 2026-07-23
+Last verified: 2026-07-24
 
 This matrix compares Caterm with the current Termius surface that materially
 affects an individual SSH user on macOS, iPhone, or iPad. It is not a
@@ -52,7 +52,7 @@ The status vocabulary is intentionally strict:
 | Import from OpenSSH config, CSV, PuTTY, MobaXterm, and SecureCRT | **Deliberately excluded** | Caterm imports keys, OpenSSH `known_hosts`, and its encrypted cross-platform backup archive, but does not promise broad third-party migration parsing. Those formats do not strengthen the recurring SSH workflow and carry high ambiguity around inherited config. Evidence: [`KnownHostsManagerView.swift`](../Sources/Caterm/Views/KnownHostsManagerView.swift) and [`BackupImporter.swift`](../Sources/BackupService/BackupImporter.swift). |
 | Reusable Identities linked to several Hosts | **Implemented** | Passwords, private keys, SSH certificates, and device-bound identity references use the dedicated [`CredentialIdentityStore`](../Sources/CredentialIdentityStore), encrypted sync in [`CredentialIdentitySync`](../Sources/CredentialIdentitySync), runtime resolution in [`CredentialIdentityRuntime`](../Sources/CredentialIdentityRuntime), and native macOS/iOS management views. Transaction, sync, backup, resolution, and connection tests mirror those modules. |
 | Import and use private keys and SSH certificates | **Implemented** | Caterm preserves the certificate/private-key pairing and writes scoped runtime material for OpenSSH. Evidence: [`CredentialIdentityEditorService.swift`](../Sources/CredentialIdentitySecurity/CredentialIdentityEditorService.swift), [`CredentialIdentityConnectionPreparer.swift`](../Sources/CredentialIdentityRuntime/CredentialIdentityConnectionPreparer.swift), and [`CredentialIdentityAuthenticationTests`](../Tests/CatermMobileTests/MobileCredentialIdentityAuthenticationTests.swift). Caterm does not currently provide an in-app general-purpose key generator. |
-| Biometric, non-exportable Secure Enclave SSH keys | **Deferred** | The model, agent codec, macOS connection bridge, and iOS management path are implemented, but signed physical-device generation and authentication remain unverified in [#58](https://github.com/ZingerLittleBee/Caterm/issues/58). Caterm does not claim hardware-backed parity until that evidence exists. |
+| Biometric, non-exportable Secure Enclave SSH keys | **Implemented** | A signed physical-device run created a device-bound P-256 identity, displayed its ready state, terminated and relaunched Caterm, restored the Keychain reference, and authenticated to a disposable OpenSSH fixture through a confirmed identity with no password fallback. The private key never left the Secure Enclave, and the temporary identity, Host, and server authorization were removed after acceptance. Evidence: [`SecureEnclaveIdentityKeyProvider.swift`](../Sources/CredentialIdentitySecurity/SecureEnclaveIdentityKeyProvider.swift), [`SecureEnclaveSSHAgentSession.swift`](../Sources/CredentialIdentityRuntime/SecureEnclaveSSHAgentSession.swift), and [`CredentialIdentityIntegrationTests.swift`](../Tests/CredentialIdentitySecurityTests/CredentialIdentityIntegrationTests.swift). |
 | FIDO2 SSH keys and Termius SSH ID | **Deliberately excluded** | Caterm has no account service and does not publish a device key set under a hosted handle. FIDO2 needs a separate hardware-token transport and UX; neither is implied by Secure Enclave support. |
 | Password and private-key authentication | **Implemented** | macOS uses OpenSSH with scoped askpass and prepared identity material; iOS uses NIO SSH authentication plans. Evidence: [`SSHConnectionPolicy.swift`](../Sources/SSHCommandBuilder/SSHConnectionPolicy.swift), [`MobileAuthenticationPlanProvider.swift`](../Sources/CatermMobile/MobileAuthenticationPlanProvider.swift), and the corresponding SSH command, SessionStore, and mobile authentication tests. |
 | Built-in agent forwarding | **Deliberately excluded** | Caterm intentionally removed its non-functional Agent credential source and does not pretend that a Finder-launched app can depend on an ambient `SSH_AUTH_SOCK`. Device-bound signing uses a narrowly scoped Caterm runtime instead of exposing a general forwarded agent. |
@@ -75,7 +75,7 @@ The status vocabulary is intentionally strict:
 | Cross-device Hosts, credentials, settings, and snippets | **Implemented** | The live iOS root owns durable stores and a serialized lifecycle coordinator in [`MobileCatermShell.swift`](../Sources/CatermMobile/MobileCatermShell.swift), [`MobileAppComposition.swift`](../Sources/CatermMobile/MobileAppComposition.swift), and [`MobileSyncCoordinator.swift`](../Sources/CatermMobile/MobileSyncCoordinator.swift). Shared Host reconciliation, encrypted credential envelopes, settings compatibility, and snippet sync are covered by their module tests and mobile composition tests. Cached Hosts and snippets remain available while offline or signed out. |
 | Encrypted cloud vault and recoverable cross-device credential policy | **Implemented** | Caterm uses the user's private CloudKit database plus synchronizable iCloud Keychain rather than a Caterm account or server. Credential fields are sealed with AES-256-GCM and associated data before CloudKit upload. Evidence: [`CredentialSync`](../Sources/CredentialSync), [`CredentialSyncStore`](../Sources/CredentialSyncStore), [`CredentialIdentitySecurity`](../Sources/CredentialIdentitySecurity), and their crypto/sync tests. |
 | Known Hosts synchronization | **Deliberately excluded** | Caterm synchronizes Host metadata but keeps authorization device-local by design. Every device performs its own host-key verification. The threat-model decision is recorded in [ADR 0006](adr/0006-known-host-trust-is-device-local.md). |
-| App PIN or biometric application lock | **Deliberately excluded** | Caterm relies on the signed-in macOS or iOS session, device passcode, FileVault, Keychain access controls, and Apple device-management or remote-erase controls. A second app-local PIN would not replace those boundaries. Secure Enclave SSH signing is a separate deferred authentication capability, not an application lock. |
+| App PIN or biometric application lock | **Deliberately excluded** | Caterm relies on the signed-in macOS or iOS session, device passcode, FileVault, Keychain access controls, and Apple device-management or remote-erase controls. A second app-local PIN would not replace those boundaries. Secure Enclave SSH signing is a separate SSH authentication capability, not an application lock. |
 | Termius-account two-factor authentication | **Deliberately excluded** | Caterm has no Caterm account, hosted control plane, or password login to protect with a second factor. Device access is governed by the user's Apple platform security and iCloud account controls; SSH server authentication remains independent. |
 | Post-quantum SSH algorithm guarantee | **Unverified** | Caterm delegates macOS negotiation to the installed OpenSSH and iOS negotiation to its NIO SSH stack. No pinned ML-KEM/ML-DSA interoperability matrix exists, so Caterm makes no post-quantum compatibility claim. |
 
@@ -111,11 +111,14 @@ the roadmap.
   pass and isolated suites around the last buffered output also pass.
 - `make run-app` now produces and launches a development-signed application.
   Its disposable SSH fixture completed the startup-automation acceptance;
-  signed Secure Enclave and desktop SFTP shipping-configuration proof remain
-  separate gates.
-- Signed macOS Workspace restoration/accessibility/load proof, physical-device
-  Secure Enclave proof, and signed desktop SFTP sandbox/process acceptance
-  remain scoped by #55, #58, and #59.
+  desktop SFTP shipping-configuration proof remains a separate gate.
+- Signed physical-device acceptance created a Secure Enclave identity,
+  restarted Caterm before connecting, and authenticated to a disposable
+  OpenSSH fixture with no password fallback. Cleanup then confirmed that the
+  identity metadata, device-bound Keychain accounts, temporary Host, and
+  server authorization were absent.
+- Signed macOS Workspace restoration/accessibility/load proof and signed
+  desktop SFTP sandbox/process acceptance remain scoped by #55 and #59.
 - No private Host address, account identity, credential, terminal content,
   screenshot, application log, or local fixture is included in this document
   or committed elsewhere by the parity audit.
