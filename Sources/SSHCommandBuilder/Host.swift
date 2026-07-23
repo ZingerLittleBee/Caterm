@@ -42,6 +42,10 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 	/// Explicit, non-secret startup behavior. Snippet identity and environment
 	/// values sync as Host metadata; credential material remains separate.
 	public var automation: HostAutomation
+	/// Optional reference to a reusable credential identity. The embedded
+	/// username and credential remain the reversible legacy fallback until
+	/// migration is explicitly confirmed.
+	public var credentialIdentity: HostCredentialIdentityReference?
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
@@ -53,7 +57,8 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 	            forwards: [PortForward] = [],
 	            icon: String? = nil,
 	            organization: HostOrganization = .empty,
-	            automation: HostAutomation = .disabled) {
+	            automation: HostAutomation = .disabled,
+	            credentialIdentity: HostCredentialIdentityReference? = nil) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -70,6 +75,7 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 		self.icon = icon
 		self.organization = organization
 		self.automation = automation
+		self.credentialIdentity = credentialIdentity
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
@@ -84,6 +90,7 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 		case icon
 		case organization
 		case automation
+		case credentialIdentity
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -108,6 +115,10 @@ public struct Host: Codable, Identifiable, Hashable, Sendable {
 		automation = try c.decodeIfPresent(
 			HostAutomation.self, forKey: .automation
 		) ?? .disabled
+		credentialIdentity = try c.decodeIfPresent(
+			HostCredentialIdentityReference.self,
+			forKey: .credentialIdentity
+		)
 	}
 	// Synthesized encode(to:) is fine — it writes all keys.
 }

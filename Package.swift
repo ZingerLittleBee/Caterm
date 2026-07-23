@@ -34,6 +34,10 @@ let package = Package(
             path: "Sources/SSHCredentialContract"
         ),
         .target(
+            name: "CredentialIdentityStore",
+            path: "Sources/CredentialIdentityStore"
+        ),
+        .target(
             name: "SSHCommandBuilder",
             dependencies: ["SSHCredentialContract"],
             path: "Sources/SSHCommandBuilder",
@@ -279,6 +283,11 @@ let package = Package(
             name: "SSHCredentialContractTests",
             dependencies: ["SSHCredentialContract"],
             path: "Tests/SSHCredentialContractTests"
+        ),
+        .testTarget(
+            name: "CredentialIdentityStoreTests",
+            dependencies: ["CredentialIdentityStore"],
+            path: "Tests/CredentialIdentityStoreTests"
         ),
         .testTarget(
             name: "SSHCommandBuilderTests",
