@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import WorkspaceCore
 
 enum WorkspaceCommand: Hashable, Sendable {
@@ -43,6 +44,100 @@ enum WorkspaceCommand: Hashable, Sendable {
 enum WorkspaceCommandOutcome: Equatable {
 	case update(Workspace)
 	case close(WorkspacePaneCloseResult)
+}
+
+struct WorkspaceCommandHandler {
+	let perform: @MainActor (WorkspaceCommand) -> Void
+
+	@MainActor
+	func callAsFunction(_ command: WorkspaceCommand) {
+		perform(command)
+	}
+}
+
+private struct WorkspaceCommandHandlerKey: FocusedValueKey {
+	typealias Value = WorkspaceCommandHandler
+}
+
+extension FocusedValues {
+	var workspaceCommandHandler: WorkspaceCommandHandler? {
+		get { self[WorkspaceCommandHandlerKey.self] }
+		set { self[WorkspaceCommandHandlerKey.self] = newValue }
+	}
+}
+
+@MainActor
+struct WorkspacePaneCommands: Commands {
+	@FocusedValue(\.workspaceCommandHandler)
+	private var handler
+
+	var body: some Commands {
+		CommandMenu("Pane") {
+			Button("Split Right") {
+				handler?(.splitRight)
+			}
+			.keyboardShortcut("d", modifiers: .command)
+			.disabled(handler == nil)
+
+			Button("Split Down") {
+				handler?(.splitDown)
+			}
+			.keyboardShortcut("d", modifiers: [.command, .shift])
+			.disabled(handler == nil)
+
+			Divider()
+
+			Button("Focus Left Pane") {
+				handler?(.focusLeft)
+			}
+			.keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+			.disabled(handler == nil)
+
+			Button("Focus Right Pane") {
+				handler?(.focusRight)
+			}
+			.keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+			.disabled(handler == nil)
+
+			Button("Focus Pane Above") {
+				handler?(.focusUp)
+			}
+			.keyboardShortcut(.upArrow, modifiers: [.command, .option])
+			.disabled(handler == nil)
+
+			Button("Focus Pane Below") {
+				handler?(.focusDown)
+			}
+			.keyboardShortcut(.downArrow, modifiers: [.command, .option])
+			.disabled(handler == nil)
+
+			Button("Focus Previous Pane") {
+				handler?(.focusPrevious)
+			}
+			.keyboardShortcut("[", modifiers: [.command, .option])
+			.disabled(handler == nil)
+
+			Button("Focus Next Pane") {
+				handler?(.focusNext)
+			}
+			.keyboardShortcut("]", modifiers: [.command, .option])
+			.disabled(handler == nil)
+
+			Divider()
+
+			Button("Toggle Focus Mode") {
+				handler?(.toggleFocusMode)
+			}
+			.keyboardShortcut(.return, modifiers: [.command, .shift])
+			.disabled(handler == nil)
+
+			Button("Close Pane") {
+				handler?(.closePane)
+			}
+			.keyboardShortcut("w", modifiers: [.command, .option])
+			.disabled(handler == nil)
+		}
+	}
 }
 
 extension Notification.Name {

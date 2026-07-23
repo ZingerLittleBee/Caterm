@@ -327,6 +327,15 @@ struct MainWindow: View {
 		.toolbar {
 			ToolbarItem(placement: .primaryAction) {
 				Button {
+					handleWorkspaceCommand(.splitRight)
+				} label: {
+					Image(systemName: "rectangle.split.2x1")
+				}
+				.accessibilityLabel("Split Right")
+				.help("Split the active Pane to the right (⌘D)")
+			}
+			ToolbarItem(placement: .primaryAction) {
+				Button {
 					presentingBroadcastComposer = true
 				} label: {
 					Image(systemName: "antenna.radiowaves.left.and.right")
@@ -361,6 +370,10 @@ struct MainWindow: View {
 				}
 			}
 		}
+		.focusedSceneValue(
+			\.workspaceCommandHandler,
+			WorkspaceCommandHandler(perform: handleWorkspaceCommand)
+		)
 		.onReceive(NotificationCenter.default
 			.publisher(for: .toggleFileDrawer)) { notification in
 			guard WindowCommandScope.shouldHandle(notification, in: hostWindow) else {
