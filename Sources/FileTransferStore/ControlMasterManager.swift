@@ -42,16 +42,21 @@ public final class ControlMasterManager {
     private let runner: ProcessRunner
     private var destinations: [UUID: String] = [:]
 
-    /// Process-wide ControlMaster manager backed by the standard
-    /// `~/Library/Caches/Caterm/cm/` directory. The UI layer uses this
-    /// shared instance so socket paths and liveness lookups stay
-    /// consistent across views (e.g. `MainWindow`'s `RemoteFileSystem`).
-    /// Force-unwrapping `try!` is acceptable: `controlMasterDir` only
-    /// fails if the user's `~/Library/Caches` is unwritable, in which
-    /// case the app cannot function.
+    /// Process-wide ControlMaster manager backed by a short, user-scoped
+    /// temporary directory. The UI layer uses this shared instance so socket
+    /// paths and liveness lookups stay consistent across views.
+    /// Startup fails explicitly when the protected socket directory cannot be
+    /// created because SSH sessions cannot function safely without it.
     public static let shared: ControlMasterManager = {
-        let dir = try! CacheDirectories.controlMasterDir()
-        return ControlMasterManager(cacheDir: dir)
+        do {
+            return ControlMasterManager(
+                cacheDir: try CacheDirectories.controlMasterDir()
+            )
+        } catch {
+            preconditionFailure(
+                "Unable to create ControlMaster directory: \(error)"
+            )
+        }
     }()
 
     public init(cacheDir: URL, runner: ProcessRunner = DefaultProcessRunner()) {
