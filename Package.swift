@@ -47,6 +47,7 @@ let package = Package(
             dependencies: [
                 "CredentialIdentitySecurity",
                 "CredentialIdentityStore",
+                "ManagedKeyStore",
                 "SSHCommandBuilder",
             ],
             path: "Sources/CredentialIdentityRuntime"
@@ -332,6 +333,7 @@ let package = Package(
                 "CredentialIdentityRuntime",
                 "CredentialIdentitySecurity",
                 "CredentialIdentityStore",
+                "ManagedKeyStore",
                 "SSHCommandBuilder",
             ],
             path: "Tests/CredentialIdentityRuntimeTests"
