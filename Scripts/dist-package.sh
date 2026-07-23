@@ -129,6 +129,13 @@ mkdir -p "$APP/Contents/Resources"
 cp "$BIN_DIR/caterm" "$APP/Contents/MacOS/caterm"
 cp "$BIN_DIR/caterm-askpass" "$APP/Contents/MacOS/caterm-askpass"
 
+# Preserve every SwiftPM target and dependency resource bundle. The package
+# build leaves these beside the executable, while a macOS app must seal them
+# under Contents/Resources.
+bash "$ROOT/Scripts/embed-swiftpm-resources.sh" \
+    "$BIN_DIR" \
+    "$APP/Contents/Resources"
+
 # Strip xattrs after copy: icon generators (Image2Icon, etc.) routinely leave
 # com.apple.FinderInfo / ResourceFork / quarantine, which codesign rejects with
 # "resource fork, Finder information, or similar detritus not allowed".

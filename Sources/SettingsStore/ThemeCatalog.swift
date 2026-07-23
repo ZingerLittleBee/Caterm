@@ -31,6 +31,19 @@ public struct ThemeCatalog {
 
     public init(themes: [ThemeRecord]) { self.themes = themes }
 
+    static func packagedResourceBundle(in mainBundle: Bundle) -> Bundle? {
+        guard let resourceURL = mainBundle.resourceURL else { return nil }
+        return Bundle(
+            url: resourceURL.appendingPathComponent(
+                "Caterm_SettingsStore.bundle",
+                isDirectory: true
+            )
+        )
+    }
+
+    private static let resourceBundle =
+        packagedResourceBundle(in: .main) ?? Bundle.module
+
     public static let favoriteNames: [String] = [
         "Catppuccin Mocha",
         "Catppuccin Latte",
@@ -52,7 +65,7 @@ public struct ThemeCatalog {
     }
 
     public static func loadBundled() -> ThemeCatalog {
-        guard let url = Bundle.module.url(forResource: "themes", withExtension: "json"),
+        guard let url = resourceBundle.url(forResource: "themes", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let themes = try? decode(data),
               !themes.isEmpty
@@ -65,11 +78,11 @@ public struct ThemeCatalog {
     public static let fallback: ThemeCatalog = {
         var themes: [ThemeRecord] = []
         for name in favoriteNames {
-            let url = Bundle.module.url(
+            let url = resourceBundle.url(
                 forResource: name,
                 withExtension: "config",
                 subdirectory: "fallback-themes"
-            ) ?? Bundle.module.url(
+            ) ?? resourceBundle.url(
                 forResource: name,
                 withExtension: "config"
             )

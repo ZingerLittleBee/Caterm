@@ -52,6 +52,10 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 cp "$BIN" "$OUT/$APP_NAME"
 
+# iOS app resources live at the bundle root, which is also where SwiftPM's
+# generated Bundle.module accessor looks for sibling resource bundles.
+bash "$ROOT/Scripts/embed-swiftpm-resources.sh" "$BIN_DIR" "$OUT"
+
 # Concrete Info.plist (no xcodebuild variable substitution available).
 PL="$OUT/Info.plist"
 cp "$ROOT/App/iOS/Info.plist" "$PL"

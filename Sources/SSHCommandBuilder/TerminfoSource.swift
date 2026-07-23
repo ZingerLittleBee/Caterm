@@ -10,10 +10,21 @@ import Foundation
 /// which would indicate a build / packaging error. The
 /// `TerminfoSourceTests` suite is a CI gate against shipping such a build.
 enum TerminfoSource {
+    static func packagedResourceBundle(in mainBundle: Bundle) -> Bundle? {
+        guard let resourceURL = mainBundle.resourceURL else { return nil }
+        return Bundle(
+            url: resourceURL.appendingPathComponent(
+                "Caterm_SSHCommandBuilder.bundle",
+                isDirectory: true
+            )
+        )
+    }
+
     /// Cached at first call; the bundle resource never changes for the
     /// lifetime of the process.
     private static let cached: String? = {
-        guard let url = Bundle.module.url(
+        let resourceBundle = packagedResourceBundle(in: .main) ?? .module
+        guard let url = resourceBundle.url(
             forResource: "xterm-ghostty",
             withExtension: "terminfo"
         ) else {
