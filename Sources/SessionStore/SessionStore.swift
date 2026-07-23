@@ -188,7 +188,8 @@ public final class SessionStore: ObservableObject {
 	let keychain: KeychainStore
 	public let credentialMaterialStore: SessionCredentialMaterialStore
 	let managedKeyStore: ManagedKeyStore
-	private var hostDeletionOutbox: HostDeletionOutbox
+	private let hostPersistence: SessionHostPersistence
+	private var publishedHostRevision: UInt64 = 0
 
     /// Optional ControlMaster manager used to tear down per-host shared SSH
     /// connections when the last tab for a host closes (after a grace
@@ -289,7 +290,8 @@ public final class SessionStore: ObservableObject {
 		historyRecorder: SessionHistoryRecording? = nil,
 		credentialIdentityStore: CredentialIdentityStore? = nil,
 		credentialIdentityPreparer:
-			CredentialIdentityConnectionPreparer? = nil
+			CredentialIdentityConnectionPreparer? = nil,
+		initialHostsForTesting: [SSHHost]? = nil
 	) {
         self.askpassPath = askpassPath
         self.knownHostsCaterm = knownHostsCaterm
@@ -298,7 +300,10 @@ public final class SessionStore: ObservableObject {
         self.hostsURL = hostsURL
         self.keychain = keychain
 		self.managedKeyStore = managedKeyStore
-		self.hostDeletionOutbox = HostDeletionOutbox(hostsURL: hostsURL)
+		self.hostPersistence = SessionHostPersistence(
+			hostsURL: hostsURL,
+			initialHosts: initialHostsForTesting
+		)
 		if let credentialMaterialStore {
 			precondition(
 				credentialMaterialStore.managedKeyStore === managedKeyStore,
@@ -318,34 +323,56 @@ public final class SessionStore: ObservableObject {
 		self.historyRecorder = historyRecorder
 		self.credentialIdentityStore = credentialIdentityStore
 		self.credentialIdentityPreparer = credentialIdentityPreparer
-        do {
-            self.hosts = try HostPersistence.load(from: hostsURL)
-        } catch {
-            self.hosts = []
-        }
+		self.hosts = initialHostsForTesting ?? []
+		Task { [weak self] in
+			try? await self?.prepareHostRepository()
+		}
     }
 
     // MARK: - Host CRUD
 
-    public func addHost(_ host: SSHHost) throws {
+	public func prepareHostRepository() async throws {
+		let snapshot = try await hostPersistence.prepare()
+		publish(snapshot)
+	}
+
+	private func publish(_ snapshot: SessionHostPersistence.Snapshot) {
+		guard snapshot.revision >= publishedHostRevision else { return }
+		hosts = snapshot.hosts
+		publishedHostRevision = snapshot.revision
+	}
+
+    public func addHost(_ host: SSHHost) async throws {
 		try validateCredentialIdentityAssignments(in: [host])
-        var updated = hosts
-        updated.append(host)
-        try HostPersistence.save(updated, to: hostsURL)
-        hosts = updated
-        mutationsForSyncSubject.send()
+		let snapshot = try await hostPersistence.mutate {
+			$0.append(host)
+		}
+		let didPersist = snapshot.revision > publishedHostRevision
+		publish(snapshot)
+		if didPersist {
+			mutationsForSyncSubject.send()
+		}
     }
 
-    public func updateHost(_ host: SSHHost) throws {
-        guard let idx = hosts.firstIndex(where: { $0.id == host.id }) else { return }
-        var updated = host
-		updated.credential = hosts[idx].credential
-		updated.credentialMaterialDirty = hosts[idx].credentialMaterialDirty
-		try validateCredentialIdentityAssignments(in: [updated])
-        updated.updatedAt = Date()
-        hosts[idx] = updated
-        try HostPersistence.save(hosts, to: hostsURL)
-        mutationsForSyncSubject.send()
+    public func updateHost(_ host: SSHHost) async throws {
+		try validateCredentialIdentityAssignments(in: [host])
+		let timestamp = Date()
+		let snapshot = try await hostPersistence.mutate {
+			guard let index = $0.firstIndex(where: {
+				$0.id == host.id
+			}) else { return }
+			var updated = host
+			updated.credential = $0[index].credential
+			updated.credentialMaterialDirty =
+				$0[index].credentialMaterialDirty
+			updated.updatedAt = timestamp
+			$0[index] = updated
+		}
+		let didPersist = snapshot.revision > publishedHostRevision
+		publish(snapshot)
+		if didPersist {
+			mutationsForSyncSubject.send()
+		}
     }
 
 	/// Confirms a reusable-identity migration and removes the legacy Host
@@ -353,6 +380,7 @@ public final class SessionStore: ObservableObject {
 	public func confirmCredentialIdentityMigration(
 		_ host: SSHHost
 	) async throws {
+		try await prepareHostRepository()
 		guard let credentialIdentityStore else {
 			return try await confirmCredentialIdentityMigrationWithinTransaction(
 				host
@@ -380,10 +408,15 @@ public final class SessionStore: ObservableObject {
 		updated.credential = hosts[index].credential
 		updated.credentialMaterialDirty = false
 		updated.updatedAt = Date()
-		var next = hosts
-		next[index] = updated
+		let persistedHost = updated
 		do {
-			try HostPersistence.save(next, to: hostsURL)
+			let snapshot = try await hostPersistence.mutate {
+				guard let currentIndex = $0.firstIndex(where: {
+					$0.id == host.id
+				}) else { return }
+				$0[currentIndex] = persistedHost
+			}
+			publish(snapshot)
 		} catch {
 			let persistenceError = error
 			do {
@@ -396,7 +429,6 @@ public final class SessionStore: ObservableObject {
 			}
 			throw persistenceError
 		}
-		hosts = next
 		await credentialMaterialStore.finalizeDeletion(commit)
 		credentialAvailabilityRevision &+= 1
 		mutationsForSyncSubject.send()
@@ -404,42 +436,43 @@ public final class SessionStore: ObservableObject {
 
     /// Persists a user-driven batch as one atomic hosts.json replacement and
     /// emits one sync mutation. Device-local credential state is preserved.
-    public func updateHosts(_ updatedHosts: [SSHHost]) throws {
+    public func updateHosts(_ updatedHosts: [SSHHost]) async throws {
         guard !updatedHosts.isEmpty else { return }
 		try validateCredentialIdentityAssignments(in: updatedHosts)
-        var updatesByID: [UUID: SSHHost] = [:]
-        for host in updatedHosts {
-            updatesByID[host.id] = host
-        }
+		let updatesByID = updatedHosts.reduce(into: [UUID: SSHHost]()) {
+			$0[$1.id] = $1
+		}
 
         let timestamp = Date()
-        var didUpdate = false
-        var next = hosts
-        for index in next.indices {
-            guard var updated = updatesByID[next[index].id] else { continue }
-            updated.credential = next[index].credential
-            updated.credentialMaterialDirty = next[index].credentialMaterialDirty
-            updated.updatedAt = timestamp
-            next[index] = updated
-            didUpdate = true
-        }
-        guard didUpdate else { return }
-
-        try HostPersistence.save(next, to: hostsURL)
-        hosts = next
-        mutationsForSyncSubject.send()
+		let snapshot = try await hostPersistence.mutate {
+			for index in $0.indices {
+				guard var updated = updatesByID[$0[index].id] else {
+					continue
+				}
+				updated.credential = $0[index].credential
+				updated.credentialMaterialDirty =
+					$0[index].credentialMaterialDirty
+				updated.updatedAt = timestamp
+				$0[index] = updated
+			}
+		}
+		let didPersist = snapshot.revision > publishedHostRevision
+		publish(snapshot)
+		if didPersist {
+			mutationsForSyncSubject.send()
+		}
     }
 
-    public func pendingRemoteHostDeletionIDs() throws -> [String] {
-        try hostDeletionOutbox.pendingIDs()
+    public func pendingRemoteHostDeletionIDs() async throws -> [String] {
+        try await hostPersistence.pendingDeletionIDs()
     }
 
-    public func clearPendingRemoteHostDeletion(serverID: String) throws {
-        try hostDeletionOutbox.remove(serverID)
+    public func clearPendingRemoteHostDeletion(serverID: String) async throws {
+        try await hostPersistence.clearDeletion(serverID: serverID)
     }
 
-	public func recordPendingRemoteHostDeletion(serverID: String) throws {
-		_ = try hostDeletionOutbox.insert(serverID)
+	public func recordPendingRemoteHostDeletion(serverID: String) async throws {
+		try await hostPersistence.recordDeletion(serverID: serverID)
 	}
 
     public func deleteHost(id: UUID) async throws {
@@ -454,42 +487,17 @@ public final class SessionStore: ObservableObject {
         id: UUID,
         enqueueRemoteDeletion: Bool
     ) async throws {
-        guard let host = hosts.first(where: { $0.id == id }) else { return }
-        let serverID = enqueueRemoteDeletion ? host.serverId : nil
+		try await prepareHostRepository()
+        guard hosts.contains(where: { $0.id == id }) else { return }
         let commit = try await credentialMaterialStore.beginDeletion(for: id)
-        var insertedDeletionIntent = false
-        if let serverID {
-            do {
-                insertedDeletionIntent = try hostDeletionOutbox.insert(serverID)
-            } catch {
-                let outboxError = error
-                do {
-                    try await credentialMaterialStore.rollbackDeletion(commit)
-                } catch {
-                    let rollbackDescription = String(describing: error)
-                    Self.log.error(
-                        "credential deletion rollback failed: \(id, privacy: .public): \(rollbackDescription, privacy: .public)"
-                    )
-                }
-                throw outboxError
-            }
-        }
-        var updated = hosts
-        updated.removeAll { $0.id == id }
         do {
-            try HostPersistence.save(updated, to: hostsURL)
+			let snapshot = try await hostPersistence.delete(
+				id: id,
+				enqueueRemoteDeletion: enqueueRemoteDeletion
+			)
+			publish(snapshot)
         } catch {
-            let persistenceError = error
-            if insertedDeletionIntent, let serverID {
-                do {
-                    try hostDeletionOutbox.remove(serverID)
-                } catch {
-                    let rollbackDescription = String(describing: error)
-                    Self.log.error(
-                        "host deletion outbox rollback failed: \(serverID, privacy: .public): \(rollbackDescription, privacy: .public)"
-                    )
-                }
-            }
+			let persistenceError = error
             do {
                 try await credentialMaterialStore.rollbackDeletion(commit)
             } catch {
@@ -500,7 +508,6 @@ public final class SessionStore: ObservableObject {
             }
             throw persistenceError
         }
-        hosts = updated
         await credentialMaterialStore.finalizeDeletion(commit)
         credentialAvailabilityRevision &+= 1
         if enqueueRemoteDeletion {
@@ -1324,39 +1331,68 @@ public final class SessionStore: ObservableObject {
 	}
 
     /// Replace the `serverId` of an existing host in-memory and persist.
-    public func setServerId(_ serverId: String, for hostId: UUID) throws {
-        guard let updated = HostRepositoryProjection.assigning(
-            serverID: serverId,
-            to: hostId,
-            in: hosts
-        ) else { throw HostSynchronizationError.localHostMissing(hostId) }
-        try HostPersistence.save(updated, to: hostsURL)
-        hosts = updated
+    public func setServerId(_ serverId: String, for hostId: UUID) async throws {
+		let snapshot = try await hostPersistence.mutate {
+			guard let updated = HostRepositoryProjection.assigning(
+				serverID: serverId,
+				to: hostId,
+				in: $0
+			) else {
+				throw HostSynchronizationError.localHostMissing(hostId)
+			}
+			$0 = updated
+		}
+		publish(snapshot)
     }
 
     /// Replaces synced metadata without touching credential or serverId. Used
     /// when a remote update lands.
-    public func applyRemoteMetadata(localHostId: UUID, remote: RemoteHost) throws {
-        guard let updated = HostRepositoryProjection.applying(
+    public func applyRemoteMetadata(
+		localHostId: UUID,
+		remote: RemoteHost
+	) async throws {
+		try await prepareHostRepository()
+        guard let candidate = HostRepositoryProjection.applying(
             remote,
             to: localHostId,
             in: hosts
         ) else { throw HostSynchronizationError.localHostMissing(localHostId) }
-		try validateCredentialIdentityAssignments(in: updated)
-        try HostPersistence.save(updated, to: hostsURL)
-        hosts = updated
+		try validateCredentialIdentityAssignments(in: candidate)
+		let snapshot = try await hostPersistence.mutate {
+			guard let updated = HostRepositoryProjection.applying(
+				remote,
+				to: localHostId,
+				in: $0
+			) else {
+				throw HostSynchronizationError.localHostMissing(localHostId)
+			}
+			$0 = updated
+		}
+		publish(snapshot)
     }
 
     /// Insert a host fetched from the server. Allocates a fresh local UUID,
     /// stamps `serverId` from `remote.id`, defaults credential to `.password`
     /// (so first connect prompts the user — see needsCredentialSetup).
     @discardableResult
-    public func addRemoteHost(_ remote: RemoteHost) throws -> UUID {
-        let result = HostRepositoryProjection.inserting(remote, into: hosts)
-		try validateCredentialIdentityAssignments(in: result.hosts)
-        try HostPersistence.save(result.hosts, to: hostsURL)
-        hosts = result.hosts
-        return result.localID
+    public func addRemoteHost(_ remote: RemoteHost) async throws -> UUID {
+		let localID = UUID()
+		try await prepareHostRepository()
+		let candidate = HostRepositoryProjection.inserting(
+			remote,
+			localID: localID,
+			into: hosts
+		)
+		try validateCredentialIdentityAssignments(in: candidate.hosts)
+		let snapshot = try await hostPersistence.mutate {
+			$0 = HostRepositoryProjection.inserting(
+				remote,
+				localID: localID,
+				into: $0
+			).hosts
+		}
+		publish(snapshot)
+        return localID
     }
 
     /// Replace the credential overlay for an existing host. Does NOT bump
@@ -1364,16 +1400,21 @@ public final class SessionStore: ObservableObject {
     /// to the server, so it must not trigger reconciler `.updateRemote` ops.
     ///
     /// Atomicity: persists to a local copy first; only assigns to `self.hosts`
-    /// after `HostPersistence.save` returns. A disk-write failure throws
+    /// after the actor-owned persistence transaction returns. A disk-write
+    /// failure throws
     /// without mutating in-memory state, so callers can treat the call as
     /// all-or-nothing for SessionStore-side state.
-	func setCredentialOnly(_ source: CredentialSource,
-	                       for hostId: UUID) throws {
-        guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
-        var updated = hosts
-        updated[idx].credential = source
-        try HostPersistence.save(updated, to: hostsURL)
-        hosts = updated
+	func setCredentialOnly(
+		_ source: CredentialSource,
+		for hostId: UUID
+	) async throws {
+		let snapshot = try await hostPersistence.mutate {
+			guard let index = $0.firstIndex(where: {
+				$0.id == hostId
+			}) else { return }
+			$0[index].credential = source
+		}
+		publish(snapshot)
     }
 
 	/// Single local credential-material mutation entry point. The material store
@@ -1384,6 +1425,7 @@ public final class SessionStore: ObservableObject {
 		credentialSource: CredentialSource,
 		for hostId: UUID
 	) async throws {
+		try await prepareHostRepository()
 		guard hosts.contains(where: { $0.id == hostId }) else { return }
 		let localSource: LocalCredentialSource
 		switch credentialSource {
@@ -1415,7 +1457,7 @@ public final class SessionStore: ObservableObject {
 			throw error
 		}
 
-		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else {
+		guard hosts.contains(where: { $0.id == hostId }) else {
 			try await credentialMaterialStore
 				.discardLocalCommitForDeletedHost(commit)
 			return
@@ -1432,17 +1474,27 @@ public final class SessionStore: ObservableObject {
 		case .agent:
 			resolvedSource = .agent
 		}
-		var updated = hosts
-		updated[idx].credential = resolvedSource
-		updated[idx].credentialMaterialDirty = true
 		do {
-			try HostPersistence.save(updated, to: hostsURL)
+			let snapshot = try await hostPersistence.mutate {
+				guard let currentIndex = $0.firstIndex(where: {
+					$0.id == hostId
+				}) else {
+					throw HostSynchronizationError.localHostMissing(hostId)
+				}
+				$0[currentIndex].credential = resolvedSource
+				$0[currentIndex].credentialMaterialDirty = true
+			}
+			publish(snapshot)
 		} catch {
 			let persistenceError = error
-			try await credentialMaterialStore.rollbackLocalCommit(commit)
+			if hosts.contains(where: { $0.id == hostId }) {
+				try await credentialMaterialStore.rollbackLocalCommit(commit)
+			} else {
+				try await credentialMaterialStore
+					.discardLocalCommitForDeletedHost(commit)
+			}
 			throw persistenceError
 		}
-		hosts = updated
 
 		NotificationCenter.default.post(
 			name: .catermHostCredentialMaterialChanged,
@@ -1460,6 +1512,7 @@ public final class SessionStore: ObservableObject {
 		from expectedSource: CredentialSource,
 		for hostId: UUID
 	) async throws -> Bool {
+		try await prepareHostRepository()
 		guard case let .keyFile(_, hasPassphrase) = expectedSource,
 		      hosts.first(where: { $0.id == hostId })?.credential == expectedSource else {
 			return false
@@ -1498,13 +1551,19 @@ public final class SessionStore: ObservableObject {
 			return false
 		}
 
-		var updated = hosts
-		updated[index].credential = .keyFile(
-			keyPath: commit.managedPath,
-			hasPassphrase: hasPassphrase
-		)
 		do {
-			try HostPersistence.save(updated, to: hostsURL)
+			let snapshot = try await hostPersistence.mutate {
+				guard let currentIndex = $0.firstIndex(where: {
+					$0.id == hostId
+				}), $0[currentIndex].credential == expectedSource else {
+					throw HostSynchronizationError.localHostMissing(hostId)
+				}
+				$0[currentIndex].credential = .keyFile(
+					keyPath: commit.managedPath,
+					hasPassphrase: hasPassphrase
+				)
+			}
+			publish(snapshot)
 		} catch {
 			let persistenceError = error
 			do {
@@ -1517,26 +1576,27 @@ public final class SessionStore: ObservableObject {
 			}
 			throw persistenceError
 		}
-		hosts = updated
 		await credentialMaterialStore.finalizeMigration(commit)
 		credentialAvailabilityRevision &+= 1
 		return true
 	}
 
 	public func resetCredentialMaterialForAccountChange() async throws {
+		try await prepareHostRepository()
 		try await credentialMaterialStore.resetAllCredentialMaterialForAccountChange(
 			hostIDs: hosts.map(\.id)
 		)
 		credentialAvailabilityRevision &+= 1
 	}
 
-	public func clearCredentialMaterialDirty(_ hostId: UUID) throws {
-		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
-		guard hosts[idx].credentialMaterialDirty else { return }  // idempotent
-		var updated = hosts
-		updated[idx].credentialMaterialDirty = false
-		try HostPersistence.save(updated, to: hostsURL)
-		hosts = updated
+	public func clearCredentialMaterialDirty(_ hostId: UUID) async throws {
+		let snapshot = try await hostPersistence.mutate {
+			guard let index = $0.firstIndex(where: {
+				$0.id == hostId
+			}), $0[index].credentialMaterialDirty else { return }
+			$0[index].credentialMaterialDirty = false
+		}
+		publish(snapshot)
 	}
 
 	private func validateCredentialIdentityAssignments(
@@ -1558,22 +1618,26 @@ public final class SessionStore: ObservableObject {
 	public func applyRemoteCredentialSource(
 		_ commit: RemoteCredentialMaterialCommit
 	) async throws {
+		try await prepareHostRepository()
 		let hostId = commit.hostId
-		guard let idx = hosts.firstIndex(where: { $0.id == hostId }) else { return }
-		var updated = hosts
-		switch commit.source {
-		case .unchanged:
-			break
-		case .password:
-			updated[idx].credential = .password
-		case let .keyFile(path, hasPassphrase):
-			updated[idx].credential = .keyFile(
-				keyPath: path,
-				hasPassphrase: hasPassphrase
-			)
+		guard hosts.contains(where: { $0.id == hostId }) else { return }
+		let snapshot = try await hostPersistence.mutate {
+			guard let currentIndex = $0.firstIndex(where: {
+				$0.id == hostId
+			}) else { return }
+			switch commit.source {
+			case .unchanged:
+				break
+			case .password:
+				$0[currentIndex].credential = .password
+			case let .keyFile(path, hasPassphrase):
+				$0[currentIndex].credential = .keyFile(
+					keyPath: path,
+					hasPassphrase: hasPassphrase
+				)
+			}
 		}
-		try HostPersistence.save(updated, to: hostsURL)
-		hosts = updated
+		publish(snapshot)
 		credentialAvailabilityRevision &+= 1
 	}
 
@@ -1644,6 +1708,7 @@ public final class SessionStore: ObservableObject {
 			.appendingPathComponent("caterm-chain-test-\(UUID().uuidString).json")
 		let kc = KeychainStore(service: "com.caterm.test.\(UUID().uuidString)",
 		                       accessGroup: nil)
+		let managedKeys = ManagedKeyStore()
 		// Write a dummy password for each host that should appear credentialed.
 		for hostId in credentialsAvailableFor {
 			try? kc.set(
@@ -1659,11 +1724,11 @@ public final class SessionStore: ObservableObject {
 			accessGroup: nil,
 			hostsURL: tmp,
 			keychain: kc,
-			configSink: configSink
+			configSink: configSink,
+			managedKeyStore: managedKeys,
+			credentialMaterialStore: nil,
+			initialHostsForTesting: hosts
 		)
-		// Inject hosts directly — bypasses disk persistence and
-		// avoids HostPersistence.save touching tmp.
-		store.hosts = hosts
 		return store
 	}
 }

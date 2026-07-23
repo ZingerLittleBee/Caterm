@@ -60,7 +60,7 @@ final class HostSyncStoreIsSyncingTests: XCTestCase {
 
     // MARK: - Initial state
 
-    func testIsSyncingFalseInitially() {
+    func testIsSyncingFalseInitially() async {
         XCTAssertFalse(sut.isSyncing,
             "Brand-new store has no in-flight sync (spec §2.1.1)")
     }
@@ -110,7 +110,7 @@ final class HostSyncStoreIsSyncingTests: XCTestCase {
         // First sync parks in listHosts().
         fakeClient.listHostsDelay = 0.5
         let h1 = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h1)
+        try await sessionStore.addHost(h1)
         // Wait past debounce + small margin so the first sync is in flight.
         try await Task.sleep(nanoseconds: 150_000_000)  // 0.15 s (> 0.05 debounce)
         XCTAssertTrue(sut.isSyncing,
@@ -118,7 +118,7 @@ final class HostSyncStoreIsSyncingTests: XCTestCase {
 
         // Trigger another auto-sync — startSync() chains, cancels first, drains.
         let h2 = SSHHost(name: "beta", hostname: "y", username: "u", credential: .agent)
-        try sessionStore.addHost(h2)
+        try await sessionStore.addHost(h2)
         // Wait long enough for the second sync to take over but well before
         // the 0.5 s listHostsDelay completes.
         try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s

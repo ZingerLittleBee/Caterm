@@ -48,7 +48,7 @@ final class CredentialIdentityMigrationTests: XCTestCase {
 				migrationState: .reversible
 			)
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(password: Data("legacy".utf8)),
 			credentialSource: .password,
@@ -113,7 +113,7 @@ final class CredentialIdentityMigrationTests: XCTestCase {
 			username: "deploy",
 			credential: .password
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(password: Data("legacy".utf8)),
 			credentialSource: .password,

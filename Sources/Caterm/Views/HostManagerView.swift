@@ -158,7 +158,9 @@ struct HostManagerView: View {
 				existingGroups: groups,
 				existingTags: tags
 			) { result in
-				apply(result, to: request.selectedIDs)
+				Task {
+					await apply(result, to: request.selectedIDs)
+				}
 			}
 		}
 		.confirmationDialog(
@@ -276,7 +278,7 @@ struct HostManagerView: View {
 	private func apply(
 		_ result: HostOrganizationEditorResult,
 		to selectedIDs: Set<UUID>
-	) {
+	) async {
 		do {
 			let updatedHosts = store.hosts.compactMap { host -> SSHHost? in
 				guard selectedIDs.contains(host.id) else { return nil }
@@ -284,7 +286,7 @@ struct HostManagerView: View {
 				updated.organization = result.apply(to: host.organization)
 				return updated
 			}
-			try store.updateHosts(updatedHosts)
+			try await store.updateHosts(updatedHosts)
 			editorRequest = nil
 		} catch {
 			errorMessage = error.localizedDescription

@@ -49,7 +49,7 @@ final class CredentialDirtyScanTests: XCTestCase {
     }
 
     func test_disabledState_doesNotQueueUpdateRemoteCredentials() async throws {
-        _ = makeDirtyHostWithServerId()
+        _ = await makeDirtyHostWithServerId()
         // prefsStore default state is .disabled — leave as-is.
 
         let sut = makeStore()
@@ -62,7 +62,7 @@ final class CredentialDirtyScanTests: XCTestCase {
     }
 
     func test_deletionInProgress_doesNotQueueUpdateRemoteCredentials() async throws {
-        _ = makeDirtyHostWithServerId()
+        _ = await makeDirtyHostWithServerId()
         prefsStore.mutate {
             $0.state = .enabled
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(pendingLocalHostIds: [])
@@ -92,7 +92,7 @@ final class CredentialDirtyScanTests: XCTestCase {
     }
 
     @discardableResult
-    private func makeDirtyHostWithServerId() -> SSHHost {
+    private func makeDirtyHostWithServerId() async -> SSHHost {
         let host = SSHHost(
             name: "dirty",
             hostname: "h",
@@ -101,8 +101,8 @@ final class CredentialDirtyScanTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try? sessionStore.addHost(host)
-        try? sessionStore.setServerId("rec-1", for: host.id)
+        try? await sessionStore.addHost(host)
+        try? await sessionStore.setServerId("rec-1", for: host.id)
         try? keychain.set(
             account: "\(host.id.uuidString).password",
             secret: "test-secret"

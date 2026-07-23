@@ -20,7 +20,9 @@ final class WorkspaceGhosttySurfaceAcceptanceTests: XCTestCase {
 		}
 		_ = NSApplication.shared
 		for surfaceCount in [2, 4] {
-			let fixture = try GhosttyWorkspaceFixture(surfaceCount: surfaceCount)
+			let fixture = try await GhosttyWorkspaceFixture(
+				surfaceCount: surfaceCount
+			)
 			addTeardownBlock { @MainActor in
 				await fixture.cleanUp()
 			}
@@ -52,7 +54,7 @@ final class WorkspaceGhosttySurfaceAcceptanceTests: XCTestCase {
 			throw XCTSkip("Local SSH is unavailable on this host.")
 		}
 		_ = NSApplication.shared
-		let fixture = try GhosttyWorkspaceFixture(surfaceCount: 8)
+		let fixture = try await GhosttyWorkspaceFixture(surfaceCount: 8)
 		addTeardownBlock { @MainActor in
 			await fixture.cleanUp()
 		}
@@ -134,7 +136,7 @@ private final class GhosttyWorkspaceFixture {
 	private(set) var workspace: Workspace
 	private var surfaceGenerations: [UUID: Int] = [:]
 
-	init(surfaceCount: Int) throws {
+	init(surfaceCount: Int) async throws {
 		self.surfaceCount = surfaceCount
 		rootURL = FileManager.default.temporaryDirectory
 			.appendingPathComponent("caterm-ghostty-acceptance-\(UUID())", isDirectory: true)
@@ -164,7 +166,7 @@ private final class GhosttyWorkspaceFixture {
 				credential: .agent
 			)
 		}
-		for host in hosts { try store.addHost(host) }
+		for host in hosts { try await store.addHost(host) }
 		guard let firstHost = hosts.first else {
 			throw GhosttyAcceptanceError.missingSurface
 		}

@@ -44,7 +44,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 
 	func test_applyPasswordReference_keepsCredentialPassword() async throws {
 		var host = Host(name: "B", hostname: "h", port: 22, username: "u", credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		host = store.hosts.first { $0.id == host.id }!
 		try await applyRemoteMaterial(
 			HostSecrets(password: Data("password".utf8)),
@@ -55,7 +55,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 
 	func test_applyPrivateKey_flipsCredentialToKeyFile() async throws {
 		var host = Host(name: "B", hostname: "h", port: 22, username: "u", credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		host = store.hosts.first { $0.id == host.id }!
 		try await applyRemoteMaterial(
 			HostSecrets(
@@ -75,7 +75,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 		// No password, no private key → should leave .agent or any other
 		// pre-existing credential alone.
 		var host = Host(name: "B", hostname: "h", port: 22, username: "u", credential: .agent)
-		try store.addHost(host)
+		try await store.addHost(host)
 		host = store.hosts.first { $0.id == host.id }!
 		try await applyRemoteMaterial(HostSecrets(), to: host.id)
 		XCTAssertEqual(store.hosts.first { $0.id == host.id }!.credential, .agent)
@@ -115,7 +115,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 				hasPassphrase: false
 			)
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 		let previousGeneration = await store.credentialMaterialStore
 			.currentGeneration(for: host.id)
 
@@ -164,7 +164,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 			username: "root",
 			credential: .password
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 		let localCommit = try await store.credentialMaterialStore.applyLocal(
 			HostSecrets(),
 			source: .agent,
@@ -175,7 +175,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 		}
 		await waitForQueuedTransactions(1, hostId: host.id)
 
-		try store.setCredentialOnly(.agent, for: host.id)
+		try await store.setCredentialOnly(.agent, for: host.id)
 		await store.credentialMaterialStore.finalizeLocalCommit(localCommit)
 
 		let requiresSetup = await availability.value
@@ -189,7 +189,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 			username: "root",
 			credential: .password
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 
 		let requiresSetup = await store.needsCredentialSetup(
 			host,
@@ -462,7 +462,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 			username: "root",
 			credential: externalSource
 		)
-		try fixture.store.addHost(host)
+		try await fixture.store.addHost(host)
 		let active = try await fixture.materialStore.beginGenerationValidation(
 			for: host.id,
 			expectedGeneration: 0
@@ -483,7 +483,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 			materialStore: fixture.materialStore
 		)
 
-		try fixture.store.setCredentialOnly(.password, for: host.id)
+		try await fixture.store.setCredentialOnly(.password, for: host.id)
 		await fixture.materialStore.finishGenerationValidation(active)
 		let migrated = try await migration.value
 
@@ -504,7 +504,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 			username: "root",
 			credential: .agent
 		)
-		try fixture.store.addHost(host)
+		try await fixture.store.addHost(host)
 		try await fixture.store.setHostCredentialMaterial(
 			secrets: HostSecrets(
 				password: Data("password".utf8),
@@ -544,7 +544,7 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 			username: "root",
 			credential: .agent
 		)
-		try fixture.store.addHost(host)
+		try await fixture.store.addHost(host)
 		let key = Data("private-key".utf8)
 		try await fixture.store.setHostCredentialMaterial(
 			secrets: HostSecrets(
@@ -554,11 +554,16 @@ final class ApplyRemoteCredentialTests: XCTestCase {
 			credentialSource: .keyFile(keyPath: "", hasPassphrase: false),
 			for: host.id
 		)
-		try FileManager.default.removeItem(at: fixture.hostsURL)
-		try FileManager.default.createDirectory(
-			at: fixture.hostsURL,
-			withIntermediateDirectories: false
+		try FileManager.default.setAttributes(
+			[.posixPermissions: 0o500],
+			ofItemAtPath: fixture.rootURL.path
 		)
+		defer {
+			try? FileManager.default.setAttributes(
+				[.posixPermissions: 0o700],
+				ofItemAtPath: fixture.rootURL.path
+			)
+		}
 
 		do {
 			try await fixture.store.deleteHost(id: host.id)

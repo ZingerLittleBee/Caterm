@@ -32,7 +32,7 @@ final class SetHostCredentialMaterialTests: XCTestCase {
 
 	func test_setMaterial_writesKeychain_setsDirty_postsNotification() async throws {
 		var host = Host(name: "Box", hostname: "h", port: 22, username: "u", credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		host = store.hosts.first { $0.id == host.id }!
 		let hostId = host.id
 
@@ -55,9 +55,9 @@ final class SetHostCredentialMaterialTests: XCTestCase {
 	func test_clearDirty_isIdempotent_andPersists() async throws {
 		var host = Host(name: "Box", hostname: "h", port: 22, username: "u", credential: .password)
 		host.credentialMaterialDirty = true
-		try store.addHost(host)
-		try store.clearCredentialMaterialDirty(host.id)
-		try store.clearCredentialMaterialDirty(host.id)  // idempotent
+		try await store.addHost(host)
+		try await store.clearCredentialMaterialDirty(host.id)
+		try await store.clearCredentialMaterialDirty(host.id)  // idempotent
 		XCTAssertFalse(store.hosts.first { $0.id == host.id }!.credentialMaterialDirty)
 	}
 }

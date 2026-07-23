@@ -47,7 +47,7 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 
     func testFirstSyncUploadsLocalUnsyncedHosts() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
         fakeClient.listResult = []
         fakeClient.createResult = RemoteHostCreateOutput(id: "srv-1")
 
@@ -89,13 +89,15 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
     func testSyncedThenRemoteDeletedRemovesLocal() async throws {
         var h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
         h.serverId = "srv-1"
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
         fakeClient.listResult = []  // server lost it (other device deleted)
 
         try await sut.sync()
 
         XCTAssertTrue(sessionStore.hosts.isEmpty)
-		XCTAssertTrue(try sessionStore.pendingRemoteHostDeletionIDs().isEmpty)
+		let pendingAfterRemoteDelete =
+			try await sessionStore.pendingRemoteHostDeletionIDs()
+		XCTAssertTrue(pendingAfterRemoteDelete.isEmpty)
 		XCTAssertTrue(fakeClient.deleteHostIDs.isEmpty)
     }
 
@@ -104,7 +106,7 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 			name: "alpha", hostname: "x", username: "u", credential: .agent
 		)
 		host.serverId = "srv-1"
-		try sessionStore.addHost(host)
+		try await sessionStore.addHost(host)
 		fakeClient.listResult = [
 			RemoteHost(
 				id: "srv-1", name: host.name, hostname: host.hostname,
@@ -125,7 +127,7 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 			name: "alpha", hostname: "x", username: "u", credential: .agent
 		)
 		host.serverId = "srv-1"
-		try sessionStore.addHost(host)
+		try await sessionStore.addHost(host)
 		fakeClient.listResult = [
 			RemoteHost(
 				id: "srv-1", name: host.name, hostname: host.hostname,
@@ -143,7 +145,9 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 			XCTAssertEqual(error as? TestFailure, .deleteFailed)
 		}
 
-		XCTAssertEqual(try sessionStore.pendingRemoteHostDeletionIDs(), ["srv-1"])
+		let pendingAfterFailure =
+			try await sessionStore.pendingRemoteHostDeletionIDs()
+		XCTAssertEqual(pendingAfterFailure, ["srv-1"])
 		XCTAssertEqual(fakeClient.deleteHostAttempts, ["srv-1"])
 		XCTAssertEqual(fakeClient.listCallCount, 0)
 
@@ -152,13 +156,15 @@ final class HostSyncStoreIntegrationTests: XCTestCase {
 
 		XCTAssertEqual(fakeClient.deleteHostAttempts, ["srv-1", "srv-1"])
 		XCTAssertEqual(fakeClient.deleteHostIDs, ["srv-1"])
-		XCTAssertTrue(try sessionStore.pendingRemoteHostDeletionIDs().isEmpty)
+		let pendingAfterRetry =
+			try await sessionStore.pendingRemoteHostDeletionIDs()
+		XCTAssertTrue(pendingAfterRetry.isEmpty)
 		XCTAssertTrue(sessionStore.hosts.isEmpty)
 	}
 
 	func testLocalOnlyAgentHostDoesNotNeedCredentialSetup() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
 		let requiresSetup = await sessionStore.needsCredentialSetup(h)
 		XCTAssertFalse(requiresSetup)
     }

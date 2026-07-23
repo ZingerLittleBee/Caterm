@@ -121,7 +121,7 @@ public enum BackupImporter {
 		for action in plan.hosts {
 			switch action.kind {
 			case .add:
-				try sessionStore.addHost(try hostForAdd(
+				try await sessionStore.addHost(try hostForAdd(
 					action.archiveHost,
 					identityMapping: plan.credentialIdentityIdMapping
 				))
@@ -153,7 +153,7 @@ public enum BackupImporter {
 							plan.credentialIdentityIdMapping
 					)
 				}
-				try sessionStore.updateHost(local)
+				try await sessionStore.updateHost(local)
 				summary.hostsUpdated += 1
 			case .credentialsOnly:
 				summary.hostsCredentialsOnly += 1
@@ -174,7 +174,7 @@ public enum BackupImporter {
 			local.jumpHostId = localTargetId
 			local.jumpHostServerId = sessionStore.hosts
 				.first { $0.id == localTargetId }?.serverId
-			try sessionStore.updateHost(local)
+			try await sessionStore.updateHost(local)
 		}
 
 		// Pass 3 — credential material through the Plan C entry point.

@@ -58,7 +58,7 @@ public enum MobileBackupService {
 		hosts: [SSHHost],
 		snippets: [Snippet],
 		includeSecrets: Bool,
-		keychain: KeychainStore,
+		keychain: any MobileCredentialStoring,
 		now: Date = Date()
 	) -> BackupPayload {
 		let backupHosts = hosts.map { host -> BackupHost in
@@ -74,9 +74,13 @@ public enum MobileBackupService {
 			var privateKey: Data?
 			if includeSecrets {
 				password = try? keychain.get(
-					account: MobileCredentialPlan.passwordAccount(host.id))
+					account: MobileCredentialPlan.passwordAccount(host.id),
+					interaction: .userInitiated
+				)
 				passphrase = try? keychain.get(
-					account: MobileCredentialPlan.keyPassphraseAccount(host.id))
+					account: MobileCredentialPlan.keyPassphraseAccount(host.id),
+					interaction: .userInitiated
+				)
 				if case let .keyFile(path, _) = host.credential {
 					privateKey = FileManager.default.contents(
 						atPath: (path as NSString).expandingTildeInPath)

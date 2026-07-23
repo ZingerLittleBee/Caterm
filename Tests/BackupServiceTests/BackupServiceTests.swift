@@ -124,14 +124,14 @@ final class BackupServiceTests: XCTestCase {
 	func test_export_roundTripsHostWithSecretsAndManagedKey() async throws {
 		let host = Host(name: "web", hostname: "h", port: 22, username: "u",
 		                credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(password: Data("pw".utf8)),
 			credentialSource: .password, for: host.id)
 
 		let keyHost = Host(name: "db", hostname: "d", port: 22, username: "u",
 		                   credential: .password)
-		try store.addHost(keyHost)
+		try await store.addHost(keyHost)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(passphrase: Data("pp".utf8), privateKeyBytes: Data("KEY".utf8)),
 			credentialSource: .keyFile(keyPath: "", hasPassphrase: true),
@@ -154,7 +154,7 @@ final class BackupServiceTests: XCTestCase {
 	func test_export_withoutSecrets_carriesNoSecretMaterial() async throws {
 		let host = Host(name: "web", hostname: "h", port: 22, username: "u",
 		                credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(password: Data("pw".utf8)),
 			credentialSource: .password, for: host.id)
@@ -186,7 +186,7 @@ final class BackupServiceTests: XCTestCase {
 			organization: organization,
 			automation: automation
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 
 		let payload = try await BackupExporter.makePayload(
 			includeSecrets: false,
@@ -251,7 +251,7 @@ final class BackupServiceTests: XCTestCase {
 			updatedAt: date(1_000),
 			automation: automation
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 		let legacy = archiveHost(
 			id: host.id,
 			name: "archive",
@@ -304,7 +304,7 @@ final class BackupServiceTests: XCTestCase {
 			username: "root",
 			credential: .agent
 		)
-		try store.addHost(target)
+		try await store.addHost(target)
 		let provisional = try await store.credentialMaterialStore.applyLocal(
 			HostSecrets(),
 			source: .agent,
@@ -330,9 +330,9 @@ final class BackupServiceTests: XCTestCase {
 			username: "root",
 			credential: .agent
 		)
-		try store.addHost(jump)
+		try await store.addHost(jump)
 		target.jumpHostId = jump.id
-		try store.updateHost(target)
+		try await store.updateHost(target)
 		_ = bookmarkStore.add(
 			RemoteBookmark(label: "logs", path: "/var/log"),
 			for: jump.id
@@ -386,8 +386,8 @@ final class BackupServiceTests: XCTestCase {
 			username: "root",
 			credential: .password
 		)
-		try isolatedStore.addHost(hostA)
-		try isolatedStore.addHost(hostB)
+		try await isolatedStore.addHost(hostA)
+		try await isolatedStore.addHost(hostB)
 		try await isolatedStore.setHostCredentialMaterial(
 			secrets: HostSecrets(privateKeyBytes: keyA),
 			credentialSource: .keyFile(keyPath: "", hasPassphrase: false),
@@ -445,12 +445,12 @@ final class BackupServiceTests: XCTestCase {
 		var localById = Host(name: "a", hostname: "h", port: 22, username: "u",
 		                     credential: .password)
 		localById.updatedAt = date(100)
-		try store.addHost(localById)
+		try await store.addHost(localById)
 		var localBySid = Host(name: "b", hostname: "h2", port: 22, username: "u",
 		                      credential: .password)
 		localBySid.serverId = "srv-9"
 		localBySid.updatedAt = date(100)
-		try store.addHost(localBySid)
+		try await store.addHost(localBySid)
 
 		let payload = makePayload(hosts: [
 			archiveHost(id: localById.id, updatedAt: date(200)),          // newer → update
@@ -481,8 +481,8 @@ final class BackupServiceTests: XCTestCase {
 		)
 		localByServerID.serverId = "server-b"
 		localByServerID.updatedAt = date(100)
-		try store.addHost(localByID)
-		try store.addHost(localByServerID)
+		try await store.addHost(localByID)
+		try await store.addHost(localByServerID)
 		let archive = archiveHost(
 			id: localByID.id,
 			serverId: "server-b",
@@ -503,7 +503,7 @@ final class BackupServiceTests: XCTestCase {
 			credential: .password
 		)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		let archive = archiveHost(
 			name: "archive",
 			hostname: "shared.example",
@@ -523,7 +523,7 @@ final class BackupServiceTests: XCTestCase {
 			credential: .password
 		)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		let archive = archiveHost(
 			id: local.id,
 			name: "archive",
@@ -590,7 +590,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "a", hostname: "h", port: 22, username: "u",
 		                 credential: .password) // no keychain item → needsCredentialSetup
 		local.updatedAt = date(300)
-		try store.addHost(local)
+		try await store.addHost(local)
 
 		let payload = makePayload(hosts: [
 			archiveHost(id: local.id, updatedAt: date(100), password: "pw"),
@@ -640,7 +640,7 @@ final class BackupServiceTests: XCTestCase {
 		                 username: "u", credential: .password)
 		local.serverId = "srv-1"
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		try store.setHostSecret("localpw", hostId: local.id, kind: .password)
 
 		let a = archiveHost(id: local.id, name: "renamed", hostname: "new.example",
@@ -660,7 +660,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "keep-name", hostname: "keep.example", port: 22,
 		                 username: "u", credential: .password)
 		local.updatedAt = date(300)
-		try store.addHost(local)
+		try await store.addHost(local)
 
 		let a = archiveHost(id: local.id, name: "archive-name",
 		                    updatedAt: date(100), password: "importedpw")
@@ -680,7 +680,7 @@ final class BackupServiceTests: XCTestCase {
 		                   credential: .password)
 		bastion.serverId = "srv-bastion"
 		bastion.updatedAt = date(100)
-		try store.addHost(bastion)
+		try await store.addHost(bastion)
 		try store.setHostSecret("x", hostId: bastion.id, kind: .password)
 
 		let archiveBastionId = UUID() // exporting device's UUID for the same bastion
@@ -724,7 +724,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "local-only", hostname: "l", port: 22, username: "u",
 		                 credential: .password)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		var current = settingsStore.settings
 		current.hostOverrides[HostId(local.id.uuidString)] = PartialSettings()
 		try settingsStore.save(current)
@@ -735,7 +735,7 @@ final class BackupServiceTests: XCTestCase {
 		                   credential: .password)
 		matched.serverId = "srv-m"
 		matched.updatedAt = date(100)
-		try store.addHost(matched)
+		try await store.addHost(matched)
 		try store.setHostSecret("x", hostId: matched.id, kind: .password)
 		let archiveHostId = UUID()
 		let payload = makePayload(
@@ -763,7 +763,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "a", hostname: "h", port: 22, username: "u",
 		                 credential: .password)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		try store.setHostSecret("x", hostId: local.id, kind: .password)
 		_ = bookmarkStore.add(RemoteBookmark(label: "www", path: "/var/www"),
 		                      for: local.id)
@@ -792,7 +792,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "survivor", hostname: "s", port: 22, username: "u",
 		                 credential: .password)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		try snippetStore.upsert(Snippet(id: UUID(), name: "s", content: "c",
 		                                createdAt: date(0), updatedAt: date(0)))
 
@@ -845,7 +845,7 @@ final class BackupServiceTests: XCTestCase {
 				migrationState: .reversible
 			)
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 
 		let payload = try await BackupExporter.makePayload(
 			includeSecrets: true,

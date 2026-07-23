@@ -27,6 +27,7 @@ public enum HostSynchronization {
 		afterApply: OperationHook? = nil,
 		didCommitCheckpoint: CheckpointObserver? = nil
 	) async throws -> [SyncOperation] {
+		try await repository.prepare()
 		try await drainPendingRemoteDeletions(
 			repository: repository,
 			client: client

@@ -185,7 +185,7 @@ struct PortForwardWorkspaceView: View {
 						throw PortForwardWorkspaceError.hostWasDeleted
 					}
 					current.forwards = forwards
-					try store.updateHost(current)
+					try await store.updateHost(current)
 				}
 			} else {
 				ContentUnavailableView(
@@ -252,7 +252,7 @@ private enum PortForwardWorkspaceError: LocalizedError {
 
 private struct PortForwardEditorSheet: View {
 	let host: SSHHost
-	let onSave: ([PortForward]) throws -> Void
+	let onSave: ([PortForward]) async throws -> Void
 	@Environment(\.dismiss) private var dismiss
 	@State private var forwards: [PortForward]
 	@State private var errorMessage: String?
@@ -260,7 +260,7 @@ private struct PortForwardEditorSheet: View {
 	init(
 		host: SSHHost,
 		addingNewRule: Bool,
-		onSave: @escaping ([PortForward]) throws -> Void
+		onSave: @escaping ([PortForward]) async throws -> Void
 	) {
 		self.host = host
 		self.onSave = onSave
@@ -308,11 +308,13 @@ private struct PortForwardEditorSheet: View {
 					.keyboardShortcut(.cancelAction)
 				Spacer()
 				Button("Save") {
-					do {
-						try onSave(forwards)
-						dismiss()
-					} catch {
-						errorMessage = error.localizedDescription
+					Task {
+						do {
+							try await onSave(forwards)
+							dismiss()
+						} catch {
+							errorMessage = error.localizedDescription
+						}
 					}
 				}
 				.keyboardShortcut(.defaultAction)

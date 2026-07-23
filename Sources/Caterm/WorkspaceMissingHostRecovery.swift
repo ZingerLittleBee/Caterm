@@ -6,7 +6,7 @@ import WorkspaceCore
 @MainActor
 struct WorkspaceMissingHostRecoveryTransaction {
 	struct Dependencies {
-		let addHost: (SSHHost) throws -> Void
+		let addHost: (SSHHost) async throws -> Void
 		let commitCredential: (SSHHost, String?, PendingKeyMaterial?) async throws -> Void
 		let replacePane: (SSHHost, PaneID, Workspace) throws -> Workspace
 		let rollbackHost: (UUID) async throws -> Void
@@ -32,7 +32,7 @@ struct WorkspaceMissingHostRecoveryTransaction {
 		paneID: PaneID,
 		workspace: Workspace
 	) async throws -> Workspace {
-		try dependencies.addHost(host)
+		try await dependencies.addHost(host)
 		do {
 			try Task.checkCancellation()
 			try await dependencies.commitCredential(host, secret, keyMaterial)

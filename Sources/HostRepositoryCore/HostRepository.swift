@@ -13,6 +13,7 @@ public protocol HostRepository: AnyObject {
 	var hostSnapshot: [SSHHost] { get }
 	var localMutations: AnyPublisher<Void, Never> { get }
 
+	func prepare() async throws
 	func createLocalHost(_ host: SSHHost) async throws
 	func updateLocalHostMetadata(_ host: SSHHost) async throws
 	func deleteLocalHost(id: UUID) async throws
@@ -24,4 +25,8 @@ public protocol HostRepository: AnyObject {
 	func assignServerID(_ serverID: String, to localID: UUID) async throws
 	func markCredentialMaterialSynced(for localID: UUID) async throws
 	func deleteHostFromRemote(localID: UUID) async throws
+}
+
+public extension HostRepository {
+	func prepare() async throws {}
 }

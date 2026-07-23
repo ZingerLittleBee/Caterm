@@ -71,12 +71,11 @@ public final class MobileHostStore: ObservableObject {
 				keychainAccessGroup: nil,
 				managedKeyStore: managedKeyStore
 			)
-		let initialHosts = (try? HostPersistence.load(from: fileURL)) ?? []
-		self.hosts = initialHosts
-		self.persistence = MobileHostPersistence(
-			hostsURL: fileURL,
-			hosts: initialHosts
-		)
+		self.hosts = []
+		self.persistence = MobileHostPersistence(hostsURL: fileURL)
+		Task { [weak self] in
+			try? await self?.prepare()
+		}
 	}
 
 	init(
@@ -96,8 +95,17 @@ public final class MobileHostStore: ObservableObject {
 				keychainAccessGroup: nil,
 				managedKeyStore: managedKeyStore
 			)
-		self.hosts = (try? HostPersistence.load(from: fileURL)) ?? []
+		self.hosts = []
 		self.persistence = persistence
+		Task { [weak self] in
+			try? await self?.prepare()
+		}
+	}
+
+	public func prepare() async throws {
+		let epoch = accountEpoch
+		let snapshot = try await persistence.prepare()
+		publish(snapshot, expectedEpoch: epoch)
 	}
 
 	public func add(_ host: SSHHost) async throws {
@@ -643,22 +651,25 @@ actor MobileHostPersistence {
 	}
 
 	private let hostsURL: URL
-	private var deletionOutbox: HostDeletionOutbox
-	private var hosts: [SSHHost]
+	private var deletionOutbox: HostDeletionOutbox?
+	private var hosts: [SSHHost] = []
 	private var revision: UInt64 = 0
 	private var accountEpoch: UInt64 = 0
 	private var resettingAccountEpoch: UInt64?
+	private var isLoaded = false
 	private let beforeMutation: @Sendable () async -> Void
 
 	init(
 		hostsURL: URL,
-		hosts: [SSHHost],
 		beforeMutation: @escaping @Sendable () async -> Void = {}
 	) {
 		self.hostsURL = hostsURL
-		self.hosts = hosts
-		self.deletionOutbox = HostDeletionOutbox(hostsURL: hostsURL)
 		self.beforeMutation = beforeMutation
+	}
+
+	func prepare() throws -> Snapshot {
+		try ensureLoaded()
+		return currentSnapshot
 	}
 
 	func mutate(
@@ -666,6 +677,7 @@ actor MobileHostPersistence {
 		_ transform: @Sendable (inout [SSHHost]) throws -> Void
 	) async throws -> Snapshot {
 		await beforeMutation()
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
 		var updated = hosts
 		try transform(&updated)
@@ -679,6 +691,7 @@ actor MobileHostPersistence {
 		expectedRevision: UInt64
 	) async throws -> Snapshot {
 		await beforeMutation()
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
 		guard revision == expectedRevision else {
 			throw MobileHostStore.StoreError.staleSnapshot
@@ -693,6 +706,7 @@ actor MobileHostPersistence {
 		expectedEpoch: UInt64
 	) async throws -> Snapshot {
 		await beforeMutation()
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
 		guard let host = hosts.first(where: { $0.id == id }) else {
 			return currentSnapshot
@@ -709,6 +723,7 @@ actor MobileHostPersistence {
 		expectedEpoch: UInt64
 	) async throws -> (snapshot: Snapshot, localID: UUID) {
 		await beforeMutation()
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
 		let result = HostRepositoryProjection.inserting(remote, into: hosts)
 		try save(result.hosts)
@@ -721,6 +736,7 @@ actor MobileHostPersistence {
 		expectedEpoch: UInt64
 	) async throws -> Snapshot {
 		await beforeMutation()
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
 		guard let updated = HostRepositoryProjection.applying(
 			remote,
@@ -739,6 +755,7 @@ actor MobileHostPersistence {
 		expectedEpoch: UInt64
 	) async throws -> Snapshot {
 		await beforeMutation()
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
 		guard let updated = HostRepositoryProjection.assigning(
 			serverID: serverID,
@@ -752,6 +769,7 @@ actor MobileHostPersistence {
 	}
 
 	func beginAccountReset(epoch: UInt64) throws -> [UUID] {
+		try ensureLoaded()
 		guard epoch == accountEpoch &+ 1,
 			resettingAccountEpoch == nil else {
 			throw MobileHostStore.StoreError.accountTransitionInProgress
@@ -762,12 +780,13 @@ actor MobileHostPersistence {
 	}
 
 	func completeAccountReset(epoch: UInt64) throws -> Snapshot {
+		try ensureLoaded()
 		guard resettingAccountEpoch == epoch else {
 			throw MobileHostStore.StoreError.accountTransitionInProgress
 		}
 		try save([])
-		for serverID in try deletionOutbox.pendingIDs() {
-			try deletionOutbox.remove(serverID)
+		for serverID in try outbox.pendingIDs() {
+			try outbox.remove(serverID)
 		}
 		resettingAccountEpoch = nil
 		return commit([])
@@ -779,38 +798,46 @@ actor MobileHostPersistence {
 	}
 
 	func pendingDeletionIDs(expectedEpoch: UInt64) throws -> [String] {
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
-		return try deletionOutbox.pendingIDs()
+		return try outbox.pendingIDs()
 	}
 
 	func recordDeletion(serverID: String, expectedEpoch: UInt64) throws {
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
-		_ = try deletionOutbox.insert(serverID)
+		_ = try outbox.insert(serverID)
 	}
 
 	func clearDeletion(serverID: String, expectedEpoch: UInt64) throws {
+		try ensureLoaded()
 		try requireWritable(epoch: expectedEpoch)
-		try deletionOutbox.remove(serverID)
+		try outbox.remove(serverID)
 	}
 
 	func hasIdentityBoundState() -> Bool {
+		do {
+			try ensureLoaded()
+		} catch {
+			return true
+		}
 		if !hosts.isEmpty { return true }
 		do {
-			return try !deletionOutbox.pendingIDs().isEmpty
+			return try !outbox.pendingIDs().isEmpty
 		} catch {
 			return true
 		}
 	}
 
 	func commitDeletion(hosts: [SSHHost], serverID: String?) throws {
-		let inserted = try serverID.map { try deletionOutbox.insert($0) } ?? false
+		let inserted = try serverID.map { try outbox.insert($0) } ?? false
 		do {
 			try HostPersistence.save(hosts, to: hostsURL)
 		} catch {
 			guard inserted, let serverID else { throw error }
 			let originalError = error
 			do {
-				try deletionOutbox.remove(serverID)
+				try outbox.remove(serverID)
 			} catch {
 				throw MobileHostStore.DeletionRollbackError(
 					originalError: originalError,
@@ -823,6 +850,25 @@ actor MobileHostPersistence {
 
 	private var currentSnapshot: Snapshot {
 		Snapshot(hosts: hosts, revision: revision)
+	}
+
+	private var outbox: HostDeletionOutbox {
+		get {
+			guard let deletionOutbox else {
+				preconditionFailure("MobileHostPersistence used before prepare")
+			}
+			return deletionOutbox
+		}
+		set {
+			deletionOutbox = newValue
+		}
+	}
+
+	private func ensureLoaded() throws {
+		guard !isLoaded else { return }
+		hosts = try HostPersistence.load(from: hostsURL)
+		deletionOutbox = HostDeletionOutbox(hostsURL: hostsURL)
+		isLoaded = true
 	}
 
 	private func requireWritable(epoch: UInt64) throws {

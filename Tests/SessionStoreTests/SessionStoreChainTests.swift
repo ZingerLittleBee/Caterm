@@ -23,7 +23,7 @@ final class SessionStoreChainTests: XCTestCase {
 		return h
 	}
 
-	func testOpenTabFailsFastOnBrokenChain() throws {
+	func testOpenTabFailsFastOnBrokenChain() async throws {
 		let target = host("target", "rh-target", jump: "rh-ghost")
 		let store = SessionStore.makeForTest(hosts: [target])
 		let tabId = store.openTab(host: target)
@@ -49,7 +49,7 @@ final class SessionStoreChainTests: XCTestCase {
 		              "got: \(msg)")
 	}
 
-	func testOpenTabUsesUnsyncedAncestorReferencedByLocalId() throws {
+	func testOpenTabUsesUnsyncedAncestorReferencedByLocalId() async throws {
 		let bastion = localHost("bastion", cred: .agent)
 		var target = localHost("target")
 		target.jumpHostId = bastion.id
@@ -60,19 +60,19 @@ final class SessionStoreChainTests: XCTestCase {
 		XCTAssertEqual(tab.resolvedChain.map(\.id), [bastion.id])
 	}
 
-	func testSetServerIdBackfillsDependentJumpHostServerIds() throws {
+	func testSetServerIdBackfillsDependentJumpHostServerIds() async throws {
 		let bastion = localHost("bastion")
 		var target = localHost("target")
 		target.jumpHostId = bastion.id
 		let store = SessionStore.makeForTest(hosts: [bastion, target])
 
-		try store.setServerId("rh-bastion", for: bastion.id)
+		try await store.setServerId("rh-bastion", for: bastion.id)
 
 		let refreshedTarget = try XCTUnwrap(store.hosts.first(where: { $0.id == target.id }))
 		XCTAssertEqual(refreshedTarget.jumpHostServerId, "rh-bastion")
 	}
 
-	func testOpenTabPopulatesResolvedChainOnSuccess() throws {
+	func testOpenTabPopulatesResolvedChainOnSuccess() async throws {
 		let bastion = host("bastion", "rh-bastion", cred: .agent)
 		let target = host("target", "rh-target", jump: "rh-bastion")
 		let store = SessionStore.makeForTest(hosts: [bastion, target])
@@ -81,7 +81,7 @@ final class SessionStoreChainTests: XCTestCase {
 		XCTAssertEqual(tab.resolvedChain.map(\.serverId), ["rh-bastion"])
 	}
 
-	func testCloseTabCallsConfigSinkCleanupWhenSshConfigURLNonNil() throws {
+	func testCloseTabCallsConfigSinkCleanupWhenSshConfigURLNonNil() async throws {
 		let bastion = host("bastion", "rh-bastion", cred: .agent)
 		let target = host("target", "rh-target", jump: "rh-bastion")
 		let sink = InMemorySSHConfigSink()
@@ -92,7 +92,7 @@ final class SessionStoreChainTests: XCTestCase {
 		XCTAssertEqual(sink.cleanups, [URL(string: "tmpfs:///0")!])
 	}
 
-	func testSurfaceConfigForChainedTabUsesChainCommandShape() throws {
+	func testSurfaceConfigForChainedTabUsesChainCommandShape() async throws {
 		// Pin the regression: surfaceConfig MUST reflect the chain command,
 		// not the direct-path command that ignores the jump-host config.
 		let bastion = host("bastion", "rh-bastion", cred: .agent)
@@ -114,7 +114,7 @@ final class SessionStoreChainTests: XCTestCase {
 		              "surfaceConfig env must contain CATERM_CHAIN")
 	}
 
-	func testSurfaceConfigForChainedTabRespectsInstallTerminfoFromBuild() throws {
+	func testSurfaceConfigForChainedTabRespectsInstallTerminfoFromBuild() async throws {
 		// Pin the I-1 regression: installTerminfo=true on chain build must
 		// produce a command with terminfo wrapping (e.g., contains TERM=xterm-ghostty).
 		let bastion = host("bastion", "rh-bastion", cred: .agent)
@@ -140,7 +140,7 @@ final class SessionStoreChainTests: XCTestCase {
 		              "chained tab with installTerminfo=true must have terminfo wrap in command; got: \(cfg!.command)")
 	}
 
-	func testRetryTabCleansOldSshConfigURL() throws {
+	func testRetryTabCleansOldSshConfigURL() async throws {
 		// Pin the regression: retryTab must clean the prior sshConfigURL before
 		// starting a fresh connection, otherwise the old temp file is leaked.
 		let bastion = host("bastion", "rh-bastion", cred: .agent)

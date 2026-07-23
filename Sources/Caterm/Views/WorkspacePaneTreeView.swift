@@ -519,7 +519,7 @@ private struct WorkspaceMissingHostView: View {
 		do {
 			let transaction = WorkspaceMissingHostRecoveryTransaction(
 				dependencies: .init(
-					addHost: { try store.addHost($0) },
+					addHost: { try await store.addHost($0) },
 					commitCredential: { savedHost, secret, keyMaterial in
 						if let keyMaterial {
 							try await HostKeyProvisioner.provision(

@@ -47,7 +47,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
 
     // MARK: - lastSyncedAt freshness (spec §4.2)
 
-    func testLastSyncedAtNilBeforeAnySync() {
+    func testLastSyncedAtNilBeforeAnySync() async {
         XCTAssertNil(sut.lastSyncedAt,
             "Fresh isolated defaults: no prior sync recorded")
     }
@@ -101,7 +101,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
         // listHosts succeeds (default empty), but createHost throws.
         // Seed a local-only host so reconciler emits a .createRemote op.
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
         fakeClient.listResult = []
         fakeClient.createHostError = Boom()
 
@@ -125,7 +125,7 @@ final class HostSyncStorePeriodicTests: XCTestCase {
     func testSignedOutMutationDebounceNoOps() async throws {
         fakeAuth.isSignedIn = false
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
         // Wait past 3× the debounce window.
         try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s
         XCTAssertEqual(fakeClient.listCallCount, 0,

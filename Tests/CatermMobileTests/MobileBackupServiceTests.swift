@@ -68,7 +68,7 @@ private actor BackupPersistenceGate {
 	}
 }
 
-private final class FailingBackupCredentialStore: MobileCredentialStoring {
+private final class InMemoryBackupCredentialStore: MobileCredentialStoring {
 	enum Failure: Error {
 		case deleteRejected
 	}
@@ -100,21 +100,19 @@ private final class FailingBackupCredentialStore: MobileCredentialStoring {
 
 @MainActor
 final class MobileBackupServiceTests: XCTestCase {
-	private var keychain: KeychainStore!
+	private var keychain: InMemoryBackupCredentialStore!
 	private var managedKeys: ManagedKeyStore!
 	private var keysRoot: URL!
 
 	override func setUp() async throws {
 		try await super.setUp()
-		keychain = KeychainStore(
-			service: "com.caterm.test.mobile-backup.\(UUID())", accessGroup: nil)
+		keychain = InMemoryBackupCredentialStore()
 		keysRoot = FileManager.default.temporaryDirectory
 			.appendingPathComponent("mobile-keys-\(UUID())", isDirectory: true)
 		managedKeys = ManagedKeyStore(rootURL: keysRoot)
 	}
 
 	override func tearDown() async throws {
-		try? keychain?.deleteAll(prefix: "")
 		try? FileManager.default.removeItem(at: keysRoot)
 		try await super.tearDown()
 	}
@@ -176,7 +174,10 @@ final class MobileBackupServiceTests: XCTestCase {
 		                        hasPassphrase: true))
 		XCTAssertEqual(try managedKeys.read(hostId: archiveId), Data("PEM".utf8))
 		XCTAssertEqual(
-			try keychain.get(account: MobileCredentialPlan.keyPassphraseAccount(archiveId)),
+			try keychain.get(
+				account: MobileCredentialPlan.keyPassphraseAccount(archiveId),
+				interaction: .userInitiated
+			),
 			"pp")
 	}
 
@@ -234,10 +235,11 @@ final class MobileBackupServiceTests: XCTestCase {
 			fileURL: hostsURL,
 			managedKeyStore: managedKeys
 		)
+		let credentials = InMemoryBackupCredentialStore()
 		let gate = BackupCommitGate()
 		let coordinator = MobileBackupImportCoordinator(
 			hostStore: store,
-			keychain: keychain,
+			keychain: credentials,
 			managedKeys: managedKeys,
 			beforeCommit: { await gate.block() }
 		)
@@ -312,11 +314,13 @@ final class MobileBackupServiceTests: XCTestCase {
 		try store.finishAccountTransition()
 		XCTAssertTrue(store.hosts.isEmpty)
 		XCTAssertTrue(try HostPersistence.load(from: hostsURL).isEmpty)
-		XCTAssertThrowsError(try keychain.get(
-			account: MobileCredentialPlan.passwordAccount(archiveID)
+		XCTAssertThrowsError(try credentials.get(
+			account: MobileCredentialPlan.passwordAccount(archiveID),
+			interaction: .userInitiated
 		))
-		XCTAssertThrowsError(try keychain.get(
-			account: MobileCredentialPlan.keyPassphraseAccount(archiveID)
+		XCTAssertThrowsError(try credentials.get(
+			account: MobileCredentialPlan.keyPassphraseAccount(archiveID),
+			interaction: .userInitiated
 		))
 		XCTAssertNil(try managedKeys.read(hostId: archiveID))
 	}
@@ -328,7 +332,6 @@ final class MobileBackupServiceTests: XCTestCase {
 		let persistenceGate = BackupPersistenceGate()
 		let persistence = MobileHostPersistence(
 			hostsURL: hostsURL,
-			hosts: [],
 			beforeMutation: { await persistenceGate.block() }
 		)
 		let store = MobileHostStore(
@@ -336,10 +339,11 @@ final class MobileBackupServiceTests: XCTestCase {
 			managedKeyStore: managedKeys,
 			persistence: persistence
 		)
+		let credentials = InMemoryBackupCredentialStore()
 		let importGate = BackupCommitGate()
 		let coordinator = MobileBackupImportCoordinator(
 			hostStore: store,
-			keychain: keychain,
+			keychain: credentials,
 			managedKeys: managedKeys,
 			beforeCommit: { await importGate.block() }
 		)
@@ -404,7 +408,6 @@ final class MobileBackupServiceTests: XCTestCase {
 		let persistenceGate = BackupPersistenceGate()
 		let persistence = MobileHostPersistence(
 			hostsURL: hostsURL,
-			hosts: [],
 			beforeMutation: { await persistenceGate.block() }
 		)
 		let store = MobileHostStore(
@@ -412,9 +415,10 @@ final class MobileBackupServiceTests: XCTestCase {
 			managedKeyStore: managedKeys,
 			persistence: persistence
 		)
+		let credentials = InMemoryBackupCredentialStore()
 		let coordinator = MobileBackupImportCoordinator(
 			hostStore: store,
-			keychain: keychain,
+			keychain: credentials,
 			managedKeys: managedKeys
 		)
 		let sharedID = UUID()
@@ -450,7 +454,7 @@ final class MobileBackupServiceTests: XCTestCase {
 			payload: payload,
 			hosts: [],
 			snippets: [],
-			keychain: keychain
+			keychain: credentials
 		)
 		XCTAssertEqual(preview.hosts.first?.kind, .add)
 
@@ -493,7 +497,6 @@ final class MobileBackupServiceTests: XCTestCase {
 		let persistenceGate = BackupPersistenceGate()
 		let persistence = MobileHostPersistence(
 			hostsURL: hostsURL,
-			hosts: [original],
 			beforeMutation: { await persistenceGate.block() }
 		)
 		let store = MobileHostStore(
@@ -501,9 +504,10 @@ final class MobileBackupServiceTests: XCTestCase {
 			managedKeyStore: managedKeys,
 			persistence: persistence
 		)
+		let credentials = InMemoryBackupCredentialStore()
 		let coordinator = MobileBackupImportCoordinator(
 			hostStore: store,
-			keychain: keychain,
+			keychain: credentials,
 			managedKeys: managedKeys
 		)
 		let payload = BackupPayload(
@@ -528,7 +532,7 @@ final class MobileBackupServiceTests: XCTestCase {
 			payload: payload,
 			hosts: [original],
 			snippets: [],
-			keychain: keychain
+			keychain: credentials
 		)
 		XCTAssertEqual(preview.hosts.first?.kind, .update)
 		var newer = original
@@ -559,7 +563,7 @@ final class MobileBackupServiceTests: XCTestCase {
 
 	func test_rollbackContinuesAfterOneCredentialItemFails() async throws {
 		enum CommitFailure: Error { case rejected }
-		let credentials = FailingBackupCredentialStore()
+		let credentials = InMemoryBackupCredentialStore()
 		let archiveID = UUID()
 		let passwordAccount = MobileCredentialPlan.passwordAccount(archiveID)
 		let passphraseAccount = MobileCredentialPlan.keyPassphraseAccount(archiveID)

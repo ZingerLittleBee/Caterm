@@ -90,8 +90,8 @@ final class CredentialPushNotificationTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
-        try sessionStore.setServerId("rec-1", for: host.id)
+        try await sessionStore.addHost(host)
+        try await sessionStore.setServerId("rec-1", for: host.id)
         try sessionStore.setHostSecret("p1", hostId: host.id, kind: .password)
         try await stageMasterKey()
         seedSnapshotMatchingLocal(serverId: "rec-1", host: host)

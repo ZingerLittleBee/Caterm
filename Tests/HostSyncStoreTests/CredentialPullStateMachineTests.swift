@@ -71,7 +71,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
 
     func test_disabled_doesNotApplyPayload_doesNotAdvanceLastApplied() async throws {
         prefsStore.mutate { $0.state = .disabled }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
         let remote = makeNewerRemote(serverId: "rec-1", host: host)
         let blob = CredentialBlob(
             state: .payload, revision: 7, keyID: "k1",
@@ -96,7 +96,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
 
     func test_pausedByRemote_payloadHigherThanTombstone_bumpsTombstoneRev() async throws {
         prefsStore.mutate { $0.state = .pausedByRemote(seenTombstoneRevision: 5) }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
         let remote = makeNewerRemote(serverId: "rec-1", host: host)
         let blob = CredentialBlob(
             state: .payload, revision: 9, keyID: "k1",
@@ -119,7 +119,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
 
     func test_waitingForKey_payload_setsObservedKeyID() async throws {
         prefsStore.mutate { $0.state = .waitingForKey(observedKeyID: nil) }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
         let remote = makeNewerRemote(serverId: "rec-1", host: host)
         let blob = CredentialBlob(
             state: .payload, revision: 3, keyID: "key-A",
@@ -142,7 +142,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
 
     func test_waitingForKey_tombstone_transitionsToPaused() async throws {
         prefsStore.mutate { $0.state = .waitingForKey(observedKeyID: "key-A") }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
         let remote = makeNewerRemote(serverId: "rec-1", host: host)
         let blob = CredentialBlob(state: .tombstone, revision: 11, keyID: nil)
         seedBatch(remote: remote, blob: blob)
@@ -162,7 +162,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
 
     func test_enabled_tombstone_transitionsToPaused_doesNotTouchKeychain() async throws {
         prefsStore.mutate { $0.state = .enabled }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
         // Pre-stage the host in the payload-tracking set — the observed
         // tombstone must remove it so the UI count doesn't lie.
         prefsStore.mutate { $0.hostsWithCloudPayload = [host.id] }
@@ -196,7 +196,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
         // and persists via SessionStore. The public outcome is the password
         // round-tripping to the keychain and revision state advancing.
         prefsStore.mutate { $0.state = .enabled }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
 
         let resolved = try await masterKeyStore.generate()
         let key = resolved.key
@@ -251,7 +251,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
     /// is `Date.distantPast` so any reasonable remote `updatedAt` will be
     /// strictly newer, forcing the reconciler to emit `.updateLocal`.
     @discardableResult
-    private func seedLocalHost(serverId: String) -> SSHHost {
+    private func seedLocalHost(serverId: String) async -> SSHHost {
         let host = SSHHost(
             id: UUID(),
             serverId: serverId,
@@ -263,7 +263,7 @@ final class CredentialPullStateMachineTests: XCTestCase {
             createdAt: Date.distantPast,
             updatedAt: Date.distantPast
         )
-        try? sessionStore.addHost(host)
+        try? await sessionStore.addHost(host)
         return host
     }
 

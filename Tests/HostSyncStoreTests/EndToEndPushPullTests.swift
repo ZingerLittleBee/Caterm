@@ -59,8 +59,8 @@ final class EndToEndPushPullTests: XCTestCase {
             username: "u", credential: .password,
             createdAt: Date.distantPast, updatedAt: Date.distantPast
         )
-        try mac.a.session.addHost(host)
-        try mac.a.session.setServerId("rec-A1", for: aHostId)
+        try await mac.a.session.addHost(host)
+        try await mac.a.session.setServerId("rec-A1", for: aHostId)
         try await mac.a.session.setHostCredentialMaterial(
             secrets: HostSecrets(password: Data("p1".utf8)),
             credentialSource: .password,
@@ -114,7 +114,7 @@ final class EndToEndPushPullTests: XCTestCase {
             credential: .password,
             createdAt: Date.distantPast, updatedAt: Date.distantPast
         )
-        try mac.b.session.addHost(bHost)
+        try await mac.b.session.addHost(bHost)
         mac.b.prefs.mutate { $0.state = .enabled }
 
         let remote = RemoteHost(
@@ -166,8 +166,8 @@ final class EndToEndPushPullTests: XCTestCase {
             credential: .keyFile(keyPath: "/tmp/ignored", hasPassphrase: true),
             createdAt: Date.distantPast, updatedAt: Date.distantPast
         )
-        try mac.a.session.addHost(host)
-        try mac.a.session.setServerId("rec-A2", for: aHostId)
+        try await mac.a.session.addHost(host)
+        try await mac.a.session.setServerId("rec-A2", for: aHostId)
 
         let pkBytes = Data("FAKE-RSA-PRIVATE-KEY-CONTENT".utf8)
         try await mac.a.session.setHostCredentialMaterial(
@@ -213,7 +213,7 @@ final class EndToEndPushPullTests: XCTestCase {
             credential: .keyFile(keyPath: "/tmp/placeholder", hasPassphrase: true),
             createdAt: Date.distantPast, updatedAt: Date.distantPast
         )
-        try mac.b.session.addHost(bHost)
+        try await mac.b.session.addHost(bHost)
         mac.b.prefs.mutate { $0.state = .enabled }
 
         let remote = RemoteHost(
@@ -274,8 +274,8 @@ final class EndToEndPushPullTests: XCTestCase {
             username: "u", credential: .password,
             createdAt: Date.distantPast, updatedAt: Date.distantPast
         )
-        try mac.a.session.addHost(host)
-        try mac.a.session.setServerId("rec-A3", for: aHostId)
+        try await mac.a.session.addHost(host)
+        try await mac.a.session.setServerId("rec-A3", for: aHostId)
         try await mac.a.session.setHostCredentialMaterial(
             secrets: HostSecrets(password: Data("p1".utf8)),
             credentialSource: .password,

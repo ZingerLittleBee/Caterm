@@ -144,11 +144,12 @@ final class CredentialIdentitySessionTests: XCTestCase {
 		}
 		await blocker.waitUntilBlocked()
 
-		XCTAssertThrowsError(
-			try fixture.sessionStore.addHost(
+		do {
+			try await fixture.sessionStore.addHost(
 				fixture.host(assignedTo: identity.id)
 			)
-		) { error in
+			XCTFail("Expected identity deletion to block Host assignment")
+		} catch {
 			XCTAssertEqual(
 				error as? CredentialIdentityStoreError,
 				.identityDeletionInProgress(identity.id)
@@ -157,7 +158,7 @@ final class CredentialIdentitySessionTests: XCTestCase {
 
 		await blocker.release()
 		try await deletion.value
-		try fixture.sessionStore.addHost(
+		try await fixture.sessionStore.addHost(
 			fixture.host(assignedTo: identity.id)
 		)
 	}

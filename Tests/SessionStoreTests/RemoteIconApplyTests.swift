@@ -34,11 +34,11 @@ final class RemoteIconApplyTests: XCTestCase {
 		try await super.tearDown()
 	}
 
-	func test_applyRemoteMetadata_copiesIconOntoIconlessHost() throws {
+	func test_applyRemoteMetadata_copiesIconOntoIconlessHost() async throws {
 		// Machine B's local copy has no icon.
 		let host = SSHHost(serverId: "rid", name: "h", hostname: "h.example",
 		                    port: 22, username: "u", credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		XCTAssertNil(store.hosts.first(where: { $0.id == host.id })?.icon)
 
 		let remote = RemoteHost(
@@ -50,7 +50,7 @@ final class RemoteIconApplyTests: XCTestCase {
 				groupPath: ["Production"], tags: ["Linux"]
 			)
 		)
-		try store.applyRemoteMetadata(localHostId: host.id, remote: remote)
+		try await store.applyRemoteMetadata(localHostId: host.id, remote: remote)
 		XCTAssertEqual(
 			store.hosts.first(where: { $0.id == host.id })?.icon, "server.rack")
 		XCTAssertEqual(
@@ -59,7 +59,7 @@ final class RemoteIconApplyTests: XCTestCase {
 		)
 	}
 
-	func test_addRemoteHost_carriesIcon() throws {
+	func test_addRemoteHost_carriesIcon() async throws {
 		let remote = RemoteHost(
 			id: "rid", name: "h", hostname: "h.example", port: 22,
 			username: "u", authType: "key",
@@ -69,7 +69,7 @@ final class RemoteIconApplyTests: XCTestCase {
 				groupPath: ["Staging"], tags: ["On-call"]
 			)
 		)
-		try store.addRemoteHost(remote)
+		try await store.addRemoteHost(remote)
 		XCTAssertEqual(
 			store.hosts.first(where: { $0.serverId == "rid" })?.icon,
 			"globe.americas.fill")
@@ -79,17 +79,17 @@ final class RemoteIconApplyTests: XCTestCase {
 		)
 	}
 
-	func test_applyRemoteMetadata_clearsIconWhenRemoteHasNone() throws {
+	func test_applyRemoteMetadata_clearsIconWhenRemoteHasNone() async throws {
 		var host = SSHHost(serverId: "rid", name: "h", hostname: "h.example",
 		                   port: 22, username: "u", credential: .password)
 		host.icon = "flag.fill"
-		try store.addHost(host)
+		try await store.addHost(host)
 		let remote = RemoteHost(
 			id: "rid", name: host.name, hostname: host.hostname,
 			port: host.port, username: host.username, authType: "key",
 			createdAt: host.createdAt, updatedAt: Date(), icon: nil
 		)
-		try store.applyRemoteMetadata(localHostId: host.id, remote: remote)
+		try await store.applyRemoteMetadata(localHostId: host.id, remote: remote)
 		XCTAssertNil(store.hosts.first(where: { $0.id == host.id })?.icon)
 	}
 }

@@ -217,6 +217,146 @@ private func platformRepositoriesPublishLocalMutations(
 }
 
 @Test(
+	"Platform Host repositories serialize concurrent local saves",
+	arguments: [HostRepositoryPlatform.macOS, .iOS]
+)
+@MainActor
+private func platformRepositoriesSerializeConcurrentLocalSaves(
+	_ platform: HostRepositoryPlatform
+) async throws {
+	let fileURL = tempRepositoryURL()
+	defer { removeRepositoryFiles(at: fileURL) }
+	let repository = makeRepository(for: platform, fileURL: fileURL)
+	let alpha = makeRepositoryHost("alpha")
+	let beta = makeRepositoryHost("beta")
+
+	async let saveAlpha: Void = repository.createLocalHost(alpha)
+	async let saveBeta: Void = repository.createLocalHost(beta)
+	_ = try await (saveAlpha, saveBeta)
+
+	let expectedIDs = Set([alpha.id, beta.id])
+	#expect(Set(repository.hostSnapshot.map(\.id)) == expectedIDs)
+	#expect(Set(try HostPersistence.load(from: fileURL).map(\.id)) == expectedIDs)
+}
+
+@Test(
+	"Platform Host repositories serialize save and delete",
+	arguments: [HostRepositoryPlatform.macOS, .iOS]
+)
+@MainActor
+private func platformRepositoriesSerializeSaveAndDelete(
+	_ platform: HostRepositoryPlatform
+) async throws {
+	let fileURL = tempRepositoryURL()
+	defer { removeRepositoryFiles(at: fileURL) }
+	let repository = makeRepository(for: platform, fileURL: fileURL)
+	let deleted = makeRepositoryHost("deleted")
+	let surviving = makeRepositoryHost("surviving")
+	try await repository.createLocalHost(deleted)
+
+	async let save: Void = repository.createLocalHost(surviving)
+	async let delete: Void = repository.deleteLocalHost(id: deleted.id)
+	_ = try await (save, delete)
+
+	#expect(repository.hostSnapshot.map(\.id) == [surviving.id])
+	#expect(try HostPersistence.load(from: fileURL).map(\.id) == [surviving.id])
+}
+
+@Test(
+	"Platform Host repositories keep remote and local interleavings whole",
+	arguments: [HostRepositoryPlatform.macOS, .iOS]
+)
+@MainActor
+private func platformRepositoriesKeepRemoteAndLocalInterleavingsWhole(
+	_ platform: HostRepositoryPlatform
+) async throws {
+	let fileURL = tempRepositoryURL()
+	defer { removeRepositoryFiles(at: fileURL) }
+	let repository = makeRepository(for: platform, fileURL: fileURL)
+	var baseline = makeRepositoryHost("baseline")
+	baseline.serverId = "server-1"
+	try await repository.createLocalHost(baseline)
+
+	var local = baseline
+	local.name = "local"
+	local.organization = HostOrganization(tags: ["local"])
+	let localEditHost = local
+	let baselineID = baseline.id
+	let remote = RemoteHost(
+		id: "server-1",
+		name: "remote",
+		hostname: baseline.hostname,
+		port: baseline.port,
+		username: baseline.username,
+		authType: "password",
+		createdAt: baseline.createdAt,
+		updatedAt: baseline.updatedAt.addingTimeInterval(1),
+		organization: HostOrganization(tags: ["remote"])
+	)
+
+	async let localEdit: Void = repository.updateLocalHostMetadata(
+		localEditHost
+	)
+	async let remoteApply: Void = repository.updateHostFromRemote(
+		localID: baselineID,
+		remote: remote
+	)
+	_ = try await (localEdit, remoteApply)
+
+	let persisted = try HostPersistence.load(from: fileURL)
+	#expect(repository.hostSnapshot == persisted)
+	#expect(persisted.count == 1)
+	#expect(persisted[0].credential == baseline.credential)
+	#expect(["local", "remote"].contains(persisted[0].name))
+}
+
+@Test(
+	"Platform Host repositories serialize outbox drain and insert",
+	arguments: [HostRepositoryPlatform.macOS, .iOS]
+)
+@MainActor
+private func platformRepositoriesSerializeOutboxDrainAndInsert(
+	_ platform: HostRepositoryPlatform
+) async throws {
+	let fileURL = tempRepositoryURL()
+	defer { removeRepositoryFiles(at: fileURL) }
+	let repository = makeRepository(for: platform, fileURL: fileURL)
+	try await repository.recordPendingRemoteDeletion(serverID: "drained")
+
+	async let insert: Void = repository.recordPendingRemoteDeletion(
+		serverID: "inserted"
+	)
+	async let drain: Void = repository.clearPendingRemoteDeletion(
+		serverID: "drained"
+	)
+	_ = try await (insert, drain)
+
+	#expect(try await repository.pendingRemoteDeletionIDs() == ["inserted"])
+}
+
+private func tempRepositoryURL() -> URL {
+	FileManager.default.temporaryDirectory
+		.appendingPathComponent("host-repository-\(UUID().uuidString).json")
+}
+
+private func removeRepositoryFiles(at fileURL: URL) {
+	try? FileManager.default.removeItem(at: fileURL)
+	try? FileManager.default.removeItem(
+		at: fileURL.deletingPathExtension()
+			.appendingPathExtension("deletions.json")
+	)
+}
+
+private func makeRepositoryHost(_ name: String) -> SSHHost {
+	SSHHost(
+		name: name,
+		hostname: "\(name).example.com",
+		username: "deploy",
+		credential: .agent
+	)
+}
+
+@Test(
 	"Platform Host repositories preserve credential state during metadata updates",
 	arguments: [HostRepositoryPlatform.macOS, .iOS]
 )
@@ -515,8 +655,9 @@ final class MobileHostStoreTests: XCTestCase {
 		)
 	}
 
-	func testLoadsEmptyWhenFileMissing() {
+	func testLoadsEmptyWhenFileMissing() async throws {
 		let store = MobileHostStore(fileURL: tempURL())
+		try await store.prepare()
 		XCTAssertTrue(store.hosts.isEmpty)
 	}
 
@@ -531,6 +672,7 @@ final class MobileHostStoreTests: XCTestCase {
 		// A fresh store over the same file sees the persisted host: this is
 		// the macOS-shared JSON format, so desktop/CloudKit stay consistent.
 		let reloaded = MobileHostStore(fileURL: url)
+		try await reloaded.prepare()
 		XCTAssertEqual(reloaded.hosts.map(\.id), [host.id])
 	}
 
@@ -544,7 +686,9 @@ final class MobileHostStoreTests: XCTestCase {
 		try await store.update(host)
 
 		XCTAssertEqual(store.hosts.first?.name, "Renamed")
-		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.first?.name, "Renamed")
+		let reloaded = MobileHostStore(fileURL: url)
+		try await reloaded.prepare()
+		XCTAssertEqual(reloaded.hosts.first?.name, "Renamed")
 	}
 
 	func testUpdateUnknownHostThrows() async throws {
@@ -566,7 +710,9 @@ final class MobileHostStoreTests: XCTestCase {
 		await waitUntil { store.hosts.map(\.id) == [host.id] }
 
 		XCTAssertEqual(store.hosts.map(\.id), [host.id])
-		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.map(\.id), [host.id])
+		let reloaded = MobileHostStore(fileURL: url)
+		try await reloaded.prepare()
+		XCTAssertEqual(reloaded.hosts.map(\.id), [host.id])
 	}
 
 	func testBindingPersistenceFailureIsPublishedWithoutMutatingHosts() async throws {
@@ -598,7 +744,9 @@ final class MobileHostStoreTests: XCTestCase {
 		try await store.delete(id: a.id)
 
 		XCTAssertEqual(store.hosts.map(\.id), [b.id])
-		XCTAssertEqual(MobileHostStore(fileURL: url).hosts.map(\.id), [b.id])
+		let reloaded = MobileHostStore(fileURL: url)
+		try await reloaded.prepare()
+		XCTAssertEqual(reloaded.hosts.map(\.id), [b.id])
 	}
 
 	func testAccountResetDrainsAHostSaveAlreadyWaitingToPersist() async throws {
@@ -608,7 +756,6 @@ final class MobileHostStoreTests: XCTestCase {
 		let gate = PersistenceMutationGate()
 		let persistence = MobileHostPersistence(
 			hostsURL: url,
-			hosts: [accountAHost],
 			beforeMutation: { await gate.block() }
 		)
 		let store = MobileHostStore(fileURL: url, persistence: persistence)

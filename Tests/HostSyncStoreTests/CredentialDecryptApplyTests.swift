@@ -62,7 +62,7 @@ final class CredentialDecryptApplyTests: XCTestCase {
 
     func test_payloadDecrypt_writesKeychain_writesManagedKeyStore_advancesLastApplied() async throws {
         prefsStore.mutate { $0.state = .enabled }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
 
         // Generate the master key in the same store the SUT will use.
         let resolved = try await masterKeyStore.generate()
@@ -143,7 +143,7 @@ final class CredentialDecryptApplyTests: XCTestCase {
 
     func test_masterKeyAbsent_transitionsToWaitingForKey_doesNotAdvance_throws() async throws {
         prefsStore.mutate { $0.state = .enabled }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
 
         // Master-key store is empty (no generate() call). load(keyID:) → nil.
         let absentKeyID = "some-key-id-not-in-store"
@@ -180,7 +180,7 @@ final class CredentialDecryptApplyTests: XCTestCase {
 
     func test_aadMismatch_throws_dirtyAdvancesAfter3Attempts() async throws {
         prefsStore.mutate { $0.state = .enabled }
-        let host = seedLocalHost(serverId: "rec-1")
+        let host = await seedLocalHost(serverId: "rec-1")
 
         // Generate a real key so the master-key resolution succeeds; the
         // failure has to come from AAD mismatch, not key-missing.
@@ -258,7 +258,7 @@ final class CredentialDecryptApplyTests: XCTestCase {
     }
 
     @discardableResult
-    private func seedLocalHost(serverId: String) -> SSHHost {
+    private func seedLocalHost(serverId: String) async -> SSHHost {
         let host = SSHHost(
             id: UUID(),
             serverId: serverId,
@@ -270,7 +270,7 @@ final class CredentialDecryptApplyTests: XCTestCase {
             createdAt: Date.distantPast,
             updatedAt: Date.distantPast
         )
-        try? sessionStore.addHost(host)
+        try? await sessionStore.addHost(host)
         return host
     }
 

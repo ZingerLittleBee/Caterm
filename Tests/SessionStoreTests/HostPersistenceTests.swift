@@ -20,7 +20,7 @@ final class HostPersistenceTests: XCTestCase {
 		try? FileManager.default.removeItem(at: deletionOutboxURL)
 	}
 
-	func testRoundtripWithAllThreeCredentialKinds() throws {
+	func testRoundtripWithAllThreeCredentialKinds() async throws {
 		let hosts: [SSHHost] = [
 			SSHHost(name: "p", hostname: "h1", port: 22, username: "u", credential: .password),
 			SSHHost(name: "k", hostname: "h2", port: 2222, username: "u",
@@ -35,19 +35,19 @@ final class HostPersistenceTests: XCTestCase {
 		XCTAssertEqual(read[2].credential, .agent)
 	}
 
-	func testLoadMissingFileReturnsEmpty() throws {
+	func testLoadMissingFileReturnsEmpty() async throws {
 		let result = try HostPersistence.load(from: tmpURL)
 		XCTAssertTrue(result.isEmpty)
 	}
 
-	func testFilePermissionsAre0600() throws {
+	func testFilePermissionsAre0600() async throws {
 		try HostPersistence.save([], to: tmpURL)
 		let attrs = try FileManager.default.attributesOfItem(atPath: tmpURL.path)
 		let perm = attrs[.posixPermissions] as? Int
 		XCTAssertEqual(perm, 0o600)
 	}
 
-	func testHostDeletionOutboxPersistsWithPrivatePermissions() throws {
+	func testHostDeletionOutboxPersistsWithPrivatePermissions() async throws {
 		var outbox = HostDeletionOutbox(hostsURL: tmpURL)
 		try outbox.insert("srv-1")
 
@@ -63,7 +63,7 @@ final class HostPersistenceTests: XCTestCase {
 		XCTAssertTrue(try HostDeletionOutbox(hostsURL: tmpURL).pendingIDs().isEmpty)
 	}
 
-	func testCorruptHostDeletionOutboxFailsClosed() throws {
+	func testCorruptHostDeletionOutboxFailsClosed() async throws {
 		try Data("not-json".utf8).write(to: deletionOutboxURL)
 		var outbox = HostDeletionOutbox(hostsURL: tmpURL)
 
@@ -71,7 +71,7 @@ final class HostPersistenceTests: XCTestCase {
 		XCTAssertThrowsError(try outbox.insert("srv-1"))
 	}
 
-	func testSaveOverwritesExisting() throws {
+	func testSaveOverwritesExisting() async throws {
 		try HostPersistence.save([
 			SSHHost(name: "first", hostname: "h", port: 22, username: "u", credential: .agent),
 		], to: tmpURL)
@@ -101,7 +101,7 @@ final class HostPersistenceTests: XCTestCase {
 			credentialMaterialStore: materialStore
 		)
 		let host = SSHHost(name: "x", hostname: "h", port: 22, username: "u", credential: .agent)
-		try store.addHost(host)
+		try await store.addHost(host)
 
 		// Re-load fresh store, verify host present
 		let store2 = SessionStore(
@@ -110,6 +110,7 @@ final class HostPersistenceTests: XCTestCase {
 			managedKeyStore: managedKeys,
 			credentialMaterialStore: materialStore
 		)
+		try await store2.prepareHostRepository()
 		XCTAssertEqual(store2.hosts.count, 1)
 		XCTAssertEqual(store2.hosts.first?.name, "x")
 
@@ -119,6 +120,7 @@ final class HostPersistenceTests: XCTestCase {
 			accessGroup: nil, hostsURL: tmpURL, keychain: kc,
 			managedKeyStore: managedKeys
 		)
+		try await store3.prepareHostRepository()
 		XCTAssertEqual(store3.hosts.count, 0)
 	}
 
@@ -144,7 +146,7 @@ final class HostPersistenceTests: XCTestCase {
 			name: "alpha", hostname: "x", username: "u", credential: .agent
 		)
 		host.serverId = "srv-1"
-		try original.addHost(host)
+		try await original.addHost(host)
 
 		try await original.deleteHost(id: host.id)
 		let restored = SessionStore(
@@ -152,8 +154,10 @@ final class HostPersistenceTests: XCTestCase {
 			accessGroup: nil, hostsURL: tmpURL, keychain: keychain,
 			managedKeyStore: keyStore, credentialMaterialStore: materialStore
 		)
+		try await restored.prepareHostRepository()
 
 		XCTAssertTrue(restored.hosts.isEmpty)
-		XCTAssertEqual(try restored.pendingRemoteHostDeletionIDs(), ["srv-1"])
+		let pendingIDs = try await restored.pendingRemoteHostDeletionIDs()
+		XCTAssertEqual(pendingIDs, ["srv-1"])
 	}
 }

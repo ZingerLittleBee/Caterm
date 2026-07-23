@@ -168,7 +168,7 @@ struct HostListSidebar: View {
 				HostFormView(mode: .add) { host, secret, keyMaterial in
 					Task { @MainActor in
 						do {
-							try store.addHost(host)
+							try await store.addHost(host)
 							if host.credentialIdentity?.migrationState
 								!= .confirmed {
 								try await applyCredentialChange(
@@ -234,7 +234,7 @@ struct HostListSidebar: View {
 											metadataUpdate
 										)
 								} else {
-									try store.updateHost(metadataUpdate)
+									try await store.updateHost(metadataUpdate)
 								}
 							}
 							editingHost = nil

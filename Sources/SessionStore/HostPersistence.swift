@@ -18,14 +18,31 @@ public enum HostPersistence {
 		let encoder = JSONEncoder()
 		encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 		let data = try encoder.encode(hosts)
+		let temporaryURL = url.deletingLastPathComponent()
+			.appendingPathComponent(
+				".\(url.lastPathComponent).\(UUID().uuidString).tmp"
+			)
 		try FileManager.default.createDirectory(
 			at: url.deletingLastPathComponent(),
 			withIntermediateDirectories: true
 		)
-		try data.write(to: url)
-		try FileManager.default.setAttributes(
-			[.posixPermissions: 0o600],
-			ofItemAtPath: url.path
-		)
+		do {
+			try data.write(to: temporaryURL)
+			try FileManager.default.setAttributes(
+				[.posixPermissions: 0o600],
+				ofItemAtPath: temporaryURL.path
+			)
+			if FileManager.default.fileExists(atPath: url.path) {
+				_ = try FileManager.default.replaceItemAt(
+					url,
+					withItemAt: temporaryURL
+				)
+			} else {
+				try FileManager.default.moveItem(at: temporaryURL, to: url)
+			}
+		} catch {
+			try? FileManager.default.removeItem(at: temporaryURL)
+			throw error
+		}
 	}
 }

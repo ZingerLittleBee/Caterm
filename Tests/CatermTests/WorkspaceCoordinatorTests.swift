@@ -10,10 +10,10 @@ import WorkspaceTemplateStore
 
 @MainActor
 final class WorkspaceCoordinatorTests: XCTestCase {
-	func testOpeningSavedHostCreatesOneWorkspacePaneAndOneSession() throws {
+	func testOpeningSavedHostCreatesOneWorkspacePaneAndOneSession() async throws {
 		let store = makeStore()
 		let host = makeHost(name: "prod")
-		try store.addHost(host)
+		try await store.addHost(host)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 
 		let workspace = try coordinator.openSavedHost(
@@ -29,7 +29,7 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.tabs.first?.installTerminfo, true)
 	}
 
-	func testOpeningOneTimeHostKeepsOnlySafeEndpointInWorkspaceShell() throws {
+	func testOpeningOneTimeHostKeepsOnlySafeEndpointInWorkspaceShell() async throws {
 		let store = makeStore()
 		let host = makeHost(name: "one-off")
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
@@ -51,10 +51,10 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertFalse(body.contains("session"))
 	}
 
-	func testRestoredSavedWorkspaceCreatesFreshSessionAndDoesNotReplayOldID() throws {
+	func testRestoredSavedWorkspaceCreatesFreshSessionAndDoesNotReplayOldID() async throws {
 		let store = makeStore()
 		let host = makeHost(name: "restore")
-		try store.addHost(host)
+		try await store.addHost(host)
 		let firstCoordinator = WorkspaceCoordinator(sessionStore: store)
 		let original = try firstCoordinator.openSavedHost(host, installTerminfo: false)
 		let oldSessionID = try XCTUnwrap(firstCoordinator.sessionID(for: original))
@@ -78,10 +78,10 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.tabs.first?.installTerminfo, true)
 	}
 
-	func testTemplateOpeningsCreateFreshRuntimeSessionIdentities() throws {
+	func testTemplateOpeningsCreateFreshRuntimeSessionIdentities() async throws {
 		let store = makeStore()
 		let host = makeHost(name: "template")
-		try store.addHost(host)
+		try await store.addHost(host)
 		let template = try WorkspaceTemplate(
 			workspace: Workspace.onePane(host: .saved(id: host.id)),
 			name: "Template"
@@ -100,7 +100,7 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.tabs.map(\.id), [firstSessionID, secondSessionID])
 	}
 
-	func testRestoredTemplateResolvesOnlyCurrentHostAutomation() throws {
+	func testRestoredTemplateResolvesOnlyCurrentHostAutomation() async throws {
 		let store = makeStore()
 		let snippetID = UUID()
 		var host = makeHost(name: "template")
@@ -108,7 +108,7 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 			isEnabled: true,
 			startupSnippetID: snippetID
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 		let plan = HostAutomationSessionPlan(
 			startupSnippetID: snippetID,
 			startupSnippetName: "Current Bootstrap",
@@ -141,10 +141,10 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.automationGate(for: sessionID), .reviewRequired(plan))
 	}
 
-	func testEnsuringSessionIsIdempotentWhileRuntimeSessionExists() throws {
+	func testEnsuringSessionIsIdempotentWhileRuntimeSessionExists() async throws {
 		let store = makeStore()
 		let host = makeHost()
-		try store.addHost(host)
+		try await store.addHost(host)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let workspace = try coordinator.openSavedHost(host, installTerminfo: false)
 		let originalSessionID = try XCTUnwrap(coordinator.sessionID(for: workspace))
@@ -159,7 +159,7 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.tabs.first?.installTerminfo, false)
 	}
 
-	func testClosingWorkspaceClosesExactlyItsMappedSession() throws {
+	func testClosingWorkspaceClosesExactlyItsMappedSession() async throws {
 		let store = makeStore()
 		let firstHost = makeHost(name: "first")
 		let secondHost = makeHost(name: "second")
@@ -177,7 +177,7 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.tabs.map(\.id), [secondSessionID])
 	}
 
-	func testMissingSavedHostRestoresShellWithoutCreatingSession() throws {
+	func testMissingSavedHostRestoresShellWithoutCreatingSession() async throws {
 		let store = makeStore()
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let workspace = Workspace.onePane(host: .saved(id: UUID()))
@@ -192,10 +192,10 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertNil(coordinator.sessionID(for: workspace))
 	}
 
-	func testReplacingMissingHostCreatesSessionForExactPane() throws {
+	func testReplacingMissingHostCreatesSessionForExactPane() async throws {
 		let store = makeStore()
 		let replacement = makeHost(name: "replacement")
-		try store.addHost(replacement)
+		try await store.addHost(replacement)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let workspace = Workspace.onePane(host: .saved(id: UUID()))
 
@@ -212,7 +212,7 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(store.tabs.first?.host.id, replacement.id)
 	}
 
-	func testRestoredOneTimeWorkspaceUsesInteractiveAuthentication() throws {
+	func testRestoredOneTimeWorkspaceUsesInteractiveAuthentication() async throws {
 		let store = makeStore()
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let descriptor = try OneTimeConnectionDescriptor(
@@ -236,10 +236,10 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertEqual(tab.authenticationMode, .interactive)
 	}
 
-	func testSplittingWorkspaceRetainsExistingSessionWithoutCreatingPickerSession() throws {
+	func testSplittingWorkspaceRetainsExistingSessionWithoutCreatingPickerSession() async throws {
 		let store = makeStore()
 		let host = makeHost(name: "first")
-		try store.addHost(host)
+		try await store.addHost(host)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let original = try coordinator.openSavedHost(host, installTerminfo: false)
 		let originalSessionID = try XCTUnwrap(coordinator.sessionID(for: original))
@@ -254,12 +254,12 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertNil(coordinator.sessionID(for: split.activePaneID, in: split))
 	}
 
-	func testConnectingPickerPaneCreatesIndependentSavedHostSession() throws {
+	func testConnectingPickerPaneCreatesIndependentSavedHostSession() async throws {
 		let store = makeStore()
 		let firstHost = makeHost(name: "first")
 		let secondHost = makeHost(name: "second")
-		try store.addHost(firstHost)
-		try store.addHost(secondHost)
+		try await store.addHost(firstHost)
+		try await store.addHost(secondHost)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let original = try coordinator.openSavedHost(firstHost, installTerminfo: false)
 		let firstSessionID = try XCTUnwrap(coordinator.sessionID(for: original))
@@ -285,12 +285,12 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		)
 	}
 
-	func testRestoringSplitCreatesFreshSessionsForHostsAndSkipsPicker() throws {
+	func testRestoringSplitCreatesFreshSessionsForHostsAndSkipsPicker() async throws {
 		let store = makeStore()
 		let firstHost = makeHost(name: "first")
 		let secondHost = makeHost(name: "second")
-		try store.addHost(firstHost)
-		try store.addHost(secondHost)
+		try await store.addHost(firstHost)
+		try await store.addHost(secondHost)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let firstPaneID = PaneID(rawValue: UUID())
 		let secondPaneID = PaneID(rawValue: UUID())
@@ -311,12 +311,12 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertNil(coordinator.sessionID(for: pickerPaneID, in: three))
 	}
 
-	func testClosingPaneClosesOnlyItsMappedSession() throws {
+	func testClosingPaneClosesOnlyItsMappedSession() async throws {
 		let store = makeStore()
 		let firstHost = makeHost(name: "first")
 		let secondHost = makeHost(name: "second")
-		try store.addHost(firstHost)
-		try store.addHost(secondHost)
+		try await store.addHost(firstHost)
+		try await store.addHost(secondHost)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let original = try coordinator.openSavedHost(firstHost, installTerminfo: false)
 		let firstPaneID = original.activePaneID
@@ -344,12 +344,12 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertNotEqual(firstSessionID, secondSessionID)
 	}
 
-	func testSiblingFailureDoesNotReplaceHealthyPaneState() throws {
+	func testSiblingFailureDoesNotReplaceHealthyPaneState() async throws {
 		let store = makeStore()
 		let firstHost = makeHost(name: "healthy")
 		let secondHost = makeHost(name: "exited")
-		try store.addHost(firstHost)
-		try store.addHost(secondHost)
+		try await store.addHost(firstHost)
+		try await store.addHost(secondHost)
 		let coordinator = WorkspaceCoordinator(sessionStore: store)
 		let original = try coordinator.openSavedHost(firstHost, installTerminfo: false)
 		let split = try original.splittingActivePane(.right)

@@ -39,7 +39,7 @@ final class ConnectIntentResolverTests: XCTestCase {
             name: "remote", hostname: "h", port: 22, username: "u",
             credential: .password
         )
-        try sut.addHost(host)
+        try await sut.addHost(host)
 
 		let intent = await resolveConnectIntent(for: host, in: sut)
 		XCTAssertEqual(intent, .promptCredentials)
@@ -48,7 +48,7 @@ final class ConnectIntentResolverTests: XCTestCase {
 	func testUnlockedAgentHostResolvesToOpenTab() async throws {
         let host = SSHHost(name: "agent-host", hostname: "h", port: 22,
                            username: "u", credential: .agent)
-        try sut.addHost(host)
+        try await sut.addHost(host)
 
 		let intent = await resolveConnectIntent(for: host, in: sut)
 		XCTAssertEqual(intent, .openTab)
@@ -64,12 +64,12 @@ final class ConnectIntentResolverTests: XCTestCase {
             name: "remote2", hostname: "h", port: 22, username: "u",
             credential: .password
         )
-        try sut.addHost(host)
+        try await sut.addHost(host)
 		let lockedIntent = await resolveConnectIntent(for: host, in: sut)
 		XCTAssertEqual(lockedIntent, .promptCredentials)
 
         try sut.setHostSecret("p@ss", hostId: host.id, kind: .password)
-        try sut.setCredentialOnly(.password, for: host.id)
+        try await sut.setCredentialOnly(.password, for: host.id)
 
         let refreshed = sut.hosts.first { $0.id == host.id }!
 		let unlockedIntent = await resolveConnectIntent(for: refreshed, in: sut)

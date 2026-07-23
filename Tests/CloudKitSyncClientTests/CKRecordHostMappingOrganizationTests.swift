@@ -7,7 +7,7 @@ import XCTest
 final class CKRecordHostMappingOrganizationTests: XCTestCase {
 	private let zoneID = CKRecordZone.ID(zoneName: "Caterm")
 
-	func testCreateAndDecodeRoundTripOrganization() throws {
+	func testCreateAndDecodeRoundTripOrganization() async throws {
 		let organization = HostOrganization(
 			groupPath: ["Production", "API"], tags: ["Linux", "Critical"]
 		)
@@ -24,7 +24,7 @@ final class CKRecordHostMappingOrganizationTests: XCTestCase {
 		XCTAssertEqual(try CKRecordHostMapping.decode(record).host.organization, organization)
 	}
 
-	func testDecodeMissingOrganizationUsesEmptyValue() throws {
+	func testDecodeMissingOrganizationUsesEmptyValue() async throws {
 		let record = CKRecord(
 			recordType: "Host",
 			recordID: .init(recordName: "legacy", zoneID: zoneID)

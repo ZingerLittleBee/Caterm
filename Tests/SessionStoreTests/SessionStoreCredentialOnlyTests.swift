@@ -37,13 +37,13 @@ final class SessionStoreCredentialOnlyTests: XCTestCase {
     /// Pin the "no sync side-effect" invariant: setCredentialOnly must
     /// not advance updatedAt. (If it did, a Sync Now after credential
     /// setup would push spurious server updates.)
-    func testSetCredentialOnlyChangesCredentialButNotUpdatedAt() throws {
+    func testSetCredentialOnlyChangesCredentialButNotUpdatedAt() async throws {
         let host = SSHHost(name: "t", hostname: "h", port: 22, username: "u",
                            credential: .password)
-        try sut.addHost(host)
+        try await sut.addHost(host)
         let before = sut.hosts[0].updatedAt
 
-        try sut.setCredentialOnly(.agent, for: host.id)
+        try await sut.setCredentialOnly(.agent, for: host.id)
 
         XCTAssertEqual(sut.hosts[0].credential, .agent)
         XCTAssertEqual(sut.hosts[0].updatedAt, before,
@@ -54,13 +54,13 @@ final class SessionStoreCredentialOnlyTests: XCTestCase {
         XCTAssertEqual(reloaded.first?.credential, .agent)
     }
 
-    func testSetCredentialOnlyNonexistentHostIsNoOp() throws {
+    func testSetCredentialOnlyNonexistentHostIsNoOp() async throws {
         let host = SSHHost(name: "t", hostname: "h", port: 22, username: "u",
                            credential: .password)
-        try sut.addHost(host)
+        try await sut.addHost(host)
         let snapshot = sut.hosts
 
-        try sut.setCredentialOnly(.agent, for: UUID())  // unrelated UUID
+        try await sut.setCredentialOnly(.agent, for: UUID())  // unrelated UUID
 
         XCTAssertEqual(sut.hosts.count, snapshot.count)
         XCTAssertEqual(sut.hosts[0].credential, .password)
@@ -73,7 +73,7 @@ final class SessionStoreCredentialOnlyTests: XCTestCase {
     /// Note: we use a dedicated nested tmpDir (a directory we create and
     /// therefore own), because FileManager cannot chmod the system-managed
     /// temporaryDirectory itself (EPERM). The named sub-dir is ours to lock.
-    func testSetCredentialOnlyRollsBackOnSaveFailure() throws {
+    func testSetCredentialOnlyRollsBackOnSaveFailure() async throws {
         // Create a dedicated parent directory we own so chmod is permitted.
         let ownedParent = FileManager.default.temporaryDirectory
             .appendingPathComponent("caterm-rollback-\(UUID().uuidString)", isDirectory: true)
@@ -96,7 +96,7 @@ final class SessionStoreCredentialOnlyTests: XCTestCase {
 
         let host = SSHHost(name: "t", hostname: "h", port: 22, username: "u",
                            credential: .password)
-        try rollbackSUT.addHost(host)
+        try await rollbackSUT.addHost(host)
         XCTAssertEqual(rollbackSUT.hosts[0].credential, .password)
 
         // Delete the hosts file so createDirectory is needed on the next
@@ -110,10 +110,10 @@ final class SessionStoreCredentialOnlyTests: XCTestCase {
         // HostPersistence.save uses non-atomic data.write(to:), and
         // createDirectory runs before that. Locking the parent dir
         // read-only forces createDirectory to throw EACCES.
-        XCTAssertThrowsError(
-            try rollbackSUT.setCredentialOnly(.agent, for: host.id),
-            "save() should throw when parent dir is read-only"
-        )
+		do {
+			try await rollbackSUT.setCredentialOnly(.agent, for: host.id)
+			XCTFail("save() should throw when parent dir is read-only")
+		} catch {}
         XCTAssertEqual(rollbackSUT.hosts[0].credential, .password,
                        "in-memory state must be unchanged after save failure")
     }
