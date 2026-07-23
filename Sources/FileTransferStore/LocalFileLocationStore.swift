@@ -360,7 +360,7 @@ public actor LocalFileLocationStore {
 		}
 		let updated = LocalFileLocation(
 			id: id,
-			displayName: locations[index].displayName,
+			displayName: url.lastPathComponent,
 			bookmarkData: try bookmarkCodec.createBookmark(for: url)
 		)
 		let previous = locations[index]

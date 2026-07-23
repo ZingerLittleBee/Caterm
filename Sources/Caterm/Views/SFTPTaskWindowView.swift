@@ -239,7 +239,7 @@ private struct SFTPTaskPaneView: View {
 		HStack(spacing: 8) {
 			Menu {
 				Button("Choose Local Folder…") {
-					chooseLocalFolder()
+					chooseLocalFolder(replacing: nil)
 				}
 				if !model.locations.isEmpty {
 					Section("Local Locations") {
@@ -393,7 +393,7 @@ private struct SFTPTaskPaneView: View {
 				Text("Choose a saved Host or authorize a local folder.")
 			} actions: {
 				Button("Choose Local Folder…") {
-					chooseLocalFolder()
+					chooseLocalFolder(replacing: nil)
 				}
 			}
 			.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -407,9 +407,9 @@ private struct SFTPTaskPaneView: View {
 				} description: {
 					Text(error)
 				} actions: {
-					if case .local = pane.endpoint {
+					if case .local(let locationID) = pane.endpoint {
 						Button("Choose Folder Again…") {
-							chooseLocalFolder()
+							chooseLocalFolder(replacing: locationID)
 						}
 					}
 					Button("Try Again") {
@@ -582,7 +582,7 @@ private struct SFTPTaskPaneView: View {
 		}
 	}
 
-	private func chooseLocalFolder() {
+	private func chooseLocalFolder(replacing locationID: UUID?) {
 		Task {
 			guard let url = await chooseURL(
 				message: "Choose a local folder for this file pane.",
@@ -596,6 +596,7 @@ private struct SFTPTaskPaneView: View {
 			defer { url.stopAccessingSecurityScopedResource() }
 			await model.authorizeLocal(
 				url: url,
+				replacing: locationID,
 				for: side,
 				hosts: sessionStore.hosts,
 				transferStore: transferStore

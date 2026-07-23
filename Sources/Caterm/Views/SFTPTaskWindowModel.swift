@@ -111,13 +111,14 @@ final class SFTPTaskWindowModel: ObservableObject {
 
 	func authorizeLocal(
 		url: URL,
+		replacing locationID: UUID?,
 		for side: SFTPTaskSide,
 		hosts: [SSHHost],
 		transferStore: FileTransferStore
 	) async {
 		do {
 			let location: LocalFileLocation
-			if case .local(let locationID) = state(for: side).endpoint {
+			if let locationID {
 				location = try await locationStore.reauthorize(
 					locationID,
 					with: url
