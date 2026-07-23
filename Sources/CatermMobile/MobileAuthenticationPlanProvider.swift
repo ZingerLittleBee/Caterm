@@ -60,6 +60,7 @@ public enum MobileAuthenticationPlanResult: Equatable, Sendable {
 public actor MobileAuthenticationPlanProvider {
 	private let materialStore: SessionCredentialMaterialStore
 	private let identityMaterialStore: CredentialIdentityMaterialStore?
+	private let identityStore: CredentialIdentityStore?
 	private let identity:
 		@Sendable (UUID) async -> CredentialIdentity?
 
@@ -67,12 +68,14 @@ public actor MobileAuthenticationPlanProvider {
 		materialStore: SessionCredentialMaterialStore,
 		identityMaterialStore:
 			CredentialIdentityMaterialStore? = nil,
+		identityStore: CredentialIdentityStore? = nil,
 		identity:
 			@escaping @Sendable (UUID) async
 				-> CredentialIdentity? = { _ in nil }
 	) {
 		self.materialStore = materialStore
 		self.identityMaterialStore = identityMaterialStore
+		self.identityStore = identityStore
 		self.identity = identity
 	}
 
@@ -81,12 +84,30 @@ public actor MobileAuthenticationPlanProvider {
 		credentialSyncState: CredentialSyncState
 	) async -> MobileAuthenticationPlanResult {
 		if let reference = host.credentialIdentity {
-			return await resolveIdentity(
+			let result = await resolveIdentity(
 				host: host,
 				identityID: reference.identityID,
 				credentialSyncState: credentialSyncState
 			)
+			if reference.migrationState == .reversible,
+			   case .unavailable = result {
+				return await resolveLegacy(
+					host: host,
+					credentialSyncState: credentialSyncState
+				)
+			}
+			return result
 		}
+		return await resolveLegacy(
+			host: host,
+			credentialSyncState: credentialSyncState
+		)
+	}
+
+	private func resolveLegacy(
+		host: SSHHost,
+		credentialSyncState: CredentialSyncState
+	) async -> MobileAuthenticationPlanResult {
 		do {
 			let selection: CredentialMaterialSelection = switch host.credential {
 			case .password:
@@ -177,6 +198,31 @@ public actor MobileAuthenticationPlanProvider {
 	}
 
 	private func resolveIdentity(
+		host: SSHHost,
+		identityID: UUID,
+		credentialSyncState: CredentialSyncState
+	) async -> MobileAuthenticationPlanResult {
+		guard let identityStore else {
+			return await resolveIdentityWithinTransaction(
+				host: host,
+				identityID: identityID,
+				credentialSyncState: credentialSyncState
+			)
+		}
+		do {
+			return try await identityStore.withTransaction {
+				await self.resolveIdentityWithinTransaction(
+					host: host,
+					identityID: identityID,
+					credentialSyncState: credentialSyncState
+				)
+			}
+		} catch {
+			return .unavailable(.credentialReadFailed)
+		}
+	}
+
+	private func resolveIdentityWithinTransaction(
 		host: SSHHost,
 		identityID: UUID,
 		credentialSyncState: CredentialSyncState

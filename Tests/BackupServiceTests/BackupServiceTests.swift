@@ -827,7 +827,7 @@ final class BackupServiceTests: XCTestCase {
 				hasPassphrase: true
 			)
 		)
-		try sourceIdentities.upsert(identity)
+		try await sourceIdentities.upsert(identity)
 		try await sourceMaterials.replaceMaterial(
 			for: identity,
 			with: CredentialIdentityMaterial(
@@ -982,7 +982,7 @@ final class BackupServiceTests: XCTestCase {
 				originDeviceID: UUID()
 			)
 		)
-		try identities.upsert(identity)
+		try await identities.upsert(identity)
 		try await materials.replaceMaterial(
 			for: identity,
 			with: CredentialIdentityMaterial(
@@ -1011,6 +1011,101 @@ final class BackupServiceTests: XCTestCase {
 			String(decoding: encoded, as: UTF8.self)
 				.contains(Data("opaque-handle".utf8).base64EncodedString())
 		)
+	}
+
+	func testIdentityBackupWaitsForConsistentMetadataAndMaterial()
+		async throws {
+		let identities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent(
+				"consistent-backup-identities.json"
+			)
+		)
+		let materials = CredentialIdentityMaterialStore(
+			secrets: InMemoryBackupIdentitySecretStore(),
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent(
+					"consistent-backup-keys"
+				)
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let identity = CredentialIdentity(
+			name: "Consistent",
+			username: "deploy",
+			source: .password(materialID: CredentialMaterialID())
+		)
+		try await identities.upsert(identity)
+		try await materials.replaceMaterial(
+			for: identity,
+			with: .init(password: Data("secret".utf8))
+		)
+		let blocker = BackupIdentityTransactionBlocker()
+		let transaction = Task { @MainActor in
+			try await identities.withTransaction {
+				await blocker.block()
+			}
+		}
+		await blocker.waitUntilBlocked()
+		let completion = BackupIdentityCompletionFlag()
+		let export = Task { @MainActor in
+			let payload = try await BackupExporter.makePayload(
+				includeSecrets: true,
+				sessionStore: store,
+				snippets: [],
+				settings: nil,
+				bookmarks: { _ in [] },
+				credentialIdentityStore: identities,
+				credentialIdentityMaterialStore: materials
+			)
+			await completion.finish()
+			return payload
+		}
+		for _ in 0..<20 {
+			await Task.yield()
+		}
+		let finishedWhileTransactionHeld = await completion.isFinished
+		XCTAssertFalse(finishedWhileTransactionHeld)
+
+		await blocker.release()
+		try await transaction.value
+		let payload = try await export.value
+		XCTAssertEqual(
+			payload.credentialIdentities.first?.password,
+			Data("secret".utf8)
+		)
+	}
+}
+
+private actor BackupIdentityTransactionBlocker {
+	private var blocked = false
+	private var waiters: [CheckedContinuation<Void, Never>] = []
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+	func block() async {
+		blocked = true
+		waiters.forEach { $0.resume() }
+		waiters.removeAll()
+		await withCheckedContinuation {
+			releaseContinuation = $0
+		}
+	}
+
+	func waitUntilBlocked() async {
+		guard !blocked else { return }
+		await withCheckedContinuation { waiters.append($0) }
+	}
+
+	func release() {
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
+}
+
+private actor BackupIdentityCompletionFlag {
+	private(set) var isFinished = false
+
+	func finish() {
+		isFinished = true
 	}
 }
 

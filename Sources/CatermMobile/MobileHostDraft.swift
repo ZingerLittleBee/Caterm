@@ -158,6 +158,9 @@ public struct MobileHostDraft: Equatable {
 		if secret != nil || previousCredential.map({ $0 != credentialSource }) == true {
 			host.credentialMaterialDirty = true
 		}
+		if host.credentialIdentity?.migrationState == .confirmed {
+			host.credentialMaterialDirty = false
+		}
 		return MobileHostDraftPayload(host: host, secret: secret)
 	}
 

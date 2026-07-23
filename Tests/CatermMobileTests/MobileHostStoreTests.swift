@@ -1,4 +1,5 @@
 import Combine
+import CredentialIdentityStore
 import HostRepositoryCore
 import KeychainStore
 import ManagedKeyStore
@@ -823,6 +824,62 @@ final class MobileHostStoreTests: XCTestCase {
 		XCTAssertEqual(storage.values[passwordAccount], "secret")
 	}
 
+	func testAssignmentWaitsForIdentityDeletionAndCannotOrphanHost()
+		async throws {
+		let identities = CredentialIdentityStore(
+			fileURL: tempURL()
+				.deletingLastPathComponent()
+				.appendingPathComponent(
+					"mobile-identities-\(UUID().uuidString).json"
+				)
+		)
+		let identity = CredentialIdentity(
+			name: "Shared",
+			username: "deploy",
+			source: .password(materialID: CredentialMaterialID())
+		)
+		try await identities.upsert(identity)
+		let store = MobileHostStore(
+			fileURL: tempURL(),
+			credentialIdentityStore: identities
+		)
+		var host = makeHost("concurrent-assignment")
+		host.credentialIdentity = .init(
+			identityID: identity.id,
+			migrationState: .confirmed
+		)
+		let blocker = MobileIdentityDeletionBlocker()
+		let deletion = Task { @MainActor in
+			try await identities.withTransaction {
+				try await identities.withDeletionReservation(id: identity.id) {
+					await blocker.block()
+					try await identities.applyRemoteTombstone(id: identity.id)
+				}
+			}
+		}
+		await blocker.waitUntilBlocked()
+		let assignment = Task { @MainActor in
+			try await store.add(host)
+		}
+		for _ in 0..<20 {
+			await Task.yield()
+		}
+		XCTAssertTrue(store.hosts.isEmpty)
+
+		await blocker.release()
+		try await deletion.value
+		do {
+			try await assignment.value
+			XCTFail("Expected the deleted identity assignment to fail")
+		} catch {
+			XCTAssertEqual(
+				error as? CredentialIdentityStoreError,
+				.identityNotFound(identity.id)
+			)
+		}
+		XCTAssertTrue(store.hosts.isEmpty)
+	}
+
 	private func waitUntil(
 		_ predicate: @MainActor () -> Bool
 	) async {
@@ -847,5 +904,30 @@ final class MobileHostStoreTests: XCTestCase {
 				line: line
 			)
 		}
+	}
+}
+
+private actor MobileIdentityDeletionBlocker {
+	private var blocked = false
+	private var waiters: [CheckedContinuation<Void, Never>] = []
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+	func block() async {
+		blocked = true
+		waiters.forEach { $0.resume() }
+		waiters.removeAll()
+		await withCheckedContinuation {
+			releaseContinuation = $0
+		}
+	}
+
+	func waitUntilBlocked() async {
+		guard !blocked else { return }
+		await withCheckedContinuation { waiters.append($0) }
+	}
+
+	func release() {
+		releaseContinuation?.resume()
+		releaseContinuation = nil
 	}
 }

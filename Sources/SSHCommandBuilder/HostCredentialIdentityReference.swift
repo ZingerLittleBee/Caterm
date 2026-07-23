@@ -13,7 +13,7 @@ public struct HostCredentialIdentityReference: Codable, Equatable, Hashable,
 
 	public init(
 		identityID: UUID,
-		migrationState: MigrationState = .confirmed
+		migrationState: MigrationState = .reversible
 	) {
 		self.identityID = identityID
 		self.migrationState = migrationState

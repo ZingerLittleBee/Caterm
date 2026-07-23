@@ -13,7 +13,7 @@ struct CredentialIdentityAccountResetCoordinatorTests {
 		let fixture = try AccountResetFixture()
 		defer { fixture.cleanup() }
 		let identity = fixture.makePasswordIdentity()
-		try fixture.store.upsert(identity)
+		try await fixture.store.upsert(identity)
 		try await fixture.materials.replaceMaterial(
 			for: identity,
 			with: .init(password: Data("old-account".utf8))
@@ -36,7 +36,7 @@ struct CredentialIdentityAccountResetCoordinatorTests {
 		let fixture = try AccountResetFixture(secrets: secrets)
 		defer { fixture.cleanup() }
 		let identity = fixture.makePasswordIdentity()
-		try fixture.store.upsert(identity)
+		try await fixture.store.upsert(identity)
 		try await fixture.materials.replaceMaterial(
 			for: identity,
 			with: .init(password: Data("keep-me".utf8))

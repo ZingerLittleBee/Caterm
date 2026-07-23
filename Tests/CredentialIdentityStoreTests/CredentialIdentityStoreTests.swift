@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct CredentialIdentityStoreTests {
 	@Test
-	func persistsVersionedIdentityAndOutboxState() throws {
+	func persistsVersionedIdentityAndOutboxState() async throws {
 		let fixture = try Fixture()
 		defer { fixture.cleanup() }
 		let materialID = CredentialMaterialID()
@@ -20,25 +20,23 @@ struct CredentialIdentityStoreTests {
 			)
 		)
 
-		try fixture.store.upsert(identity)
+		try await fixture.store.upsert(identity)
 
 		let reloaded = CredentialIdentityStore(fileURL: fixture.fileURL)
-		try reloaded.load()
+		try await reloaded.load()
 		#expect(reloaded.identities == [identity])
 		#expect(reloaded.locallyDirtyIdentityIDs == [identity.id])
 		#expect(reloaded.pendingDeletedIdentityIDs.isEmpty)
 	}
 
 	@Test
-	func editingPreservesStableIdentityAndMaterialReferences() throws {
+	func editingPreservesStableIdentityAndMaterialReferences() async throws {
 		let fixture = try Fixture()
 		defer { fixture.cleanup() }
 		let firstDate = Date(timeIntervalSince1970: 10)
-		let secondDate = Date(timeIntervalSince1970: 20)
-		var dates = [firstDate, secondDate]
 		let store = CredentialIdentityStore(
 			fileURL: fixture.fileURL,
-			now: { dates.removeFirst() }
+			now: { firstDate }
 		)
 		let materialID = CredentialMaterialID()
 		var identity = CredentialIdentity(
@@ -49,9 +47,9 @@ struct CredentialIdentityStoreTests {
 			createdAt: firstDate,
 			updatedAt: firstDate
 		)
-		try store.upsert(identity)
+		try await store.upsert(identity)
 		identity.name = "Renamed"
-		try store.upsert(identity)
+		try await store.upsert(identity)
 
 		let stored = try #require(store.identity(id: identity.id))
 		#expect(stored.id == identity.id)
@@ -62,7 +60,7 @@ struct CredentialIdentityStoreTests {
 	}
 
 	@Test
-	func refusesDeletionWhileHostsReferenceIdentity() throws {
+	func refusesDeletionWhileHostsReferenceIdentity() async throws {
 		let fixture = try Fixture()
 		defer { fixture.cleanup() }
 		let identity = CredentialIdentity(
@@ -70,14 +68,14 @@ struct CredentialIdentityStoreTests {
 			username: "ops",
 			source: .password(materialID: CredentialMaterialID())
 		)
-		try fixture.store.upsert(identity)
+		try await fixture.store.upsert(identity)
 		let hostIDs: Set<UUID> = [UUID(), UUID()]
 
-		#expect(throws: CredentialIdentityStoreError.identityInUse(
+		await #expect(throws: CredentialIdentityStoreError.identityInUse(
 			identityID: identity.id,
 			hostIDs: hostIDs
 		)) {
-			try fixture.store.delete(
+			try await fixture.store.delete(
 				id: identity.id,
 				assignedHostIDs: hostIDs
 			)
@@ -86,7 +84,7 @@ struct CredentialIdentityStoreTests {
 	}
 
 	@Test
-	func deletionCreatesDurableTombstoneWithoutMaterialExposure() throws {
+	func deletionCreatesDurableTombstoneWithoutMaterialExposure() async throws {
 		let fixture = try Fixture()
 		defer { fixture.cleanup() }
 		let identity = CredentialIdentity(
@@ -98,18 +96,18 @@ struct CredentialIdentityStoreTests {
 				originDeviceID: UUID()
 			)
 		)
-		try fixture.store.upsert(identity)
-		try fixture.store.delete(id: identity.id)
+		try await fixture.store.upsert(identity)
+		try await fixture.store.delete(id: identity.id)
 
 		let reloaded = CredentialIdentityStore(fileURL: fixture.fileURL)
-		try reloaded.load()
+		try await reloaded.load()
 		#expect(reloaded.identities.isEmpty)
 		#expect(reloaded.locallyDirtyIdentityIDs.isEmpty)
 		#expect(reloaded.pendingDeletedIdentityIDs == [identity.id])
 	}
 
 	@Test
-	func remoteMergeUsesRevisionThenTimestampAndClearsDirtyState() throws {
+	func remoteMergeUsesRevisionThenTimestampAndClearsDirtyState() async throws {
 		let fixture = try Fixture()
 		defer { fixture.cleanup() }
 		let id = UUID()
@@ -122,7 +120,7 @@ struct CredentialIdentityStoreTests {
 			updatedAt: Date(timeIntervalSince1970: 20),
 			revision: 2
 		)
-		try fixture.store.upsert(local)
+		try await fixture.store.upsert(local)
 		let stale = CredentialIdentity(
 			id: id,
 			name: "Stale",
@@ -131,7 +129,7 @@ struct CredentialIdentityStoreTests {
 			updatedAt: Date(timeIntervalSince1970: 30),
 			revision: 1
 		)
-		#expect(try !fixture.store.applyRemote(stale))
+		#expect(try await !fixture.store.applyRemote(stale))
 		let remote = CredentialIdentity(
 			id: id,
 			name: "Remote",
@@ -140,13 +138,13 @@ struct CredentialIdentityStoreTests {
 			updatedAt: Date(timeIntervalSince1970: 30),
 			revision: 3
 		)
-		#expect(try fixture.store.applyRemote(remote))
+		#expect(try await fixture.store.applyRemote(remote))
 		#expect(fixture.store.identity(id: id)?.name == "Remote")
 		#expect(!fixture.store.locallyDirtyIdentityIDs.contains(id))
 	}
 
 	@Test
-	func rejectsDuplicateMaterialReferencesOnLoad() throws {
+	func rejectsDuplicateMaterialReferencesOnLoad() async throws {
 		let fixture = try Fixture()
 		defer { fixture.cleanup() }
 		let materialID = CredentialMaterialID()
@@ -163,18 +161,18 @@ struct CredentialIdentityStoreTests {
 				hasPassphrase: false
 			)
 		)
-		try fixture.store.upsert(first)
+		try await fixture.store.upsert(first)
 
-		#expect(throws: CredentialIdentityStoreError.duplicateMaterialID(
+		await #expect(throws: CredentialIdentityStoreError.duplicateMaterialID(
 			materialID
 		)) {
-			try fixture.store.upsert(second)
+			try await fixture.store.upsert(second)
 		}
 		#expect(fixture.store.identities == [first])
 	}
 
 	@Test
-	func accountResetClearsMetadataWithoutCloudTombstones() throws {
+	func accountResetClearsMetadataWithoutCloudTombstones() async throws {
 		let fixture = try Fixture()
 		defer { fixture.cleanup() }
 		let identity = CredentialIdentity(
@@ -182,22 +180,22 @@ struct CredentialIdentityStoreTests {
 			username: "ops",
 			source: .password(materialID: CredentialMaterialID())
 		)
-		try fixture.store.upsert(identity)
-		try fixture.store.delete(id: identity.id)
+		try await fixture.store.upsert(identity)
+		try await fixture.store.delete(id: identity.id)
 		let replacement = CredentialIdentity(
 			name: "Pending Upload",
 			username: "deploy",
 			source: .password(materialID: CredentialMaterialID())
 		)
-		try fixture.store.upsert(replacement)
+		try await fixture.store.upsert(replacement)
 
-		try fixture.store.resetForAccountChange()
+		try await fixture.store.resetForAccountChange()
 
 		#expect(fixture.store.identities.isEmpty)
 		#expect(fixture.store.locallyDirtyIdentityIDs.isEmpty)
 		#expect(fixture.store.pendingDeletedIdentityIDs.isEmpty)
 		let reloaded = CredentialIdentityStore(fileURL: fixture.fileURL)
-		try reloaded.load()
+		try await reloaded.load()
 		#expect(reloaded.identities.isEmpty)
 		#expect(reloaded.pendingDeletedIdentityIDs.isEmpty)
 	}

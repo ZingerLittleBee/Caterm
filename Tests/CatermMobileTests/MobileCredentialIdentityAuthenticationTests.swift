@@ -31,7 +31,10 @@ struct MobileCredentialIdentityAuthenticationTests {
 		let result = await fixture.provider(
 			identity: identity
 		).resolve(
-			host: fixture.host(assignedTo: identity.id),
+			host: fixture.host(
+				assignedTo: identity.id,
+				migrationState: .confirmed
+			),
 			credentialSyncState: .enabled
 		)
 		let authentication = try #require(
@@ -73,7 +76,10 @@ struct MobileCredentialIdentityAuthenticationTests {
 		let result = await fixture.provider(
 			identity: identity
 		).resolve(
-			host: fixture.host(assignedTo: identity.id),
+			host: fixture.host(
+				assignedTo: identity.id,
+				migrationState: .confirmed
+			),
 			credentialSyncState: .enabled
 		)
 		let authentication = try #require(
@@ -109,7 +115,10 @@ struct MobileCredentialIdentityAuthenticationTests {
 		let result = await fixture.provider(
 			identity: identity
 		).resolve(
-			host: fixture.host(assignedTo: identity.id),
+			host: fixture.host(
+				assignedTo: identity.id,
+				migrationState: .confirmed
+			),
 			credentialSyncState: .enabled
 		)
 
@@ -155,7 +164,11 @@ private struct MobileIdentityAuthenticationFixture {
 		)
 	}
 
-	func host(assignedTo identityID: UUID) -> SSHHost {
+	func host(
+		assignedTo identityID: UUID,
+		migrationState:
+			HostCredentialIdentityReference.MigrationState = .reversible
+	) -> SSHHost {
 		var host = SSHHost(
 			name: "Server",
 			hostname: "server.example.com",
@@ -165,7 +178,7 @@ private struct MobileIdentityAuthenticationFixture {
 		)
 		host.credentialIdentity = .init(
 			identityID: identityID,
-			migrationState: .reversible
+			migrationState: migrationState
 		)
 		return host
 	}

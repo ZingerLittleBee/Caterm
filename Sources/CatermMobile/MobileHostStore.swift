@@ -1,4 +1,5 @@
 import Combine
+import CredentialIdentityStore
 import CredentialSync
 import Foundation
 import HostRepositoryCore
@@ -38,6 +39,7 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	private let credentialWriter: MobileCredentialWriter?
+	private let credentialIdentityStore: CredentialIdentityStore?
 	public let credentialMaterialStore: SessionCredentialMaterialStore
 	public let managedKeyStore: ManagedKeyStore
 	private let localMutationsSubject = PassthroughSubject<Void, Never>()
@@ -57,9 +59,11 @@ public final class MobileHostStore: ObservableObject {
 		fileURL: URL,
 		credentialWriter: MobileCredentialWriter? = nil,
 		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
-		credentialMaterialStore: SessionCredentialMaterialStore? = nil
+		credentialMaterialStore: SessionCredentialMaterialStore? = nil,
+		credentialIdentityStore: CredentialIdentityStore? = nil
 	) {
 		self.credentialWriter = credentialWriter
+		self.credentialIdentityStore = credentialIdentityStore
 		self.managedKeyStore = managedKeyStore
 		self.credentialMaterialStore = credentialMaterialStore
 			?? SessionCredentialMaterialStore(
@@ -80,9 +84,11 @@ public final class MobileHostStore: ObservableObject {
 		credentialWriter: MobileCredentialWriter? = nil,
 		managedKeyStore: ManagedKeyStore = ManagedKeyStore(),
 		credentialMaterialStore: SessionCredentialMaterialStore? = nil,
+		credentialIdentityStore: CredentialIdentityStore? = nil,
 		persistence: MobileHostPersistence
 	) {
 		self.credentialWriter = credentialWriter
+		self.credentialIdentityStore = credentialIdentityStore
 		self.managedKeyStore = managedKeyStore
 		self.credentialMaterialStore = credentialMaterialStore
 			?? SessionCredentialMaterialStore(
@@ -95,37 +101,48 @@ public final class MobileHostStore: ObservableObject {
 	}
 
 	public func add(_ host: SSHHost) async throws {
-		try await withAccountOperation { accountContext in
-			let snapshot = try await persistence.mutate(
-				expectedEpoch: accountContext.epoch
-			) {
-				$0.append(host)
+		try await withIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			try await self.withAccountOperation { accountContext in
+				let snapshot = try await self.persistence.mutate(
+					expectedEpoch: accountContext.epoch
+				) {
+					$0.append(host)
+				}
+				self.publish(snapshot, expectedEpoch: accountContext.epoch)
+				self.localMutationsSubject.send()
 			}
-			publish(snapshot, expectedEpoch: accountContext.epoch)
-			localMutationsSubject.send()
 		}
 	}
 
 	public func update(_ host: SSHHost) async throws {
-		try await withAccountOperation { accountContext in
-			let snapshot = try await persistence.mutate(
-				expectedEpoch: accountContext.epoch
-			) {
-				guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
-					throw StoreError.hostNotFound
+		try await withIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			try await self.withAccountOperation { accountContext in
+				let snapshot = try await self.persistence.mutate(
+					expectedEpoch: accountContext.epoch
+				) {
+					guard let index = $0.firstIndex(where: {
+						$0.id == host.id
+					}) else {
+						throw StoreError.hostNotFound
+					}
+					$0[index] = host
 				}
-				$0[index] = host
+				self.publish(snapshot, expectedEpoch: accountContext.epoch)
+				self.localMutationsSubject.send()
 			}
-			publish(snapshot, expectedEpoch: accountContext.epoch)
-			localMutationsSubject.send()
 		}
 	}
 
 	/// Insert or replace by id and persist. Used by the shell's add/edit
 	/// save callbacks, which can't know whether the form was add or edit.
 	public func upsert(_ host: SSHHost) async throws {
-		try await withAccountOperation { accountContext in
-			try await upsert(host, accountContext: accountContext)
+		try await withIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			try await self.withAccountOperation { accountContext in
+				try await self.upsert(host, accountContext: accountContext)
+			}
 		}
 	}
 
@@ -162,11 +179,16 @@ public final class MobileHostStore: ObservableObject {
 	/// disk without threading store calls through every view.
 	public func replaceAll(_ newHosts: [SSHHost]) async {
 		do {
-			try await withAccountOperation { accountContext in
-				try await replaceAll(
-					newHosts,
-					accountContext: accountContext
+			try await withIdentityTransaction {
+				try self.validateCredentialIdentityAssignments(
+					in: newHosts
 				)
+				try await self.withAccountOperation { accountContext in
+					try await self.replaceAll(
+						newHosts,
+						accountContext: accountContext
+					)
+				}
 			}
 		} catch {
 			lastPersistenceFailure = PersistenceFailure(underlyingError: error)
@@ -272,6 +294,38 @@ public final class MobileHostStore: ObservableObject {
 		let accountContext = try beginAccountOperation()
 		defer { endAccountOperation() }
 		return try await operation(accountContext)
+	}
+
+	private func withIdentityTransaction<T>(
+		_ operation: @MainActor () async throws -> T
+	) async throws -> T {
+		guard let credentialIdentityStore else {
+			return try await operation()
+		}
+		return try await credentialIdentityStore.withTransaction(operation)
+	}
+
+	func withCredentialIdentityTransaction<T>(
+		for host: SSHHost,
+		_ operation: @MainActor () async throws -> T
+	) async throws -> T {
+		try await withIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			return try await operation()
+		}
+	}
+
+	private func validateCredentialIdentityAssignments(
+		in candidateHosts: [SSHHost]
+	) throws {
+		guard let credentialIdentityStore else { return }
+		for identityID in Set(candidateHosts.compactMap {
+			$0.credentialIdentity?.identityID
+		}) {
+			try credentialIdentityStore.validateAssignment(
+				identityID: identityID
+			)
+		}
 	}
 
 	var isAccountTransitionInProgress: Bool { accountTransitionInProgress }
@@ -444,21 +498,27 @@ extension MobileHostStore {
 	}
 
 	public func updateLocalHostMetadata(_ host: SSHHost) async throws {
-		try await withAccountOperation { accountContext in
-			let snapshot = try await persistence.mutate(
-				expectedEpoch: accountContext.epoch
-			) {
-				guard let index = $0.firstIndex(where: { $0.id == host.id }) else {
-					throw StoreError.hostNotFound
+		try await withIdentityTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			try await self.withAccountOperation { accountContext in
+				let snapshot = try await self.persistence.mutate(
+					expectedEpoch: accountContext.epoch
+				) {
+					guard let index = $0.firstIndex(where: {
+						$0.id == host.id
+					}) else {
+						throw StoreError.hostNotFound
+					}
+					var metadata = host
+					metadata.credential = $0[index].credential
+					metadata.credentialMaterialDirty =
+						$0[index].credentialMaterialDirty
+					metadata.updatedAt = Date()
+					$0[index] = metadata
 				}
-				var metadata = host
-				metadata.credential = $0[index].credential
-				metadata.credentialMaterialDirty = $0[index].credentialMaterialDirty
-				metadata.updatedAt = Date()
-				$0[index] = metadata
+				self.publish(snapshot, expectedEpoch: accountContext.epoch)
+				self.localMutationsSubject.send()
 			}
-			publish(snapshot, expectedEpoch: accountContext.epoch)
-			localMutationsSubject.send()
 		}
 	}
 
@@ -489,24 +549,49 @@ extension MobileHostStore {
 	}
 
 	public func createHostFromRemote(_ remote: RemoteHost) async throws -> UUID {
-		try await withAccountOperation { accountContext in
-			let result = try await persistence.createFromRemote(
+		try await withIdentityTransaction {
+			let candidate = HostRepositoryProjection.inserting(
 				remote,
-				expectedEpoch: accountContext.epoch
+				into: self.hosts
 			)
-			publish(result.snapshot, expectedEpoch: accountContext.epoch)
-			return result.localID
+			try self.validateCredentialIdentityAssignments(
+				in: candidate.hosts
+			)
+			return try await self.withAccountOperation { accountContext in
+				let result = try await self.persistence.createFromRemote(
+					remote,
+					expectedEpoch: accountContext.epoch
+				)
+				self.publish(
+					result.snapshot,
+					expectedEpoch: accountContext.epoch
+				)
+				return result.localID
+			}
 		}
 	}
 
 	public func updateHostFromRemote(localID: UUID, remote: RemoteHost) async throws {
-		try await withAccountOperation { accountContext in
-			let snapshot = try await persistence.updateFromRemote(
-				localID: localID,
-				remote: remote,
-				expectedEpoch: accountContext.epoch
-			)
-			publish(snapshot, expectedEpoch: accountContext.epoch)
+		try await withIdentityTransaction {
+			guard let candidate = HostRepositoryProjection.applying(
+				remote,
+				to: localID,
+				in: self.hosts
+			) else {
+				throw StoreError.hostNotFound
+			}
+			try self.validateCredentialIdentityAssignments(in: candidate)
+			try await self.withAccountOperation { accountContext in
+				let snapshot = try await self.persistence.updateFromRemote(
+					localID: localID,
+					remote: remote,
+					expectedEpoch: accountContext.epoch
+				)
+				self.publish(
+					snapshot,
+					expectedEpoch: accountContext.epoch
+				)
+			}
 		}
 	}
 

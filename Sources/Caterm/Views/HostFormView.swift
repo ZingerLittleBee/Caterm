@@ -46,7 +46,7 @@ struct HostFormView: View {
 	@State private var pendingSecret = ""
 	@State private var credentialIdentityID: UUID?
 	@State private var credentialIdentityMigrationState:
-		HostCredentialIdentityReference.MigrationState = .confirmed
+		HostCredentialIdentityReference.MigrationState = .reversible
 	@State private var jumpHostSelection = JumpHostSelection.none
 	@State private var forwards: [PortForward] = []
 	@State private var icon: String? = nil
@@ -442,30 +442,33 @@ struct HostFormView: View {
 					.fixedSize(horizontal: false, vertical: true)
 			}
 
-			DisclosureGroup(
-				credentialIdentityID == nil
-					? "Host-owned credential"
-					: "Host-owned fallback"
-			) {
-				VStack(alignment: .leading, spacing: 10) {
-					Picker("Method", selection: $credKind) {
-						ForEach(CredKind.allCases) { kind in
-							Text(kind.displayName).tag(kind)
+			if credentialIdentityID == nil
+				|| credentialIdentityMigrationState == .reversible {
+				DisclosureGroup(
+					credentialIdentityID == nil
+						? "Host-owned credential"
+						: "Host-owned fallback"
+				) {
+					VStack(alignment: .leading, spacing: 10) {
+						Picker("Method", selection: $credKind) {
+							ForEach(CredKind.allCases) { kind in
+								Text(kind.displayName).tag(kind)
+							}
 						}
-					}
-					.pickerStyle(.segmented)
-					.labelsHidden()
+						.pickerStyle(.segmented)
+						.labelsHidden()
 
-					AuthMethodFields(
-						credKind: $credKind,
-						pendingKey: $pendingKey,
-						hasPassphrase: $hasPassphrase,
-						pendingSecret: $pendingSecret,
-						hasExistingManagedKey: existingKeyPath != nil
-					)
-					.frame(minHeight: 96, alignment: .top)
+						AuthMethodFields(
+							credKind: $credKind,
+							pendingKey: $pendingKey,
+							hasPassphrase: $hasPassphrase,
+							pendingSecret: $pendingSecret,
+							hasExistingManagedKey: existingKeyPath != nil
+						)
+						.frame(minHeight: 96, alignment: .top)
+					}
+					.padding(.top, 8)
 				}
-				.padding(.top, 8)
 			}
 		}
 	}
@@ -745,7 +748,7 @@ struct HostFormView: View {
 		automationReconnectPolicy = host.automation.reconnectPolicy
 		credentialIdentityID = host.credentialIdentity?.identityID
 		credentialIdentityMigrationState =
-			host.credentialIdentity?.migrationState ?? .confirmed
+			host.credentialIdentity?.migrationState ?? .reversible
 	}
 
 	/// Credential as it should be persisted on the host. For a brand-new

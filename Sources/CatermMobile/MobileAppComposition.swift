@@ -209,12 +209,14 @@ public final class MobileAppComposition: ObservableObject {
 				"credential-identities.json"
 			)
 		)
-		do {
-			try credentialIdentityStore.load()
-		} catch {
-			NSLog(
-				"[MobileAppComposition] Credential identities failed to load: \(error)"
-			)
+		Task { @MainActor in
+			do {
+				try await credentialIdentityStore.load()
+			} catch {
+				NSLog(
+					"[MobileAppComposition] Credential identities failed to load: \(error)"
+				)
+			}
 		}
 		let credentialIdentityMaterialStore =
 			CredentialIdentityMaterialStore(
@@ -225,13 +227,15 @@ public final class MobileAppComposition: ObservableObject {
 			keychain: KeychainStore(
 				service: SSHCredentialContract.keychainService,
 				accessGroup: nil
-			)
+			),
+			managedKeyStore: managedKeyStore
 		)
 		let hostStore = MobileHostStore(
 			fileURL: hostsURL,
 			credentialWriter: credentialWriter,
 			managedKeyStore: managedKeyStore,
-			credentialMaterialStore: materialStore
+			credentialMaterialStore: materialStore,
+			credentialIdentityStore: credentialIdentityStore
 		)
 		#if targetEnvironment(simulator)
 		seedSimulatorCachedHostIfRequested(
@@ -256,6 +260,7 @@ public final class MobileAppComposition: ObservableObject {
 			materialStore: materialStore,
 			identityMaterialStore:
 				credentialIdentityMaterialStore,
+			identityStore: credentialIdentityStore,
 			identity: { @MainActor id in
 				credentialIdentityStore.identity(id: id)
 			}
@@ -483,7 +488,13 @@ public final class MobileAppComposition: ObservableObject {
 				materialStore:
 					credentialIdentityMaterialStore,
 				client: client,
-				masterKeys: masterKeyStore
+				masterKeys: masterKeyStore,
+				assignedHostIDs: { identityID in
+					Set(hostStore.hosts.compactMap { host in
+						host.credentialIdentity?.identityID == identityID
+							? host.id : nil
+					})
+				}
 			)
 
 		return MobileAppComposition(

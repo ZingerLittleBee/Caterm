@@ -20,6 +20,13 @@ public final class CredentialIdentityAccountResetCoordinator {
 	}
 
 	public func resetForAccountChange() async throws {
+		try await store.withTransaction {
+			try await self.resetWithinTransaction()
+		}
+	}
+
+	private func resetWithinTransaction() async throws {
+		try await store.load()
 		let identities = store.identities
 		var snapshots: [
 			(
@@ -44,25 +51,34 @@ public final class CredentialIdentityAccountResetCoordinator {
 				attempted.append(snapshot)
 				try await materialStore.delete(identity: snapshot.identity)
 			}
-			try store.resetForAccountChange()
+			try await store.resetForAccountChange()
 		} catch {
+			let originalError = error
+			var rollbackErrors: [String] = []
 			for snapshot in attempted.reversed()
 			where snapshot.material.hasAnyMaterial {
-				try? await materialStore.replaceMaterial(
-					for: snapshot.identity,
-					with: snapshot.material
+				do {
+					try await materialStore.replaceMaterial(
+						for: snapshot.identity,
+						with: snapshot.material
+					)
+				} catch {
+					rollbackErrors.append(String(describing: error))
+				}
+			}
+			if !rollbackErrors.isEmpty {
+				throw CredentialIdentityRollbackError(
+					operation: originalError,
+					rollback: CredentialIdentityAccountResetRollbackError(
+						failures: rollbackErrors
+					)
 				)
 			}
-			throw error
+			throw originalError
 		}
 	}
 }
 
-private extension CredentialIdentityMaterial {
-	var hasAnyMaterial: Bool {
-		password != nil
-			|| passphrase != nil
-			|| privateKey != nil
-			|| secureEnclaveKeyBlob != nil
-	}
+private struct CredentialIdentityAccountResetRollbackError: Error {
+	let failures: [String]
 }

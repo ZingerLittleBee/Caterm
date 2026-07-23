@@ -153,7 +153,8 @@ struct CredentialIdentityConnectionResolverTests {
 		let assignedHost = host(
 			name: "Secure",
 			hostname: "secure.example",
-			identityID: identity.id
+			identityID: identity.id,
+			migrationState: .confirmed
 		)
 
 		#expect(throws:
@@ -169,10 +170,33 @@ struct CredentialIdentityConnectionResolverTests {
 		}
 	}
 
+	@Test
+	func reversibleMigrationFallsBackToHostOwnedCredential() throws {
+		let identityID = UUID()
+		let assignedHost = host(
+			name: "Reversible",
+			hostname: "fallback.example",
+			identityID: identityID,
+			migrationState: .reversible
+		)
+
+		let resolved = try CredentialIdentityConnectionResolver.resolve(
+			host: assignedHost,
+			identities: [],
+			material: nil
+		)
+
+		#expect(resolved.identity == nil)
+		#expect(resolved.payload == .legacyHostOwned)
+		#expect(resolved.host == assignedHost)
+	}
+
 	private func host(
 		name: String,
 		hostname: String,
-		identityID: UUID
+		identityID: UUID,
+		migrationState:
+			HostCredentialIdentityReference.MigrationState = .reversible
 	) -> SSHHost {
 		SSHHost(
 			name: name,
@@ -191,7 +215,7 @@ struct CredentialIdentityConnectionResolverTests {
 			],
 			credentialIdentity: HostCredentialIdentityReference(
 				identityID: identityID,
-				migrationState: .reversible
+				migrationState: migrationState
 			)
 		)
 	}

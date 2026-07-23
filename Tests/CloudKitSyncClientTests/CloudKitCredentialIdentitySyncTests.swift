@@ -65,6 +65,21 @@ final class CKRecordCredentialIdentityMappingTests: XCTestCase {
 }
 
 final class CloudKitCredentialIdentitySyncTests: XCTestCase {
+	func test_queryPaginationCollectsEveryPage() async throws {
+		let pages: [Int: ([String], Int?)] = [
+			0: (["first"], 1),
+			1: (["second"], 2),
+			2: (["third"], nil),
+		]
+
+		let values = try await collectAllQueryPages(
+			first: { try XCTUnwrap(pages[0]) },
+			next: { cursor in try XCTUnwrap(pages[cursor]) }
+		)
+
+		XCTAssertEqual(values, ["first", "second", "third"])
+	}
+
 	func test_upsertListAndDelete_useStableIdentityRecordID() async throws {
 		let database = FakeCloudDatabase()
 		let zoneID = CKRecordZone.ID(zoneName: "Caterm")
@@ -99,7 +114,7 @@ final class CloudKitCredentialIdentitySyncTests: XCTestCase {
 		XCTAssertTrue(remaining.isEmpty)
 	}
 
-	func test_list_skipsCorruptIdentityRecordWithoutDroppingValidRecords()
+	func test_list_failsWhenAnyIdentityRecordIsCorrupt()
 		async throws {
 		let database = FakeCloudDatabase()
 		let zoneID = CKRecordZone.ID(zoneName: "Caterm")
@@ -122,10 +137,43 @@ final class CloudKitCredentialIdentitySyncTests: XCTestCase {
 		database.records[valid.recordID] = valid
 		database.records[corrupt.recordID] = corrupt
 
-		let listed = try await client.listCredentialIdentities()
-
-		XCTAssertEqual(listed.map(\.identity.id), [identity.id])
+		do {
+			_ = try await client.listCredentialIdentities()
+			XCTFail("Expected corrupt record to fail the complete snapshot")
+		} catch {}
 	}
+
+	func test_list_failsWhenAnyCloudKitMatchFails() async throws {
+		let database = FakeCloudDatabase()
+		let zoneID = CKRecordZone.ID(zoneName: "Caterm")
+		let client = CloudKitSyncClient(
+			database: database,
+			zoneID: zoneID
+		)
+		let recordID = CKRecord.ID(
+			recordName: UUID().uuidString,
+			zoneID: zoneID
+		)
+		database.recordMatchResults = [
+			(
+				recordID,
+				.failure(CKError(.partialFailure))
+			),
+		]
+
+		await XCTAssertThrowsErrorAsync {
+			_ = try await client.listCredentialIdentities()
+		}
+	}
+}
+
+private func XCTAssertThrowsErrorAsync(
+	_ expression: () async throws -> Void
+) async {
+	do {
+		try await expression()
+		XCTFail("Expected expression to throw")
+	} catch {}
 }
 
 private func makeIdentity() -> CredentialIdentity {

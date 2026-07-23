@@ -83,31 +83,36 @@ public enum BackupImporter {
 			      let credentialIdentityMaterialStore else {
 				throw BackupImportError.credentialIdentityStoresUnavailable
 			}
-			for action in plan.credentialIdentities {
-				switch action.kind {
-				case .add:
-					try await applyCredentialIdentity(
-						action,
-						store: credentialIdentityStore,
-						materialStore: credentialIdentityMaterialStore
-					)
-					summary.credentialIdentitiesAdded += 1
-				case .update:
-					try await applyCredentialIdentity(
-						action,
-						store: credentialIdentityStore,
-						materialStore: credentialIdentityMaterialStore
-					)
-					summary.credentialIdentitiesUpdated += 1
-				case .materialOnly:
-					try await applyCredentialIdentityMaterialOnly(
-						action,
-						store: credentialIdentityStore,
-						materialStore: credentialIdentityMaterialStore
-					)
-					summary.credentialIdentitiesMaterialOnly += 1
-				case .skipLocalNewer:
-					summary.credentialIdentitiesSkipped += 1
+			try await credentialIdentityStore.withTransaction {
+				for action in plan.credentialIdentities {
+					switch action.kind {
+					case .add:
+						try await applyCredentialIdentity(
+							action,
+							store: credentialIdentityStore,
+							materialStore:
+								credentialIdentityMaterialStore
+						)
+						summary.credentialIdentitiesAdded += 1
+					case .update:
+						try await applyCredentialIdentity(
+							action,
+							store: credentialIdentityStore,
+							materialStore:
+								credentialIdentityMaterialStore
+						)
+						summary.credentialIdentitiesUpdated += 1
+					case .materialOnly:
+						try await applyCredentialIdentityMaterialOnly(
+							action,
+							store: credentialIdentityStore,
+							materialStore:
+								credentialIdentityMaterialStore
+						)
+						summary.credentialIdentitiesMaterialOnly += 1
+					case .skipLocalNewer:
+						summary.credentialIdentitiesSkipped += 1
+					}
 				}
 			}
 		}
@@ -435,17 +440,32 @@ public enum BackupImporter {
 			          ) {
 				try await materialStore.delete(identity: previous)
 			}
-			try store.upsert(candidate)
+			try await store.upsert(candidate)
 		} catch {
+			let operationError = error
 			if let previous, let previousMaterial {
-				try? await materialStore.replaceMaterial(
-					for: previous,
-					with: previousMaterial
-				)
+				do {
+					try await materialStore.replaceMaterial(
+						for: previous,
+						with: previousMaterial
+					)
+				} catch {
+					throw CredentialIdentityRollbackError(
+						operation: operationError,
+						rollback: error
+					)
+				}
 			} else if previous == nil {
-				try? await materialStore.delete(identity: candidate)
+				do {
+					try await materialStore.delete(identity: candidate)
+				} catch {
+					throw CredentialIdentityRollbackError(
+						operation: operationError,
+						rollback: error
+					)
+				}
 			}
-			throw error
+			throw operationError
 		}
 	}
 

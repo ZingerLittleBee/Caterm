@@ -1,5 +1,6 @@
 import Foundation
 import KeychainStore
+import ManagedKeyStore
 import SSHCommandBuilder
 import SSHCredentialContract
 import SwiftUI
@@ -40,6 +41,9 @@ public enum MobileCredentialPlan {
 		let id = payload.host.id
 		let pw = passwordAccount(id)
 		let pp = keyPassphraseAccount(id)
+		if payload.host.credentialIdentity?.migrationState == .confirmed {
+			return [.clear(account: pw), .clear(account: pp)]
+		}
 
 		switch payload.host.credential {
 		case .password:
@@ -79,20 +83,35 @@ public actor MobileCredentialWriter {
 		case value(String)
 	}
 
+	private enum ManagedKeySnapshot {
+		case unavailable
+		case missing
+		case value(Data)
+	}
+
 	public static let defaultService = SSHCredentialContract.keychainService
 
 	private let storage: any MobileCredentialStoring
+	private let managedKeyStore: ManagedKeyStore?
 	private var transactionHolders: Set<UUID> = []
 	private var transactionWaiters: [
 		UUID: [CheckedContinuation<Void, Never>]
 	] = [:]
 
-	public init(keychain: KeychainStore) {
+	public init(
+		keychain: KeychainStore,
+		managedKeyStore: ManagedKeyStore? = nil
+	) {
 		self.storage = keychain
+		self.managedKeyStore = managedKeyStore
 	}
 
-	init(storage: any MobileCredentialStoring) {
+	init(
+		storage: any MobileCredentialStoring,
+		managedKeyStore: ManagedKeyStore? = nil
+	) {
 		self.storage = storage
+		self.managedKeyStore = managedKeyStore
 	}
 
 	public func apply(_ payload: MobileHostDraftPayload) throws {
@@ -113,6 +132,9 @@ public actor MobileCredentialWriter {
 		}
 		let accounts = Self.accounts(hostID: hostID)
 		let snapshot = try capture(accounts)
+		let managedKeySnapshot = try captureManagedKey(hostID: hostID)
+		let deletesManagedKey =
+			payload.host.credentialIdentity?.migrationState == .confirmed
 		var mutatedCredentialMaterial = false
 		do {
 			guard await transactionIsCurrent() else {
@@ -120,6 +142,9 @@ public actor MobileCredentialWriter {
 			}
 			mutatedCredentialMaterial = true
 			try apply(MobileCredentialPlan.operations(for: payload))
+			if deletesManagedKey {
+				try await managedKeyStore?.delete(hostId: hostID)
+			}
 			guard await transactionIsCurrent() else {
 				throw AccountTransactionError.staleAccount
 			}
@@ -127,9 +152,18 @@ public actor MobileCredentialWriter {
 		} catch {
 			guard mutatedCredentialMaterial else { throw error }
 			if await transactionIsCurrent() {
-				try rollback(snapshot, originalError: error)
+				try await rollback(
+					snapshot,
+					managedKeySnapshot: managedKeySnapshot,
+					hostID: hostID,
+					originalError: error
+				)
 			} else {
-				try discard(accounts, originalError: error)
+				try await discard(
+					accounts,
+					hostID: hostID,
+					originalError: error
+				)
 			}
 		}
 	}
@@ -147,6 +181,7 @@ public actor MobileCredentialWriter {
 		}
 		let accounts = Self.accounts(hostID: hostID)
 		let snapshot = try capture(accounts)
+		let managedKeySnapshot = try captureManagedKey(hostID: hostID)
 		var mutatedCredentialMaterial = false
 		do {
 			guard await transactionIsCurrent() else {
@@ -154,6 +189,7 @@ public actor MobileCredentialWriter {
 			}
 			mutatedCredentialMaterial = true
 			try apply(accounts.map(MobileCredentialOp.clear))
+			try await managedKeyStore?.delete(hostId: hostID)
 			guard await transactionIsCurrent() else {
 				throw AccountTransactionError.staleAccount
 			}
@@ -161,9 +197,18 @@ public actor MobileCredentialWriter {
 		} catch {
 			guard mutatedCredentialMaterial else { throw error }
 			if await transactionIsCurrent() {
-				try rollback(snapshot, originalError: error)
+				try await rollback(
+					snapshot,
+					managedKeySnapshot: managedKeySnapshot,
+					hostID: hostID,
+					originalError: error
+				)
 			} else {
-				try discard(accounts, originalError: error)
+				try await discard(
+					accounts,
+					hostID: hostID,
+					originalError: error
+				)
 			}
 		}
 	}
@@ -184,13 +229,20 @@ public actor MobileCredentialWriter {
 	}
 
 	/// Remove every secret for a host (called when the host is deleted).
-	public func clearAll(hostId: UUID) throws {
+	public func clearAll(hostId: UUID) async throws {
 		let accounts = Self.accounts(hostID: hostId)
 		let snapshot = try capture(accounts)
+		let managedKeySnapshot = try captureManagedKey(hostID: hostId)
 		do {
 			try apply(accounts.map(MobileCredentialOp.clear))
+			try await managedKeyStore?.delete(hostId: hostId)
 		} catch {
-			try rollback(snapshot, originalError: error)
+			try await rollback(
+				snapshot,
+				managedKeySnapshot: managedKeySnapshot,
+				hostID: hostId,
+				originalError: error
+			)
 		}
 	}
 
@@ -241,10 +293,23 @@ public actor MobileCredentialWriter {
 		return snapshot
 	}
 
+	private func captureManagedKey(hostID: UUID) throws
+		-> ManagedKeySnapshot {
+		guard let managedKeyStore else {
+			return .unavailable
+		}
+		if let data = try managedKeyStore.read(hostId: hostID) {
+			return .value(data)
+		}
+		return .missing
+	}
+
 	private func rollback(
 		_ snapshot: [String: StoredSecret],
+		managedKeySnapshot: ManagedKeySnapshot,
+		hostID: UUID,
 		originalError: any Error
-	) throws -> Never {
+	) async throws -> Never {
 		var rollbackErrors: [any Error] = []
 		for account in snapshot.keys.sorted() {
 			guard let secret = snapshot[account] else { continue }
@@ -261,6 +326,21 @@ public actor MobileCredentialWriter {
 				rollbackErrors.append(error)
 			}
 		}
+		do {
+			switch managedKeySnapshot {
+			case .unavailable:
+				break
+			case .missing:
+				try await managedKeyStore?.delete(hostId: hostID)
+			case .value(let data):
+				_ = try await managedKeyStore?.write(
+					hostId: hostID,
+					bytes: data
+				)
+			}
+		} catch {
+			rollbackErrors.append(error)
+		}
 		guard rollbackErrors.isEmpty else {
 			throw TransactionRollbackError(
 				originalError: originalError,
@@ -272,8 +352,9 @@ public actor MobileCredentialWriter {
 
 	private func discard(
 		_ accounts: [String],
+		hostID: UUID,
 		originalError: any Error
-	) throws -> Never {
+	) async throws -> Never {
 		var cleanupErrors: [any Error] = []
 		for account in accounts {
 			do {
@@ -283,6 +364,11 @@ public actor MobileCredentialWriter {
 			} catch {
 				cleanupErrors.append(error)
 			}
+		}
+		do {
+			try await managedKeyStore?.delete(hostId: hostID)
+		} catch {
+			cleanupErrors.append(error)
 		}
 		guard cleanupErrors.isEmpty else {
 			throw TransactionRollbackError(
@@ -315,21 +401,27 @@ final class MobileHostSaveCoordinator {
 	}
 
 	func save(_ payload: MobileHostDraftPayload) async throws {
-		let accountContext = try hostStore.beginAccountOperation()
-		defer { hostStore.endAccountOperation() }
-		try await credentialWriter.commitSave(
-			payload,
-			transactionIsCurrent: { self.hostStore.isCurrent(accountContext) }
+		try await hostStore.withCredentialIdentityTransaction(
+			for: payload.host
 		) {
-			if payload.host.credentialMaterialDirty {
-				try await self.prepareCredentialSyncForSave {
+			let accountContext = try self.hostStore.beginAccountOperation()
+			defer { self.hostStore.endAccountOperation() }
+			try await self.credentialWriter.commitSave(
+				payload,
+				transactionIsCurrent: {
 					self.hostStore.isCurrent(accountContext)
 				}
+			) {
+				if payload.host.credentialMaterialDirty {
+					try await self.prepareCredentialSyncForSave {
+						self.hostStore.isCurrent(accountContext)
+					}
+				}
+				try await self.hostStore.upsert(
+					payload.host,
+					accountContext: accountContext
+				)
 			}
-			try await self.hostStore.upsert(
-				payload.host,
-				accountContext: accountContext
-			)
 		}
 	}
 }

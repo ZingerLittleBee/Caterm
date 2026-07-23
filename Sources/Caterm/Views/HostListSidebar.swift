@@ -169,11 +169,16 @@ struct HostListSidebar: View {
 					Task { @MainActor in
 						do {
 							try store.addHost(host)
-							try await applyCredentialChange(
-								hostId: host.id, credential: host.credential,
-								secret: secret, keyMaterial: keyMaterial,
-								forceTransaction: true
-							)
+							if host.credentialIdentity?.migrationState
+								!= .confirmed {
+								try await applyCredentialChange(
+									hostId: host.id,
+									credential: host.credential,
+									secret: secret,
+									keyMaterial: keyMaterial,
+									forceTransaction: true
+								)
+							}
 							showingAddSheet = false
 						} catch {
 							errorMessage = error.localizedDescription
@@ -192,27 +197,29 @@ struct HostListSidebar: View {
 								editingHost = nil
 								return
 							}
-							let route = HostCredentialEditRouting.route(
-								initial: host.credential,
-								current: current.credential,
-								updated: updated.credential,
-								hasSecret: secret != nil,
-								hasKeyMaterial: keyMaterial != nil
-							)
-							switch route {
-							case .preserveCurrent:
-								break
-							case let .transact(forceSourceCommit):
-								// Commit material and its source first, then merge the
-								// remaining form fields without replacing the resolved
-								// managed-key path or dirty bit.
-								try await applyCredentialChange(
-									hostId: updated.id,
-									credential: updated.credential,
-									secret: secret,
-									keyMaterial: keyMaterial,
-									forceTransaction: forceSourceCommit
+							let identityIsConfirmed =
+								updated.credentialIdentity?.migrationState
+									== .confirmed
+							if !identityIsConfirmed {
+								let route = HostCredentialEditRouting.route(
+									initial: host.credential,
+									current: current.credential,
+									updated: updated.credential,
+									hasSecret: secret != nil,
+									hasKeyMaterial: keyMaterial != nil
 								)
+								switch route {
+								case .preserveCurrent:
+									break
+								case let .transact(forceSourceCommit):
+									try await applyCredentialChange(
+										hostId: updated.id,
+										credential: updated.credential,
+										secret: secret,
+										keyMaterial: keyMaterial,
+										forceTransaction: forceSourceCommit
+									)
+								}
 							}
 							if let committed = store.hosts.first(where: {
 								$0.id == updated.id
@@ -221,7 +228,14 @@ struct HostListSidebar: View {
 								metadataUpdate.credential = committed.credential
 								metadataUpdate.credentialMaterialDirty =
 									committed.credentialMaterialDirty
-								try store.updateHost(metadataUpdate)
+								if identityIsConfirmed {
+									try await store
+										.confirmCredentialIdentityMigration(
+											metadataUpdate
+										)
+								} else {
+									try store.updateHost(metadataUpdate)
+								}
 							}
 							editingHost = nil
 						} catch {

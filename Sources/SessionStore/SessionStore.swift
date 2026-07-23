@@ -12,6 +12,16 @@ import SSHCredentialContract
 import ServerSyncClient
 import SessionHistory
 
+public struct SessionStoreCredentialIdentityMigrationError: Error {
+	public let operation: String
+	public let rollback: String
+
+	public init(operation: any Error, rollback: any Error) {
+		self.operation = String(describing: operation)
+		self.rollback = String(describing: rollback)
+	}
+}
+
 // We deliberately import Combine (not SwiftUI/AppKit) here so the public `Host`
 // from SSHCommandBuilder doesn't collide with Foundation.NSHost. ObservableObject
 // lives in Combine. UI types (Caterm executable target) wrap us via @StateObject.
@@ -318,6 +328,7 @@ public final class SessionStore: ObservableObject {
     // MARK: - Host CRUD
 
     public func addHost(_ host: SSHHost) throws {
+		try validateCredentialIdentityAssignments(in: [host])
         var updated = hosts
         updated.append(host)
         try HostPersistence.save(updated, to: hostsURL)
@@ -330,16 +341,72 @@ public final class SessionStore: ObservableObject {
         var updated = host
 		updated.credential = hosts[idx].credential
 		updated.credentialMaterialDirty = hosts[idx].credentialMaterialDirty
+		try validateCredentialIdentityAssignments(in: [updated])
         updated.updatedAt = Date()
         hosts[idx] = updated
         try HostPersistence.save(hosts, to: hostsURL)
         mutationsForSyncSubject.send()
     }
 
+	/// Confirms a reusable-identity migration and removes the legacy Host
+	/// credential in the same transaction as the metadata update.
+	public func confirmCredentialIdentityMigration(
+		_ host: SSHHost
+	) async throws {
+		guard let credentialIdentityStore else {
+			return try await confirmCredentialIdentityMigrationWithinTransaction(
+				host
+			)
+		}
+		try await credentialIdentityStore.withTransaction {
+			try self.validateCredentialIdentityAssignments(in: [host])
+			try await self.confirmCredentialIdentityMigrationWithinTransaction(
+				host
+			)
+		}
+	}
+
+	private func confirmCredentialIdentityMigrationWithinTransaction(
+		_ host: SSHHost
+	) async throws {
+		guard host.credentialIdentity?.migrationState == .confirmed,
+		      let index = hosts.firstIndex(where: { $0.id == host.id }) else {
+			return
+		}
+		let commit = try await credentialMaterialStore.beginDeletion(
+			for: host.id
+		)
+		var updated = host
+		updated.credential = hosts[index].credential
+		updated.credentialMaterialDirty = false
+		updated.updatedAt = Date()
+		var next = hosts
+		next[index] = updated
+		do {
+			try HostPersistence.save(next, to: hostsURL)
+		} catch {
+			let persistenceError = error
+			do {
+				try await credentialMaterialStore.rollbackDeletion(commit)
+			} catch {
+				throw SessionStoreCredentialIdentityMigrationError(
+					operation: persistenceError,
+					rollback: error
+				)
+			}
+			throw persistenceError
+		}
+		hosts = next
+		await credentialMaterialStore.finalizeDeletion(commit)
+		credentialAvailabilityRevision &+= 1
+		mutationsForSyncSubject.send()
+	}
+
     /// Persists a user-driven batch as one atomic hosts.json replacement and
     /// emits one sync mutation. Device-local credential state is preserved.
     public func updateHosts(_ updatedHosts: [SSHHost]) throws {
         guard !updatedHosts.isEmpty else { return }
+		try validateCredentialIdentityAssignments(in: updatedHosts)
         var updatesByID: [UUID: SSHHost] = [:]
         for host in updatedHosts {
             updatesByID[host.id] = host
@@ -863,14 +930,38 @@ public final class SessionStore: ObservableObject {
 		tab: Tab
 	) async throws -> PreparedCredentialIdentityConnectionSet? {
 		guard let credentialIdentityPreparer else { return nil }
+		guard let credentialIdentityStore else {
+			return try await prepareIdentityConnections(
+				tab: tab,
+				identitySnapshots: tab.credentialIdentitySnapshots,
+				preparer: credentialIdentityPreparer
+			)
+		}
+		return try await credentialIdentityStore.withTransaction {
+			let snapshots = self.credentialIdentitySnapshots(
+				for: tab.resolvedChain + [tab.host]
+			)
+			return try await self.prepareIdentityConnections(
+				tab: tab,
+				identitySnapshots: snapshots,
+				preparer: credentialIdentityPreparer
+			)
+		}
+	}
+
+	private func prepareIdentityConnections(
+		tab: Tab,
+		identitySnapshots: [UUID: CredentialIdentity],
+		preparer: CredentialIdentityConnectionPreparer
+	) async throws -> PreparedCredentialIdentityConnectionSet? {
 		var prepared: [PreparedCredentialIdentityConnection] = []
 		do {
 			for host in tab.resolvedChain + [tab.host] {
 				let identity = host.credentialIdentity.flatMap {
-					tab.credentialIdentitySnapshots[$0.identityID]
+					identitySnapshots[$0.identityID]
 				}
 				prepared.append(
-					try await credentialIdentityPreparer.prepare(
+					try await preparer.prepare(
 						host: host,
 						identity: identity
 					)
@@ -1246,6 +1337,7 @@ public final class SessionStore: ObservableObject {
             to: localHostId,
             in: hosts
         ) else { throw HostSynchronizationError.localHostMissing(localHostId) }
+		try validateCredentialIdentityAssignments(in: updated)
         try HostPersistence.save(updated, to: hostsURL)
         hosts = updated
     }
@@ -1256,6 +1348,7 @@ public final class SessionStore: ObservableObject {
     @discardableResult
     public func addRemoteHost(_ remote: RemoteHost) throws -> UUID {
         let result = HostRepositoryProjection.inserting(remote, into: hosts)
+		try validateCredentialIdentityAssignments(in: result.hosts)
         try HostPersistence.save(result.hosts, to: hostsURL)
         hosts = result.hosts
         return result.localID
@@ -1439,6 +1532,19 @@ public final class SessionStore: ObservableObject {
 		updated[idx].credentialMaterialDirty = false
 		try HostPersistence.save(updated, to: hostsURL)
 		hosts = updated
+	}
+
+	private func validateCredentialIdentityAssignments(
+		in candidateHosts: [SSHHost]
+	) throws {
+		guard let credentialIdentityStore else { return }
+		for identityID in Set(candidateHosts.compactMap {
+			$0.credentialIdentity?.identityID
+		}) {
+			try credentialIdentityStore.validateAssignment(
+				identityID: identityID
+			)
+		}
 	}
 
 	/// Commits the resulting credential reference to main-actor host state after

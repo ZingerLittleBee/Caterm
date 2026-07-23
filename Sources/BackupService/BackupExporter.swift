@@ -46,8 +46,6 @@ public enum BackupExporter {
 			do {
 				try Task.checkCancellation()
 				let hostSnapshot = sessionStore.hosts
-				let identitySnapshot =
-					credentialIdentityStore?.identities ?? []
 				let bookmarkSnapshot = hostSnapshot.flatMap { host in
 					bookmarks(host.id).map { bookmark in
 						BackupBookmark(
@@ -82,16 +80,29 @@ public enum BackupExporter {
 				guard sessionStore.hosts == hostSnapshot else {
 					throw HostSnapshotChanged()
 				}
-				let backupIdentities = try await identitySnapshot.asyncMap {
-					try await backupIdentity(
-						$0,
-						includeSecrets: includeSecrets,
-						materialStore: credentialIdentityMaterialStore
-					)
-				}
-				guard (credentialIdentityStore?.identities ?? [])
-					== identitySnapshot else {
-					throw HostSnapshotChanged()
+				let backupIdentities: [BackupCredentialIdentity]
+				if let credentialIdentityStore {
+					backupIdentities =
+						try await credentialIdentityStore.withTransaction {
+							let identitySnapshot =
+								credentialIdentityStore.identities
+							let result =
+								try await identitySnapshot.asyncMap {
+									try await backupIdentity(
+										$0,
+										includeSecrets: includeSecrets,
+										materialStore:
+											credentialIdentityMaterialStore
+									)
+								}
+							guard credentialIdentityStore.identities
+								== identitySnapshot else {
+								throw HostSnapshotChanged()
+							}
+							return result
+						}
+				} else {
+					backupIdentities = []
 				}
 
 				let backupSnippets = snippets.map { snippet in

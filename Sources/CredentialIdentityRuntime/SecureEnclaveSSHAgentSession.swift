@@ -2,6 +2,7 @@
 import CredentialIdentitySecurity
 import Darwin
 import Foundation
+import os
 
 public enum SecureEnclaveSSHAgentSessionError: Error, Equatable {
 	case socketCreationFailed(Int32)
@@ -10,9 +11,14 @@ public enum SecureEnclaveSSHAgentSessionError: Error, Equatable {
 	case bindFailed(Int32)
 	case permissionFailed(Int32)
 	case listenFailed(Int32)
+	case cleanupFailed(operation: String, cleanup: String)
 }
 
 public final class SecureEnclaveSSHAgentSession: @unchecked Sendable {
+	private static let log = Logger(
+		subsystem: "com.caterm.app",
+		category: "secure-enclave-ssh-agent"
+	)
 	public let socketURL: URL
 
 	private let signer: any P256SSHAgentSigning
@@ -52,11 +58,22 @@ public final class SecureEnclaveSSHAgentSession: @unchecked Sendable {
 			SOCK_STREAM,
 			0
 		)
-		guard fileDescriptor >= 0 else {
-			let code = errno
-			try? FileManager.default.removeItem(at: directoryURL)
-			throw SecureEnclaveSSHAgentSessionError
-				.socketCreationFailed(code)
+			guard fileDescriptor >= 0 else {
+				let code = errno
+				do {
+					try FileManager.default.removeItem(at: directoryURL)
+				} catch {
+					throw SecureEnclaveSSHAgentSessionError.cleanupFailed(
+						operation: String(
+							describing:
+								SecureEnclaveSSHAgentSessionError
+									.socketCreationFailed(code)
+						),
+						cleanup: String(describing: error)
+					)
+				}
+				throw SecureEnclaveSSHAgentSessionError
+					.socketCreationFailed(code)
 		}
 		listenerFileDescriptor = fileDescriptor
 
@@ -73,11 +90,19 @@ public final class SecureEnclaveSSHAgentSession: @unchecked Sendable {
 				throw SecureEnclaveSSHAgentSessionError
 					.listenFailed(errno)
 			}
-		} catch {
-			Darwin.close(fileDescriptor)
-			unlink(socketURL.path)
-			try? FileManager.default.removeItem(at: directoryURL)
-			throw error
+			} catch {
+				let operationError = error
+				Darwin.close(fileDescriptor)
+				unlink(socketURL.path)
+				do {
+					try FileManager.default.removeItem(at: directoryURL)
+				} catch {
+					throw SecureEnclaveSSHAgentSessionError.cleanupFailed(
+						operation: String(describing: operationError),
+						cleanup: String(describing: error)
+					)
+				}
+				throw operationError
 		}
 
 		queue.async { [weak self] in
@@ -108,8 +133,14 @@ public final class SecureEnclaveSSHAgentSession: @unchecked Sendable {
 		}
 		shutdown(listener, SHUT_RDWR)
 		Darwin.close(listener)
-		unlink(socketURL.path)
-		try? FileManager.default.removeItem(at: directoryURL)
+			unlink(socketURL.path)
+			do {
+				try FileManager.default.removeItem(at: directoryURL)
+			} catch {
+				Self.log.error(
+					"SSH agent directory cleanup failed: \(String(describing: error), privacy: .public)"
+				)
+			}
 	}
 
 	private func acceptConnections() {

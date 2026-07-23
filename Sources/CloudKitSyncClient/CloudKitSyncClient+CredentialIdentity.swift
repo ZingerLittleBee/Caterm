@@ -11,17 +11,16 @@ extension CloudKitSyncClient: CredentialIdentitySyncClient {
 			predicate: NSPredicate(value: true)
 		)
 		do {
-			let (matches, _) = try await database.records(
+			let matches = try await database.allRecords(
 				matching: query,
 				inZoneWith: zoneID,
 				desiredKeys: nil,
 				resultsLimit: CKQueryOperation.maximumResults
 			)
-			return matches.compactMap { _, result in
-				guard case .success(let record) = result else {
-					return nil
-				}
-				return try? CKRecordCredentialIdentityMapping.decode(record)
+			return try matches.map { _, result in
+				try CKRecordCredentialIdentityMapping.decode(
+					result.get()
+				)
 			}
 		} catch let error as CKError where error.code == .zoneNotFound {
 			return []

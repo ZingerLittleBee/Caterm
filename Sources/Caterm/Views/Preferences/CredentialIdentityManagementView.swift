@@ -1,7 +1,6 @@
 import CredentialIdentitySecurity
 import CredentialIdentityStore
 import Foundation
-import ManagedKeyStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
@@ -10,6 +9,7 @@ import UniformTypeIdentifiers
 private struct CredentialIdentityRow: Identifiable {
 	let identity: CredentialIdentity
 	let availability: CredentialIdentityMaterialAvailability?
+	let availabilityError: String?
 
 	var id: UUID { identity.id }
 	var name: String { identity.name }
@@ -27,7 +27,10 @@ private struct CredentialIdentityRow: Identifiable {
 		}
 	}
 	var status: String {
-		switch availability {
+		if availabilityError != nil {
+			return "Check failed"
+		}
+		return switch availability {
 		case .available:
 			"Ready"
 		case .unavailableOnThisDevice:
@@ -75,7 +78,10 @@ private struct CredentialIdentityTable: View {
 			TableColumn("Status", value: \.status) { row in
 				Label(
 					row.status,
-					systemImage: statusSymbol(row.availability)
+					systemImage: statusSymbol(
+						row.availability,
+						hasError: row.availabilityError != nil
+					)
 				)
 				.foregroundStyle(
 					row.availability == .available
@@ -100,9 +106,13 @@ private struct CredentialIdentityTable: View {
 	}
 
 	private func statusSymbol(
-		_ status: CredentialIdentityMaterialAvailability?
+		_ status: CredentialIdentityMaterialAvailability?,
+		hasError: Bool
 	) -> String {
-		switch status {
+		if hasError {
+			return "exclamationmark.triangle.fill"
+		}
+		return switch status {
 		case .available:
 			"checkmark.circle.fill"
 		case .unavailableOnThisDevice:
@@ -127,6 +137,7 @@ struct CredentialIdentityManagementView: View {
 	]
 	@State private var availability:
 		[UUID: CredentialIdentityMaterialAvailability] = [:]
+	@State private var availabilityErrors: [UUID: String] = [:]
 	@State private var editorRequest: CredentialIdentityEditorRequest?
 	@State private var pendingDeleteID: UUID?
 	@State private var errorMessage: String?
@@ -136,7 +147,8 @@ struct CredentialIdentityManagementView: View {
 		store.identities.map {
 			CredentialIdentityRow(
 				identity: $0,
-				availability: availability[$0.id]
+				availability: availability[$0.id],
+				availabilityError: availabilityErrors[$0.id]
 			)
 		}.sorted(using: sortOrder)
 	}
@@ -212,6 +224,14 @@ struct CredentialIdentityManagementView: View {
 						Label("Delete", systemImage: "trash")
 					}
 					.disabled(selectedIdentity == nil || isWorking)
+				}
+				if !availabilityErrors.isEmpty {
+					Button("Retry Status Checks") {
+						Task { await refreshAvailability() }
+					}
+					.accessibilityHint(
+						"Retries credential material availability checks"
+					)
 				}
 			}
 		}
@@ -290,12 +310,18 @@ struct CredentialIdentityManagementView: View {
 
 	private func refreshAvailability() async {
 		var next: [UUID: CredentialIdentityMaterialAvailability] = [:]
+		var errors: [UUID: String] = [:]
 		for identity in store.identities {
-			next[identity.id] = try? await materialStore.availability(
-				for: identity
-			)
+			do {
+				next[identity.id] = try await materialStore.availability(
+					for: identity
+				)
+			} catch {
+				errors[identity.id] = String(describing: error)
+			}
 		}
 		availability = next
+		availabilityErrors = errors
 	}
 
 	private func deletePendingIdentity() {
@@ -314,19 +340,16 @@ struct CredentialIdentityManagementView: View {
 		Task { @MainActor in
 			defer { isWorking = false }
 			do {
-				let previous = try await materialStore.snapshot(for: identity)
-				try await materialStore.delete(identity: identity)
-				do {
-					try store.delete(id: id, assignedHostIDs: hostIDs)
-				} catch {
-					if previous.hasAnyMaterial {
-						try? await materialStore.replaceMaterial(
-							for: identity,
-							with: previous
-						)
-					}
-					throw error
-				}
+				let editor = CredentialIdentityEditorService(
+					materialStore: materialStore
+				)
+				try await editor.delete(
+					identity,
+					assignedHostIDs: {
+						assignedHostIDs(identityID: id)
+					},
+					from: store
+				)
 				selection.remove(id)
 				triggerSync()
 			} catch {
@@ -342,24 +365,16 @@ struct CredentialIdentityManagementView: View {
 		Task { @MainActor in
 			defer { isWorking = false }
 			do {
-				let generated = try await materialStore
-					.createSecureEnclaveIdentity(
-						name: identity.name,
-						username: identity.username,
-						originDeviceID:
-							CredentialIdentityDeviceID.current(),
-						localizedReason:
-							"Create an SSH identity for \(identity.name)"
-					)
-				var replacement = identity
-				replacement.source = generated.source
-				do {
-					try store.upsert(replacement)
-				} catch {
-					try? await materialStore.delete(identity: generated)
-					throw error
-				}
-				try? await materialStore.delete(identity: identity)
+				let editor = CredentialIdentityEditorService(
+					materialStore: materialStore
+				)
+				_ = try await editor.replaceSecureEnclaveKey(
+					for: identity,
+					originDeviceID: CredentialIdentityDeviceID.current(),
+					localizedReason:
+						"Create an SSH identity for \(identity.name)",
+					in: store
+				)
 				triggerSync()
 				await refreshAvailability()
 			} catch {
@@ -621,28 +636,29 @@ private struct CredentialIdentityEditorSheet: View {
 		Task { @MainActor in
 			defer { isSaving = false }
 			do {
-				if kind == .secureEnclaveP256,
-				   existingIdentity == nil {
-					let generated = try await materialStore
-						.createSecureEnclaveIdentity(
-							name: name,
-							username: username,
-							originDeviceID:
-								CredentialIdentityDeviceID.current(),
-							localizedReason:
-								"Create an SSH identity for \(name)"
-						)
-					do {
-						try store.upsert(generated)
-					} catch {
-						try? await materialStore.delete(
-							identity: generated
-						)
-						throw error
-					}
-				} else {
-					try await saveStandardIdentity()
-				}
+				let editor = CredentialIdentityEditorService(
+					materialStore: materialStore
+				)
+				try await editor.save(
+					CredentialIdentityEditorInput(
+						existingIdentity: existingIdentity,
+						kind: kind.sharedKind,
+						name: name,
+						username: username,
+						password: password.isEmpty
+							? nil : Data(password.utf8),
+						privateKey: privateKey,
+						publicCertificate: publicCertificate,
+						hasPassphrase: hasPassphrase,
+						passphrase: passphrase.isEmpty
+							? nil : Data(passphrase.utf8),
+						originDeviceID:
+							CredentialIdentityDeviceID.current(),
+						localizedReason:
+							"Create an SSH identity for \(name)"
+					),
+					to: store
+				)
 				triggerSync()
 				dismiss()
 			} catch {
@@ -651,142 +667,50 @@ private struct CredentialIdentityEditorSheet: View {
 		}
 	}
 
-	private func saveStandardIdentity() async throws {
-		let previousMaterial: CredentialIdentityMaterial?
-		if let existingIdentity {
-			previousMaterial = try await materialStore.snapshot(
-				for: existingIdentity
-			)
-		} else {
-			previousMaterial = nil
-		}
-		let materialID = existingIdentity?.source.materialID
-			?? CredentialMaterialID()
-		let source: CredentialIdentitySource
-		let material: CredentialIdentityMaterial?
-		switch kind {
-		case .password:
-			source = .password(materialID: materialID)
-			let resolvedPassword = password.isEmpty
-				? previousMaterial?.password
-				: Data(password.utf8)
-			material = CredentialIdentityMaterial(
-				password: resolvedPassword
-			)
-		case .managedKey:
-			source = .managedKey(
-				materialID: materialID,
-				hasPassphrase: hasPassphrase
-			)
-			material = CredentialIdentityMaterial(
-				passphrase: resolvedPassphrase(previousMaterial),
-				privateKey: privateKey ?? previousMaterial?.privateKey
-			)
-		case .sshCertificate:
-			guard let certificate = publicCertificate else {
-				throw CredentialIdentityValidationError
-					.emptyPublicCertificate
-			}
-			source = .sshCertificate(
-				materialID: materialID,
-				publicCertificate: certificate,
-				hasPassphrase: hasPassphrase
-			)
-			material = CredentialIdentityMaterial(
-				passphrase: resolvedPassphrase(previousMaterial),
-				privateKey: privateKey ?? previousMaterial?.privateKey
-			)
-		case .secureEnclaveP256:
-			guard let existingIdentity else {
-				throw SecureEnclaveIdentityError.unavailable
-			}
-			source = existingIdentity.source
-			material = nil
-		}
-		var candidate = existingIdentity ?? CredentialIdentity(
-			name: name,
-			username: username,
-			source: source
-		)
-		candidate.name = name
-		candidate.username = username
-		candidate.source = source
-		if let material {
-			try await materialStore.replaceMaterial(
-				for: candidate,
-				with: material
-			)
-		}
-		do {
-			try store.upsert(candidate)
-		} catch {
-			if let existingIdentity, let previousMaterial {
-				try? await materialStore.replaceMaterial(
-					for: existingIdentity,
-					with: previousMaterial
-				)
-			} else if existingIdentity == nil {
-				try? await materialStore.delete(identity: candidate)
-			}
-			throw error
-		}
-	}
-
-	private func resolvedPassphrase(
-		_ previous: CredentialIdentityMaterial?
-	) -> Data? {
-		guard hasPassphrase else { return nil }
-		return passphrase.isEmpty
-			? previous?.passphrase
-			: Data(passphrase.utf8)
-	}
-
 	private func importPrivateKey(
 		_ result: Result<[URL], any Error>
 	) {
-		do {
-			let url = try result.get().first
-			guard let url else { return }
-			privateKey = try readSecurityScoped(url)
-			privateKeyFileName = url.lastPathComponent
-		} catch {
-			errorMessage = error.localizedDescription
+		Task { @MainActor in
+			do {
+				let url = try result.get().first
+				guard let url else { return }
+				privateKey = try await CredentialIdentityFileImporter.read(url)
+				privateKeyFileName = url.lastPathComponent
+			} catch {
+				errorMessage = error.localizedDescription
+			}
 		}
 	}
 
 	private func importCertificate(
 		_ result: Result<[URL], any Error>
 	) {
-		do {
-			let url = try result.get().first
-			guard let url else { return }
-			publicCertificate = try readSecurityScoped(url)
-			certificateFileName = url.lastPathComponent
-		} catch {
-			errorMessage = error.localizedDescription
-		}
-	}
-
-	private func readSecurityScoped(_ url: URL) throws -> Data {
-		let accessed = url.startAccessingSecurityScopedResource()
-		defer {
-			if accessed {
-				url.stopAccessingSecurityScopedResource()
+		Task { @MainActor in
+			do {
+				let url = try result.get().first
+				guard let url else { return }
+				publicCertificate =
+					try await CredentialIdentityFileImporter.read(url)
+				certificateFileName = url.lastPathComponent
+			} catch {
+				errorMessage = error.localizedDescription
 			}
 		}
-		let data = try Data(contentsOf: url)
-		guard data.count <= ManagedKeyStore.maxBytes else {
-			throw ManagedKeyStore.Error.tooLarge
-		}
-		return data
 	}
 }
 
-private extension CredentialIdentityMaterial {
-	var hasAnyMaterial: Bool {
-		password != nil
-			|| passphrase != nil
-			|| privateKey != nil
-			|| secureEnclaveKeyBlob != nil
+
+private extension CredentialIdentityEditorKind {
+	var sharedKind: CredentialIdentitySecurity.CredentialIdentityEditorKind {
+		switch self {
+		case .password:
+			.password
+		case .managedKey:
+			.managedKey
+		case .sshCertificate:
+			.sshCertificate
+		case .secureEnclaveP256:
+			.secureEnclaveP256
+		}
 	}
 }

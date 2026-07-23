@@ -17,6 +17,12 @@ public protocol CKDatabaseProtocol: Sendable {
 		async throws -> (matchResults: [(CKRecord.ID, Result<CKRecord, Error>)],
 		                 queryCursor: CKQueryOperation.Cursor?)
 
+	func allRecords(matching query: CKQuery,
+	                inZoneWith zoneID: CKRecordZone.ID?,
+	                desiredKeys: [CKRecord.FieldKey]?,
+	                resultsLimit: Int)
+		async throws -> [(CKRecord.ID, Result<CKRecord, Error>)]
+
 	func save(_ record: CKRecord) async throws -> CKRecord
 	func deleteRecord(withID recordID: CKRecord.ID) async throws -> CKRecord.ID
 	func record(for recordID: CKRecord.ID) async throws -> CKRecord
@@ -45,7 +51,47 @@ public protocol CKDatabaseProtocol: Sendable {
 
 extension CKDatabase: CKDatabaseProtocol {}
 
+func collectAllQueryPages<Cursor, Value>(
+	first: () async throws -> ([Value], Cursor?),
+	next: (Cursor) async throws -> ([Value], Cursor?)
+) async throws -> [Value] {
+	var page = try await first()
+	var values = page.0
+	while let cursor = page.1 {
+		page = try await next(cursor)
+		values.append(contentsOf: page.0)
+	}
+	return values
+}
+
 extension CKDatabase {
+	public func allRecords(
+		matching query: CKQuery,
+		inZoneWith zoneID: CKRecordZone.ID?,
+		desiredKeys: [CKRecord.FieldKey]?,
+		resultsLimit: Int
+	) async throws -> [(CKRecord.ID, Result<CKRecord, Error>)] {
+		try await collectAllQueryPages(
+			first: {
+				let page = try await self.records(
+					matching: query,
+					inZoneWith: zoneID,
+					desiredKeys: desiredKeys,
+					resultsLimit: resultsLimit
+				)
+				return (page.matchResults, page.queryCursor)
+			},
+			next: { cursor in
+				let page = try await self.records(
+					continuingMatchFrom: cursor,
+					desiredKeys: desiredKeys,
+					resultsLimit: resultsLimit
+				)
+				return (page.matchResults, page.queryCursor)
+			}
+		)
+	}
+
 	public func fetchDatabaseChanges(previousServerChangeToken: CKServerChangeToken?)
 		async throws -> (changedZoneIDs: [CKRecordZone.ID],
 		                 deletedZoneIDs: [CKRecordZone.ID],

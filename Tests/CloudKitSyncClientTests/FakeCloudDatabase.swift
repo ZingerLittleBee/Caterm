@@ -44,6 +44,9 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
 	var saveZoneCallCount = 0
 
 	var recordsError: Error?
+	var recordMatchResults: [
+		(CKRecord.ID, Result<CKRecord, Error>)
+	]?
 	var saveError: Error?
 	var deleteError: Error?
 	var recordFetchError: Error?
@@ -104,6 +107,24 @@ final class FakeCloudDatabase: CKDatabaseProtocol, @unchecked Sendable {
 			(rec.recordID, Result<CKRecord, Error>.success(rec))
 		}
 		return (pairs, nil)
+	}
+
+	func allRecords(
+		matching query: CKQuery,
+		inZoneWith zoneID: CKRecordZone.ID?,
+		desiredKeys: [CKRecord.FieldKey]?,
+		resultsLimit: Int
+	) async throws -> [(CKRecord.ID, Result<CKRecord, Error>)] {
+		recordsCallCount += 1
+		if let recordsError {
+			throw recordsError
+		}
+		if let recordMatchResults {
+			return recordMatchResults
+		}
+		return records.values
+			.filter { $0.recordType == query.recordType }
+			.map { ($0.recordID, .success($0)) }
 	}
 
 	func save(_ record: CKRecord) async throws -> CKRecord {

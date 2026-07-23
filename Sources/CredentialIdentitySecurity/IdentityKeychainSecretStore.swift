@@ -14,8 +14,12 @@ public protocol IdentitySecretStoring: Sendable {
 	func delete(account: String) throws
 }
 
+public protocol IdentityRuntimeSecretScavenging: Sendable {
+	func deleteAll(accountPrefix: String) throws
+}
+
 public final class IdentityKeychainSecretStore: IdentitySecretStoring,
-	@unchecked Sendable {
+	IdentityRuntimeSecretScavenging, @unchecked Sendable {
 	private let service: String
 	private let accessGroup: String?
 
@@ -83,11 +87,41 @@ public final class IdentityKeychainSecretStore: IdentitySecretStoring,
 		}
 	}
 
+	public func deleteAll(accountPrefix: String) throws {
+		var query = baseServiceQuery()
+		query[kSecReturnAttributes as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitAll
+		var result: CFTypeRef?
+		let status = SecItemCopyMatching(query as CFDictionary, &result)
+		guard status != errSecItemNotFound else { return }
+		guard status == errSecSuccess else {
+			if status == errSecInteractionNotAllowed {
+				throw IdentityKeychainError.interactionNotAllowed
+			}
+			throw IdentityKeychainError.osStatus(status)
+		}
+		guard let items = result as? [[String: Any]] else {
+			throw IdentityKeychainError.unexpectedResult
+		}
+		for item in items {
+			guard let account = item[kSecAttrAccount as String] as? String,
+			      account.hasPrefix(accountPrefix) else {
+				continue
+			}
+			try delete(account: account)
+		}
+	}
+
 	private func baseQuery(account: String) -> [String: Any] {
+		var query = baseServiceQuery()
+		query[kSecAttrAccount as String] = account
+		return query
+	}
+
+	private func baseServiceQuery() -> [String: Any] {
 		var query: [String: Any] = [
 			kSecClass as String: kSecClassGenericPassword,
 			kSecAttrService as String: service,
-			kSecAttrAccount as String: account,
 		]
 		if let accessGroup {
 			query[kSecAttrAccessGroup as String] = accessGroup

@@ -39,12 +39,9 @@ final class CredentialIdentitySessionTests: XCTestCase {
 			environment["CATERM_ASKPASS_SERVICE"],
 			CredentialIdentityKeychainContract.service
 		)
-		XCTAssertEqual(
-			environment["CATERM_ASKPASS_ACCOUNT"],
-			CredentialIdentityKeychainContract.account(
-				materialID: identity.source.materialID,
-				kind: .password
-			)
+		XCTAssertTrue(
+			environment["CATERM_ASKPASS_ACCOUNT"]?
+				.hasPrefix("runtime.") == true
 		)
 		XCTAssertEqual(
 			environment["CATERM_ASKPASS_DATA_PROTECTION"],
@@ -69,7 +66,7 @@ final class CredentialIdentitySessionTests: XCTestCase {
 		)
 
 		identity.username = "after"
-		try fixture.identityStore.upsert(identity)
+		try await fixture.identityStore.upsert(identity)
 		let secondTabID = fixture.sessionStore.openTab(host: host)
 		await fixture.sessionStore.awaitConnectionAttempt(
 			tabId: secondTabID
@@ -128,6 +125,67 @@ final class CredentialIdentitySessionTests: XCTestCase {
 			fixture.sessionStore.surfaceConfig(for: tabID)
 		)
 	}
+
+	func testHostAssignmentCannotCommitDuringIdentityDeletion()
+		async throws {
+		let fixture = try IdentitySessionFixture()
+		let identity = try await fixture.addPasswordIdentity(
+			username: "shared"
+		)
+		let blocker = IdentityDeletionBlocker()
+		let deletion = Task { @MainActor in
+			try await fixture.identityStore.withTransaction {
+				try await fixture.identityStore.withDeletionReservation(
+					id: identity.id
+				) {
+					await blocker.block()
+				}
+			}
+		}
+		await blocker.waitUntilBlocked()
+
+		XCTAssertThrowsError(
+			try fixture.sessionStore.addHost(
+				fixture.host(assignedTo: identity.id)
+			)
+		) { error in
+			XCTAssertEqual(
+				error as? CredentialIdentityStoreError,
+				.identityDeletionInProgress(identity.id)
+			)
+		}
+
+		await blocker.release()
+		try await deletion.value
+		try fixture.sessionStore.addHost(
+			fixture.host(assignedTo: identity.id)
+		)
+	}
+}
+
+private actor IdentityDeletionBlocker {
+	private var blocked = false
+	private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+	func block() async {
+		blocked = true
+		blockedWaiters.forEach { $0.resume() }
+		blockedWaiters.removeAll()
+		await withCheckedContinuation {
+			releaseContinuation = $0
+		}
+	}
+
+	func waitUntilBlocked() async {
+		guard !blocked else { return }
+		await withCheckedContinuation { blockedWaiters.append($0) }
+	}
+
+	func release() {
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
 }
 
 @MainActor
@@ -176,7 +234,12 @@ private final class IdentitySessionFixture {
 			credentialIdentityPreparer:
 				CredentialIdentityConnectionPreparer(
 					materialStore: materialStore,
-					managedKeyStore: managedKeys
+					managedKeyStore: managedKeys,
+					runtimeSecrets: secrets,
+					runtimeRootURL: root.appendingPathComponent(
+						"runtime",
+						isDirectory: true
+					)
 				)
 		)
 	}
@@ -197,7 +260,7 @@ private final class IdentitySessionFixture {
 				password: Data("secret".utf8)
 			)
 		)
-		try identityStore.upsert(identity)
+		try await identityStore.upsert(identity)
 		return try XCTUnwrap(
 			identityStore.identity(id: identity.id)
 		)
@@ -220,7 +283,8 @@ private final class IdentitySessionFixture {
 }
 
 private final class SessionMemoryIdentitySecrets:
-	IdentitySecretStoring, @unchecked Sendable {
+	IdentitySecretStoring, IdentityRuntimeSecretScavenging,
+	@unchecked Sendable {
 	private let lock = NSLock()
 	private var values: [String: Data] = [:]
 
@@ -234,6 +298,12 @@ private final class SessionMemoryIdentitySecrets:
 
 	func delete(account: String) throws {
 		_ = lock.withLock { values.removeValue(forKey: account) }
+	}
+
+	func deleteAll(accountPrefix: String) throws {
+		lock.withLock {
+			values = values.filter { !$0.key.hasPrefix(accountPrefix) }
+		}
 	}
 }
 

@@ -118,7 +118,13 @@ struct CatermApp: App {
         store: identityStore,
         materialStore: identityMaterialStore,
         client: $0,
-        masterKeys: mks
+        masterKeys: mks,
+        assignedHostIDs: { identityID in
+          Set(session.hosts.compactMap { host in
+            host.credentialIdentity?.identityID == identityID
+              ? host.id : nil
+          })
+        }
       )
     }
     let identitySyncScheduler = CredentialIdentitySyncScheduler(
@@ -980,7 +986,10 @@ private func makeStore(
     credentialIdentityStore: credentialIdentityStore,
     credentialIdentityPreparer: CredentialIdentityConnectionPreparer(
       materialStore: credentialIdentityMaterialStore,
-      managedKeyStore: managedKeyStore
+      managedKeyStore: managedKeyStore,
+      runtimeSecrets: IdentityKeychainSecretStore(
+        accessGroup: accessGroup
+      )
     )
   )
 }
@@ -998,13 +1007,15 @@ private func makeCredentialIdentityStore() -> CredentialIdentityStore {
       .appendingPathComponent("Caterm", isDirectory: true)
       .appendingPathComponent("credential-identities.json")
   let store = CredentialIdentityStore(fileURL: fileURL)
-  do {
-    try store.load()
-  } catch {
-    NSLog(
-      "[CatermApp] Credential identities failed to load: %@",
-      String(describing: error)
-    )
+  Task { @MainActor in
+    do {
+      try await store.load()
+    } catch {
+      NSLog(
+        "[CatermApp] Credential identities failed to load: %@",
+        String(describing: error)
+      )
+    }
   }
   return store
 }

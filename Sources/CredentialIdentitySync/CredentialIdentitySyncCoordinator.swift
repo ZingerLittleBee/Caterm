@@ -32,6 +32,8 @@ public enum CredentialIdentitySyncError: Error, Equatable {
 	case masterKeyUnavailable
 	case unsupportedCryptoVersion(Int64)
 	case encryptedMaterialMissing(UUID)
+	case remoteSuperseded(UUID)
+	case transactionRollbackFailed(operation: String, rollback: [String])
 }
 
 @MainActor
@@ -40,20 +42,31 @@ public final class CredentialIdentitySyncCoordinator {
 	private let materialStore: CredentialIdentityMaterialStore
 	private let client: any CredentialIdentitySyncClient
 	private let masterKeys: any IdentitySyncMasterKeyProviding
+	private let assignedHostIDs: @MainActor (UUID) -> Set<UUID>
 
 	public init(
 		store: CredentialIdentityStore,
 		materialStore: CredentialIdentityMaterialStore,
 		client: any CredentialIdentitySyncClient,
-		masterKeys: any IdentitySyncMasterKeyProviding
+		masterKeys: any IdentitySyncMasterKeyProviding,
+		assignedHostIDs:
+			@escaping @MainActor (UUID) -> Set<UUID> = { _ in [] }
 	) {
 		self.store = store
 		self.materialStore = materialStore
 		self.client = client
 		self.masterKeys = masterKeys
+		self.assignedHostIDs = assignedHostIDs
 	}
 
 	public func sync() async throws {
+		try await store.withTransaction {
+			try await self.syncWithinTransaction()
+		}
+	}
+
+	private func syncWithinTransaction() async throws {
+		try await store.load()
 		let remote = try await client.listCredentialIdentities()
 		try await applyRemote(remote)
 		try await removeCleanRemoteTombstones(remote: remote)
@@ -65,9 +78,10 @@ public final class CredentialIdentitySyncCoordinator {
 		_ records: [CredentialIdentitySyncRecord]
 	) async throws {
 		for record in records {
-			guard shouldApplyRemote(record.identity) else {
+			guard store.wouldApplyRemote(record.identity) else {
 				continue
 			}
+			let storeSnapshot = store.snapshot()
 			let previousIdentity = store.identity(id: record.identity.id)
 			let previousMaterial: CredentialIdentityMaterial?
 			if let previousIdentity {
@@ -77,6 +91,8 @@ public final class CredentialIdentitySyncCoordinator {
 			} else {
 				previousMaterial = nil
 			}
+			let destinationMaterial =
+				try await materialStore.snapshot(for: record.identity)
 			let incomingMaterial = try await openMaterial(record)
 			do {
 				if let incomingMaterial {
@@ -85,19 +101,26 @@ public final class CredentialIdentitySyncCoordinator {
 						with: incomingMaterial
 					)
 				}
-				_ = try store.applyRemote(record.identity)
-			} catch {
-				if let previousIdentity, let previousMaterial {
-					try? await materialStore.replaceMaterial(
-						for: previousIdentity,
-						with: previousMaterial
-					)
-				} else if previousIdentity == nil {
-					try? await materialStore.delete(
-						identity: record.identity
+				let applied = try await store.applyRemote(record.identity)
+				guard applied else {
+					throw CredentialIdentitySyncError.remoteSuperseded(
+						record.identity.id
 					)
 				}
-				throw error
+				if let previousIdentity,
+				   previousIdentity.source.materialID
+					!= record.identity.source.materialID {
+					try await materialStore.delete(identity: previousIdentity)
+				}
+			} catch {
+				throw await rollbackRemoteMutation(
+					operationError: error,
+					storeSnapshot: storeSnapshot,
+					previousIdentity: previousIdentity,
+					previousMaterial: previousMaterial,
+					incomingIdentity: record.identity,
+					destinationMaterial: destinationMaterial
+				)
 			}
 		}
 	}
@@ -111,7 +134,7 @@ public final class CredentialIdentitySyncCoordinator {
 			}
 			let record = try await sealedRecord(identity)
 			let serverID = try await client.upsertCredentialIdentity(record)
-			try store.acknowledgePush(id: id, serverID: serverID)
+			try await store.acknowledgePush(id: id, serverID: serverID)
 		}
 	}
 
@@ -120,7 +143,7 @@ public final class CredentialIdentitySyncCoordinator {
 			$0.uuidString < $1.uuidString
 		}) {
 			try await client.deleteCredentialIdentity(id: id.uuidString)
-			try store.acknowledgeDeletion(id: id)
+			try await store.acknowledgeDeletion(id: id)
 		}
 	}
 
@@ -133,33 +156,87 @@ public final class CredentialIdentitySyncCoordinator {
 		where identity.serverID != nil
 			&& !store.locallyDirtyIdentityIDs.contains(identity.id)
 			&& !remoteIDs.contains(identity.id) {
-			let previousMaterial = try await materialStore.snapshot(
-				for: identity
-			)
-			do {
-				try await materialStore.delete(identity: identity)
-				try store.applyRemoteTombstone(id: identity.id)
-			} catch {
-				try? await materialStore.replaceMaterial(
-					for: identity,
-					with: previousMaterial
+			try await store.withDeletionReservation(id: identity.id) {
+				guard self.assignedHostIDs(identity.id).isEmpty else {
+					return
+				}
+				let previousMaterial = try await self.materialStore.snapshot(
+					for: identity
 				)
-				throw error
+				let storeSnapshot = self.store.snapshot()
+				do {
+					try await self.materialStore.delete(identity: identity)
+					try await self.store.applyRemoteTombstone(id: identity.id)
+				} catch {
+					throw await self.rollbackRemoteMutation(
+						operationError: error,
+						storeSnapshot: storeSnapshot,
+						previousIdentity: identity,
+						previousMaterial: previousMaterial,
+						incomingIdentity: identity,
+						destinationMaterial: previousMaterial
+					)
+				}
 			}
 		}
 	}
 
-	private func shouldApplyRemote(_ remote: CredentialIdentity) -> Bool {
-		guard let local = store.identity(id: remote.id) else {
-			return true
+	private func rollbackRemoteMutation(
+		operationError: any Error,
+		storeSnapshot: CredentialIdentityStoreSnapshot,
+		previousIdentity: CredentialIdentity?,
+		previousMaterial: CredentialIdentityMaterial?,
+		incomingIdentity: CredentialIdentity,
+		destinationMaterial: CredentialIdentityMaterial
+	) async -> any Error {
+		var rollbackErrors: [String] = []
+		do {
+			try await store.restore(storeSnapshot)
+		} catch {
+			rollbackErrors.append(String(describing: error))
 		}
-		if store.locallyDirtyIdentityIDs.contains(local.id) {
-			if local.revision != remote.revision {
-				return remote.revision > local.revision
+		if let previousIdentity, let previousMaterial {
+			do {
+				try await restoreMaterial(
+					previousMaterial,
+					for: previousIdentity
+				)
+			} catch {
+				rollbackErrors.append(String(describing: error))
 			}
-			return remote.updatedAt >= local.updatedAt
 		}
-		return true
+		if previousIdentity?.source.materialID
+			!= incomingIdentity.source.materialID {
+			do {
+				try await restoreMaterial(
+					destinationMaterial,
+					for: incomingIdentity
+				)
+			} catch {
+				rollbackErrors.append(String(describing: error))
+			}
+		}
+		guard !rollbackErrors.isEmpty else {
+			return operationError
+		}
+		return CredentialIdentitySyncError.transactionRollbackFailed(
+			operation: String(describing: operationError),
+			rollback: rollbackErrors
+		)
+	}
+
+	private func restoreMaterial(
+		_ material: CredentialIdentityMaterial,
+		for identity: CredentialIdentity
+	) async throws {
+		if material.hasAnyMaterial {
+			try await materialStore.replaceMaterial(
+				for: identity,
+				with: material
+			)
+		} else {
+			try await materialStore.delete(identity: identity)
+		}
 	}
 
 	private func sealedRecord(

@@ -19,6 +19,13 @@ public struct CredentialIdentityMaterial: Equatable, Sendable {
 		self.privateKey = privateKey
 		self.secureEnclaveKeyBlob = secureEnclaveKeyBlob
 	}
+
+	public var hasAnyMaterial: Bool {
+		password != nil
+			|| passphrase != nil
+			|| privateKey != nil
+			|| secureEnclaveKeyBlob != nil
+	}
 }
 
 public enum CredentialIdentityMaterialAvailability: Equatable, Sendable {
@@ -31,6 +38,16 @@ public enum CredentialIdentityMaterialStoreError: Error, Equatable {
 	case invalidMaterialForSource
 	case materialUnavailable
 	case secureEnclavePublicKeyMismatch
+}
+
+public struct CredentialIdentityRollbackError: Error, Equatable {
+	public let operation: String
+	public let rollback: String
+
+	public init(operation: any Error, rollback: any Error) {
+		self.operation = String(describing: operation)
+		self.rollback = String(describing: rollback)
+	}
 }
 
 public actor CredentialIdentityMaterialStore {
@@ -63,7 +80,14 @@ public actor CredentialIdentityMaterialStore {
 			)
 		} catch {
 			let originalError = error
-			try? await restore(previous, materialID: materialID)
+			do {
+				try await restore(previous, materialID: materialID)
+			} catch {
+				throw CredentialIdentityRollbackError(
+					operation: originalError,
+					rollback: error
+				)
+			}
 			throw originalError
 		}
 	}
@@ -123,8 +147,16 @@ public actor CredentialIdentityMaterialStore {
 			)
 			return identity
 		} catch {
-			try? await delete(materialID: materialID)
-			throw error
+			let originalError = error
+			do {
+				try await delete(materialID: materialID)
+			} catch {
+				throw CredentialIdentityRollbackError(
+					operation: originalError,
+					rollback: error
+				)
+			}
+			throw originalError
 		}
 	}
 

@@ -54,8 +54,10 @@ public enum CredentialIdentityConnectionResolver {
 		guard let identity = identities.first(where: {
 			$0.id == reference.identityID
 		}) else {
-			throw CredentialIdentityResolutionError.missingIdentity(
-				reference.identityID
+			return try legacyFallback(
+				host: host,
+				reference: reference,
+				error: .missingIdentity(reference.identityID)
 			)
 		}
 		let material = material ?? CredentialIdentityMaterial()
@@ -66,21 +68,27 @@ public enum CredentialIdentityConnectionResolver {
 		switch identity.source {
 		case .password:
 			guard let password = material.password else {
-				throw CredentialIdentityResolutionError.missingPassword(
-					identity.id
+				return try legacyFallback(
+					host: host,
+					reference: reference,
+					error: .missingPassword(identity.id)
 				)
 			}
 			resolvedHost.credential = .password
 			payload = .password(password)
 		case .managedKey(_, let hasPassphrase):
 			guard let privateKey = material.privateKey else {
-				throw CredentialIdentityResolutionError.missingPrivateKey(
-					identity.id
+				return try legacyFallback(
+					host: host,
+					reference: reference,
+					error: .missingPrivateKey(identity.id)
 				)
 			}
 			if hasPassphrase && material.passphrase == nil {
-				throw CredentialIdentityResolutionError.missingPassphrase(
-					identity.id
+				return try legacyFallback(
+					host: host,
+					reference: reference,
+					error: .missingPassphrase(identity.id)
 				)
 			}
 			resolvedHost.credential = .keyFile(
@@ -98,13 +106,17 @@ public enum CredentialIdentityConnectionResolver {
 			let hasPassphrase
 		):
 			guard let privateKey = material.privateKey else {
-				throw CredentialIdentityResolutionError.missingPrivateKey(
-					identity.id
+				return try legacyFallback(
+					host: host,
+					reference: reference,
+					error: .missingPrivateKey(identity.id)
 				)
 			}
 			if hasPassphrase && material.passphrase == nil {
-				throw CredentialIdentityResolutionError.missingPassphrase(
-					identity.id
+				return try legacyFallback(
+					host: host,
+					reference: reference,
+					error: .missingPassphrase(identity.id)
 				)
 			}
 			resolvedHost.credential = .keyFile(
@@ -118,8 +130,11 @@ public enum CredentialIdentityConnectionResolver {
 			)
 		case .secureEnclaveP256:
 			guard material.secureEnclaveKeyBlob != nil else {
-				throw CredentialIdentityResolutionError
-					.secureEnclaveUnavailable(identity.id)
+				return try legacyFallback(
+					host: host,
+					reference: reference,
+					error: .secureEnclaveUnavailable(identity.id)
+				)
 			}
 			resolvedHost.credential = .agent
 			payload = .secureEnclaveP256
@@ -129,6 +144,21 @@ public enum CredentialIdentityConnectionResolver {
 			host: resolvedHost,
 			identity: identity,
 			payload: payload
+		)
+	}
+
+	private static func legacyFallback(
+		host: SSHHost,
+		reference: HostCredentialIdentityReference,
+		error: CredentialIdentityResolutionError
+	) throws -> ResolvedIdentityConnection {
+		guard reference.migrationState == .reversible else {
+			throw error
+		}
+		return ResolvedIdentityConnection(
+			host: host,
+			identity: nil,
+			payload: .legacyHostOwned
 		)
 	}
 }
