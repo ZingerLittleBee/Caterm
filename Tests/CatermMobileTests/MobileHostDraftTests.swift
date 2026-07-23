@@ -114,4 +114,50 @@ final class MobileHostDraftTests: XCTestCase {
 		XCTAssertTrue(payload.host.credentialMaterialDirty)
 		XCTAssertEqual(payload.secret, "phrase")
 	}
+
+	func testAutomationRoundTripsThroughMobileDraft() throws {
+		let automation = HostAutomation(
+			isEnabled: true,
+			startupSnippetID: UUID(),
+			environment: [
+				HostEnvironmentVariable(name: "REGION", value: "west")
+			],
+			reviewPolicy: .always,
+			reconnectPolicy: .everyConnection
+		)
+		let existing = SSHHost(
+			name: "Automated",
+			hostname: "automated.example",
+			username: "deploy",
+			credential: .password,
+			automation: automation
+		)
+		let draft = MobileHostDraft(host: existing)
+
+		let payload = try draft.build(mode: .edit(existing), allHosts: [])
+
+		XCTAssertEqual(draft.automation, automation)
+		XCTAssertEqual(payload.host.automation, automation)
+	}
+
+	func testInvalidAutomationFailsInsteadOfSavingSilently() {
+		var draft = MobileHostDraft()
+		draft.hostname = "automated.example"
+		draft.username = "deploy"
+		draft.automation = HostAutomation(
+			isEnabled: true,
+			environment: [
+				HostEnvironmentVariable(name: "1INVALID", value: "value")
+			]
+		)
+
+		XCTAssertThrowsError(
+			try draft.build(mode: .add, allHosts: [])
+		) { error in
+			guard case .invalidAutomation =
+				error as? MobileHostDraft.ValidationError else {
+				return XCTFail("Expected invalid automation, got \(error)")
+			}
+		}
+	}
 }

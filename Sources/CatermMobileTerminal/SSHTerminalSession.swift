@@ -1,4 +1,5 @@
 import Foundation
+import HostAutomationRuntime
 import SSHCommandBuilder
 
 @MainActor
@@ -23,6 +24,14 @@ public final class SSHTerminalSession {
 
 	public var onStateChange: ((State) -> Void)?
 	public var onOutput: (([UInt8]) -> Void)?
+	public var onEnvironmentStatusChange: ((HostEnvironmentRequestStatus) -> Void)?
+	public private(set) var environmentRequestStatus: HostEnvironmentRequestStatus = .notRequested {
+		didSet {
+			if environmentRequestStatus != oldValue {
+				onEnvironmentStatusChange?(environmentRequestStatus)
+			}
+		}
+	}
 
 	public init(host: SSHHost, transport: SSHChannelTransport) {
 		self.host = host
@@ -64,6 +73,13 @@ public final class SSHTerminalSession {
 			state = .hostKeyPrompt(endpoint: endpoint, fingerprint: fingerprint)
 		case let .authPrompt(missing):
 			state = .authPrompt(missing)
+		case .environmentRequestsStarted(let names):
+			environmentRequestStatus = .pending(names: names)
+		case .environmentRequestsCompleted(let accepted, let rejected):
+			environmentRequestStatus = .completed(
+				accepted: accepted,
+				rejected: rejected
+			)
 		case .connected:
 			state = .connected
 		case let .data(bytes):

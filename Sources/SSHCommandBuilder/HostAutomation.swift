@@ -54,8 +54,12 @@ public struct HostAutomation: Codable, Hashable, Sendable {
 			throw HostAutomationValidationError.emptyConfiguration
 		}
 
+		var ids: Set<UUID> = []
 		var names: Set<String> = []
 		for variable in environment {
+			guard ids.insert(variable.id).inserted else {
+				throw HostAutomationValidationError.duplicateEnvironmentID(variable.id)
+			}
 			guard Self.isValidEnvironmentName(variable.name) else {
 				throw HostAutomationValidationError.invalidEnvironmentName(variable.name)
 			}
@@ -93,6 +97,7 @@ public struct HostAutomation: Codable, Hashable, Sendable {
 public enum HostAutomationValidationError: Error, Equatable, Sendable {
 	case emptyConfiguration
 	case invalidEnvironmentName(String)
+	case duplicateEnvironmentID(UUID)
 	case duplicateEnvironmentName(String)
 	case invalidEnvironmentValue(String)
 }
@@ -104,6 +109,8 @@ extension HostAutomationValidationError: LocalizedError {
 			"Choose a startup snippet or add an environment variable before enabling automation."
 		case .invalidEnvironmentName(let name):
 			"\(name.isEmpty ? "The environment variable name" : name) is not a valid environment variable name."
+		case .duplicateEnvironmentID:
+			"Each environment variable must have a unique identity."
 		case .duplicateEnvironmentName(let name):
 			"\(name) appears more than once."
 		case .invalidEnvironmentValue(let name):

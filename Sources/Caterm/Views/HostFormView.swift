@@ -2,6 +2,8 @@ import AppKit
 import HostKeyProvisioning
 import SessionStore
 import SettingsStore
+import SnippetStore
+import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 
@@ -26,6 +28,7 @@ struct HostFormView: View {
 	let isSubmitting: Bool
 	@Environment(\.dismiss) private var dismiss
 	@EnvironmentObject private var sessionStore: SessionStore
+	@EnvironmentObject private var snippetStore: SnippetStore
 
 	@State private var label = ""
 	@State private var hostname = ""
@@ -43,6 +46,11 @@ struct HostFormView: View {
 	@State private var icon: String? = nil
 	@State private var groupText = ""
 	@State private var tagsText = ""
+	@State private var automationEnabled = false
+	@State private var startupSnippetID: UUID?
+	@State private var automationEnvironment: [HostEnvironmentVariable] = []
+	@State private var automationReviewPolicy: HostAutomationReviewPolicy = .always
+	@State private var automationReconnectPolicy: HostAutomationReconnectPolicy = .oncePerSession
 
 	init(
 		mode: HostFormMode,
@@ -62,6 +70,7 @@ struct HostFormView: View {
 					connectionCard(preview: validation.chainPreview)
 					organizationCard
 					authenticationCard
+					automationCard
 					portForwardingCard
 					// Theme override only makes sense for an existing host —
 					// the override key is the host's UUID, which doesn't exist
@@ -100,6 +109,190 @@ struct HostFormView: View {
 		.frame(width: 560, height: 720)
 		.interactiveDismissDisabled(isSubmitting)
 		.onAppear { populate() }
+	}
+
+	private var automationCard: some View {
+		FormCard("Startup Automation") {
+			Toggle("Enable automation for new sessions", isOn: $automationEnabled)
+
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Startup snippet")
+				HStack {
+					Picker("Startup snippet", selection: $startupSnippetID) {
+						Text("(none)").tag(nil as UUID?)
+						if let startupSnippetID,
+						   !snippetStore.snippets.contains(where: {
+							$0.id == startupSnippetID
+						   }) {
+							Text("(deleted snippet)")
+								.tag(startupSnippetID as UUID?)
+						}
+						ForEach(snippetStore.snippets) { snippet in
+							Text(snippet.name).tag(snippet.id as UUID?)
+						}
+					}
+					.labelsHidden()
+					.frame(maxWidth: .infinity, alignment: .leading)
+
+					if startupSnippetID != nil {
+						Button("Remove") {
+							startupSnippetID = nil
+						}
+					}
+				}
+			}
+
+			if let snippet = selectedStartupSnippet {
+				VStack(alignment: .leading, spacing: 6) {
+					HStack {
+						FieldLabel("Complete command")
+						Spacer()
+						Text("Runs after the terminal is live")
+							.font(.caption)
+							.foregroundStyle(.secondary)
+					}
+					ScrollView {
+						Text(snippet.content)
+							.font(.system(.body, design: .monospaced))
+							.textSelection(.enabled)
+							.frame(maxWidth: .infinity, alignment: .leading)
+					}
+					.frame(maxHeight: 160)
+					.padding(10)
+					.background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+					if let placeholders = snippet.placeholders,
+					   !placeholders.isEmpty {
+						Label(
+							"Startup snippets cannot require input: \(placeholders.joined(separator: ", "))",
+							systemImage: "exclamationmark.triangle"
+						)
+						.font(.caption)
+						.foregroundStyle(.red)
+					}
+				}
+			} else if startupSnippetID != nil {
+				Label(
+					"The selected snippet was deleted. Choose another snippet or remove it.",
+					systemImage: "exclamationmark.triangle"
+				)
+				.font(.caption)
+				.foregroundStyle(.red)
+			}
+
+			Divider()
+
+			VStack(alignment: .leading, spacing: 8) {
+				HStack {
+					FieldLabel("Remote environment")
+					Spacer()
+					Button {
+						automationEnvironment.append(
+							HostEnvironmentVariable(name: "", value: "")
+						)
+					} label: {
+						Label("Add variable", systemImage: "plus")
+					}
+				}
+				if automationEnvironment.isEmpty {
+					Text("No environment variables")
+						.font(.callout)
+						.foregroundStyle(.secondary)
+				} else {
+					ForEach($automationEnvironment) { $variable in
+						HStack(spacing: 8) {
+							TextField("NAME", text: $variable.name)
+								.font(.system(.body, design: .monospaced))
+								.accessibilityLabel("Environment variable name")
+							TextField("value", text: $variable.value)
+								.font(.system(.body, design: .monospaced))
+								.accessibilityLabel(
+									"Value for \(variable.name.isEmpty ? "environment variable" : variable.name)"
+								)
+							Button {
+								automationEnvironment.removeAll {
+									$0.id == variable.id
+								}
+							} label: {
+								Image(systemName: "trash")
+							}
+							.buttonStyle(.borderless)
+							.accessibilityLabel(
+								"Remove \(variable.name.isEmpty ? "environment variable" : variable.name)"
+							)
+						}
+					}
+				}
+				Text("Values are synchronized as non-secret Host metadata. Do not put passwords, tokens, or private keys here.")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+
+			HStack(alignment: .top, spacing: 12) {
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("Before connecting")
+					Picker("Before connecting", selection: $automationReviewPolicy) {
+						Text("Review before session").tag(HostAutomationReviewPolicy.always)
+						Text("Run without review").tag(HostAutomationReviewPolicy.never)
+					}
+					.labelsHidden()
+				}
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("On reconnect")
+					Picker("On reconnect", selection: $automationReconnectPolicy) {
+						Text("First connection only")
+							.tag(HostAutomationReconnectPolicy.oncePerSession)
+						Text("Every connection")
+							.tag(HostAutomationReconnectPolicy.everyConnection)
+					}
+					.labelsHidden()
+				}
+			}
+
+			if let message = automationValidationMessage {
+				Label(message, systemImage: "exclamationmark.circle")
+					.font(.caption)
+					.foregroundStyle(.red)
+			}
+		}
+	}
+
+	private var selectedStartupSnippet: Snippet? {
+		guard let startupSnippetID else { return nil }
+		return snippetStore.snippets.first { $0.id == startupSnippetID }
+	}
+
+	private var automationDraft: HostAutomation {
+		HostAutomation(
+			isEnabled: automationEnabled,
+			startupSnippetID: startupSnippetID,
+			environment: automationEnvironment,
+			reviewPolicy: automationReviewPolicy,
+			reconnectPolicy: automationReconnectPolicy
+		)
+	}
+
+	private var automationValidationMessage: String? {
+		if automationEnabled, startupSnippetID != nil {
+			guard let snippet = selectedStartupSnippet else {
+				return "The selected startup snippet is unavailable."
+			}
+			if let placeholders = snippet.placeholders, !placeholders.isEmpty {
+				return "Choose a startup snippet that does not require input."
+			}
+			if snippet.content.trimmingCharacters(
+				in: .whitespacesAndNewlines
+			).isEmpty {
+				return "The selected startup snippet has no command."
+			}
+		}
+		do {
+			_ = try automationDraft.validated()
+			return nil
+		} catch {
+			return (error as? LocalizedError)?.errorDescription
+				?? String(describing: error)
+		}
 	}
 
 	private var organizationCard: some View {
@@ -247,7 +440,10 @@ struct HostFormView: View {
 		let forwardsAreValid = (try? PortForward.validateCollection(forwards)) != nil
 		return FormValidation(
 			chainPreview: chainPreview(for: resolution),
-			isValid: fieldsAreValid && resolution.isComplete && forwardsAreValid
+			isValid: fieldsAreValid
+				&& resolution.isComplete
+				&& forwardsAreValid
+				&& automationValidationMessage == nil
 		)
 	}
 
@@ -465,6 +661,11 @@ struct HostFormView: View {
 		icon = host.icon
 		groupText = HostOrganizationText.groupText(host.organization)
 		tagsText = HostOrganizationText.tagsText(host.organization)
+		automationEnabled = host.automation.isEnabled
+		startupSnippetID = host.automation.startupSnippetID
+		automationEnvironment = host.automation.environment
+		automationReviewPolicy = host.automation.reviewPolicy
+		automationReconnectPolicy = host.automation.reconnectPolicy
 	}
 
 	/// Credential as it should be persisted on the host. For a brand-new
@@ -497,6 +698,7 @@ struct HostFormView: View {
 		host.organization = HostOrganizationText.makeOrganization(
 			group: groupText, tags: tagsText
 		)
+		host.automation = automationDraft
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {

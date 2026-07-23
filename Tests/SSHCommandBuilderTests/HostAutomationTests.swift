@@ -58,6 +58,28 @@ final class HostAutomationTests: XCTestCase {
 			)
 		}
 
+		let duplicateID = UUID()
+		XCTAssertThrowsError(try HostAutomation(
+			isEnabled: true,
+			environment: [
+				HostEnvironmentVariable(
+					id: duplicateID,
+					name: "REGION",
+					value: "one"
+				),
+				HostEnvironmentVariable(
+					id: duplicateID,
+					name: "FEATURE",
+					value: "two"
+				),
+			]
+		).validated()) { error in
+			XCTAssertEqual(
+				error as? HostAutomationValidationError,
+				.duplicateEnvironmentID(duplicateID)
+			)
+		}
+
 		XCTAssertThrowsError(try enabledEnvironment(
 			(name: "REGION", value: "west\nInjected yes")
 		).validated()) { error in
@@ -155,6 +177,69 @@ final class HostAutomationTests: XCTestCase {
 		).last ?? ""
 		XCTAssertTrue(targetBlock.contains("SetEnv \"REGION=west coast\""))
 		XCTAssertTrue(targetBlock.contains("SetEnv FEATURE=on"))
+	}
+
+	func testExplicitEmptyEnvironmentSuppressesDirectAndChainSetEnv() throws {
+		var target = SSHHost(
+			name: "Target",
+			hostname: "target.example",
+			username: "deploy",
+			credential: .agent,
+			automation: enabledEnvironment((name: "REGION", value: "west"))
+		)
+		let direct = SSHCommandBuilder.build(
+			host: target,
+			askpassPath: "/tmp/askpass",
+			knownHostsCaterm: "/tmp/caterm-known-hosts",
+			knownHostsUser: "/tmp/user-known-hosts",
+			automationEnvironment: []
+		)
+		XCTAssertFalse(direct.command.contains("SetEnv="))
+
+		let jump = SSHHost(
+			name: "Jump",
+			hostname: "jump.example",
+			username: "deploy",
+			credential: .agent
+		)
+		target.jumpHostId = jump.id
+		let sink = InMemorySSHConfigSink()
+		_ = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [jump],
+			configSink: sink,
+			askpassPath: "/tmp/askpass",
+			knownHostsCaterm: "/tmp/caterm-known-hosts",
+			knownHostsUser: "/tmp/user-known-hosts",
+			terminfoDump: "",
+			automationEnvironment: []
+		)
+		let config = try XCTUnwrap(sink.writes.first?.1)
+		XCTAssertFalse(config.contains("SetEnv "))
+	}
+
+	func testValidatedDirectBuilderSurfacesInvalidAutomation() {
+		let target = SSHHost(
+			name: "Target",
+			hostname: "target.example",
+			username: "deploy",
+			credential: .agent
+		)
+
+		XCTAssertThrowsError(try SSHCommandBuilder.buildValidated(
+			host: target,
+			askpassPath: "/tmp/askpass",
+			knownHostsCaterm: "/tmp/caterm-known-hosts",
+			knownHostsUser: "/tmp/user-known-hosts",
+			automationEnvironment: [
+				HostEnvironmentVariable(name: "INVALID-NAME", value: "value")
+			]
+		)) { error in
+			XCTAssertEqual(
+				error as? HostAutomationValidationError,
+				.invalidEnvironmentName("INVALID-NAME")
+			)
+		}
 	}
 
 	private func enabledEnvironment(

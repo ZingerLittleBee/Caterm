@@ -22,6 +22,19 @@ public struct BackupImportSummary: Equatable {
 	public init() {}
 }
 
+public enum BackupImportError: Error, Equatable {
+	case invalidHostAutomation(hostID: UUID, reason: String)
+}
+
+extension BackupImportError: LocalizedError {
+	public var errorDescription: String? {
+		switch self {
+		case .invalidHostAutomation(let hostID, let reason):
+			"Host \(hostID.uuidString) has invalid startup automation: \(reason)"
+		}
+	}
+}
+
 /// Applies a confirmed `BackupMergePlan`. All writes go through the same
 /// store entry points user edits use, so sync invariants hold: added
 /// hosts are local-new (foreign serverId stripped) and push naturally;
@@ -39,13 +52,14 @@ public enum BackupImporter {
 		archiveSettings: BackupSettings?,
 		bookmarkStore: RemoteBookmarkStore?
 	) async throws -> BackupImportSummary {
+		try validateHostAutomation(in: plan.hosts)
 		var summary = BackupImportSummary()
 
 		// Pass 1 — host metadata (adds first so jump targets exist).
 		for action in plan.hosts {
 			switch action.kind {
 			case .add:
-				try sessionStore.addHost(hostForAdd(action.archiveHost))
+				try sessionStore.addHost(try hostForAdd(action.archiveHost))
 				summary.hostsAdded += 1
 			case .update:
 				guard var local = sessionStore.hosts.first(where: { $0.id == action.localHostId })
@@ -60,7 +74,12 @@ public enum BackupImporter {
 				local.organization = HostOrganization(
 					groupPath: a.groupPath ?? [], tags: a.tags ?? []
 				)
-				local.automation = hostAutomation(from: a.automation)
+				if let automation = a.automation {
+					local.automation = try hostAutomation(
+						from: automation,
+						hostID: a.id
+					)
+				}
 				try sessionStore.updateHost(local)
 				summary.hostsUpdated += 1
 			case .credentialsOnly:
@@ -165,7 +184,7 @@ public enum BackupImporter {
 	/// preserved (they ARE the entity's identity/history); the foreign
 	/// `serverId` is stripped so the host is local-new to whatever iCloud
 	/// account this device syncs with. Jump references land in pass 2.
-	private static func hostForAdd(_ a: BackupHost) -> SSHHost {
+	private static func hostForAdd(_ a: BackupHost) throws -> SSHHost {
 		SSHHost(
 			id: a.id,
 			serverId: nil,
@@ -181,14 +200,32 @@ public enum BackupImporter {
 			organization: HostOrganization(
 				groupPath: a.groupPath ?? [], tags: a.tags ?? []
 			),
-			automation: hostAutomation(from: a.automation)
+			automation: try a.automation.map {
+				try hostAutomation(from: $0, hostID: a.id)
+			} ?? .disabled
 		)
 	}
 
 	private static func hostAutomation(
-		from backup: BackupHostAutomation?
-	) -> HostAutomation {
-		guard let backup else { return .disabled }
+		from backup: BackupHostAutomation,
+		hostID: UUID
+	) throws -> HostAutomation {
+		guard let reviewPolicy = HostAutomationReviewPolicy(
+			rawValue: backup.reviewPolicy
+		) else {
+			throw BackupImportError.invalidHostAutomation(
+				hostID: hostID,
+				reason: "unknown review policy \(backup.reviewPolicy)"
+			)
+		}
+		guard let reconnectPolicy = HostAutomationReconnectPolicy(
+			rawValue: backup.reconnectPolicy
+		) else {
+			throw BackupImportError.invalidHostAutomation(
+				hostID: hostID,
+				reason: "unknown reconnect policy \(backup.reconnectPolicy)"
+			)
+		}
 		let automation = HostAutomation(
 			isEnabled: backup.isEnabled,
 			startupSnippetID: backup.startupSnippetID,
@@ -199,14 +236,33 @@ public enum BackupImporter {
 					value: $0.value
 				)
 			},
-			reviewPolicy: HostAutomationReviewPolicy(
-				rawValue: backup.reviewPolicy
-			) ?? .always,
-			reconnectPolicy: HostAutomationReconnectPolicy(
-				rawValue: backup.reconnectPolicy
-			) ?? .oncePerSession
+			reviewPolicy: reviewPolicy,
+			reconnectPolicy: reconnectPolicy
 		)
-		return (try? automation.validated()) ?? .disabled
+		do {
+			return try automation.validated()
+		} catch {
+			throw BackupImportError.invalidHostAutomation(
+				hostID: hostID,
+				reason: (error as? LocalizedError)?.errorDescription
+					?? String(describing: error)
+			)
+		}
+	}
+
+	private static func validateHostAutomation(
+		in actions: [BackupMergePlan.HostAction]
+	) throws {
+		for action in actions
+		where action.kind == .add || action.kind == .update {
+			guard let automation = action.archiveHost.automation else {
+				continue
+			}
+			_ = try hostAutomation(
+				from: automation,
+				hostID: action.archiveHost.id
+			)
+		}
 	}
 
 	/// Credential shape before (or without) secret material. A keyFile

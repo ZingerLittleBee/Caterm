@@ -77,7 +77,11 @@ public struct MobileHostsView: View {
 		}
 		.sheet(item: $editingHost) { host in
 			NavigationStack {
-				MobileHostFormView(mode: .edit(host), allHosts: hosts) { payload in
+				MobileHostFormView(
+					mode: .edit(host),
+					allHosts: hosts,
+					snippets: snippets
+				) { payload in
 					saveHost(payload) {
 						editingHost = nil
 					}
@@ -128,7 +132,15 @@ public struct MobileHostsView: View {
 			.appendingPathComponent("Caterm", isDirectory: true)
 		let knownHosts = MobileKnownHostsStore(
 			fileURL: support.appendingPathComponent("known_hosts.json"))
-		let transport = NIOSSHTransport(host: host, plan: plan, knownHosts: knownHosts)
+		let environment = host.automation.isEnabled
+			? try host.automation.validated().environment
+			: []
+		let transport = NIOSSHTransport(
+			host: host,
+			plan: plan,
+			knownHosts: knownHosts,
+			environment: environment
+		)
 		return SSHTerminalSession(host: host, transport: transport)
 	}
 
@@ -206,7 +218,11 @@ public struct MobileHostsView: View {
 			}
 		case .edit(let id):
 			if let host = hosts.first(where: { $0.id == id }) {
-				MobileHostFormView(mode: .edit(host), allHosts: hosts) { payload in
+				MobileHostFormView(
+					mode: .edit(host),
+					allHosts: hosts,
+					snippets: snippets
+				) { payload in
 					saveHost(payload)
 				}
 			} else {
@@ -221,7 +237,12 @@ public struct MobileHostsView: View {
 					initialHost: host,
 					hosts: hosts,
 					snippets: snippets.map {
-						TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
+						TerminalSnippet(
+							id: $0.id,
+							name: $0.name,
+							command: $0.content,
+							placeholders: $0.placeholders ?? []
+						)
 					},
 					preferences: terminalPreferences
 				) {
@@ -306,7 +327,11 @@ struct MobileHostDetailView: View {
 		}
 		.sheet(isPresented: $showingEdit) {
 			NavigationStack {
-				MobileHostFormView(mode: .edit(host), allHosts: [host]) { payload in
+				MobileHostFormView(
+					mode: .edit(host),
+					allHosts: [host],
+					snippets: snippets
+				) { payload in
 					if let hostSave {
 						Task { @MainActor in
 							guard await hostSave.save(payload) else { return }
@@ -351,7 +376,12 @@ struct MobileHostDetailView: View {
 						initialHost: host,
 						hosts: [host],
 						snippets: snippets.map {
-							TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
+							TerminalSnippet(
+								id: $0.id,
+								name: $0.name,
+								command: $0.content,
+								placeholders: $0.placeholders ?? []
+							)
 						},
 						preferences: terminalPreferences
 					) {

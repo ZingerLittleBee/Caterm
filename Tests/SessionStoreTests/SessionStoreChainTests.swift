@@ -100,7 +100,7 @@ final class SessionStoreChainTests: XCTestCase {
 		let sink = InMemorySSHConfigSink()
 		let store = SessionStore.makeForTest(hosts: [bastion, target], configSink: sink)
 		let tabId = store.openTab(host: target)
-		// Populate chainOutput via the test seam (simulates runConnection success).
+		// Populate connectionOutput via the test seam (simulates runConnection success).
 		store.populateChainOutputForTest(tabId: tabId)
 
 		guard let cfg = store.surfaceConfig(for: tabId) else {

@@ -6,6 +6,7 @@ import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
 import Foundation
+import HostAutomationRuntime
 import HostKeyProvisioning
 import HostSyncStore
 import KeychainStore
@@ -64,9 +65,6 @@ struct CatermApp: App {
     let session = makeStore(
       managedKeyStore: mngs,
       historyRecorder: history
-    )
-    _workspaceCoordinator = StateObject(
-      wrappedValue: WorkspaceCoordinator(sessionStore: session)
     )
     _historyStore = StateObject(wrappedValue: history)
     let surfaceRegistry = SurfaceRegistry()
@@ -173,6 +171,17 @@ struct CatermApp: App {
     let snippetStoreInstance = SnippetStore(directory: snippetsDir)
     try? snippetStoreInstance.load()
     _snippetStore = StateObject(wrappedValue: snippetStoreInstance)
+    _workspaceCoordinator = StateObject(
+      wrappedValue: WorkspaceCoordinator(
+        sessionStore: session,
+        resolveAutomation: { host in
+          HostAutomationResolver.resolve(
+            host: host,
+            snippets: snippetStoreInstance.snippets
+          )
+        }
+      )
+    )
     let workspaceTemplateStoreInstance = WorkspaceTemplateStore(directory: snippetsDir)
     _workspaceTemplateStore = StateObject(wrappedValue: workspaceTemplateStoreInstance)
     Task { @MainActor in

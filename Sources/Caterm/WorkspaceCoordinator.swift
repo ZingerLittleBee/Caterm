@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import HostAutomationRuntime
 import SessionStore
 import SSHCommandBuilder
 import WorkspaceCore
@@ -17,10 +18,17 @@ final class WorkspaceCoordinator: ObservableObject {
 	@Published private(set) var runtimeRevision: UInt64 = 0
 
 	private let sessionStore: SessionStore
+	private let resolveAutomation: (SSHHost) -> HostAutomationResolution
 	private var runtime = WorkspaceRuntimeMap()
 
-	init(sessionStore: SessionStore) {
+	init(
+		sessionStore: SessionStore,
+		resolveAutomation: @escaping (SSHHost) -> HostAutomationResolution = {
+			_ in .disabled
+		}
+	) {
 		self.sessionStore = sessionStore
+		self.resolveAutomation = resolveAutomation
 	}
 
 	func openSavedHost(
@@ -225,7 +233,8 @@ final class WorkspaceCoordinator: ObservableObject {
 		let sessionID = sessionStore.openTab(
 			host: host,
 			installTerminfo: installTerminfo,
-			authenticationMode: authenticationMode
+			authenticationMode: authenticationMode,
+			automationResolution: resolveAutomation(host)
 		)
 		do {
 			try runtime.bind(

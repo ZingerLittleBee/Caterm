@@ -92,7 +92,7 @@ let package = Package(
         ),
         .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory", "HostRepositoryCore"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory", "HostRepositoryCore", "HostAutomationRuntime"],
             path: "Sources/SessionStore"
         ),
         .target(
@@ -140,6 +140,11 @@ let package = Package(
             name: "SnippetStore",
             dependencies: ["SnippetSyncClient", "MergeDecision", "SyncScheduler"],
             path: "Sources/SnippetStore"
+        ),
+        .target(
+            name: "HostAutomationRuntime",
+            dependencies: ["SSHCommandBuilder", "SnippetSyncClient"],
+            path: "Sources/HostAutomationRuntime"
         ),
         .target(
             name: "FileTransferStore",
@@ -193,6 +198,7 @@ let package = Package(
             dependencies: [
                 "SSHCommandBuilder",
                 "KeychainStore",
+                "HostAutomationRuntime",
                 .product(name: "NIOSSH", package: "swift-nio-ssh"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
@@ -221,6 +227,7 @@ let package = Package(
                 "WorkspaceCore",
                 "WorkspaceTemplateStore",
                 "WorkspaceBroadcast",
+                "HostAutomationRuntime",
                 "KnownHostsStore",
                 "KeychainStore",
                 "ConfigStore",
@@ -279,13 +286,22 @@ let package = Package(
             path: "Tests/SSHCommandBuilderTests"
         ),
         .testTarget(
+            name: "HostAutomationRuntimeTests",
+            dependencies: [
+                "HostAutomationRuntime",
+                "SSHCommandBuilder",
+                "SnippetSyncClient",
+            ],
+            path: "Tests/HostAutomationRuntimeTests"
+        ),
+        .testTarget(
             name: "KeychainStoreTests",
             dependencies: ["KeychainStore"],
             path: "Tests/KeychainStoreTests"
         ),
         .testTarget(
             name: "SessionStoreTests",
-            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder"],
+            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder", "HostAutomationRuntime"],
             path: "Tests/SessionStoreTests"
         ),
         .testTarget(
@@ -350,7 +366,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermMobileTerminalTests",
-            dependencies: ["CatermMobileTerminal", "SSHCommandBuilder", "KeychainStore"],
+            dependencies: ["CatermMobileTerminal", "SSHCommandBuilder", "KeychainStore", "HostAutomationRuntime"],
             path: "Tests/CatermMobileTerminalTests"
         ),
         .testTarget(

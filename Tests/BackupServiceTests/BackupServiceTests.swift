@@ -232,6 +232,69 @@ final class BackupServiceTests: XCTestCase {
 		XCTAssertEqual(destination.hosts.first?.automation, automation)
 	}
 
+	func test_legacyArchiveUpdatePreservesExistingHostAutomation() async throws {
+		let automation = HostAutomation(
+			isEnabled: true,
+			startupSnippetID: UUID(),
+			environment: [
+				HostEnvironmentVariable(name: "REGION", value: "west")
+			]
+		)
+		let host = Host(
+			id: UUID(),
+			name: "local",
+			hostname: "local.example",
+			username: "deploy",
+			credential: .agent,
+			updatedAt: date(1_000),
+			automation: automation
+		)
+		try store.addHost(host)
+		let legacy = archiveHost(
+			id: host.id,
+			name: "archive",
+			hostname: "archive.example",
+			updatedAt: date(2_000)
+		)
+
+		let plan = await computePlan(makePayload(hosts: [legacy]))
+		_ = try await applyPlan(plan)
+
+		XCTAssertEqual(store.hosts.first?.name, "archive")
+		XCTAssertEqual(store.hosts.first?.automation, automation)
+	}
+
+	func test_invalidArchiveAutomationFailsBeforeWritingAnyHost() async {
+		var archived = archiveHost(updatedAt: date(2_000))
+		archived.automation = BackupHostAutomation(
+			isEnabled: true,
+			environment: [
+				BackupHostEnvironmentVariable(
+					id: UUID(),
+					name: "1INVALID",
+					value: "value"
+				)
+			],
+			reviewPolicy: HostAutomationReviewPolicy.always.rawValue,
+			reconnectPolicy:
+				HostAutomationReconnectPolicy.oncePerSession.rawValue
+		)
+		let plan = await computePlan(makePayload(hosts: [archived]))
+
+		do {
+			_ = try await applyPlan(plan)
+			XCTFail("Expected invalid Host automation to stop the import")
+		} catch let error as BackupImportError {
+			guard case .invalidHostAutomation(let hostID, _) = error else {
+				return XCTFail("Unexpected import error: \(error)")
+			}
+			XCTAssertEqual(hostID, archived.id)
+		} catch {
+			XCTFail("Unexpected import error: \(error)")
+		}
+		XCTAssertTrue(store.hosts.isEmpty)
+	}
+
 	func test_export_retriesWhenHostGraphChangesDuringCredentialRead() async throws {
 		var target = Host(
 			name: "target",

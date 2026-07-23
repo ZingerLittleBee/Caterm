@@ -1,3 +1,4 @@
+import HostAutomationRuntime
 import SSHCommandBuilder
 @testable import CatermMobileTerminal
 import XCTest
@@ -68,5 +69,33 @@ final class SSHTerminalSessionTests: XCTestCase {
 		await s.connect()
 		t.emit(.closed(reason: "bye"))
 		XCTAssertEqual(states.last, .disconnected(reason: "bye"))
+	}
+
+	func testEnvironmentRepliesExposePartialConfigurationWithoutFailingTerminal() async {
+		let transport = FakeTransport()
+		let session = SSHTerminalSession(host: host(), transport: transport)
+		var statuses: [HostEnvironmentRequestStatus] = []
+		session.onEnvironmentStatusChange = { statuses.append($0) }
+
+		await session.connect()
+		transport.emit(
+			.environmentRequestsStarted(names: ["ACCEPTED", "REJECTED"])
+		)
+		transport.emit(
+			.environmentRequestsCompleted(
+				accepted: ["ACCEPTED"],
+				rejected: ["REJECTED"]
+			)
+		)
+
+		XCTAssertEqual(
+			statuses,
+			[
+				.pending(names: ["ACCEPTED", "REJECTED"]),
+				.completed(accepted: ["ACCEPTED"], rejected: ["REJECTED"]),
+			]
+		)
+		XCTAssertFalse(session.environmentRequestStatus.isFullyConfigured)
+		XCTAssertEqual(session.state, .connected)
 	}
 }

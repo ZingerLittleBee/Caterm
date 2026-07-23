@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import HostAutomationRuntime
 import HostRepositoryCore
 import KeychainStore
 import ManagedKeyStore
@@ -52,11 +53,10 @@ public final class SessionStore: ObservableObject {
         /// for chain connections. Nil for direct (no-jump) connections. Cleaned
         /// up by `closeTab` and `markChildExited`.
         public var sshConfigURL: URL? = nil
-        /// Full `SSHCommandBuilder.Output` captured from the chain-aware build
-        /// in `runConnection`. Non-nil only when `resolvedChain` is non-empty
-        /// and the build succeeded. `surfaceConfig` returns its (command, env)
-        /// directly so the chain feature works end-to-end.
-        public var chainOutput: SSHCommandBuilder.Output? = nil
+        /// Validated command and environment captured in `runConnection`
+        /// before a terminal surface can be created. Includes direct and
+        /// jump-host connections.
+        public var connectionOutput: SSHCommandBuilder.Output? = nil
         /// Whether to install terminfo on connect (v1.6 feature). Snapshotted
         /// at `openTab` time so `runConnection` passes the correct value to
         /// `SSHCommandBuilder.build` when building chain commands.
@@ -65,10 +65,15 @@ public final class SessionStore: ObservableObject {
 		/// their configured credential; one-time connections let OpenSSH prompt.
 		public var authenticationMode: SSHAuthenticationMode = .configuredCredential
 		public var historyEntryID: UUID?
+		public var automationController: HostAutomationSessionController
+		public var environmentRequestStatus: HostEnvironmentRequestStatus = .notRequested
         public init(host: SSHHost) {
             self.id = UUID()
             self.host = host
             self.state = .idle
+			self.automationController = HostAutomationSessionController(
+				resolution: .disabled
+			)
         }
         /// Convenience initialiser for pre-failed tabs created synchronously
         /// in `openTab` when chain resolution or credential pre-check fails.
@@ -76,12 +81,16 @@ public final class SessionStore: ObservableObject {
 			id: UUID,
 			host: SSHHost,
 			failedWith kind: FailureKind,
-			historyEntryID: UUID? = nil
+			historyEntryID: UUID? = nil,
+			automationResolution: HostAutomationResolution = .disabled
 		) {
             self.id = id
             self.host = host
             self.state = .failed(kind)
 			self.historyEntryID = historyEntryID
+			self.automationController = HostAutomationSessionController(
+				resolution: automationResolution
+			)
         }
         /// Convenience initialiser for happy-path tabs that carry a pre-resolved chain.
         init(
@@ -90,7 +99,8 @@ public final class SessionStore: ObservableObject {
 			resolvedChain: [SSHHost],
 			installTerminfo: Bool = false,
 			authenticationMode: SSHAuthenticationMode = .configuredCredential,
-			historyEntryID: UUID? = nil
+			historyEntryID: UUID? = nil,
+			automationResolution: HostAutomationResolution = .disabled
 		) {
             self.id = id
             self.host = host
@@ -99,6 +109,9 @@ public final class SessionStore: ObservableObject {
             self.installTerminfo = installTerminfo
 			self.authenticationMode = authenticationMode
 			self.historyEntryID = historyEntryID
+			self.automationController = HostAutomationSessionController(
+				resolution: automationResolution
+			)
         }
     }
 
@@ -423,7 +436,8 @@ public final class SessionStore: ObservableObject {
     public func openTab(
 		host: SSHHost,
 		installTerminfo: Bool = false,
-		authenticationMode: SSHAuthenticationMode = .configuredCredential
+		authenticationMode: SSHAuthenticationMode = .configuredCredential,
+		automationResolution: HostAutomationResolution = .disabled
 	) -> UUID {
 		let historyEntryID = beginHistory(for: host)
         // 1. Resolve the jump-host chain. Fail-fast if broken or cyclic.
@@ -438,7 +452,8 @@ public final class SessionStore: ObservableObject {
 				id: id,
 				host: host,
 				failedWith: failure,
-				historyEntryID: historyEntryID
+				historyEntryID: historyEntryID,
+				automationResolution: automationResolution
 			))
 			finishHistory(id: historyEntryID, outcome: .failed)
             return id
@@ -462,8 +477,11 @@ public final class SessionStore: ObservableObject {
         tabs.append(Tab(id: id, host: host, resolvedChain: chain,
 						installTerminfo: installTerminfo,
 						authenticationMode: authenticationMode,
-						historyEntryID: historyEntryID))
-        startConnection(tabId: id)
+						historyEntryID: historyEntryID,
+						automationResolution: automationResolution))
+		if tabs.last?.automationController.canConnect == true {
+			startConnection(tabId: id)
+		}
         return id
     }
 
@@ -543,35 +561,23 @@ public final class SessionStore: ObservableObject {
 
     /// Build the command and environment from the tab's open-time snapshot.
     ///
-    /// For chained (jump-host) connections the full `SSHCommandBuilder.Output`
-    /// is captured in `tab.chainOutput` by `runConnection`. We return its
-    /// (command, env) directly so the chain feature works end-to-end. The
-    /// direct-path build is only invoked for single-hop (no-jump) tabs.
+    /// The validated `SSHCommandBuilder.Output` is captured by `runConnection`
+    /// before a terminal surface can be created, so command construction
+    /// failures remain typed connection failures instead of spawning a
+    /// sentinel process.
     public func surfaceConfig(
         for tabId: UUID,
         installTerminfo _: Bool = false
     ) -> (command: String, env: [(String, String)])? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
-        if let chainOut = tab.chainOutput {
-            var env = chainOut.env
+        if let output = tab.connectionOutput {
+            var env = output.env
             if let accessGroup {
                 env.append((SSHCredentialEnvironmentKey.accessGroup.rawValue, accessGroup))
             }
-            return (chainOut.command, env)
+            return (output.command, env)
         }
-        let cmd = SSHCommandBuilder.build(
-            host: tab.host,
-            askpassPath: askpassPath,
-            knownHostsCaterm: knownHostsCaterm,
-            knownHostsUser: knownHostsUser,
-			installTerminfo: tab.installTerminfo,
-			authenticationMode: tab.authenticationMode
-        )
-        var env = cmd.env
-        if let accessGroup {
-            env.append((SSHCredentialEnvironmentKey.accessGroup.rawValue, accessGroup))
-        }
-        return (cmd.command, env)
+		return nil
     }
 
     public func hostId(for tabId: UUID) -> UUID? {
@@ -582,6 +588,10 @@ public final class SessionStore: ObservableObject {
 	/// callers (`openTab`, `retryTab`, reconnect timer) can all invoke; the
 	/// attempt token guards stale results.
 	public func startConnection(tabId: UUID) {
+		guard tabs.first(where: { $0.id == tabId })?
+			.automationController.canConnect == true else {
+			return
+		}
 		// Cancel any in-flight probe for this tab — its outcome would be
 		// discarded by the attempt-token guard anyway, but cancellation
 		// releases the underlying NWConnection and stops a pending Preflight.probe
@@ -684,27 +694,43 @@ public final class SessionStore: ObservableObject {
 		}
 
 		applyIfCurrent(tabId: tabId, token: token) { t in
-			// Capture the full chain Output from SSHCommandBuilder before
-			// transitioning to .authenticating so surfaceConfig callers see it.
-			if !chain.isEmpty {
-				do {
-					let output = try SSHCommandBuilder.build(
+			// Capture a validated Output before transitioning to
+			// `.authenticating` so the surface never receives a sentinel
+			// command after a swallowed construction error.
+			do {
+				let output: SSHCommandBuilder.Output
+				if chain.isEmpty {
+					output = try SSHCommandBuilder.buildValidated(
+						host: host,
+						askpassPath: self.askpassPath,
+						knownHostsCaterm: self.knownHostsCaterm,
+						knownHostsUser: self.knownHostsUser,
+						installTerminfo: t.installTerminfo,
+						authenticationMode: t.authenticationMode,
+						automationEnvironment: t.automationController.environment
+					)
+				} else {
+					output = try SSHCommandBuilder.build(
 						host: host,
 						ancestors: chain,
 						configSink: self.configSink,
 						askpassPath: self.askpassPath,
 						knownHostsCaterm: self.knownHostsCaterm,
 						knownHostsUser: self.knownHostsUser,
-						installTerminfo: t.installTerminfo
+						installTerminfo: t.installTerminfo,
+						automationEnvironment: t.automationController.environment
 					)
-					t.chainOutput = output
-					t.sshConfigURL = output.configURL
-				} catch {
-					let msg = "Failed to build chain SSH config: \(error)"
-					t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
-					return
 				}
+				t.connectionOutput = output
+				t.sshConfigURL = output.configURL
+			} catch {
+				let msg = "Failed to build SSH command: \(error)"
+				t.state = .failed(.networkUnreachable(.other(code: 0, message: msg)))
+				return
 			}
+			t.environmentRequestStatus = t.automationController.environment.isEmpty
+				? .notRequested
+				: .pending(names: t.automationController.environment.map(\.name))
 			t.surfaceGeneration += 1
 			t.state = .authenticating(startedAt: Date())
 		}
@@ -773,8 +799,8 @@ public final class SessionStore: ObservableObject {
 		if let oldURL = previous.sshConfigURL {
 			configSink.cleanup(oldURL)
 			tabs[idx].sshConfigURL = nil
-			tabs[idx].chainOutput = nil
 		}
+		tabs[idx].connectionOutput = nil
 		update(tabId) {
 			$0.lastFailure = nil
 			$0.state = .idle
@@ -812,6 +838,69 @@ public final class SessionStore: ObservableObject {
         }
     }
 
+	public func automationGate(
+		for tabId: UUID
+	) -> HostAutomationConnectionGate? {
+		tabs.first(where: { $0.id == tabId })?.automationController.gate
+	}
+
+	public func environmentRequestStatus(
+		for tabId: UUID
+	) -> HostEnvironmentRequestStatus? {
+		tabs.first(where: { $0.id == tabId })?.environmentRequestStatus
+	}
+
+	public func approveAutomation(tabId: UUID) {
+		guard let index = tabs.firstIndex(where: { $0.id == tabId }) else {
+			return
+		}
+		guard case .idle = tabs[index].state else { return }
+		let wasConnectable = tabs[index].automationController.canConnect
+		tabs[index].automationController.approve()
+		if !wasConnectable, tabs[index].automationController.canConnect {
+			startConnection(tabId: tabId)
+		}
+	}
+
+	public func suppressAutomation(tabId: UUID) {
+		guard let index = tabs.firstIndex(where: { $0.id == tabId }) else {
+			return
+		}
+		guard case .idle = tabs[index].state else { return }
+		let wasConnectable = tabs[index].automationController.canConnect
+		tabs[index].automationController.suppress()
+		tabs[index].environmentRequestStatus = .notRequested
+		if !wasConnectable, tabs[index].automationController.canConnect {
+			startConnection(tabId: tabId)
+		}
+	}
+
+	public func consumeStartupCommand(
+		tabId: UUID,
+		generation: Int
+	) -> String? {
+		guard let index = tabs.firstIndex(where: { $0.id == tabId }),
+		      tabs[index].surfaceGeneration == generation else {
+			return nil
+		}
+		return tabs[index].automationController.startupCommand(
+			sessionGeneration: generation
+		)
+	}
+
+	public func markAutomationSessionLive(
+		tabId: UUID,
+		generation: Int
+	) {
+		update(tabId) { tab in
+			guard tab.surfaceGeneration == generation else { return }
+			let names = tab.automationController.environment.map(\.name)
+			tab.environmentRequestStatus = names.isEmpty
+				? .notRequested
+				: .sentUnverified(names: names)
+		}
+	}
+
     /// Provisionally enter `.connected` to dismiss the connecting overlay early
     /// — without committing `hadConnected`. Used by the short-grace path when a
     /// silent remote shell (no OSC title/pwd) leaves us no positive "live"
@@ -833,11 +922,12 @@ public final class SessionStore: ObservableObject {
     public func markChildExited(tabId: UUID, exitCode: Int32) {
 		cancelScheduledReconnect(tabId: tabId)
         // Clean up any per-session ssh_config before state transition.
-        if let idx = tabs.firstIndex(where: { $0.id == tabId }),
-           let configURL = tabs[idx].sshConfigURL {
-            configSink.cleanup(configURL)
-            tabs[idx].sshConfigURL = nil
-            tabs[idx].chainOutput = nil
+        if let idx = tabs.firstIndex(where: { $0.id == tabId }) {
+            if let configURL = tabs[idx].sshConfigURL {
+                configSink.cleanup(configURL)
+                tabs[idx].sshConfigURL = nil
+            }
+            tabs[idx].connectionOutput = nil
         }
         update(tabId) { tab in
             let kind = FailureKind.classify(exitCode: exitCode,
@@ -1256,7 +1346,7 @@ public final class SessionStore: ObservableObject {
 				knownHostsUser: knownHostsUser,
 				installTerminfo: installTerminfo
 			)
-			tabs[idx].chainOutput = output
+			tabs[idx].connectionOutput = output
 			tabs[idx].sshConfigURL = output.configURL
 		} catch {
 			// Test setup error — surface it so the calling test can diagnose it.

@@ -1,4 +1,5 @@
 import AppKit
+import HostAutomationRuntime
 import SessionStore
 import SettingsStore
 import SSHCommandBuilder
@@ -42,10 +43,69 @@ struct TerminalContainerView: View {
 			if let tab = store.tabs.first(where: { $0.id == tabId }) {
 				surfaceOrPlaceholder(for: tab)
 				stateOverlay(for: tab.state, host: tab.host, chain: tab.resolvedChain)
+				automationOverlay(for: tab)
+				environmentStatus(for: tab)
 			}
 		}
 		.animation(WorkspaceMotionPolicy.statusAnimation(reduceMotion: reduceMotion),
 		           value: store.tabs.first(where: { $0.id == tabId })?.state)
+	}
+
+	@ViewBuilder
+	private func automationOverlay(for tab: SessionStore.Tab) -> some View {
+		if case .idle = tab.state {
+			switch tab.automationController.gate {
+			case .reviewRequired(let plan):
+				HostAutomationConnectionOverlay(
+					mode: .review(plan),
+					onConnect: { store.approveAutomation(tabId: tabId) },
+					onConnectWithoutAutomation: {
+						store.suppressAutomation(tabId: tabId)
+					},
+					onEditHost: editHostAction(for: tab.host)
+				)
+			case .blocked(let reason):
+				HostAutomationConnectionOverlay(
+					mode: .blocked(reason),
+					onConnect: {},
+					onConnectWithoutAutomation: {
+						store.suppressAutomation(tabId: tabId)
+					},
+					onEditHost: editHostAction(for: tab.host)
+				)
+			case .inactive, .approved, .suppressed:
+				EmptyView()
+			}
+		} else {
+			EmptyView()
+		}
+	}
+
+	@ViewBuilder
+	private func environmentStatus(for tab: SessionStore.Tab) -> some View {
+		if case .connected = tab.state,
+		   case .sentUnverified(let names) = tab.environmentRequestStatus {
+			VStack {
+				HStack(spacing: 8) {
+					Image(systemName: "questionmark.circle")
+					Text(
+						"Environment sent for \(names.joined(separator: ", ")); OpenSSH cannot confirm server acceptance."
+					)
+					.font(.caption)
+					.textSelection(.enabled)
+				}
+				.padding(.horizontal, 12)
+				.padding(.vertical, 8)
+				.background(.regularMaterial, in: Capsule())
+				.accessibilityElement(children: .combine)
+				.accessibilityLabel(
+					"Host environment sent but server acceptance is unverified"
+				)
+				Spacer()
+			}
+			.padding(12)
+			.allowsHitTesting(false)
+		}
 	}
 
 	@ViewBuilder
@@ -215,7 +275,8 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 						store?.markChildExited(tabId: capturedTabId, exitCode: code)
 					}
 				}
-				surface.onSessionLive = { [weak probeReference] in
+				surface.onSessionLive = {
+					[weak probeReference] in
 					MainActor.assumeIsolated {
 						probeReference?.sessionDidBecomeLive()
 					}
@@ -224,12 +285,21 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 				let hostId = store?.hostId(for: capturedTabId).map { HostId($0.uuidString) }
 				surface.applyConfig(hostId: hostId)
 			},
-			onEvent: { [weak store] event in
+			onEvent: { [weak store, weak view] event in
 				switch event {
 				case .provisional:
 					store?.markConnectedProvisional(tabId: capturedTabId)
 				case .confirmed:
-					store?.markConnected(tabId: capturedTabId)
+					guard let store, let surface = view?.surface else {
+						return
+					}
+					HostAutomationLiveSessionActivator.activate(
+						store: store,
+						tabID: capturedTabId,
+						generation: capturedGeneration,
+						execute: surface.executeSnippet
+					)
+					store.markConnected(tabId: capturedTabId)
 				case .lost:
 					break
 				}
@@ -253,5 +323,119 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 			onFocus()
 		}
 		view.setPaneFocusRequested(isFocused)
+	}
+}
+
+private struct HostAutomationConnectionOverlay: View {
+	enum Mode {
+		case review(HostAutomationSessionPlan)
+		case blocked(HostAutomationUnresolvedReason)
+	}
+
+	let mode: Mode
+	let onConnect: () -> Void
+	let onConnectWithoutAutomation: () -> Void
+	let onEditHost: (() -> Void)?
+
+	var body: some View {
+		ZStack {
+			Color.black.opacity(0.52)
+				.ignoresSafeArea()
+
+			VStack(alignment: .leading, spacing: 16) {
+				Label(title, systemImage: icon)
+					.font(.title3.weight(.semibold))
+
+				content
+
+				HStack {
+					if case .blocked = mode, let onEditHost {
+						Button("Edit Host", action: onEditHost)
+					}
+					Spacer()
+					Button(
+						"Connect Without Automation",
+						action: onConnectWithoutAutomation
+					)
+					if case .review = mode {
+						Button("Run Automation & Connect", action: onConnect)
+							.buttonStyle(.borderedProminent)
+							.keyboardShortcut(.defaultAction)
+					}
+				}
+			}
+			.padding(20)
+			.frame(maxWidth: 560)
+			.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+			.overlay {
+				RoundedRectangle(cornerRadius: 16)
+					.stroke(.separator.opacity(0.7))
+			}
+			.shadow(radius: 24, y: 8)
+			.padding(24)
+		}
+		.accessibilityElement(children: .contain)
+		.accessibilityLabel(title)
+	}
+
+	private var title: String {
+		switch mode {
+		case .review:
+			"Review Host Automation"
+		case .blocked:
+			"Automation Needs Attention"
+		}
+	}
+
+	private var icon: String {
+		switch mode {
+		case .review:
+			"checklist"
+		case .blocked:
+			"exclamationmark.triangle"
+		}
+	}
+
+	@ViewBuilder
+	private var content: some View {
+		switch mode {
+		case .review(let plan):
+			if let command = plan.startupCommand {
+				VStack(alignment: .leading, spacing: 6) {
+					Text(plan.startupSnippetName ?? "Startup Command")
+						.font(.subheadline.weight(.medium))
+					ScrollView {
+						Text(command)
+							.font(.system(.body, design: .monospaced))
+							.textSelection(.enabled)
+							.frame(maxWidth: .infinity, alignment: .leading)
+					}
+					.frame(maxHeight: 180)
+					.padding(10)
+					.background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+				}
+			}
+			if !plan.environment.isEmpty {
+				VStack(alignment: .leading, spacing: 6) {
+					Text("Remote Environment")
+						.font(.subheadline.weight(.medium))
+					ForEach(plan.environment) { variable in
+						HStack(alignment: .firstTextBaseline, spacing: 8) {
+							Text(variable.name)
+								.font(.system(.body, design: .monospaced).weight(.medium))
+							Text(variable.value)
+								.font(.system(.body, design: .monospaced))
+								.foregroundStyle(.secondary)
+								.textSelection(.enabled)
+							Spacer()
+						}
+					}
+				}
+			}
+		case .blocked(let reason):
+			Text(reason.message)
+				.foregroundStyle(.secondary)
+				.fixedSize(horizontal: false, vertical: true)
+		}
 	}
 }

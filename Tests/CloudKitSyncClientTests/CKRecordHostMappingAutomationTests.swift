@@ -50,18 +50,58 @@ final class CKRecordHostMappingAutomationTests: XCTestCase {
 	}
 
 	func testLegacyRecordDecodesWithDisabledAutomation() throws {
+		let record = makeLegacyRecord(recordName: "legacy")
+
+		XCTAssertEqual(
+			try CKRecordHostMapping.decode(record).host.automation,
+			.disabled
+		)
+	}
+
+	func testMalformedAutomationDoesNotDecodeAsDisabled() {
+		let record = makeLegacyRecord(recordName: "malformed")
+		record["automation"] = "{not-json" as CKRecordValue
+
+		XCTAssertThrowsError(try CKRecordHostMapping.decode(record)) { error in
+			guard case CKRecordHostMapping.DecodeError.invalidAutomation =
+				error else {
+				return XCTFail("Expected invalidAutomation, got \(error)")
+			}
+		}
+	}
+
+	func testInvalidAutomationDoesNotDecodeAsDisabled() throws {
+		let record = makeLegacyRecord(recordName: "invalid")
+		let invalid = HostAutomation(
+			isEnabled: true,
+			environment: [
+				HostEnvironmentVariable(name: "INVALID-NAME", value: "value")
+			]
+		)
+		record["automation"] = try XCTUnwrap(
+			String(data: JSONEncoder().encode(invalid), encoding: .utf8)
+		) as CKRecordValue
+
+		XCTAssertThrowsError(try CKRecordHostMapping.decode(record)) { error in
+			XCTAssertEqual(
+				error as? CKRecordHostMapping.DecodeError,
+				.invalidAutomation(
+					"INVALID-NAME is not a valid environment variable name."
+				)
+			)
+		}
+	}
+
+	private func makeLegacyRecord(recordName: String) -> CKRecord {
 		let record = CKRecord(
 			recordType: "Host",
-			recordID: .init(recordName: "legacy", zoneID: zoneID)
+			recordID: .init(recordName: recordName, zoneID: zoneID)
 		)
 		record["name"] = "Legacy" as CKRecordValue
 		record["hostname"] = "legacy.example" as CKRecordValue
 		record["port"] = 22 as CKRecordValue
 		record["username"] = "deploy" as CKRecordValue
 
-		XCTAssertEqual(
-			try CKRecordHostMapping.decode(record).host.automation,
-			.disabled
-		)
+		return record
 	}
 }

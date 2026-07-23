@@ -1,9 +1,11 @@
+import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 
 struct MobileHostFormView: View {
 	let mode: MobileHostFormMode
 	let allHosts: [SSHHost]
+	let snippets: [Snippet]
 	let onSave: (MobileHostDraftPayload) -> Void
 	@Environment(\.dismiss) private var dismiss
 	@State private var draft: MobileHostDraft
@@ -12,10 +14,12 @@ struct MobileHostFormView: View {
 	init(
 		mode: MobileHostFormMode,
 		allHosts: [SSHHost],
+		snippets: [Snippet] = [],
 		onSave: @escaping (MobileHostDraftPayload) -> Void
 	) {
 		self.mode = mode
 		self.allHosts = allHosts
+		self.snippets = snippets
 		self.onSave = onSave
 		switch mode {
 		case .add:
@@ -64,6 +68,112 @@ struct MobileHostFormView: View {
 					EmptyView()
 				}
 			}
+
+			Section("Startup Automation") {
+				Toggle(
+					"Enable for new sessions",
+					isOn: $draft.automation.isEnabled
+				)
+
+				Picker(
+					"Startup snippet",
+					selection: $draft.automation.startupSnippetID
+				) {
+					Text("None").tag(nil as UUID?)
+					if let selected = draft.automation.startupSnippetID,
+					   !snippets.contains(where: { $0.id == selected }) {
+						Text("Deleted snippet").tag(selected as UUID?)
+					}
+					ForEach(snippets) { snippet in
+						Text(snippet.name).tag(snippet.id as UUID?)
+					}
+				}
+
+				if draft.automation.startupSnippetID != nil {
+					Button("Remove Startup Snippet", role: .destructive) {
+						draft.automation.startupSnippetID = nil
+					}
+				}
+
+				if let snippet = selectedSnippet {
+					VStack(alignment: .leading, spacing: 6) {
+						Text("Complete Command")
+							.font(.caption)
+							.foregroundStyle(.secondary)
+						Text(snippet.content)
+							.font(.system(.body, design: .monospaced))
+							.textSelection(.enabled)
+							.frame(maxWidth: .infinity, alignment: .leading)
+					}
+					if let placeholders = snippet.placeholders,
+					   !placeholders.isEmpty {
+						Label(
+							"Requires input: \(placeholders.joined(separator: ", "))",
+							systemImage: "exclamationmark.triangle"
+						)
+						.font(.caption)
+						.foregroundStyle(.red)
+					}
+				} else if draft.automation.startupSnippetID != nil {
+					Label(
+						"The selected snippet is unavailable.",
+						systemImage: "exclamationmark.triangle"
+					)
+					.font(.caption)
+					.foregroundStyle(.red)
+				}
+
+				if draft.automation.environment.isEmpty {
+					Text("No remote environment variables")
+						.foregroundStyle(.secondary)
+				}
+				ForEach($draft.automation.environment) { $variable in
+					VStack(alignment: .leading, spacing: 8) {
+						TextField("Variable name", text: $variable.name)
+							.sshFieldStyle()
+							.font(.system(.body, design: .monospaced))
+						TextField("Value", text: $variable.value)
+							.sshFieldStyle()
+							.font(.system(.body, design: .monospaced))
+						Button("Remove Variable", role: .destructive) {
+							draft.automation.environment.removeAll {
+								$0.id == variable.id
+							}
+						}
+					}
+				}
+				Button {
+					draft.automation.environment.append(
+						HostEnvironmentVariable(name: "", value: "")
+					)
+				} label: {
+					Label("Add Environment Variable", systemImage: "plus")
+				}
+
+				Picker(
+					"Before connecting",
+					selection: $draft.automation.reviewPolicy
+				) {
+					Text("Review before session")
+						.tag(HostAutomationReviewPolicy.always)
+					Text("Run without review")
+						.tag(HostAutomationReviewPolicy.never)
+				}
+
+				Picker(
+					"On reconnect",
+					selection: $draft.automation.reconnectPolicy
+				) {
+					Text("First connection only")
+						.tag(HostAutomationReconnectPolicy.oncePerSession)
+					Text("Every connection")
+						.tag(HostAutomationReconnectPolicy.everyConnection)
+				}
+
+				Text("Environment values sync as non-secret Host metadata. Do not enter passwords, tokens, or private keys.")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+			}
 		}
 		.navigationTitle(title)
 		#if os(iOS)
@@ -104,6 +214,9 @@ struct MobileHostFormView: View {
 
 	private func save() {
 		do {
+			if let issue = startupSnippetIssue {
+				throw MobileHostDraft.ValidationError.invalidAutomation(issue)
+			}
 			let payload = try draft.build(mode: mode, allHosts: allHosts)
 			onSave(payload)
 			dismiss()
@@ -112,6 +225,30 @@ struct MobileHostFormView: View {
 		} catch {
 			validationError = .missingHostname
 		}
+	}
+
+	private var selectedSnippet: Snippet? {
+		guard let id = draft.automation.startupSnippetID else { return nil }
+		return snippets.first { $0.id == id }
+	}
+
+	private var startupSnippetIssue: String? {
+		guard draft.automation.isEnabled,
+		      draft.automation.startupSnippetID != nil else {
+			return nil
+		}
+		guard let snippet = selectedSnippet else {
+			return "The selected startup snippet is unavailable."
+		}
+		if let placeholders = snippet.placeholders, !placeholders.isEmpty {
+			return "Choose a startup snippet that does not require input."
+		}
+		if snippet.content.trimmingCharacters(
+			in: .whitespacesAndNewlines
+		).isEmpty {
+			return "The selected startup snippet has no command."
+		}
+		return nil
 	}
 
 	private var credentialKind: Binding<MobileCredentialKind> {
@@ -191,6 +328,8 @@ struct MobileHostFormView: View {
 			"Port must be between 1 and 65535."
 		case .missingKeyPath:
 			"Private key path is required."
+		case .invalidAutomation(let message):
+			message
 		case nil:
 			"Check the host details and try again."
 		}

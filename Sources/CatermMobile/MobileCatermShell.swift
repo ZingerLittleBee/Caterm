@@ -442,7 +442,11 @@ struct MobileShellBody: View {
 				}
 				.sheet(isPresented: $showingAddHost) {
 					NavigationStack {
-						MobileHostFormView(mode: .add, allHosts: hosts) { payload in
+						MobileHostFormView(
+							mode: .add,
+							allHosts: hosts,
+							snippets: snippets
+						) { payload in
 							if let hostSave {
 								Task { @MainActor in
 									guard await hostSave.save(payload) else { return }
@@ -537,7 +541,11 @@ private struct MobileCompactShell: View {
 		}
 		.sheet(isPresented: $showingAddHost) {
 			NavigationStack {
-				MobileHostFormView(mode: .add, allHosts: hosts) { payload in
+				MobileHostFormView(
+					mode: .add,
+					allHosts: hosts,
+					snippets: snippets
+				) { payload in
 					if let hostSave {
 						Task { @MainActor in
 							guard await hostSave.save(payload) else { return }
@@ -655,7 +663,12 @@ private struct MobileShellDetail: View {
 					initialHost: host,
 					hosts: hosts,
 					snippets: snippets.map {
-						TerminalSnippet(id: $0.id, name: $0.name, command: $0.content)
+						TerminalSnippet(
+							id: $0.id,
+							name: $0.name,
+							command: $0.content,
+							placeholders: $0.placeholders ?? []
+						)
 					},
 					preferences: terminalPreferences
 					) {

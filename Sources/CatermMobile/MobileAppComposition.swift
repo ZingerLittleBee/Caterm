@@ -202,7 +202,10 @@ public final class MobileAppComposition: ObservableObject {
 			credentialMaterialStore: materialStore
 		)
 		#if targetEnvironment(simulator)
-		seedSimulatorCachedHostIfRequested(in: hostStore)
+		seedSimulatorCachedHostIfRequested(
+			in: hostStore,
+			snippetStore: snippetStore
+		)
 		#endif
 		let credentialSync = CredentialSyncPreferencesStore(
 			defaults: credentialDefaults
@@ -466,10 +469,14 @@ public final class MobileAppComposition: ObservableObject {
 				planProvider: planProvider,
 				credentialSync: credentialSync
 			)
+			let environment = host.automation.isEnabled
+				? try host.automation.validated().environment
+				: []
 			let transport = NIOSSHTransport(
 				host: host,
 				plan: plan,
-				knownHosts: knownHosts
+				knownHosts: knownHosts,
+				environment: environment
 			)
 			return SSHTerminalSession(host: host, transport: transport)
 		}
@@ -540,29 +547,27 @@ public final class MobileAppComposition: ObservableObject {
 	}
 
 	private static func seedSimulatorCachedHostIfRequested(
-		in store: MobileHostStore
+		in store: MobileHostStore,
+		snippetStore: SnippetStore
 	) {
 		#if DEBUG
 		let environment = ProcessInfo.processInfo.environment
 		guard store.hosts.isEmpty,
-			let name = environment["CATERM_SIM_CACHED_HOST_NAME"],
-			!name.isEmpty else { return }
-		let credential: CredentialSource =
-			environment["CATERM_SIM_CACHED_HOST_AUTH"] == "password"
-				? .password
-				: .agent
-		let host = SSHHost(
-				name: name,
-				hostname: environment["CATERM_SIM_CACHED_HOST_ADDRESS"]
-					?? "offline.example.com",
-				port: Int(environment["CATERM_SIM_CACHED_HOST_PORT"] ?? "") ?? 22,
-				username: environment["CATERM_SIM_CACHED_HOST_USER"]
-					?? "offline",
-				credential: credential,
-				organization: HostOrganization(tags: ["offline"])
-			)
+			let fixture = MobileSimulatorHostFixture(environment: environment)
+		else { return }
+		if let snippet = fixture.snippet {
+			do {
+				try snippetStore.upsert(snippet)
+			} catch {
+				NSLog("[MobileAppComposition] Simulator snippet seed failed: \(error)")
+			}
+		}
 		Task { @MainActor in
-			try? await store.add(host)
+			do {
+				try await store.add(fixture.host)
+			} catch {
+				NSLog("[MobileAppComposition] Simulator Host seed failed: \(error)")
+			}
 		}
 		#endif
 	}
@@ -586,6 +591,111 @@ public final class MobileAppComposition: ObservableObject {
 		return plan.missing == nil ? plan : nil
 	}
 	#endif
+}
+
+struct MobileSimulatorHostFixture: Equatable {
+	static let snippetID = UUID(uuid: (
+		0xCA, 0x7E, 0x00, 0x00,
+		0x00, 0x00,
+		0x40, 0x00,
+		0x80, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x57
+	))
+	private static let acceptedEnvironmentID = UUID(uuid: (
+		0xCA, 0x7E, 0x00, 0x00,
+		0x00, 0x00,
+		0x40, 0x00,
+		0x80, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0xA1
+	))
+	private static let rejectedEnvironmentID = UUID(uuid: (
+		0xCA, 0x7E, 0x00, 0x00,
+		0x00, 0x00,
+		0x40, 0x00,
+		0x80, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0xB1
+	))
+
+	let host: SSHHost
+	let snippet: Snippet?
+
+	init?(environment: [String: String]) {
+		guard let name = environment["CATERM_SIM_CACHED_HOST_NAME"],
+			!name.isEmpty else { return nil }
+		let credential: CredentialSource =
+			environment["CATERM_SIM_CACHED_HOST_AUTH"] == "password"
+				? .password
+				: .agent
+		let snippet = Self.makeSnippet(environment: environment)
+		let automation = snippet.map {
+			HostAutomation(
+				isEnabled: true,
+				startupSnippetID: $0.id,
+				environment: Self.environmentVariables(environment),
+				reviewPolicy: .always,
+				reconnectPolicy: .everyConnection
+			)
+		} ?? .disabled
+		self.host = SSHHost(
+			name: name,
+			hostname: environment["CATERM_SIM_CACHED_HOST_ADDRESS"]
+				?? "offline.example.com",
+			port: Int(environment["CATERM_SIM_CACHED_HOST_PORT"] ?? "") ?? 22,
+			username: environment["CATERM_SIM_CACHED_HOST_USER"]
+				?? "offline",
+			credential: credential,
+			organization: HostOrganization(tags: ["offline"]),
+			automation: automation
+		)
+		self.snippet = snippet
+	}
+
+	private static func makeSnippet(
+		environment: [String: String]
+	) -> Snippet? {
+		guard let command = environment["CATERM_SIM_AUTOMATION_COMMAND"],
+			!command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+		else { return nil }
+		let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+		return Snippet(
+			id: snippetID,
+			name: "Simulator startup automation",
+			content: command,
+			createdAt: timestamp,
+			updatedAt: timestamp
+		)
+	}
+
+	private static func environmentVariables(
+		_ environment: [String: String]
+	) -> [HostEnvironmentVariable] {
+		[
+			environmentVariable(
+				id: acceptedEnvironmentID,
+				nameKey: "CATERM_SIM_AUTOMATION_ACCEPTED_NAME",
+				valueKey: "CATERM_SIM_AUTOMATION_ACCEPTED_VALUE",
+				environment: environment
+			),
+			environmentVariable(
+				id: rejectedEnvironmentID,
+				nameKey: "CATERM_SIM_AUTOMATION_REJECTED_NAME",
+				valueKey: "CATERM_SIM_AUTOMATION_REJECTED_VALUE",
+				environment: environment
+			),
+		].compactMap { $0 }
+	}
+
+	private static func environmentVariable(
+		id: UUID,
+		nameKey: String,
+		valueKey: String,
+		environment: [String: String]
+	) -> HostEnvironmentVariable? {
+		guard let name = environment[nameKey], !name.isEmpty,
+			let value = environment[valueKey]
+		else { return nil }
+		return HostEnvironmentVariable(id: id, name: name, value: value)
+	}
 }
 
 #if targetEnvironment(simulator)

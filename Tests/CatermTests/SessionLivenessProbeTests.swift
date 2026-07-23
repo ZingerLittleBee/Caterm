@@ -1,3 +1,4 @@
+import HostAutomationRuntime
 import KeychainStore
 import SessionStore
 import SSHCommandBuilder
@@ -6,6 +7,24 @@ import XCTest
 
 @MainActor
 final class SessionLivenessProbeTests: XCTestCase {
+	private final class ImmediatePreflight:
+		PreflightProbing, @unchecked Sendable {
+		func probe(
+			host _: String,
+			port _: UInt16,
+			timeout _: TimeInterval
+		) async -> PreflightOutcome {
+			.ok
+		}
+
+		func probeLocalBind(
+			address _: String,
+			port _: UInt16
+		) async -> PortBindOutcome {
+			.available
+		}
+	}
+
 	func testTimingRejectsNonPositivePollInterval() {
 		XCTAssertNil(SessionLivenessProbe.Timing(
 			surfacePollInterval: .zero,
@@ -39,6 +58,80 @@ final class SessionLivenessProbeTests: XCTestCase {
 		XCTAssertEqual(preparedSurfaceCount, 1)
 		XCTAssertEqual(observedSleeps, [.milliseconds(600), .milliseconds(2_400)])
 		XCTAssertEqual(observedEvents, [.provisional, .confirmed])
+	}
+
+	func testSilentLiveConfirmationRunsStartupCommandExactlyOnce() async throws {
+		let root = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-silent-automation-\(UUID())")
+		let sessionStore = SessionStore(
+			askpassPath: "/tmp/caterm-askpass",
+			knownHostsCaterm: "/tmp/caterm-known-hosts",
+			knownHostsUser: "/tmp/user-known-hosts",
+			accessGroup: nil,
+			hostsURL: root.appendingPathComponent("hosts.json"),
+			keychain: KeychainStore(
+				service: "com.caterm.test.silent-automation.\(UUID())",
+				accessGroup: nil
+			),
+			preflight: ImmediatePreflight()
+		)
+		let plan = HostAutomationSessionPlan(
+			startupSnippetID: UUID(),
+			startupSnippetName: "Bootstrap",
+			startupCommand: "printf 'silent-ready\\n'",
+			environment: [
+				HostEnvironmentVariable(name: "REGION", value: "west")
+			],
+			reviewPolicy: .never,
+			reconnectPolicy: .everyConnection
+		)
+		let tabID = sessionStore.openTab(
+			host: SSHHost(
+				name: "Silent",
+				hostname: "192.0.2.1",
+				username: "deploy",
+				credential: .agent
+			),
+			automationResolution: .ready(plan)
+		)
+		await sessionStore.awaitConnectionAttempt(tabId: tabID)
+		let generation = try XCTUnwrap(
+			sessionStore.tabs.first(where: { $0.id == tabID })?
+				.surfaceGeneration
+		)
+		let expectedGeneration = SessionLivenessProbe.Generation(generation)
+		var commands: [String] = []
+		let probe = SessionLivenessProbe(
+			expectedGeneration: expectedGeneration,
+			observation: {
+				.surfaceRunning(generation: expectedGeneration)
+			},
+			prepareSurface: {},
+			sleep: { _ in },
+			onEvent: { event in
+				guard event == .confirmed else { return }
+				HostAutomationLiveSessionActivator.activate(
+					store: sessionStore,
+					tabID: tabID,
+					generation: generation,
+					execute: { commands.append($0) }
+				)
+			}
+		)
+
+		await probe.run()
+		HostAutomationLiveSessionActivator.activate(
+			store: sessionStore,
+			tabID: tabID,
+			generation: generation,
+			execute: { commands.append($0) }
+		)
+
+		XCTAssertEqual(commands, ["printf 'silent-ready\\n'"])
+		XCTAssertEqual(
+			sessionStore.environmentRequestStatus(for: tabID),
+			.sentUnverified(names: ["REGION"])
+		)
 	}
 
 	func testLazySurfaceIsPolledUntilItBecomesAvailable() async throws {

@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import HostAutomationRuntime
 import KeychainStore
 import SessionStore
 import SSHCommandBuilder
@@ -97,6 +98,47 @@ final class WorkspaceCoordinatorTests: XCTestCase {
 		XCTAssertNotEqual(firstSessionID, secondSessionID)
 		XCTAssertNotEqual(first.id, second.id)
 		XCTAssertEqual(store.tabs.map(\.id), [firstSessionID, secondSessionID])
+	}
+
+	func testRestoredTemplateResolvesOnlyCurrentHostAutomation() throws {
+		let store = makeStore()
+		let snippetID = UUID()
+		var host = makeHost(name: "template")
+		host.automation = HostAutomation(
+			isEnabled: true,
+			startupSnippetID: snippetID
+		)
+		try store.addHost(host)
+		let plan = HostAutomationSessionPlan(
+			startupSnippetID: snippetID,
+			startupSnippetName: "Current Bootstrap",
+			startupCommand: "echo current",
+			environment: [],
+			reviewPolicy: .always,
+			reconnectPolicy: .oncePerSession
+		)
+		var resolutions = 0
+		let coordinator = WorkspaceCoordinator(
+			sessionStore: store,
+			resolveAutomation: { resolvedHost in
+				resolutions += 1
+				XCTAssertEqual(resolvedHost.id, host.id)
+				return .ready(plan)
+			}
+		)
+		let template = try WorkspaceTemplate(
+			workspace: Workspace.onePane(host: .saved(id: host.id)),
+			name: "Template"
+		)
+		let restored = try template.instantiate(
+			availableHostIDs: [host.id]
+		).workspace
+
+		try coordinator.ensureSessions(for: restored, installTerminfo: false)
+
+		let sessionID = try XCTUnwrap(coordinator.sessionID(for: restored))
+		XCTAssertEqual(resolutions, 1)
+		XCTAssertEqual(store.automationGate(for: sessionID), .reviewRequired(plan))
 	}
 
 	func testEnsuringSessionIsIdempotentWhileRuntimeSessionExists() throws {

@@ -17,6 +17,7 @@ public struct MobileHostDraft: Equatable {
 		case missingUsername
 		case invalidPort
 		case missingKeyPath
+		case invalidAutomation(String)
 	}
 
 	public enum Credential: Equatable {
@@ -32,6 +33,7 @@ public struct MobileHostDraft: Equatable {
 	public var credential: Credential
 	public var jumpHostId: UUID?
 	public var forwards: [PortForward]
+	public var automation: HostAutomation
 
 	public init(
 		label: String = "",
@@ -40,7 +42,8 @@ public struct MobileHostDraft: Equatable {
 		username: String = "",
 		credential: Credential = .password(secret: ""),
 		jumpHostId: UUID? = nil,
-		forwards: [PortForward] = []
+		forwards: [PortForward] = [],
+		automation: HostAutomation = .disabled
 	) {
 		self.label = label
 		self.hostname = hostname
@@ -49,6 +52,7 @@ public struct MobileHostDraft: Equatable {
 		self.credential = credential
 		self.jumpHostId = jumpHostId
 		self.forwards = forwards
+		self.automation = automation
 	}
 
 	public init(host: SSHHost) {
@@ -67,6 +71,7 @@ public struct MobileHostDraft: Equatable {
 		}
 		self.jumpHostId = host.jumpHostId
 		self.forwards = host.forwards
+		self.automation = host.automation
 	}
 
 	public func build(mode: MobileHostFormMode, allHosts: [SSHHost]) throws -> MobileHostDraftPayload {
@@ -121,6 +126,14 @@ public struct MobileHostDraft: Equatable {
 			allHosts.first(where: { $0.id == id })?.serverId
 		}
 		host.forwards = forwards
+		do {
+			host.automation = try automation.validated()
+		} catch {
+			throw ValidationError.invalidAutomation(
+				(error as? LocalizedError)?.errorDescription
+					?? String(describing: error)
+			)
+		}
 		if secret != nil || previousCredential.map({ $0 != credentialSource }) == true {
 			host.credentialMaterialDirty = true
 		}

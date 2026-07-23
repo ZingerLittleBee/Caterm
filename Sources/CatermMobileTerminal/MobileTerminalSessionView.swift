@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import HostAutomationRuntime
 import SSHCommandBuilder
 import SwiftTerm
 import SwiftUI
@@ -10,10 +11,18 @@ public struct TerminalSnippet: Identifiable, Equatable, Sendable {
 	public let id: UUID
 	public let name: String
 	public let command: String
-	public init(id: UUID, name: String, command: String) {
+	public let placeholders: [String]
+
+	public init(
+		id: UUID,
+		name: String,
+		command: String,
+		placeholders: [String] = []
+	) {
 		self.id = id
 		self.name = name
 		self.command = command
+		self.placeholders = placeholders
 	}
 }
 
@@ -29,6 +38,9 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	@Published public var keyBar = TerminalKeyBar()
 	@Published public private(set) var recents: [String] = []
 	@Published public var theme: TerminalTheme = TerminalTheme.presets[0]
+	@Published public private(set) var automationGate: HostAutomationConnectionGate
+	@Published public private(set) var environmentRequestStatus:
+		HostEnvironmentRequestStatus = .notRequested
 
 	public let terminalView: TerminalView
 	private let coordinator = TerminalCoordinator()
@@ -37,15 +49,22 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 	private var started = false
 	private var startupTask: Task<Void, Never>?
 	private var startupGeneration: UInt64 = 0
+	private var automationController: HostAutomationSessionController
 
 	public init(
 		host: SSHHost,
 		preferences: MobileTerminalPreferences = .storedDefaults,
+		automationResolution: HostAutomationResolution = .disabled,
 		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
 	) {
 		self.host = host
 		self.title = host.name
 		self.make = makeSession
+		let automationController = HostAutomationSessionController(
+			resolution: automationResolution
+		)
+		self.automationController = automationController
+		self.automationGate = automationController.gate
 		let tv = TerminalView(frame: .init(x: 0, y: 0, width: 400, height: 600))
 		tv.backgroundColor = .black
 		tv.font = UIFont.monospacedSystemFont(
@@ -63,6 +82,7 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 
 	public func start() {
 		guard !started else { return }
+		guard automationController.canConnect else { return }
 		started = true
 		startupGeneration &+= 1
 		let generation = startupGeneration
@@ -70,17 +90,60 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		startupTask = Task { @MainActor [weak self] in
 			guard let self else { return }
 			do {
-				let session = try await make(host)
+				var connectionHost = host
+				let environment = automationController.environment
+				connectionHost.automation = HostAutomation(
+					isEnabled: !environment.isEmpty,
+					environment: environment,
+					reviewPolicy: .never
+				)
+				let session = try await make(connectionHost)
 				try Task.checkCancellation()
 				guard started, generation == startupGeneration else {
 					await session.disconnect()
 					return
 				}
 				session.onStateChange = { [weak self] state in
-					Task { @MainActor in self?.state = state }
+					Task { @MainActor [weak self, weak session] in
+						guard let self,
+						      let session,
+						      self.started,
+						      generation == self.startupGeneration,
+						      self.session === session else {
+							return
+						}
+						self.state = state
+						if state == .connected {
+							await self.runStartupCommandIfNeeded(
+								on: session,
+								generation: generation
+							)
+						}
+					}
 				}
-				session.onOutput = { [weak self] bytes in
-					Task { @MainActor in self?.coordinator.feed(bytes) }
+				session.onOutput = { [weak self, weak session] bytes in
+					Task { @MainActor [weak self, weak session] in
+						guard let self,
+						      let session,
+						      self.started,
+						      generation == self.startupGeneration,
+						      self.session === session else {
+							return
+						}
+						self.coordinator.feed(bytes)
+					}
+				}
+				session.onEnvironmentStatusChange = { [weak self, weak session] status in
+					Task { @MainActor [weak self, weak session] in
+						guard let self,
+						      let session,
+						      self.started,
+						      generation == self.startupGeneration,
+						      self.session === session else {
+							return
+						}
+						self.environmentRequestStatus = status
+					}
 				}
 				self.session = session
 				await session.connect()
@@ -94,6 +157,41 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 				}
 			}
 		}
+	}
+
+	public func approveAutomation() {
+		let wasConnectable = automationController.canConnect
+		automationController.approve()
+		automationGate = automationController.gate
+		if !wasConnectable, automationController.canConnect {
+			start()
+		}
+	}
+
+	public func connectWithoutAutomation() {
+		let wasConnectable = automationController.canConnect
+		automationController.suppress()
+		automationGate = automationController.gate
+		environmentRequestStatus = .notRequested
+		if !wasConnectable, automationController.canConnect {
+			start()
+		}
+	}
+
+	private func runStartupCommandIfNeeded(
+		on session: SSHTerminalSession,
+		generation: UInt64
+	) async {
+		guard let command = automationController.startupCommand(
+			sessionGeneration: Int(truncatingIfNeeded: generation)
+		) else {
+			return
+		}
+		var bytes = Array(command.utf8)
+		if bytes.last != 0x0a {
+			bytes.append(0x0a)
+		}
+		await session.send(bytes)
 	}
 
 	public func tapKey(_ key: TerminalKeyBar.Key) {
@@ -162,8 +260,10 @@ public final class TerminalScreenModel: ObservableObject, Identifiable {
 		// would otherwise clobber the fresh session's .connected state.
 		old?.onStateChange = nil
 		old?.onOutput = nil
+		old?.onEnvironmentStatusChange = nil
 		session = nil
 		started = false
+		environmentRequestStatus = .notRequested
 		// Switch to the connecting UI synchronously so the tap has
 		// immediate, visible feedback instead of briefly looking dead.
 		state = .connecting
@@ -184,13 +284,16 @@ public final class TerminalSessionsModel: ObservableObject {
 	@Published public var keyboardMode: TerminalKeyboardMode = .custom
 
 	private let makeSession: @MainActor (SSHHost) async throws -> SSHTerminalSession
+	private let automationSnippets: [HostAutomationSnippet]
 
 	public init(
 		initialHost: SSHHost,
 		preferences: MobileTerminalPreferences = .storedDefaults,
+		automationSnippets: [HostAutomationSnippet] = [],
 		makeSession: @escaping @MainActor (SSHHost) async throws -> SSHTerminalSession
 	) {
 		self.makeSession = makeSession
+		self.automationSnippets = automationSnippets
 		self.keyboardMode = preferences.keyboardMode
 		addTab(host: initialHost, preferences: preferences)
 	}
@@ -207,6 +310,10 @@ public final class TerminalSessionsModel: ObservableObject {
 		let model = TerminalScreenModel(
 			host: host,
 			preferences: preferences,
+			automationResolution: HostAutomationResolver.resolve(
+				host: host,
+				automationSnippets: automationSnippets
+			),
 			makeSession: makeSession
 		)
 		tabs.append(model)
@@ -276,6 +383,14 @@ public struct MobileTerminalSessionView: View {
 		_sessions = StateObject(wrappedValue: TerminalSessionsModel(
 			initialHost: initialHost,
 			preferences: preferences,
+			automationSnippets: snippets.map {
+				HostAutomationSnippet(
+					id: $0.id,
+					name: $0.name,
+					content: $0.command,
+					placeholders: $0.placeholders
+				)
+			},
 			makeSession: makeSession
 		))
 	}
@@ -302,16 +417,29 @@ public struct MobileTerminalSessionView: View {
 
 	@ViewBuilder private func terminalArea(_ model: TerminalScreenModel) -> some View {
 		TerminalPane(model: model) { connectionOverlay(model) }
-		if sessions.keyboardMode == .custom {
-			TerminalKeyGridView(model: model)
-		} else {
-			TerminalAccessoryRow(model: model)
+		if showsTerminalControls(for: model.automationGate) {
+			if sessions.keyboardMode == .custom {
+				TerminalKeyGridView(model: model)
+			} else {
+				TerminalAccessoryRow(model: model)
+			}
+			TerminalToolbarView(
+				model: model,
+				snippets: snippets,
+				keyboardMode: $sessions.keyboardMode
+			)
 		}
-		TerminalToolbarView(
-			model: model,
-			snippets: snippets,
-			keyboardMode: $sessions.keyboardMode
-		)
+	}
+
+	private func showsTerminalControls(
+		for gate: HostAutomationConnectionGate
+	) -> Bool {
+		switch gate {
+		case .reviewRequired, .blocked:
+			false
+		case .inactive, .approved, .suppressed:
+			true
+		}
 	}
 
 	private var tabStrip: some View {
@@ -381,13 +509,129 @@ public struct MobileTerminalSessionView: View {
 	}
 
 	@ViewBuilder private func connectionOverlay(_ model: TerminalScreenModel) -> some View {
+		switch model.automationGate {
+		case .reviewRequired(let plan):
+			mobileAutomationReview(plan, model: model)
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(Color(.systemBackground))
+		case .blocked(let reason):
+			mobileAutomationBlocked(reason, model: model)
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(Color(.systemBackground))
+		case .inactive, .approved, .suppressed:
+			connectionStateOverlay(model)
+		}
+	}
+
+	@ViewBuilder private func connectionStateOverlay(
+		_ model: TerminalScreenModel
+	) -> some View {
 		switch model.state {
-		case .connected, .hostKeyPrompt:
+		case .connected:
+			mobileEnvironmentStatus(model.environmentRequestStatus)
+		case .hostKeyPrompt:
 			EmptyView()
 		default:
 			overlayContent(model)
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
 				.background(Color(.systemBackground))
+		}
+	}
+
+	private func mobileAutomationReview(
+		_ plan: HostAutomationSessionPlan,
+		model: TerminalScreenModel
+	) -> some View {
+		ScrollView {
+			VStack(alignment: .leading, spacing: 18) {
+				Label("Review Host Automation", systemImage: "checklist")
+					.font(.title2.weight(.semibold))
+				if let command = plan.startupCommand {
+					VStack(alignment: .leading, spacing: 6) {
+						Text(plan.startupSnippetName ?? "Startup Command")
+							.font(.headline)
+						Text(command)
+							.font(.system(.body, design: .monospaced))
+							.textSelection(.enabled)
+							.frame(maxWidth: .infinity, alignment: .leading)
+							.padding(12)
+							.background(
+								Color.secondary.opacity(0.12),
+								in: RoundedRectangle(cornerRadius: 10)
+							)
+					}
+				}
+				if !plan.environment.isEmpty {
+					VStack(alignment: .leading, spacing: 8) {
+						Text("Remote Environment").font(.headline)
+						ForEach(plan.environment) { variable in
+							LabeledContent(variable.name, value: variable.value)
+								.font(.system(.body, design: .monospaced))
+						}
+					}
+				}
+				Button("Run Automation & Connect") {
+					model.approveAutomation()
+				}
+				.buttonStyle(.borderedProminent)
+				.frame(maxWidth: .infinity)
+				Button("Connect Without Automation") {
+					model.connectWithoutAutomation()
+				}
+				.frame(maxWidth: .infinity)
+			}
+			.padding(24)
+		}
+	}
+
+	private func mobileAutomationBlocked(
+		_ reason: HostAutomationUnresolvedReason,
+		model: TerminalScreenModel
+	) -> some View {
+		ContentUnavailableView {
+			Label("Automation Needs Attention", systemImage: "exclamationmark.triangle")
+		} description: {
+			Text(reason.message)
+		} actions: {
+			Button("Connect Without Automation") {
+				model.connectWithoutAutomation()
+			}
+			.buttonStyle(.borderedProminent)
+		}
+		.padding()
+	}
+
+	@ViewBuilder
+	private func mobileEnvironmentStatus(
+		_ status: HostEnvironmentRequestStatus
+	) -> some View {
+		switch status {
+		case .completed(_, let rejected) where !rejected.isEmpty:
+			VStack {
+				Label(
+					"Server rejected environment: \(rejected.joined(separator: ", "))",
+					systemImage: "exclamationmark.triangle"
+				)
+				.font(.caption)
+				.padding(10)
+				.background(.regularMaterial, in: Capsule())
+				.padding()
+				Spacer()
+			}
+		case .pending(let names):
+			VStack {
+				Label(
+					"Waiting for environment: \(names.joined(separator: ", "))",
+					systemImage: "clock"
+				)
+				.font(.caption)
+				.padding(10)
+				.background(.regularMaterial, in: Capsule())
+				.padding()
+				Spacer()
+			}
+		case .notRequested, .sentUnverified, .completed:
+			EmptyView()
 		}
 	}
 

@@ -37,6 +37,7 @@ public enum CKRecordHostMapping {
 
 	public enum DecodeError: Error, Equatable {
 		case missingField(String)
+		case invalidAutomation(String)
 	}
 
 	/// Used by `.createRemote` only. Initializes metadata + seeds credential
@@ -184,16 +185,27 @@ public enum CKRecordHostMapping {
 			}
 			return value
 		}()
-		let automation: HostAutomation = {
-			guard let json = rec[Field.automation] as? String,
-			      let data = json.data(using: .utf8),
-			      let value = try? JSONDecoder().decode(
-					HostAutomation.self, from: data
-			      ) else {
-				return .disabled
+		let automation: HostAutomation
+		if let rawAutomation = rec[Field.automation] {
+			guard let json = rawAutomation as? String,
+			      let data = json.data(using: .utf8) else {
+				throw DecodeError.invalidAutomation(
+					"automation is not a UTF-8 JSON string"
+				)
 			}
-			return value
-		}()
+			do {
+				automation = try JSONDecoder()
+					.decode(HostAutomation.self, from: data)
+					.validated()
+			} catch {
+				throw DecodeError.invalidAutomation(
+					(error as? LocalizedError)?.errorDescription
+						?? String(describing: error)
+				)
+			}
+		} else {
+			automation = .disabled
+		}
 
 		let host = RemoteHost(
 			id: rec.recordID.recordName,
