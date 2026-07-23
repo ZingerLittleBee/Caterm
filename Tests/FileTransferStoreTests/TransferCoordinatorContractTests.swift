@@ -144,6 +144,27 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertTrue(try partialFiles().isEmpty)
 	}
 
+	func testDownloadCarriesDirectoryIntentToTransport() async throws {
+		let client = RecordingRemoteFileClient(
+			downloadData: Data("archive".utf8)
+		)
+		let store = makeStore(client: client)
+		let remotePath = "/remote/archive"
+
+		let id = try XCTUnwrap(store.enqueueDownload(
+			remotePaths: [remotePath],
+			localDir: temporaryDirectory,
+			host: makeHost(),
+			directoryPaths: [remotePath]
+		).first)
+		try await store.waitIdle()
+
+		let directoryFlags = await client.downloadDirectoryFlags()
+		XCTAssertEqual(store.task(id: id)?.status, .completed)
+		XCTAssertEqual(store.task(id: id)?.isDirectory, true)
+		XCTAssertEqual(directoryFlags, [true])
+	}
+
 	func testUploadConflictRequiresPolicyBeforeTransportRuns() async throws {
 		let local = temporaryDirectory.appendingPathComponent("upload.txt")
 		try Data("upload".utf8).write(to: local)
@@ -288,6 +309,32 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertEqual(store.task(id: id)?.attemptCount, 1)
 	}
 
+	func testTerminalTaskWaiterCancelsWithoutPollingOrCancellingTransfer()
+		async throws {
+		let client = SuspendingRemoteFileClient()
+		let store = makeStore(client: client)
+		let id = try XCTUnwrap(store.enqueueDownload(
+			remotePaths: ["/remote/waiter.txt"],
+			localDir: temporaryDirectory,
+			host: makeHost()
+		).first)
+		await client.waitUntilStarted()
+		let waiter = Task {
+			try await store.waitForTerminalTask(id)
+		}
+
+		waiter.cancel()
+
+		do {
+			_ = try await waiter.value
+			XCTFail("Expected the waiter to observe cancellation")
+		} catch is CancellationError {
+			XCTAssertEqual(store.task(id: id)?.status, .running)
+		}
+		store.cancel(id)
+		try await store.waitIdle()
+	}
+
 	func testCancellationAfterAtomicPublishKeepsTransferCompleted() async throws {
 		let callback = AsyncCallbackBox()
 		let client = RecordingRemoteFileClient(downloadData: Data("complete".utf8))
@@ -310,6 +357,38 @@ final class TransferCoordinatorContractTests: XCTestCase {
 		XCTAssertEqual(store.task(id: id)?.status, .completed)
 		XCTAssertEqual(try Data(contentsOf: destination), Data("complete".utf8))
 		XCTAssertTrue(try partialFiles().isEmpty)
+	}
+
+	func testAtomicUploadPublishesThroughRemoteSiblingRename() async throws {
+		let source = temporaryDirectory.appendingPathComponent("draft.txt")
+		try Data("draft".utf8).write(to: source)
+		let destination = "/remote/draft.txt"
+		let client = RecordingRemoteFileClient(
+			downloadData: Data(),
+			existingRemotePaths: [destination]
+		)
+		let store = makeStore(client: client)
+
+		let id = try XCTUnwrap(store.enqueueAtomicUpload(
+			localFile: source,
+			remotePath: destination,
+			host: makeHost()
+		))
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .completed)
+		let renames = await client.renameOperations()
+		XCTAssertEqual(renames.count, 1)
+		let rename = try XCTUnwrap(renames.first)
+		XCTAssertEqual(rename.to, destination)
+		XCTAssertTrue(
+			rename.from.contains(".draft.txt.caterm-partial-")
+		)
+		let uploadDestinations = await client.uploadDestinations()
+		XCTAssertEqual(
+			uploadDestinations,
+			[rename.from]
+		)
 	}
 
 	func testBackgroundInterruptionCancelsRunningWorkWithoutForegroundReplay() async throws {
@@ -723,6 +802,8 @@ private actor RecordingRemoteFileClient: RemoteFileClient {
 	private let existingRemotePaths: Set<String>
 	private(set) var downloadCallCount = 0
 	private var uploadedDestinations: [String] = []
+	private var directoryFlags: [Bool] = []
+	private var renames: [(from: String, to: String)] = []
 
 	init(
 		downloadData: Data,
@@ -748,6 +829,14 @@ private actor RecordingRemoteFileClient: RemoteFileClient {
 		uploadedDestinations
 	}
 
+	func downloadDirectoryFlags() -> [Bool] {
+		directoryFlags
+	}
+
+	func renameOperations() -> [(from: String, to: String)] {
+		renames
+	}
+
 	func list(_ path: String) async throws -> [RemoteEntry] { [] }
 	func stat(_ path: String) async throws -> RemoteEntry? {
 		guard existingRemotePaths.contains(path) else { return nil }
@@ -760,7 +849,9 @@ private actor RecordingRemoteFileClient: RemoteFileClient {
 		)
 	}
 	func createDirectory(_ path: String) async throws {}
-	func rename(from: String, to: String) async throws {}
+	func rename(from: String, to: String) async throws {
+		renames.append((from, to))
+	}
 	func delete(_ path: String, isDirectory: Bool) async throws {}
 
 	func upload(
@@ -785,6 +876,7 @@ private actor RecordingRemoteFileClient: RemoteFileClient {
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		downloadCallCount += 1
+		directoryFlags.append(isDirectory)
 		try downloadData.write(to: localURL)
 		await progress(TransferProgress(
 			bytesTransferred: Int64(downloadData.count),

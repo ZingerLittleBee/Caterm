@@ -40,6 +40,8 @@ public struct TransferHostRemovalContext: Equatable, Sendable {
 @MainActor
 public final class FileTransferStore: ObservableObject {
 	public typealias ClientFactory = (SSHHost) -> any RemoteFileClient
+	public typealias AtomicUploadPreflight =
+		@Sendable (any RemoteFileClient) async throws -> Bool
 
 	@Published public private(set) var tasks: [TransferTask] = []
 	@Published public private(set) var lifecycleInterruption: TransferLifecycleInterruption?
@@ -58,6 +60,12 @@ public final class FileTransferStore: ObservableObject {
 	private var hostRemovalRevisions: [UUID: UInt64] = [:]
 	private var accountResetInProgress = false
 	private var admissionSuspended = false
+	private var atomicUploadPreflights: [TaskId: AtomicUploadPreflight] = [:]
+	private var terminalTaskWaiters: [
+		TaskId: [
+			UUID: CheckedContinuation<TransferTask?, any Error>
+		]
+	] = [:]
 	#if os(macOS)
 	private var localAccessGrants: [TaskId: LocalFileAccessGrant] = [:]
 	#endif
@@ -144,6 +152,36 @@ public final class FileTransferStore: ObservableObject {
 		return ids
 	}
 
+	/// Queues one file for sibling-temporary upload followed by remote rename.
+	/// This is used when publishing an edited draft must never expose partial
+	/// bytes under the final remote path.
+	public func enqueueAtomicUpload(
+		localFile: URL,
+		remotePath: String,
+		host: SSHHost,
+		conflictPolicy: TransferConflictPolicy = .replace,
+		prePublishValidation: AtomicUploadPreflight? = nil,
+		expectedContext: TransferEnqueueContext? = nil
+	) -> TaskId? {
+		guard accepts(expectedContext, for: host.id) else { return nil }
+		perHostHost[host.id] = host
+		let task = TransferTask(
+			id: UUID(),
+			kind: .upload,
+			hostId: host.id,
+			source: localFile.path,
+			destination: remotePath,
+			isDirectory: false,
+			conflictPolicy: conflictPolicy,
+			publishesAtomically: true
+		)
+		tasks.append(task)
+		atomicUploadPreflights[task.id] = prePublishValidation
+		perHostQueues[host.id, default: []].append(task.id)
+		kick(host.id)
+		return task.id
+	}
+
 	#if os(macOS)
 	public func enqueueScopedUpload(
 		localFiles: [LocalFileAccessGrant],
@@ -170,6 +208,7 @@ public final class FileTransferStore: ObservableObject {
 		remotePaths: [String],
 		localDir: URL,
 		host: SSHHost,
+		directoryPaths: Set<String> = [],
 		conflictPolicy: TransferConflictPolicy? = nil,
 		expectedContext: TransferEnqueueContext? = nil
 	) -> [TaskId] {
@@ -186,7 +225,7 @@ public final class FileTransferStore: ObservableObject {
 				hostId: host.id,
 				source: remotePath,
 				destination: destination.path,
-				isDirectory: false,
+				isDirectory: directoryPaths.contains(remotePath),
 				conflictPolicy: conflictPolicy
 			)
 			tasks.append(task)
@@ -202,6 +241,7 @@ public final class FileTransferStore: ObservableObject {
 		remotePaths: [String],
 		localDirectory: LocalFileAccessGrant,
 		host: SSHHost,
+		directoryPaths: Set<String> = [],
 		conflictPolicy: TransferConflictPolicy? = nil,
 		expectedContext: TransferEnqueueContext? = nil
 	) -> [TaskId] {
@@ -209,6 +249,7 @@ public final class FileTransferStore: ObservableObject {
 			remotePaths: remotePaths,
 			localDir: localDirectory.url,
 			host: host,
+			directoryPaths: directoryPaths,
 			conflictPolicy: conflictPolicy,
 			expectedContext: expectedContext
 		)
@@ -303,6 +344,9 @@ public final class FileTransferStore: ObservableObject {
 			return
 		}
 		guard taskHostsAreAvailable(tasks[index]) else { return }
+		if policy == .replace {
+			atomicUploadPreflights[id] = nil
+		}
 		tasks[index].conflictPolicy = policy
 		tasks[index].state = .pending
 		perHostQueues[tasks[index].hostId, default: []].append(id)
@@ -350,9 +394,11 @@ public final class FileTransferStore: ObservableObject {
 		}
 		removeFromQueue(id, hostID: task.hostId)
 		tasks.removeAll { $0.id == id }
+		atomicUploadPreflights[id] = nil
 		#if os(macOS)
 		localAccessGrants[id] = nil
 		#endif
+		resolveTerminalTaskWaiters(for: id)
 		await didDiscard(task)
 	}
 
@@ -436,6 +482,7 @@ public final class FileTransferStore: ObservableObject {
 		let discarded = removeCurrentTasks { _ in true }
 		perHostQueues.removeAll()
 		perHostHost.removeAll()
+		atomicUploadPreflights.removeAll()
 		drainingHostIDs.removeAll()
 		removedHostIDs.removeAll()
 		lifecycleInterruption = nil
@@ -450,6 +497,35 @@ public final class FileTransferStore: ObservableObject {
 			!$0.isEmpty
 		}) {
 			try await Task.sleep(for: .milliseconds(5))
+		}
+	}
+
+	public func waitForTerminalTask(_ id: TaskId) async throws -> TransferTask? {
+		try Task.checkCancellation()
+		if let current = task(id: id),
+			![.pending, .running].contains(current.status) {
+			return current
+		}
+		let waiterID = UUID()
+		return try await withTaskCancellationHandler {
+			try await withCheckedThrowingContinuation { continuation in
+				if Task.isCancelled {
+					continuation.resume(throwing: CancellationError())
+				} else if let current = task(id: id),
+					[.pending, .running].contains(current.status) {
+					terminalTaskWaiters[id, default: [:]][waiterID] =
+						continuation
+				} else {
+					continuation.resume(returning: task(id: id))
+				}
+			}
+		} onCancel: {
+			Task { @MainActor [weak self] in
+				self?.cancelTerminalTaskWaiter(
+					taskID: id,
+					waiterID: waiterID
+				)
+			}
 		}
 	}
 
@@ -501,11 +577,17 @@ public final class FileTransferStore: ObservableObject {
 		let matching = tasks.filter(shouldDiscard)
 		let ids = Set(matching.map(\.id))
 		tasks.removeAll { ids.contains($0.id) }
+		for id in ids {
+			atomicUploadPreflights[id] = nil
+		}
 		#if os(macOS)
 		for id in ids {
 			localAccessGrants[id] = nil
 		}
 		#endif
+		for id in ids {
+			resolveTerminalTaskWaiters(for: id)
+		}
 		return matching
 	}
 
@@ -579,6 +661,8 @@ public final class FileTransferStore: ObservableObject {
 			tasks[completedIndex].state = .completed(
 				tasks[completedIndex].progress
 			)
+			atomicUploadPreflights[id] = nil
+			resolveTerminalTaskWaiters(for: id)
 			await didComplete(tasks[completedIndex])
 		} catch is CancellationError {
 			markCancelled(id: id)
@@ -606,10 +690,19 @@ public final class FileTransferStore: ObservableObject {
 	) async throws {
 		#if os(macOS)
 		if let grant = localAccessGrants[id] {
-			try await grant.withAccess { [self] _ in
-				try await executeUploadWithAvailableSource(
-					id: id,
-					client: client
+			do {
+				try await grant.withAccess { [self] safeSource in
+					try await executeUploadWithAvailableSource(
+						id: id,
+						client: client,
+						sourceOverride: safeSource
+					)
+				}
+			} catch let failure as RemoteFileError {
+				throw failure
+			} catch {
+				throw RemoteFileError.localIO(
+					message: error.localizedDescription
 				)
 			}
 			return
@@ -620,10 +713,12 @@ public final class FileTransferStore: ObservableObject {
 
 	private func executeUploadWithAvailableSource(
 		id: TaskId,
-		client: any RemoteFileClient
+		client: any RemoteFileClient,
+		sourceOverride: URL? = nil
 	) async throws {
 		guard let task = task(id: id) else { return }
-		let source = URL(fileURLWithPath: task.source)
+		let source = sourceOverride
+			?? URL(fileURLWithPath: task.source)
 		let isDirectory: Bool
 		do {
 			isDirectory = try await localFiles.isDirectory(at: source)
@@ -638,6 +733,15 @@ public final class FileTransferStore: ObservableObject {
 			client: client
 		)
 		guard let destination = apply(preparation, to: id) else { return }
+		if task.publishesAtomically {
+			try await executeAtomicUpload(
+				id: id,
+				source: source,
+				destination: destination,
+				client: client
+			)
+			return
+		}
 		let result = try await client.upload(
 			localURL: source,
 			remotePath: destination,
@@ -655,16 +759,132 @@ public final class FileTransferStore: ObservableObject {
 		)
 	}
 
+	private func executeAtomicUpload(
+		id: TaskId,
+		source: URL,
+		destination: String,
+		client: any RemoteFileClient
+	) async throws {
+		let temporaryRemotePath = remoteTemporaryPath(for: destination)
+		var uploadedTemporary = false
+		do {
+			let result = try await client.upload(
+				localURL: source,
+				remotePath: temporaryRemotePath,
+				isDirectory: false,
+				resume: false,
+				replaceExisting: false,
+				progress: progressHandler(for: id)
+			)
+			uploadedTemporary = true
+			try Task.checkCancellation()
+			if let preflight = atomicUploadPreflights[id],
+				try await !preflight(client) {
+				do {
+					try await client.delete(
+						temporaryRemotePath,
+						isDirectory: false
+					)
+					uploadedTemporary = false
+				} catch {
+					throw RemoteFileError.cleanupFailed(
+						original: .conflict(path: destination),
+						cleanupMessage: error.localizedDescription
+					)
+				}
+				guard let conflictIndex = index(of: id) else { return }
+				tasks[conflictIndex].state = .conflict(
+					TransferConflict(destination: destination)
+				)
+				resolveTerminalTaskWaiters(for: id)
+				return
+			}
+			guard let task = task(id: id) else { return }
+			let finalPreparation = try await prepareRemoteDestination(
+				destination,
+				policy: task.conflictPolicy,
+				client: client
+			)
+			let finalDestination: String
+			switch finalPreparation {
+			case .ready:
+				guard let prepared = apply(finalPreparation, to: id) else {
+					return
+				}
+				finalDestination = prepared
+			case .conflict, .cancelled:
+				do {
+					try await client.delete(
+						temporaryRemotePath,
+						isDirectory: false
+					)
+					uploadedTemporary = false
+				} catch {
+					throw RemoteFileError.cleanupFailed(
+						original: terminalFailure(
+							for: finalPreparation,
+							destination: destination
+						),
+						cleanupMessage: error.localizedDescription
+					)
+				}
+				_ = apply(finalPreparation, to: id)
+				return
+			}
+			try await client.rename(
+				from: temporaryRemotePath,
+				to: finalDestination
+			)
+			uploadedTemporary = false
+			advanceProgress(
+				id: id,
+				to: TransferProgress(
+					bytesTransferred: result.bytesTransferred,
+					totalBytes: result.bytesTransferred
+				)
+			)
+		} catch {
+			let original = remoteFileError(from: error)
+			guard uploadedTemporary else { throw original }
+			do {
+				try await client.delete(
+					temporaryRemotePath,
+					isDirectory: false
+				)
+			} catch {
+				throw RemoteFileError.cleanupFailed(
+					original: original,
+					cleanupMessage: error.localizedDescription
+				)
+			}
+			throw original
+		}
+	}
+
 	private func executeDownload(
 		id: TaskId,
 		client: any RemoteFileClient
 	) async throws {
 		#if os(macOS)
 		if let grant = localAccessGrants[id] {
-			try await grant.withAccess { [self] _ in
-				try await executeDownloadWithAvailableDestination(
-					id: id,
-					client: client
+			guard let task = task(id: id) else { return }
+			let destinationName = (task.destination as NSString)
+				.lastPathComponent
+			do {
+				try await grant.withAccess { [self] safeDirectory in
+					let safeDestination = safeDirectory
+						.appendingPathComponent(destinationName)
+					try await executeDownloadWithAvailableDestination(
+						id: id,
+						client: client,
+						requestedOverride: safeDestination
+					)
+				}
+			} catch let failure as RemoteFileError {
+				throw failure
+			} catch {
+				throw RemoteFileError.localIO(
+					message: error.localizedDescription
 				)
 			}
 			return
@@ -678,10 +898,12 @@ public final class FileTransferStore: ObservableObject {
 
 	private func executeDownloadWithAvailableDestination(
 		id: TaskId,
-		client: any RemoteFileClient
+		client: any RemoteFileClient,
+		requestedOverride: URL? = nil
 	) async throws {
 		guard let task = task(id: id) else { return }
-		let requested = URL(fileURLWithPath: task.destination)
+		let requested = requestedOverride
+			?? URL(fileURLWithPath: task.destination)
 		let preparation: DestinationPreparation<URL>
 		do {
 			preparation = try await localFiles.prepareDestination(
@@ -781,7 +1003,9 @@ public final class FileTransferStore: ObservableObject {
 		let temporaryRemotePath = remoteTemporaryPath(for: destination)
 		var uploadedTemporary = false
 		do {
-			let sourceSize = sourceEntry.size
+			let sourceSize = sourceEntry.isDirectory
+				? nil
+				: sourceEntry.size
 			let download = try await sourceClient.download(
 				remotePath: task.source,
 				localURL: stagedFile,
@@ -809,19 +1033,68 @@ public final class FileTransferStore: ObservableObject {
 			)
 			uploadedTemporary = true
 			try Task.checkCancellation()
+			guard let currentTask = self.task(id: id) else { return }
+			let finalPreparation = try await prepareRemoteDestination(
+				destination,
+				policy: currentTask.conflictPolicy,
+				client: destinationClient
+			)
+			let finalDestination: String
+			switch finalPreparation {
+			case .ready:
+				guard let prepared = apply(finalPreparation, to: id) else {
+					return
+				}
+				finalDestination = prepared
+			case .conflict, .cancelled:
+				do {
+					try await destinationClient.delete(
+						temporaryRemotePath,
+						isDirectory: sourceEntry.isDirectory
+					)
+					uploadedTemporary = false
+				} catch {
+					throw RemoteFileError.cleanupFailed(
+						original: terminalFailure(
+							for: finalPreparation,
+							destination: destination
+						),
+						cleanupMessage: error.localizedDescription
+					)
+				}
+				do {
+					try await localFiles.remove(stagingDirectory)
+				} catch {
+					throw RemoteFileError.cleanupFailed(
+						original: terminalFailure(
+							for: finalPreparation,
+							destination: destination
+						),
+						cleanupMessage: error.localizedDescription
+					)
+				}
+				_ = apply(finalPreparation, to: id)
+				return
+			}
 			try await destinationClient.rename(
 				from: temporaryRemotePath,
-				to: destination
+				to: finalDestination
 			)
 			uploadedTemporary = false
 			advanceProgress(
 				id: id,
 				to: TransferProgress(
-					bytesTransferred: transferSize * 2,
-					totalBytes: transferSize * 2
+					bytesTransferred: Self.saturatingDouble(transferSize),
+					totalBytes: Self.saturatingDouble(transferSize)
 				)
 			)
-			try await localFiles.remove(stagingDirectory)
+			do {
+				try await localFiles.remove(stagingDirectory)
+			} catch {
+				NSLog(
+					"[FileTransferStore] Remote copy completed, but local relay cleanup failed: \(error.localizedDescription)"
+				)
+			}
 		} catch {
 			let original = remoteFileError(from: error)
 			var cleanupMessages: [String] = []
@@ -892,10 +1165,25 @@ public final class FileTransferStore: ObservableObject {
 			tasks[index].state = .conflict(TransferConflict(
 				destination: destinationDescription(destination)
 			))
+			resolveTerminalTaskWaiters(for: id)
 			return nil
 		case .cancelled:
 			markCancelled(at: index)
 			return nil
+		}
+	}
+
+	private func terminalFailure(
+		for preparation: DestinationPreparation<String>,
+		destination: String
+	) -> RemoteFileError {
+		switch preparation {
+		case .conflict:
+			.conflict(path: destination)
+		case .cancelled:
+			.cancelled
+		case .ready:
+			.staleOperation
 		}
 	}
 
@@ -924,17 +1212,38 @@ public final class FileTransferStore: ObservableObject {
 	) -> TransferProgressHandler {
 		{ [weak self] progress in
 			let size = sourceSize ?? progress.totalBytes
-			let total = size.map { $0 * 2 }
+			let total = size.map(Self.saturatingDouble)
 			let completedSource = phase == .upload ? (size ?? 0) : 0
 			await self?.advanceProgress(
 				id: id,
 				to: TransferProgress(
-					bytesTransferred:
-						completedSource + progress.bytesTransferred,
+					bytesTransferred: Self.saturatingAdd(
+						completedSource,
+						progress.bytesTransferred
+					),
 					totalBytes: total
 				)
 			)
 		}
+	}
+
+	nonisolated private static func saturatingDouble(
+		_ value: Int64
+	) -> Int64 {
+		let nonnegative = max(0, value)
+		return nonnegative > Int64.max / 2
+			? Int64.max
+			: nonnegative * 2
+	}
+
+	nonisolated private static func saturatingAdd(
+		_ lhs: Int64,
+		_ rhs: Int64
+	) -> Int64 {
+		let (sum, overflow) = max(0, lhs).addingReportingOverflow(
+			max(0, rhs)
+		)
+		return overflow ? Int64.max : sum
 	}
 
 	private func advanceProgress(id: TaskId, to progress: TransferProgress) {
@@ -949,6 +1258,7 @@ public final class FileTransferStore: ObservableObject {
 	private func markFailed(id: TaskId, failure: RemoteFileError) {
 		guard let index = index(of: id) else { return }
 		tasks[index].state = .failed(failure, tasks[index].progress)
+		resolveTerminalTaskWaiters(for: id)
 	}
 
 	private func markCancelled(id: TaskId) {
@@ -957,7 +1267,33 @@ public final class FileTransferStore: ObservableObject {
 	}
 
 	private func markCancelled(at index: Int) {
+		let id = tasks[index].id
 		tasks[index].state = .cancelled(tasks[index].progress)
+		resolveTerminalTaskWaiters(for: id)
+	}
+
+	private func resolveTerminalTaskWaiters(for id: TaskId) {
+		guard let waiters = terminalTaskWaiters.removeValue(forKey: id) else {
+			return
+		}
+		let result = task(id: id)
+		for waiter in waiters.values {
+			waiter.resume(returning: result)
+		}
+	}
+
+	private func cancelTerminalTaskWaiter(
+		taskID: TaskId,
+		waiterID: UUID
+	) {
+		guard let waiter = terminalTaskWaiters[taskID]?
+			.removeValue(forKey: waiterID) else {
+			return
+		}
+		if terminalTaskWaiters[taskID]?.isEmpty == true {
+			terminalTaskWaiters[taskID] = nil
+		}
+		waiter.resume(throwing: CancellationError())
 	}
 
 	private func removeFromQueue(_ id: TaskId, hostID: UUID) {

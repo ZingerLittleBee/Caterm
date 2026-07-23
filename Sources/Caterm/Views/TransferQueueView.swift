@@ -16,11 +16,7 @@ struct TransferQueueView: View {
 				if let first = active.first(where: { $0.status == .running }) {
 					HStack {
 						transferProgress(first)
-						Text(
-							first.kind == .upload
-								? "Uploading: \((first.source as NSString).lastPathComponent)"
-								: "Downloading: \((first.source as NSString).lastPathComponent)"
-						)
+						Text(activeDescription(first))
 						.lineLimit(1)
 						Spacer()
 						Button {
@@ -29,6 +25,7 @@ struct TransferQueueView: View {
 							Image(systemName: "xmark.circle")
 						}
 						.buttonStyle(.borderless)
+						.accessibilityLabel("Cancel Transfer")
 					}
 				}
 				if active.count > 1 {
@@ -60,18 +57,40 @@ struct TransferQueueView: View {
 					}
 				}
 				ForEach(failed) { t in
-					HStack {
-						Image(systemName: "exclamationmark.triangle.fill")
-							.foregroundStyle(.red)
-						Text((t.source as NSString).lastPathComponent)
-						Spacer()
-						Button("Retry") { store.retry(t.id) }
-							.buttonStyle(.borderless)
+					VStack(alignment: .leading, spacing: 2) {
+						HStack {
+							Image(systemName: "exclamationmark.triangle.fill")
+								.foregroundStyle(.red)
+							Text((t.source as NSString).lastPathComponent)
+							Spacer()
+							Button("Retry") { store.retry(t.id) }
+								.buttonStyle(.borderless)
+						}
+						if let failure = t.failure {
+							Text(failure.localizedDescription)
+								.foregroundStyle(.secondary)
+								.lineLimit(2)
+								.accessibilityLabel(
+									"Transfer failed: \(failure.localizedDescription)"
+								)
+						}
 					}
 					.font(.caption)
 				}
 			}
 			.padding(8)
+		}
+	}
+
+	private func activeDescription(_ task: TransferTask) -> String {
+		let name = (task.source as NSString).lastPathComponent
+		switch task.kind {
+		case .upload:
+			return "Uploading: \(name)"
+		case .download:
+			return "Downloading: \(name)"
+		case .remoteCopy:
+			return "Copying through this Mac: \(name)"
 		}
 	}
 

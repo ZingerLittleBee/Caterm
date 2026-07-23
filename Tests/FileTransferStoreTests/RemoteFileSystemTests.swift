@@ -101,6 +101,44 @@ final class RemoteFileSystemTests: XCTestCase {
 		XCTAssertEqual(match?.name, "report  final.txt")
 	}
 
+	func testRecursiveUploadReportsRegularFileBytes() async throws {
+		let root = FileManager.default.temporaryDirectory
+			.appendingPathComponent(
+				"caterm-recursive-progress-\(UUID().uuidString)",
+				isDirectory: true
+			)
+		try FileManager.default.createDirectory(
+			at: root.appendingPathComponent("nested", isDirectory: true),
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: root) }
+		try Data("four".utf8).write(
+			to: root.appendingPathComponent("first.txt")
+		)
+		try Data("sixsix".utf8).write(
+			to: root.appendingPathComponent("nested/second.txt")
+		)
+		let runner = FakeSFTPRunner()
+		let fileSystem = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+
+		let result = try await fileSystem.upload(
+			localURL: root,
+			remotePath: "/remote/folder",
+			isDirectory: true,
+			resume: false,
+			replaceExisting: false,
+			progress: { _ in }
+		)
+
+		XCTAssertEqual(result.bytesTransferred, 10)
+	}
+
 	@MainActor
 	func testUploadConflictPreservesLeadingAndTrailingSpaces() async throws {
 		let runner = FakeSFTPRunner()

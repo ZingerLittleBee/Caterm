@@ -382,6 +382,23 @@ struct HostListSidebar: View {
 			.buttonStyle(.plain)
 			.accessibilityHint("Opens forwarding rules for saved hosts")
 			Button {
+				openWindow(id: SFTPTaskWindow.id)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "arrow.left.arrow.right.square")
+					Text("File Transfer")
+					Spacer()
+					Text("⌥⌘F")
+						.foregroundStyle(.tertiary)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Opens the dual-pane local and remote file workspace")
+			Button {
 				openWindow(id: KnownHostsWindow.id)
 			} label: {
 				HStack(spacing: 8) {

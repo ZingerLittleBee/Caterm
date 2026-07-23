@@ -74,6 +74,9 @@ public enum SFTPCommandBuilder {
 		case .list(let dir):
 			return "cd \(try SFTPPathEncoder.encodeRemote(dir))\nls -la\nexit\n"
 		case .put(let local, let remote, let r, let resume):
+			// OpenSSH sftp does not follow symlinks while traversing `put -R`.
+			// This preserves the caller's authorized-root boundary after the
+			// selected top-level URL has been canonicalized.
 			let flags = "-p" + (r ? "R" : "") + (resume ? "a" : "")
 			return "put \(flags) \(try SFTPPathEncoder.encode(local.path)) \(try SFTPPathEncoder.encodeRemote(remote))\nexit\n"
 		case .get(let remote, let local, let r, let resume):

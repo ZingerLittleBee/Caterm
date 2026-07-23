@@ -48,7 +48,7 @@ public actor RemoteFileSystem: RemoteFileClient {
 	) async throws -> RemoteFileTransferResult {
 		_ = replaceExisting
 		try await ensureAlive()
-		let total = localByteCount(at: localURL)
+		let total = await localByteCount(at: localURL)
 		await progress(TransferProgress(bytesTransferred: 0, totalBytes: total))
 		try await runVoidOp(.put(
 			localPath: localURL,
@@ -73,7 +73,12 @@ public actor RemoteFileSystem: RemoteFileClient {
 		progress: @escaping TransferProgressHandler
 	) async throws -> RemoteFileTransferResult {
 		try await ensureAlive()
-		let total = try await stat(remotePath)?.size
+		let total: Int64?
+		if isDirectory {
+			total = nil
+		} else {
+			total = try await stat(remotePath)?.size
+		}
 		await progress(TransferProgress(bytesTransferred: 0, totalBytes: total))
 		try await runVoidOp(.get(
 			remotePath: remotePath,
@@ -82,7 +87,13 @@ public actor RemoteFileSystem: RemoteFileClient {
 			resume: resume
 		))
 		try Task.checkCancellation()
-		let transferred = total ?? localByteCount(at: localURL) ?? 0
+		let measured: Int64?
+		if total == nil {
+			measured = await localByteCount(at: localURL)
+		} else {
+			measured = nil
+		}
+		let transferred = total ?? measured ?? 0
 		await progress(TransferProgress(
 			bytesTransferred: transferred,
 			totalBytes: total
@@ -162,12 +173,68 @@ public actor RemoteFileSystem: RemoteFileClient {
 		return parent.isEmpty ? "." : parent
 	}
 
-	private func localByteCount(at url: URL) -> Int64? {
-		guard let values = try? url.resourceValues(forKeys: [
+	private func localByteCount(at url: URL) async -> Int64? {
+		await Task.detached(priority: .utility) {
+			Self.calculateLocalByteCount(at: url)
+		}.value
+	}
+
+	nonisolated private static func calculateLocalByteCount(
+		at url: URL
+	) -> Int64? {
+		let keys: Set<URLResourceKey> = [
+			.isDirectoryKey,
+			.isRegularFileKey,
 			.fileSizeKey,
 			.totalFileAllocatedSizeKey,
-		]) else { return nil }
-		return Int64(values.fileSize ?? values.totalFileAllocatedSize ?? 0)
+		]
+		let rootValues: URLResourceValues
+		do {
+			rootValues = try url.resourceValues(forKeys: keys)
+		} catch {
+			return nil
+		}
+		guard rootValues.isDirectory == true else {
+			return Int64(
+				rootValues.fileSize
+					?? rootValues.totalFileAllocatedSize
+					?? 0
+			)
+		}
+		var enumerationFailed = false
+		guard let enumerator = FileManager.default.enumerator(
+			at: url,
+			includingPropertiesForKeys: Array(keys),
+			options: [],
+			errorHandler: { _, _ in
+				enumerationFailed = true
+				return false
+			}
+		) else {
+			return nil
+		}
+		var total: Int64 = 0
+		for case let child as URL in enumerator {
+			let values: URLResourceValues
+			do {
+				values = try child.resourceValues(forKeys: keys)
+			} catch {
+				return nil
+			}
+			guard values.isRegularFile == true else {
+				continue
+			}
+			let size = Int64(
+				values.fileSize
+					?? values.totalFileAllocatedSize
+					?? 0
+			)
+			let (sum, overflow) = total.addingReportingOverflow(
+				max(0, size)
+			)
+			total = overflow ? Int64.max : sum
+		}
+		return enumerationFailed ? nil : total
 	}
 }
 

@@ -5,6 +5,27 @@ import XCTest
 
 @MainActor
 final class LocalFileLocationStoreTests: XCTestCase {
+	func testInvalidPersistenceReportsRecoverableLoadError() async throws {
+		let root = makeTemporaryDirectory()
+		let persistenceURL = root.appendingPathComponent("locations.json")
+		try Data("{not-json".utf8).write(to: persistenceURL)
+
+		let store = LocalFileLocationStore(
+			fileURL: persistenceURL,
+			bookmarkCodec: RecordingBookmarkCodec()
+		)
+
+		let locations = await store.locations
+		XCTAssertTrue(locations.isEmpty)
+		guard case .invalidData = await store.loadError else {
+			XCTFail("Expected invalid persisted data to remain visible")
+			return
+		}
+		_ = try await store.add(url: root, displayName: "Recovered")
+		let recoveredLoadError = await store.loadError
+		XCTAssertNil(recoveredLoadError)
+	}
+
 	func testStaleBookmarkIsRebuiltBeforeAccess() async throws {
 		let root = makeTemporaryDirectory()
 		let persistenceURL = root.appendingPathComponent("locations.json")
@@ -76,6 +97,33 @@ final class LocalFileLocationStoreTests: XCTestCase {
 		XCTAssertEqual(retainedLocation?.displayName, "Build volume")
 	}
 
+	func testSandboxedBookmarkRequiresAnActiveSecurityScope() async throws {
+		let root = makeTemporaryDirectory()
+		let codec = RecordingBookmarkCodec(
+			isReachable: true,
+			requiresSecurityScope: true,
+			startsSuccessfully: false
+		)
+		let store = LocalFileLocationStore(
+			fileURL: root.appendingPathComponent("locations.json"),
+			bookmarkCodec: codec
+		)
+		let location = try await store.add(
+			url: root,
+			displayName: "Workspace"
+		)
+		let grant = try await store.access(location.id)
+
+		do {
+			_ = try await grant.withAccess { $0.path }
+			XCTFail("Expected denied sandbox access")
+		} catch let error as LocalFileLocationError {
+			XCTAssertEqual(error, .accessDenied(root.path))
+		}
+		XCTAssertEqual(codec.startCount, 1)
+		XCTAssertEqual(codec.stopCount, 0)
+	}
+
 	func testScopedUploadBalancesAccessAroundTransport() async throws {
 		let root = makeTemporaryDirectory()
 		let localFile = root.appendingPathComponent("payload.txt")
@@ -137,6 +185,83 @@ final class LocalFileLocationStoreTests: XCTestCase {
 		)
 	}
 
+	func testDescendantAllowsMacFileNamesButRejectsTraversal() async throws {
+		let root = makeTemporaryDirectory()
+		let outside = makeTemporaryDirectory()
+		try FileManager.default.createSymbolicLink(
+			at: root.appendingPathComponent("escape"),
+			withDestinationURL: outside
+		)
+		let grant = LocalFileAccessGrant(
+			url: root,
+			resourceAccess: RecordingResourceAccess(url: root)
+		)
+
+		let macFileName = try grant.descendant(
+			relativePath: #"reports\archive.txt"#
+		)
+
+		XCTAssertEqual(
+			macFileName.url.lastPathComponent,
+			#"reports\archive.txt"#
+		)
+		XCTAssertThrowsError(
+			try grant.descendant(relativePath: "../outside.txt")
+		) { error in
+			XCTAssertEqual(
+				error as? LocalFileLocationError,
+				.invalidRelativePath("../outside.txt")
+			)
+		}
+		let escaped = try grant.descendant(
+			relativePath: "escape/outside.txt"
+		)
+		do {
+			_ = try await escaped.withAccess { $0.path }
+			XCTFail("Expected the symlink escape to be rejected")
+		} catch let error as LocalFileLocationError {
+			guard case .invalidRelativePath = error else {
+				return XCTFail("Unexpected error: \(error)")
+			}
+		}
+	}
+
+	func testScopedUploadNeverUsesSymlinkOutsideAuthorizedRoot() async throws {
+		let root = makeTemporaryDirectory()
+		let outside = makeTemporaryDirectory()
+		let outsideFile = outside.appendingPathComponent("secret.txt")
+		try Data("secret".utf8).write(to: outsideFile)
+		try FileManager.default.createSymbolicLink(
+			at: root.appendingPathComponent("payload.txt"),
+			withDestinationURL: outsideFile
+		)
+		let rootGrant = LocalFileAccessGrant(
+			url: root,
+			resourceAccess: RecordingResourceAccess(url: root)
+		)
+		let escapedGrant = try rootGrant.descendant(
+			relativePath: "payload.txt"
+		)
+		let client = ScopedTransferClient()
+		let store = FileTransferStore(clientForHost: { _ in client })
+
+		let id = try XCTUnwrap(
+			store.enqueueScopedUpload(
+				localFiles: [escapedGrant],
+				remoteDirectory: "/remote",
+				host: makeHost()
+			).first
+		)
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .failed)
+		guard case .localIO = store.task(id: id)?.failure else {
+			return XCTFail("Expected a local path validation failure")
+		}
+		let uploadedData = await client.uploadedData
+		XCTAssertNil(uploadedData)
+	}
+
 	private func makeHost() -> SSHHost {
 		SSHHost(
 			id: UUID(),
@@ -173,13 +298,19 @@ private final class RecordingBookmarkCodec:
 	private var creationCount = 0
 	private var starts = 0
 	private var stops = 0
+	let requiresSecurityScope: Bool
+	private let startsSuccessfully: Bool
 
 	init(
 		staleResolutions: Int = 0,
-		isReachable: Bool = true
+		isReachable: Bool = true,
+		requiresSecurityScope: Bool = false,
+		startsSuccessfully: Bool = true
 	) {
 		remainingStaleResolutions = staleResolutions
 		reachable = isReachable
+		self.requiresSecurityScope = requiresSecurityScope
+		self.startsSuccessfully = startsSuccessfully
 	}
 
 	var bookmarkCreationCount: Int {
@@ -221,7 +352,7 @@ private final class RecordingBookmarkCodec:
 
 	func startAccessing(_ url: URL) -> Bool {
 		lock.withLock { starts += 1 }
-		return true
+		return startsSuccessfully
 	}
 
 	func stopAccessing(_ url: URL) {

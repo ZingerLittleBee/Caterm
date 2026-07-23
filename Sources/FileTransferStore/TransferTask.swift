@@ -39,6 +39,7 @@ public struct TransferTask: Identifiable, Equatable, Sendable {
 	public internal(set) var state: TransferState
 	public internal(set) var conflictPolicy: TransferConflictPolicy?
 	public internal(set) var attemptCount: Int
+	let publishesAtomically: Bool
 
 	public var status: Status {
 		switch state {
@@ -89,7 +90,8 @@ public struct TransferTask: Identifiable, Equatable, Sendable {
 		isDirectory: Bool,
 		state: TransferState = .pending,
 		conflictPolicy: TransferConflictPolicy? = nil,
-		attemptCount: Int = 0
+		attemptCount: Int = 0,
+		publishesAtomically: Bool = false
 	) {
 		self.id = id
 		self.kind = kind
@@ -101,5 +103,6 @@ public struct TransferTask: Identifiable, Equatable, Sendable {
 		self.state = state
 		self.conflictPolicy = conflictPolicy
 		self.attemptCount = max(0, attemptCount)
+		self.publishesAtomically = publishesAtomically
 	}
 }

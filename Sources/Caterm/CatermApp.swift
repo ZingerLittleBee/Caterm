@@ -742,6 +742,12 @@ struct CatermApp: App {
       )
     }
     .defaultSize(width: 920, height: 520)
+    Window("File Transfer", id: SFTPTaskWindow.id) {
+      SFTPTaskWindowView()
+        .environmentObject(store)
+        .environmentObject(fileTransferStore)
+    }
+    .defaultSize(width: 1120, height: 700)
   }
 }
 
@@ -795,6 +801,10 @@ struct CatermWindowCommands: Commands {
       Button("Known Hosts") {
         openWindow(id: KnownHostsWindow.id)
       }
+      Button("File Transfer") {
+        openWindow(id: SFTPTaskWindow.id)
+      }
+      .keyboardShortcut("f", modifiers: [.command, .option])
     }
   }
 }

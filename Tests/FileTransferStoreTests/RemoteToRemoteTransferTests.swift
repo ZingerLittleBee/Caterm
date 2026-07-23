@@ -142,6 +142,70 @@ final class RemoteToRemoteTransferTests: XCTestCase {
 		)
 	}
 
+	func testRemoteCopyProgressSaturatesUntrustedReportedSize() async throws {
+		let sourceHost = makeHost(name: "Source")
+		let destinationHost = makeHost(name: "Destination")
+		let source = RelayRemoteFileClient(
+			files: ["/source/report.txt": Data("new".utf8)],
+			reportedSize: Int64.max
+		)
+		let destination = RelayRemoteFileClient()
+		let store = makeStore(
+			sourceHost: sourceHost,
+			source: source,
+			destinationHost: destinationHost,
+			destination: destination
+		)
+
+		let taskID = try XCTUnwrap(
+			store.enqueueRemoteCopy(
+				remotePaths: ["/source/report.txt"],
+				destinationDirectory: "/destination",
+				sourceHost: sourceHost,
+				destinationHost: destinationHost
+			).first
+		)
+		try await store.waitIdle()
+
+		let task = try XCTUnwrap(store.task(id: taskID))
+		XCTAssertEqual(task.status, .completed)
+		XCTAssertEqual(task.progress.totalBytes, Int64.max)
+		XCTAssertEqual(task.progress.bytesTransferred, Int64.max)
+	}
+
+	func testRemoteDirectoryCopyUsesRecursivePayloadProgress() async throws {
+		let sourceHost = makeHost(name: "Source")
+		let destinationHost = makeHost(name: "Destination")
+		let source = DirectoryRelayRemoteFileClient(
+			payloads: [
+				"first.txt": Data("four".utf8),
+				"nested/second.txt": Data("sixsix".utf8),
+			]
+		)
+		let destination = DirectoryRelayRemoteFileClient()
+		let store = FileTransferStore { host in
+			host.id == sourceHost.id ? source : destination
+		}
+
+		let taskID = try XCTUnwrap(
+			store.enqueueRemoteCopy(
+				remotePaths: ["/source/folder"],
+				destinationDirectory: "/destination",
+				sourceHost: sourceHost,
+				destinationHost: destinationHost
+			).first
+		)
+		try await store.waitIdle()
+
+		let task = try XCTUnwrap(store.task(id: taskID))
+		XCTAssertEqual(task.status, .completed)
+		XCTAssertTrue(task.isDirectory)
+		XCTAssertEqual(task.progress.totalBytes, 20)
+		XCTAssertEqual(task.progress.bytesTransferred, 20)
+		let receivedBytes = await destination.receivedPayloadBytes()
+		XCTAssertEqual(receivedBytes, 10)
+	}
+
 	private func makeStore(
 		sourceHost: SSHHost,
 		source: RelayRemoteFileClient,
@@ -172,14 +236,145 @@ final class RemoteToRemoteTransferTests: XCTestCase {
 	}
 }
 
+private actor DirectoryRelayRemoteFileClient: RemoteFileClient {
+	private var payloads: [String: Data]
+	private var stagedPayloadBytes: [String: Int64] = [:]
+	private var receivedBytes: Int64 = 0
+
+	init(payloads: [String: Data] = [:]) {
+		self.payloads = payloads
+	}
+
+	func receivedPayloadBytes() -> Int64 {
+		receivedBytes
+	}
+
+	func list(_ path: String) async throws -> [RemoteEntry] {
+		[]
+	}
+
+	func stat(_ path: String) async throws -> RemoteEntry? {
+		guard !payloads.isEmpty || stagedPayloadBytes[path] != nil else {
+			return nil
+		}
+		return RemoteEntry(
+			name: (path as NSString).lastPathComponent,
+			isDirectory: true,
+			size: 4_096,
+			mtime: Date(timeIntervalSince1970: 1_700_000_000),
+			mode: 0o700
+		)
+	}
+
+	func upload(
+		localURL: URL,
+		remotePath: String,
+		isDirectory: Bool,
+		resume: Bool,
+		replaceExisting: Bool,
+		progress: @escaping TransferProgressHandler
+	) async throws -> RemoteFileTransferResult {
+		guard isDirectory else {
+			throw RemoteFileError.invalidResponse(
+				message: "Expected directory upload"
+			)
+		}
+		let bytes = try Self.regularFileBytes(in: localURL)
+		stagedPayloadBytes[remotePath] = bytes
+		await progress(
+			TransferProgress(
+				bytesTransferred: bytes,
+				totalBytes: bytes
+			)
+		)
+		return RemoteFileTransferResult(bytesTransferred: bytes)
+	}
+
+	func download(
+		remotePath: String,
+		localURL: URL,
+		isDirectory: Bool,
+		resume: Bool,
+		progress: @escaping TransferProgressHandler
+	) async throws -> RemoteFileTransferResult {
+		guard isDirectory else {
+			throw RemoteFileError.invalidResponse(
+				message: "Expected directory download"
+			)
+		}
+		try FileManager.default.createDirectory(
+			at: localURL,
+			withIntermediateDirectories: true
+		)
+		for (relativePath, data) in payloads {
+			let destination = localURL.appendingPathComponent(relativePath)
+			try FileManager.default.createDirectory(
+				at: destination.deletingLastPathComponent(),
+				withIntermediateDirectories: true
+			)
+			try data.write(to: destination)
+		}
+		let bytes = payloads.values.reduce(Int64(0)) {
+			$0 + Int64($1.count)
+		}
+		await progress(
+			TransferProgress(
+				bytesTransferred: bytes,
+				totalBytes: bytes
+			)
+		)
+		return RemoteFileTransferResult(bytesTransferred: bytes)
+	}
+
+	func createDirectory(_ path: String) async throws {}
+
+	func rename(from: String, to: String) async throws {
+		guard let bytes = stagedPayloadBytes.removeValue(forKey: from) else {
+			throw RemoteFileError.notFound(path: from)
+		}
+		receivedBytes = bytes
+		stagedPayloadBytes[to] = bytes
+	}
+
+	func delete(_ path: String, isDirectory: Bool) async throws {
+		stagedPayloadBytes[path] = nil
+	}
+
+	nonisolated private static func regularFileBytes(
+		in root: URL
+	) throws -> Int64 {
+		guard let enumerator = FileManager.default.enumerator(
+			at: root,
+			includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+		) else {
+			return 0
+		}
+		var total: Int64 = 0
+		for case let child as URL in enumerator {
+			let values = try child.resourceValues(
+				forKeys: [.isRegularFileKey, .fileSizeKey]
+			)
+			if values.isRegularFile == true {
+				total += Int64(values.fileSize ?? 0)
+			}
+		}
+		return total
+	}
+}
+
 private actor RelayRemoteFileClient: RemoteFileClient {
 	private var files: [String: Data]
 	private var uploadPaths: [String] = []
 	private var renameTargets: [String] = []
 	private var downloads = 0
+	private let reportedSize: Int64?
 
-	init(files: [String: Data] = [:]) {
+	init(
+		files: [String: Data] = [:],
+		reportedSize: Int64? = nil
+	) {
 		self.files = files
+		self.reportedSize = reportedSize
 	}
 
 	func data(at path: String) -> Data? {
@@ -206,7 +401,7 @@ private actor RelayRemoteFileClient: RemoteFileClient {
 			return RemoteEntry(
 				name: (filePath as NSString).lastPathComponent,
 				isDirectory: false,
-				size: Int64(data.count),
+				size: reportedSize ?? Int64(data.count),
 				mtime: Date(timeIntervalSince1970: 1_700_000_000),
 				mode: 0o600
 			)
@@ -218,7 +413,7 @@ private actor RelayRemoteFileClient: RemoteFileClient {
 		return RemoteEntry(
 			name: (path as NSString).lastPathComponent,
 			isDirectory: false,
-			size: Int64(data.count),
+			size: reportedSize ?? Int64(data.count),
 			mtime: Date(timeIntervalSince1970: 1_700_000_000),
 			mode: 0o600
 		)
