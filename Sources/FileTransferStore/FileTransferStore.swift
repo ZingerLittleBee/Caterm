@@ -58,6 +58,9 @@ public final class FileTransferStore: ObservableObject {
 	private var hostRemovalRevisions: [UUID: UInt64] = [:]
 	private var accountResetInProgress = false
 	private var admissionSuspended = false
+	#if os(macOS)
+	private var localAccessGrants: [TaskId: LocalFileAccessGrant] = [:]
+	#endif
 
 	/// Creates a transport-independent transfer coordinator.
 	public init(
@@ -141,6 +144,28 @@ public final class FileTransferStore: ObservableObject {
 		return ids
 	}
 
+	#if os(macOS)
+	public func enqueueScopedUpload(
+		localFiles: [LocalFileAccessGrant],
+		remoteDirectory: String,
+		host: SSHHost,
+		conflictPolicy: TransferConflictPolicy? = nil,
+		expectedContext: TransferEnqueueContext? = nil
+	) -> [TaskId] {
+		let ids = enqueueUpload(
+			localPaths: localFiles.map(\.url),
+			remoteDir: remoteDirectory,
+			host: host,
+			conflictPolicy: conflictPolicy,
+			expectedContext: expectedContext
+		)
+		for (id, grant) in zip(ids, localFiles) {
+			localAccessGrants[id] = grant
+		}
+		return ids
+	}
+	#endif
+
 	public func enqueueDownload(
 		remotePaths: [String],
 		localDir: URL,
@@ -171,6 +196,28 @@ public final class FileTransferStore: ObservableObject {
 		kick(host.id)
 		return ids
 	}
+
+	#if os(macOS)
+	public func enqueueScopedDownload(
+		remotePaths: [String],
+		localDirectory: LocalFileAccessGrant,
+		host: SSHHost,
+		conflictPolicy: TransferConflictPolicy? = nil,
+		expectedContext: TransferEnqueueContext? = nil
+	) -> [TaskId] {
+		let ids = enqueueDownload(
+			remotePaths: remotePaths,
+			localDir: localDirectory.url,
+			host: host,
+			conflictPolicy: conflictPolicy,
+			expectedContext: expectedContext
+		)
+		for id in ids {
+			localAccessGrants[id] = localDirectory
+		}
+		return ids
+	}
+	#endif
 
 	/// Relays remote files through a private local staging directory. The
 	/// destination never exposes a partial file under its final name.
@@ -303,6 +350,9 @@ public final class FileTransferStore: ObservableObject {
 		}
 		removeFromQueue(id, hostID: task.hostId)
 		tasks.removeAll { $0.id == id }
+		#if os(macOS)
+		localAccessGrants[id] = nil
+		#endif
 		await didDiscard(task)
 	}
 
@@ -451,6 +501,11 @@ public final class FileTransferStore: ObservableObject {
 		let matching = tasks.filter(shouldDiscard)
 		let ids = Set(matching.map(\.id))
 		tasks.removeAll { ids.contains($0.id) }
+		#if os(macOS)
+		for id in ids {
+			localAccessGrants[id] = nil
+		}
+		#endif
 		return matching
 	}
 
@@ -549,6 +604,24 @@ public final class FileTransferStore: ObservableObject {
 		id: TaskId,
 		client: any RemoteFileClient
 	) async throws {
+		#if os(macOS)
+		if let grant = localAccessGrants[id] {
+			try await grant.withAccess { [self] _ in
+				try await executeUploadWithAvailableSource(
+					id: id,
+					client: client
+				)
+			}
+			return
+		}
+		#endif
+		try await executeUploadWithAvailableSource(id: id, client: client)
+	}
+
+	private func executeUploadWithAvailableSource(
+		id: TaskId,
+		client: any RemoteFileClient
+	) async throws {
 		guard let task = task(id: id) else { return }
 		let source = URL(fileURLWithPath: task.source)
 		let isDirectory: Bool
@@ -583,6 +656,27 @@ public final class FileTransferStore: ObservableObject {
 	}
 
 	private func executeDownload(
+		id: TaskId,
+		client: any RemoteFileClient
+	) async throws {
+		#if os(macOS)
+		if let grant = localAccessGrants[id] {
+			try await grant.withAccess { [self] _ in
+				try await executeDownloadWithAvailableDestination(
+					id: id,
+					client: client
+				)
+			}
+			return
+		}
+		#endif
+		try await executeDownloadWithAvailableDestination(
+			id: id,
+			client: client
+		)
+	}
+
+	private func executeDownloadWithAvailableDestination(
 		id: TaskId,
 		client: any RemoteFileClient
 	) async throws {
