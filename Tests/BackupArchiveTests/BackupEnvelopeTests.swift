@@ -107,6 +107,8 @@ final class BackupEnvelopeTests: XCTestCase {
 	func test_payload_roundTrip() throws {
 		let hostId = UUID()
 		let snippetID = UUID()
+		let identityID = UUID()
+		let materialID = UUID()
 		let payload = BackupPayload(
 			exportedAt: Date(timeIntervalSince1970: 1_700_000_000),
 			appVersion: "2.0",
@@ -134,8 +136,28 @@ final class BackupEnvelopeTests: XCTestCase {
 					reviewPolicy: "always",
 					reconnectPolicy: "oncePerSession"
 				),
+				credentialIdentity: BackupHostCredentialIdentityReference(
+					identityID: identityID,
+					migrationState: "reversible"
+				),
 				password: nil, passphrase: "pp", privateKey: Data("KEY".utf8)
 			)],
+			credentialIdentities: [
+				BackupCredentialIdentity(
+					kind: "sshCertificate",
+					id: identityID,
+					serverId: identityID.uuidString,
+					materialId: materialID,
+					name: "Production",
+					username: "deploy",
+					hasPassphrase: true,
+					publicCertificate: Data("CERT".utf8),
+					createdAt: Date(timeIntervalSince1970: 10),
+					updatedAt: Date(timeIntervalSince1970: 20),
+					passphrase: Data("pp".utf8),
+					privateKey: Data("PRIVATE".utf8)
+				)
+			],
 			snippets: [BackupSnippet(id: snippetID, name: "ls", content: "ls -la",
 			                         placeholders: nil,
 			                         createdAt: Date(timeIntervalSince1970: 0),
@@ -178,6 +200,8 @@ final class BackupEnvelopeTests: XCTestCase {
 		let payload = try BackupPayload.decode(json)
 
 		XCTAssertNil(payload.hosts.first?.automation)
+		XCTAssertTrue(payload.credentialIdentities.isEmpty)
+		XCTAssertNil(payload.hosts.first?.credentialIdentity)
 	}
 
 	func test_payload_futureContentVersion_rejected() throws {

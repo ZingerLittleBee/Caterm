@@ -1,5 +1,7 @@
 import XCTest
 import BackupArchive
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import Foundation
 import KeychainStore
 import ManagedKeyStore
@@ -800,6 +802,216 @@ final class BackupServiceTests: XCTestCase {
 		XCTAssertEqual(store.hosts.count, 1)
 		XCTAssertEqual(snippetStore.snippets.count, 1)
 	}
+
+	func test_reusableIdentityAndHostAssignmentRoundTripThroughBackup()
+		async throws {
+		let sourceIdentities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent("source-identities.json")
+		)
+		let sourceMaterials = CredentialIdentityMaterialStore(
+			secrets: InMemoryBackupIdentitySecretStore(),
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent("source-identity-keys")
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let certificate = Data(
+			"ssh-ed25519-cert-v01@openssh.com AAAA".utf8
+		)
+		let identity = CredentialIdentity(
+			name: "Production certificate",
+			username: "deploy",
+			source: .sshCertificate(
+				materialID: CredentialMaterialID(),
+				publicCertificate: certificate,
+				hasPassphrase: true
+			)
+		)
+		try sourceIdentities.upsert(identity)
+		try await sourceMaterials.replaceMaterial(
+			for: identity,
+			with: CredentialIdentityMaterial(
+				passphrase: Data("passphrase".utf8),
+				privateKey: Data("PRIVATE KEY".utf8)
+			)
+		)
+		let host = Host(
+			name: "api",
+			hostname: "api.example",
+			username: "legacy-user",
+			credential: .password,
+			credentialIdentity: HostCredentialIdentityReference(
+				identityID: identity.id,
+				migrationState: .reversible
+			)
+		)
+		try store.addHost(host)
+
+		let payload = try await BackupExporter.makePayload(
+			includeSecrets: true,
+			sessionStore: store,
+			snippets: [],
+			settings: nil,
+			bookmarks: { _ in [] },
+			credentialIdentityStore: sourceIdentities,
+			credentialIdentityMaterialStore: sourceMaterials
+		)
+
+		let archivedIdentity = try XCTUnwrap(
+			payload.credentialIdentities.first
+		)
+		XCTAssertEqual(archivedIdentity.kind, "sshCertificate")
+		XCTAssertEqual(archivedIdentity.publicCertificate, certificate)
+		XCTAssertEqual(
+			archivedIdentity.privateKey,
+			Data("PRIVATE KEY".utf8)
+		)
+		XCTAssertEqual(
+			payload.hosts.first?.credentialIdentity?.identityID,
+			identity.id
+		)
+
+		let destinationKeychain = KeychainStore(
+			service: "com.caterm.test.backup-identity.\(UUID())",
+			accessGroup: nil
+		)
+		defer { try? destinationKeychain.deleteAll(prefix: "") }
+		let destinationSession = SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: root.appendingPathComponent(
+				"identity-known-hosts"
+			).path,
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: root.appendingPathComponent("identity-hosts.json"),
+			keychain: destinationKeychain,
+			managedKeyStore: ManagedKeyStore(
+				rootURL: root.appendingPathComponent(
+					"destination-host-keys"
+				)
+			)
+		)
+		let destinationIdentities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent(
+				"destination-identities.json"
+			)
+		)
+		let destinationMaterials = CredentialIdentityMaterialStore(
+			secrets: InMemoryBackupIdentitySecretStore(),
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent(
+					"destination-identity-keys"
+				)
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let plan = BackupMergePlanner.plan(
+			payload: payload,
+			localHosts: [],
+			needsCredentialSetup: { _ in false },
+			localSnippets: [],
+			localSettingsRevision: nil,
+			localBookmarks: { _ in [] },
+			localKnownHostsLines: [],
+			localCredentialIdentities: []
+		)
+
+		let summary = try await BackupImporter.apply(
+			plan: plan,
+			sessionStore: destinationSession,
+			snippetStore: nil,
+			settingsStore: nil,
+			archiveSettings: nil,
+			bookmarkStore: nil,
+			credentialIdentityStore: destinationIdentities,
+			credentialIdentityMaterialStore: destinationMaterials
+		)
+
+		XCTAssertEqual(summary.credentialIdentitiesAdded, 1)
+		let restoredIdentity = try XCTUnwrap(
+			destinationIdentities.identity(id: identity.id)
+		)
+		XCTAssertNil(restoredIdentity.serverID)
+		guard case .sshCertificate(
+			_,
+			let restoredCertificate,
+			let hasPassphrase
+		) = restoredIdentity.source else {
+			return XCTFail("Expected an SSH certificate identity")
+		}
+		XCTAssertEqual(restoredCertificate, certificate)
+		XCTAssertTrue(hasPassphrase)
+		let restoredMaterial = try await destinationMaterials.snapshot(
+			for: restoredIdentity
+		)
+		XCTAssertEqual(
+			restoredMaterial.privateKey,
+			Data("PRIVATE KEY".utf8)
+		)
+		XCTAssertEqual(
+			restoredMaterial.passphrase,
+			Data("passphrase".utf8)
+		)
+		XCTAssertEqual(
+			destinationSession.hosts.first?.credentialIdentity,
+			HostCredentialIdentityReference(
+				identityID: identity.id,
+				migrationState: .reversible
+			)
+		)
+	}
+
+	func test_secureEnclaveBackupNeverExportsPrivateHandle() async throws {
+		let identities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent("enclave-identities.json")
+		)
+		let secrets = InMemoryBackupIdentitySecretStore()
+		let materials = CredentialIdentityMaterialStore(
+			secrets: secrets,
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent("enclave-identity-keys")
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let identity = CredentialIdentity(
+			name: "This Mac",
+			username: "admin",
+			source: .secureEnclaveP256(
+				materialID: CredentialMaterialID(),
+				publicKey: Data([4, 1, 2, 3]),
+				originDeviceID: UUID()
+			)
+		)
+		try identities.upsert(identity)
+		try await materials.replaceMaterial(
+			for: identity,
+			with: CredentialIdentityMaterial(
+				secureEnclaveKeyBlob: Data("opaque-handle".utf8)
+			)
+		)
+
+		let payload = try await BackupExporter.makePayload(
+			includeSecrets: true,
+			sessionStore: store,
+			snippets: [],
+			settings: nil,
+			bookmarks: { _ in [] },
+			credentialIdentityStore: identities,
+			credentialIdentityMaterialStore: materials
+		)
+
+		let archived = try XCTUnwrap(payload.credentialIdentities.first)
+		XCTAssertEqual(archived.kind, "secureEnclaveP256")
+		XCTAssertEqual(archived.publicKey, Data([4, 1, 2, 3]))
+		XCTAssertNil(archived.password)
+		XCTAssertNil(archived.passphrase)
+		XCTAssertNil(archived.privateKey)
+		let encoded = try payload.encoded()
+		XCTAssertFalse(
+			String(decoding: encoded, as: UTF8.self)
+				.contains(Data("opaque-handle".utf8).base64EncodedString())
+		)
+	}
 }
 
 private final class InMemoryBackupCredentialSecretStore:
@@ -837,5 +1049,45 @@ private final class InMemoryBackupCredentialSecretStore:
 		lock.lock()
 		values = values.filter { !$0.key.hasPrefix(prefix) }
 		lock.unlock()
+	}
+}
+
+private final class InMemoryBackupIdentitySecretStore:
+	IdentitySecretStoring, @unchecked Sendable {
+	private let lock = NSLock()
+	private var values: [String: Data] = [:]
+
+	func read(account: String) throws -> Data? {
+		lock.lock()
+		defer { lock.unlock() }
+		return values[account]
+	}
+
+	func write(_ data: Data, account: String) throws {
+		lock.lock()
+		values[account] = data
+		lock.unlock()
+	}
+
+	func delete(account: String) throws {
+		lock.lock()
+		values[account] = nil
+		lock.unlock()
+	}
+}
+
+private struct UnavailableBackupSecureEnclaveProvider:
+	SecureEnclaveIdentityKeyProviding {
+	let isAvailable = false
+
+	func create(localizedReason: String) throws -> SecureEnclaveIdentityKey {
+		throw SecureEnclaveIdentityError.unavailable
+	}
+
+	func restore(
+		dataRepresentation: Data,
+		localizedReason: String
+	) throws -> SecureEnclaveIdentityKey {
+		throw SecureEnclaveIdentityError.unavailable
 	}
 }

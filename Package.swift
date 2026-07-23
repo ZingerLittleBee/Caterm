@@ -199,7 +199,7 @@ let package = Package(
         ),
         .target(
             name: "BackupService",
-            dependencies: ["BackupArchive", "SessionStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "MergeDecision"],
+            dependencies: ["BackupArchive", "SessionStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "MergeDecision", "CredentialIdentityStore", "CredentialIdentitySecurity"],
             path: "Sources/BackupService"
         ),
         .target(
@@ -485,7 +485,7 @@ let package = Package(
         ),
         .testTarget(
             name: "BackupServiceTests",
-            dependencies: ["BackupService", "BackupArchive", "SessionStore", "ManagedKeyStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "KeychainStore"],
+            dependencies: ["BackupService", "BackupArchive", "SessionStore", "ManagedKeyStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "KeychainStore", "CredentialIdentityStore", "CredentialIdentitySecurity"],
             path: "Tests/BackupServiceTests"
         ),
         .testTarget(

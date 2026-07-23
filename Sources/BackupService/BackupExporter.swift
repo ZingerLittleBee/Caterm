@@ -1,4 +1,6 @@
 import BackupArchive
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import Foundation
 import SessionStore
 import SettingsStore
@@ -10,6 +12,10 @@ public enum BackupExportError: Error {
 	/// A credential-material read failed. The export aborts rather than
 	/// silently producing an archive with missing secrets.
 	case credentialMaterialUnavailable(hostName: String, underlying: String)
+	case credentialIdentityMaterialUnavailable(
+		identityName: String,
+		underlying: String
+	)
 }
 
 /// Gathers user configuration from the live stores into a `BackupPayload`.
@@ -27,6 +33,8 @@ public enum BackupExporter {
 		snippets: [Snippet],
 		settings: CatermSettings?,
 		bookmarks: (UUID) -> [RemoteBookmark],
+		credentialIdentityStore: CredentialIdentityStore? = nil,
+		credentialIdentityMaterialStore: CredentialIdentityMaterialStore? = nil,
 		now: Date = Date()
 	) async throws -> BackupPayload {
 		while true {
@@ -38,6 +46,8 @@ public enum BackupExporter {
 			do {
 				try Task.checkCancellation()
 				let hostSnapshot = sessionStore.hosts
+				let identitySnapshot =
+					credentialIdentityStore?.identities ?? []
 				let bookmarkSnapshot = hostSnapshot.flatMap { host in
 					bookmarks(host.id).map { bookmark in
 						BackupBookmark(
@@ -72,6 +82,17 @@ public enum BackupExporter {
 				guard sessionStore.hosts == hostSnapshot else {
 					throw HostSnapshotChanged()
 				}
+				let backupIdentities = try await identitySnapshot.asyncMap {
+					try await backupIdentity(
+						$0,
+						includeSecrets: includeSecrets,
+						materialStore: credentialIdentityMaterialStore
+					)
+				}
+				guard (credentialIdentityStore?.identities ?? [])
+					== identitySnapshot else {
+					throw HostSnapshotChanged()
+				}
 
 				let backupSnippets = snippets.map { snippet in
 					BackupSnippet(
@@ -99,6 +120,7 @@ public enum BackupExporter {
 					exportedAt: now,
 					appVersion: appVersion,
 					hosts: hosts,
+					credentialIdentities: backupIdentities,
 					snippets: backupSnippets,
 					settings: backupSettings,
 					bookmarks: bookmarkSnapshot,
@@ -230,9 +252,98 @@ public enum BackupExporter {
 				reviewPolicy: host.automation.reviewPolicy.rawValue,
 				reconnectPolicy: host.automation.reconnectPolicy.rawValue
 			),
+			credentialIdentity: host.credentialIdentity.map {
+				BackupHostCredentialIdentityReference(
+					identityID: $0.identityID,
+					migrationState: $0.migrationState.rawValue
+				)
+			},
 			password: password,
 			passphrase: passphrase,
 			privateKey: privateKey
+		)
+	}
+
+	private static func backupIdentity(
+		_ identity: CredentialIdentity,
+		includeSecrets: Bool,
+		materialStore: CredentialIdentityMaterialStore?
+	) async throws -> BackupCredentialIdentity {
+		let material: CredentialIdentityMaterial?
+		if includeSecrets, !identity.source.isDeviceBound {
+			guard let materialStore else {
+				throw BackupExportError
+					.credentialIdentityMaterialUnavailable(
+						identityName: identity.name,
+						underlying: "identity material store unavailable"
+					)
+			}
+			do {
+				material = try await materialStore.snapshot(for: identity)
+			} catch is CancellationError {
+				throw CancellationError()
+			} catch {
+				throw BackupExportError
+					.credentialIdentityMaterialUnavailable(
+						identityName: identity.name,
+						underlying: String(describing: error)
+					)
+			}
+		} else {
+			material = nil
+		}
+
+		let kind: String
+		let hasPassphrase: Bool
+		let publicCertificate: Data?
+		let publicKey: Data?
+		let originDeviceID: UUID?
+		switch identity.source {
+		case .password:
+			kind = "password"
+			hasPassphrase = false
+			publicCertificate = nil
+			publicKey = nil
+			originDeviceID = nil
+		case .managedKey(_, let sourceHasPassphrase):
+			kind = "managedKey"
+			hasPassphrase = sourceHasPassphrase
+			publicCertificate = nil
+			publicKey = nil
+			originDeviceID = nil
+		case .sshCertificate(
+			_,
+			let certificate,
+			let sourceHasPassphrase
+		):
+			kind = "sshCertificate"
+			hasPassphrase = sourceHasPassphrase
+			publicCertificate = certificate
+			publicKey = nil
+			originDeviceID = nil
+		case .secureEnclaveP256(_, let sourcePublicKey, let sourceDeviceID):
+			kind = "secureEnclaveP256"
+			hasPassphrase = false
+			publicCertificate = nil
+			publicKey = sourcePublicKey
+			originDeviceID = sourceDeviceID
+		}
+		return BackupCredentialIdentity(
+			kind: kind,
+			id: identity.id,
+			serverId: identity.serverID,
+			materialId: identity.source.materialID.rawValue,
+			name: identity.name,
+			username: identity.username,
+			hasPassphrase: hasPassphrase,
+			publicCertificate: publicCertificate,
+			publicKey: publicKey,
+			originDeviceId: originDeviceID,
+			createdAt: identity.createdAt,
+			updatedAt: identity.updatedAt,
+			password: material?.password,
+			passphrase: material?.passphrase,
+			privateKey: material?.privateKey
 		)
 	}
 
@@ -252,5 +363,18 @@ public enum BackupExporter {
 		return text.split(separator: "\n", omittingEmptySubsequences: true)
 			.map(String.init)
 			.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+	}
+}
+
+private extension Array {
+	func asyncMap<T>(
+		_ transform: (Element) async throws -> T
+	) async rethrows -> [T] {
+		var results: [T] = []
+		results.reserveCapacity(count)
+		for element in self {
+			results.append(try await transform(element))
+		}
+		return results
 	}
 }
