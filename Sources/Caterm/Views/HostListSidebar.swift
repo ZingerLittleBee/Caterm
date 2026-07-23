@@ -602,12 +602,14 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 
 	@MainActor
 	final class Coordinator: NSObject {
+		static let installedAction = #selector(forwardSingleAction(_:))
 		static let installedDoubleAction = #selector(openClickedRow(_:))
 
 		private var hosts: [SSHHost] = []
 		private var onDoubleClick: ((SSHHost) -> Void)?
 		private weak var tableView: NSTableView?
 		private weak var previousTarget: AnyObject?
+		private var previousAction: Selector?
 		private var previousDoubleAction: Selector?
 
 		func update(hosts: [SSHHost], onDoubleClick: @escaping (SSHHost) -> Void) {
@@ -625,10 +627,21 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 		func restorePreviousDoubleAction() {
 			guard let tableView else { return }
 			tableView.target = previousTarget
+			tableView.action = previousAction
 			tableView.doubleAction = previousDoubleAction
 			self.tableView = nil
 			previousTarget = nil
+			previousAction = nil
 			previousDoubleAction = nil
+		}
+
+		@objc func forwardSingleAction(_ sender: NSTableView) {
+			guard let previousAction else { return }
+			NSApplication.shared.sendAction(
+				previousAction,
+				to: previousTarget,
+				from: sender
+			)
 		}
 
 		@objc func openClickedRow(_ sender: NSTableView) {
@@ -637,14 +650,26 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 			onDoubleClick?(hosts[row])
 		}
 
+		// SwiftUI can restore its table action between representable updates
+		// while leaving this coordinator installed as the target.
+		@objc func onAction(_ sender: NSTableView) {
+			if NSApp.currentEvent?.clickCount == 2 {
+				openClickedRow(sender)
+			} else {
+				forwardSingleAction(sender)
+			}
+		}
+
 		func install(on tableView: NSTableView) {
 			if tableView !== self.tableView {
 				restorePreviousDoubleAction()
 				previousTarget = tableView.target as AnyObject?
+				previousAction = tableView.action
 				previousDoubleAction = tableView.doubleAction
 				self.tableView = tableView
 			}
 			tableView.target = self
+			tableView.action = Self.installedAction
 			tableView.doubleAction = Self.installedDoubleAction
 		}
 
