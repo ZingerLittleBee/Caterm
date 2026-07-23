@@ -9,10 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### iOS
 
+- Complete the executable cross-device continuity path for Hosts, encrypted
+  credential material, reusable credential identities, snippets, compatible
+  settings, and durable offline state.
 - Route launch, foreground, pull-to-refresh, silent push, account changes,
   and manual refresh through one serialized iCloud sync coordinator.
 - Show actionable iCloud sync status and recovery controls while keeping
   cached hosts and snippets available through transient network failures.
+- Replace the file-browser preview with real NIO SFTP browsing and mutations,
+  Files upload/export, iPad drag and drop, durable transfer progress,
+  cancellation, conflict handling, typed failures, and safe interruption when
+  iOS suspends the app.
+- Keep Known Hosts authorization device-local even when Host metadata and
+  encrypted credentials synchronize.
+
+### macOS
+
+- Add native multi-Pane Workspaces with split/focus commands, responder-scoped
+  routing, and independent session lifecycle.
+- Prepare reusable Workspace templates that always create fresh SSH sessions.
+  Shipping remains gated on signed restoration, accessibility, and load proof
+  in #55.
+- Add reviewed command broadcast with frozen recipients, per-Pane outcomes,
+  and no disconnected-session replay.
+- Prepare startup snippets and non-secret Host environment variables with
+  explicit review and reconnect policy. Shipping remains gated on the signed
+  macOS fixture in #57.
+- Add reusable credential identities for passwords, keys, and SSH
+  certificates. Secure Enclave authentication remains gated on signed
+  physical-device proof in #58.
+- Prepare a native dual-pane File Transfer window for local/remote and
+  cross-Host copies through the Mac, plus external-editor upload-back with
+  explicit review and conflict protection. Shipping remains gated on the
+  signed process/sandbox acceptance in #59.
+
+### Documentation corrections
+
+- Correct the 1.1.0 mobile sync claim. Version 1.1.0 introduced the mobile
+  terminal and local mobile stores, but its live composition did not execute
+  CloudKit Host/settings sync or durable snippet continuity. The complete
+  executable path described above lands in the next release represented by
+  this Unreleased section; the historical 1.1.0 notes remain unchanged below.
+- Document that Workspace templates restore declarations as fresh sessions,
+  Known Hosts trust is device-local, and iOS background suspension can
+  interrupt terminals, tunnels, and transfers.
 
 ## [1.1.0] - 2026-05-17
 

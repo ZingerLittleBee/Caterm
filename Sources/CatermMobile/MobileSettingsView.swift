@@ -214,16 +214,18 @@ private struct MobileSettingsContent: View {
 						)
 					}
 					.accessibilityHint(
-						"Manage reusable passwords, keys, certificates, and device-bound identities"
+						"Manage reusable passwords, portable keys, and certificates"
 					)
 				}
 			}
 
 			Section("Data") {
-				Label("Hosts and snippets persist locally for offline use.",
+				Label("Hosts, snippets, and shared settings are cached locally for offline use.",
 					systemImage: "externaldrive")
-				Label("Host secrets are saved to the device keychain.",
+				Label("Portable credential secrets are encrypted before iCloud sync.",
 					systemImage: "key")
+				Label("Known Hosts approvals stay on this device and are never granted by sync.",
+					systemImage: "checkmark.shield")
 				if syncAction != nil, let syncStatus {
 					MobileSettingsSyncRow(
 						status: syncStatus,
@@ -279,7 +281,7 @@ private struct MobileSettingsSyncRow: View {
 				}
 				.accessibilityHint(status == .signedOut
 					? "Shows the steps for signing in to iCloud"
-					: "Synchronizes hosts, snippets, and settings with iCloud")
+					: "Synchronizes hosts, encrypted credentials, reusable identities, snippets, and shared settings with iCloud")
 			}
 		}
 		.accessibilityElement(children: .contain)
@@ -314,7 +316,7 @@ private struct MobileSettingsSyncRow: View {
 		case .signedOut:
 			"Sign in to iCloud to sync. Hosts and snippets remain available offline."
 		case .syncing:
-			"Synchronizing hosts, snippets, and shared settings."
+			"Synchronizing hosts, encrypted credentials, reusable identities, snippets, and shared settings."
 		case .upToDate(let date):
 			"Up to date. Last synced \(date.formatted(date: .abbreviated, time: .shortened))."
 		case .temporarilyUnavailable(let message), .failed(let message):

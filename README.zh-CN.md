@@ -2,13 +2,15 @@
 
 [English](README.md) | **简体中文**
 
-原生 macOS SSH 终端管理器，支持 iCloud 同步，无需自建服务器。
+适用于 macOS、iPhone 和 iPad 的原生 SSH 终端管理器，支持 iCloud
+同步，无需自建服务器。
 
 [![Latest release](https://img.shields.io/github/v/release/ZingerLittleBee/Caterm)](https://github.com/ZingerLittleBee/Caterm/releases/latest)
 
-Caterm 是一个 SwiftUI 应用，终端引擎基于 [libghostty](https://github.com/ghostty-org/ghostty)。
-主机、凭据、设置和代码片段会通过 iCloud 在你的多台 Mac 之间同步——凭据端到端加密，
-绝不会以明文形式离开你的设备。无需注册账号，也无需运行任何后端。
+Caterm 在 macOS 上使用 [libghostty](https://github.com/ghostty-org/ghostty)，
+在 iOS 上使用原生 NIO SSH 终端。主机、可复用凭据身份、兼容设置和代码
+片段会通过 iCloud 在设备间同步。凭据机密采用端到端加密，绝不会以明文
+形式离开设备。无需 Caterm 账号，也无需运行任何后端。
 
 ## 下载
 
@@ -16,10 +18,15 @@ Caterm 是一个 SwiftUI 应用，终端引擎基于 [libghostty](https://github
 应用经过 Developer ID 签名、公证（notarized）并已 staple。下载
 `Caterm-<version>.dmg`，打开后将 Caterm 拖入「应用程序」即可。
 
-要求 **macOS 14.0 或更高版本**。
+要求 **macOS 14.0 或更高版本**。iOS companion 以 **iOS / iPadOS
+17.0 或更高版本**为目标，目前需从源码构建。
 
-同步功能需要 Mac 已登录 iCloud——没有独立账号。未登录时，Caterm 仍可作为
-纯本地终端管理器完整使用，只是不会同步。没有降级模式，也没有打扰式提示。
+下方功能清单描述当前 `main`/Unreleased 源码。最新打包发布版不一定包含
+全部所列能力，具体发布边界见 [CHANGELOG.md](CHANGELOG.md)。
+
+同步功能要求设备已登录 iCloud，无需独立账号。退出登录或暂时离线时，
+Caterm 会保留本地缓存的主机和代码片段，并暂停远端同步。正常同步自动
+进行，需要处理时会显示明确状态和手动恢复操作。
 
 ## 截图
 
@@ -37,27 +44,41 @@ Caterm 是一个 SwiftUI 应用，终端引擎基于 [libghostty](https://github
 
 ### 终端
 
-- 基于 Ghostty 的终端界面，支持标签页会话和可折叠的主机列表侧边栏
-  （`⌘B` 切换）。
+- macOS 上基于 Ghostty 的终端界面，支持原生窗口标签页和可折叠的主机
+  侧边栏（`⌘B` 切换）。
+- 原生 macOS 工作区支持水平/垂直窗格、方向焦点、聚焦/分栏视图、独立
+  重连与关闭。
+- 经复核的命令广播会冻结当前工作区内符合条件的接收窗格，在发送前展示
+  完整命令和接收者，逐窗格报告结果，并且绝不向断开或正在重连的会话
+  缓冲命令。
 - 内置 `xterm-ghostty` terminfo，支持按主机选择性远程安装。
 - 完整的终端设置 UI（字体、光标、配色、行为），由托管的 Ghostty
   配置快照支撑，并提供诊断信息展示。
 - 从 Ghostty 提取的主题目录，配有可搜索的选择器、收藏网格，以及
   按主机覆盖主题的能力。
+- iPhone 和 iPad 提供原生终端会话、移动端按键栏、软硬件键盘支持、
+  同步代码片段、重连和设备本地的主机密钥验证。
 
 ### SSH
 
 - 主机增删改查，标签可选（缺省回退为 `user@host`）。
+- 嵌套主机分组和标签，支持搜索与批量整理。
 - 通过 `ProxyJump` 进行主机链式跳转，配有 Via 主机选择器、链路预览、
   环路检测，以及按会话生成的 `ssh_config`。
 - 按主机配置端口转发（本地 / 远程 / 动态）。
 - ControlMaster 连接复用，并具备确定性的拆除流程。
 - 链路感知的 askpass，可在跨跳转的凭据提示中工作。
+- 可复用凭据身份支持密码、私钥和 SSH 证书。可迁移机密保持加密。
 
-### SFTP
+### SFTP 与文件
 
-- 带传输队列的文件传输抽屉。
-- 按主机持久化的远程路径书签。
+- macOS 提供跟随活动工作区窗格的文件抽屉、共享传输队列，以及按主机
+  持久化的远端路径书签。
+- iPhone 和 iPad 通过 NIO 提供真实 SFTP，可浏览、新建目录、重命名、
+  删除、从“文件”上传、下载到明确的导出/共享目的地、在 iPad 上拖出已
+  完成文件，并查看传输进度与类型化错误。
+- iOS 进入后台时会安全取消未完成传输。Caterm 不声称应用被挂起后 SSH
+  或 SFTP 还能无限运行。
 
 ### iCloud 同步（无服务器）
 
@@ -68,6 +89,34 @@ Caterm 是一个 SwiftUI 应用，终端引擎基于 [libghostty](https://github
 - 通过 `NSUbiquitousKeyValueStore` 同步设置，基于修订号的
   last-writer-wins 策略，对损坏或 schema 不兼容的数据块予以隔离。
 - 代码片段（snippet）存储与同步。
+- iOS 正式运行组合使用持久化的主机、代码片段、设置、凭据和传输存储。
+  启动、前台激活、下拉刷新、静默推送、账号变化和手动刷新都会进入同一个
+  串行同步协调器。
+- iCloud 退出登录、暂时不可用或离线时，缓存的主机和代码片段仍可使用。
+
+## 明确的产品边界
+
+- Known Hosts 信任是设备本地状态。每台 Mac、iPhone 和 iPad 都独立验证
+  服务器；iCloud 同步主机不会携带其他设备的信任决定。
+- 工作区模板描述全新的会话，不是可恢复的实时远端进程。需要进程跨客户端
+  断线存活时，请使用 `tmux`、`screen` 或其他服务端复用器。
+- iOS 进入后台后可能很快挂起 Caterm。缓存数据仍然可用，但终端、隧道和
+  传输不会被宣传为常驻后台服务。
+- Caterm 以 SSH 为核心。Telnet、Serial、Mosh、RDP、VNC、SCP、云厂商
+  资源发现、AI 命令生成、原始按键广播、终端输出同步和团队协作不属于
+  当前个人用户产品。
+- 工作区模板恢复、签名环境下的窗格辅助功能/负载验收、Secure Enclave
+  身份认证、跨平台启动自动化，以及桌面双窗格/外部编辑器 SFTP 工作区
+  已存在于源码，但仍处于验收门槛后。工作区模板的定义契约会创建全新的
+  SSH 会话，绝不保留实时 PTY、套接字、远端进程、工作目录或终端输出。
+  只有
+  [#55](https://github.com/ZingerLittleBee/Caterm/issues/55)、
+  [#58](https://github.com/ZingerLittleBee/Caterm/issues/58)、
+  [#57](https://github.com/ZingerLittleBee/Caterm/issues/57) 和
+  [#59](https://github.com/ZingerLittleBee/Caterm/issues/59) 关闭后，
+  才会被宣传为已交付。
+- 每个已验证对标能力的证据和处理结论见
+  [Termius 对标矩阵](docs/termius-parity.md)。
 
 ## 安全
 
@@ -78,16 +127,19 @@ Caterm 会同步 SSH 凭据，因此加密模型经过刻意设计：
   主机、字段和修订号）。
 - **主密钥只存在于你的 iCloud Keychain 中。** 它是一个 256 位
   对称密钥，作为*可同步的* Keychain 项存储，因此通过 Apple
-  端到端加密的 iCloud Keychain 在你的多台 Mac 间传播——Apple
-  无法读取它。
+  端到端加密的 iCloud Keychain 在已授权设备间传播，Apple 无法读取它。
+  设备绑定的私钥材料不可迁移，也不会同步。
 - **不同数据，不同路径。** 密封的凭据数据块随 CloudKit `Host`
   记录传输；主密钥随 iCloud Keychain 传输。Apple 在 CloudKit
   一侧只看到密文，且从不持有解密它的密钥。
 - **设置**通过 `NSUbiquitousKeyValueStore` 同步，不属于敏感数据；
   损坏或 schema 不兼容的数据块会被隔离而非应用。
-- **丢失设备**不会泄露凭据：没有主密钥，这些数据块毫无用处，而
-  主密钥受你的 Apple ID 和 iCloud Keychain 安全码保护。一如往常，
-  在 Apple ID 设备管理中吊销丢失的 Mac 即可。
+- **Known Hosts 信任仅保留在各设备本地。** Caterm 同步连接元数据，
+  不同步主机密钥授权决定。
+- **CloudKit 永远不会收到凭据密钥。** 丢失的设备可能已经持有本地可访问
+  的 Keychain 材料，因此 Caterm 依赖设备密码、FileVault、Keychain
+  访问控制，以及 Apple 的设备管理或远程抹除能力。从 Apple ID 中移除
+  设备可以阻止后续账号访问，但不能代替远程抹除。
 
 没有 Caterm 服务器，也没有 Caterm 账号——我们这一侧没有任何东西可
 被攻破，因为根本不存在「我们这一侧」。
