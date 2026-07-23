@@ -1,4 +1,5 @@
 import AppKit
+import CredentialIdentityStore
 import HostKeyProvisioning
 import SessionStore
 import SettingsStore
@@ -29,6 +30,8 @@ struct HostFormView: View {
 	@Environment(\.dismiss) private var dismiss
 	@EnvironmentObject private var sessionStore: SessionStore
 	@EnvironmentObject private var snippetStore: SnippetStore
+	@EnvironmentObject private var credentialIdentityStore:
+		CredentialIdentityStore
 
 	@State private var label = ""
 	@State private var hostname = ""
@@ -41,6 +44,9 @@ struct HostFormView: View {
 	@State private var existingKeyPath: String? = nil
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
+	@State private var credentialIdentityID: UUID?
+	@State private var credentialIdentityMigrationState:
+		HostCredentialIdentityReference.MigrationState = .confirmed
 	@State private var jumpHostSelection = JumpHostSelection.none
 	@State private var forwards: [PortForward] = []
 	@State private var icon: String? = nil
@@ -385,23 +391,88 @@ struct HostFormView: View {
 
 	private var authenticationCard: some View {
 		FormCard("Authentication") {
-			Picker("Method", selection: $credKind) {
-				ForEach(CredKind.allCases) { kind in
-					Text(kind.displayName).tag(kind)
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Credential identity")
+				Picker(
+					"Credential identity",
+					selection: $credentialIdentityID
+				) {
+					Text("Host-owned credential").tag(nil as UUID?)
+					if let credentialIdentityID,
+					   selectedIdentity == nil {
+						Text("(deleted identity)")
+							.tag(credentialIdentityID as UUID?)
+					}
+					ForEach(credentialIdentityStore.identities) {
+						Text("\($0.name) · \($0.username)")
+							.tag($0.id as UUID?)
+					}
 				}
+				.labelsHidden()
+				.frame(maxWidth: .infinity, alignment: .leading)
 			}
-			.pickerStyle(.segmented)
-			.labelsHidden()
 
-			AuthMethodFields(
-				credKind: $credKind,
-				pendingKey: $pendingKey,
-				hasPassphrase: $hasPassphrase,
-				pendingSecret: $pendingSecret,
-				hasExistingManagedKey: existingKeyPath != nil
-			)
-			.frame(minHeight: 96, alignment: .top)
+			if let selectedIdentity {
+				LabeledContent("Connect as", value: selectedIdentity.username)
+					.accessibilityLabel(
+						"Identity username \(selectedIdentity.username)"
+					)
+				Picker(
+					"Migration",
+					selection: $credentialIdentityMigrationState
+				) {
+					Text("Keep host credential as fallback")
+						.tag(
+							HostCredentialIdentityReference
+								.MigrationState.reversible
+						)
+					Text("Identity only")
+						.tag(
+							HostCredentialIdentityReference
+								.MigrationState.confirmed
+						)
+				}
+				Text(
+					credentialIdentityMigrationState == .reversible
+						? "The existing host-owned credential remains available until you confirm the migration."
+						: "The selected identity is authoritative for new connections."
+				)
+					.font(.caption)
+					.foregroundStyle(.secondary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+
+			DisclosureGroup(
+				credentialIdentityID == nil
+					? "Host-owned credential"
+					: "Host-owned fallback"
+			) {
+				VStack(alignment: .leading, spacing: 10) {
+					Picker("Method", selection: $credKind) {
+						ForEach(CredKind.allCases) { kind in
+							Text(kind.displayName).tag(kind)
+						}
+					}
+					.pickerStyle(.segmented)
+					.labelsHidden()
+
+					AuthMethodFields(
+						credKind: $credKind,
+						pendingKey: $pendingKey,
+						hasPassphrase: $hasPassphrase,
+						pendingSecret: $pendingSecret,
+						hasExistingManagedKey: existingKeyPath != nil
+					)
+					.frame(minHeight: 96, alignment: .top)
+				}
+				.padding(.top, 8)
+			}
 		}
+	}
+
+	private var selectedIdentity: CredentialIdentity? {
+		guard let credentialIdentityID else { return nil }
+		return credentialIdentityStore.identity(id: credentialIdentityID)
 	}
 
 	private var portForwardingCard: some View {
@@ -435,7 +506,13 @@ struct HostFormView: View {
 		let resolution = selectedChainResolution
 		let fieldsAreValid = !hostname.isEmpty
 			&& !username.isEmpty
-			&& (credKind != .keyFile || pendingKey != nil || existingKeyPath != nil)
+			&& (credentialIdentityID == nil || selectedIdentity != nil)
+			&& (
+				credentialIdentityID != nil
+					|| credKind != .keyFile
+					|| pendingKey != nil
+					|| existingKeyPath != nil
+			)
 			&& (Int(port).map { (1...65535).contains($0) } ?? false)
 		let forwardsAreValid = (try? PortForward.validateCollection(forwards)) != nil
 		return FormValidation(
@@ -666,6 +743,9 @@ struct HostFormView: View {
 		automationEnvironment = host.automation.environment
 		automationReviewPolicy = host.automation.reviewPolicy
 		automationReconnectPolicy = host.automation.reconnectPolicy
+		credentialIdentityID = host.credentialIdentity?.identityID
+		credentialIdentityMigrationState =
+			host.credentialIdentity?.migrationState ?? .confirmed
 	}
 
 	/// Credential as it should be persisted on the host. For a brand-new
@@ -699,6 +779,12 @@ struct HostFormView: View {
 			group: groupText, tags: tagsText
 		)
 		host.automation = automationDraft
+		host.credentialIdentity = credentialIdentityID.map {
+			HostCredentialIdentityReference(
+				identityID: $0,
+				migrationState: credentialIdentityMigrationState
+			)
+		}
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {

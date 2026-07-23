@@ -2,6 +2,9 @@ import AppKit
 import CloudKit
 import CloudKitSyncClient
 import ConfigStore
+import CredentialIdentitySecurity
+import CredentialIdentityStore
+import CredentialIdentitySync
 import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
@@ -37,6 +40,7 @@ struct CatermApp: App {
   @StateObject var settingsStore: SettingsStore
   @StateObject var remoteBookmarks: RemoteBookmarkStore
   @StateObject private var credentialSync: CredentialSyncPreferencesStore
+  @StateObject private var credentialIdentityStore: CredentialIdentityStore
   @StateObject var surfaceRegistry: SurfaceRegistry
   @StateObject private var snippetStore: SnippetStore
   @StateObject private var snippetSync: SnippetSyncStore
@@ -54,6 +58,8 @@ struct CatermApp: App {
   private let settingsSync: SettingsSyncStore
   private let masterKeyStore: KeychainSyncMasterKeyStore
   private let credentialSyncCoordinator: CredentialSyncCoordinator
+  private let credentialIdentityMaterialStore: CredentialIdentityMaterialStore
+  private let credentialIdentitySyncScheduler: CredentialIdentitySyncScheduler
   private let cloudSyncDisabled: Bool
 
   init() {
@@ -61,6 +67,15 @@ struct CatermApp: App {
     self.cloudSyncDisabled = cloudSyncDisabled
     try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
     let mngs = ManagedKeyStore()
+    let identityStore = makeCredentialIdentityStore()
+    let identityMaterialStore = CredentialIdentityMaterialStore(
+      secrets: IdentityKeychainSecretStore(
+        accessGroup: catermAccessGroup()
+      ),
+      managedKeys: mngs
+    )
+    _credentialIdentityStore = StateObject(wrappedValue: identityStore)
+    self.credentialIdentityMaterialStore = identityMaterialStore
     let history = makeSessionHistoryStore()
     let session = makeStore(
       managedKeyStore: mngs,
@@ -86,6 +101,34 @@ struct CatermApp: App {
       iCloudKeychainAvailable: { true }
     )
     self.credentialSyncCoordinator = credentialCoordinator
+    let identitySyncCoordinator = cloudSync.cloudKitClient.map {
+      CredentialIdentitySyncCoordinator(
+        store: identityStore,
+        materialStore: identityMaterialStore,
+        client: $0,
+        masterKeys: mks
+      )
+    }
+    let identitySyncScheduler = CredentialIdentitySyncScheduler(
+      isEnabled: {
+        guard identitySyncCoordinator != nil else { return false }
+        if case .enabled = credentialSyncPrefs.prefs.state {
+          return true
+        }
+        return false
+      },
+      sync: {
+        guard let identitySyncCoordinator else { return }
+        try await identitySyncCoordinator.sync()
+      },
+      reportFailure: { error in
+        NSLog(
+          "[CatermApp] Credential identity sync failed: %@",
+          String(describing: error)
+        )
+      }
+    )
+    self.credentialIdentitySyncScheduler = identitySyncScheduler
     let credentialSyncAccountReset = CredentialSyncAccountResetCoordinator(
       prefsStore: credentialSyncPrefs,
       sessionStore: session
@@ -295,7 +338,12 @@ struct CatermApp: App {
           credentialSyncCoordinator: credentialCoordinator,
           sessionStore: session,
           snippetStore: snippetStoreInstance,
-          bookmarkStore: remoteBookmarkStore
+          bookmarkStore: remoteBookmarkStore,
+          credentialIdentityStore: identityStore,
+          credentialIdentityMaterialStore: identityMaterialStore,
+          triggerCredentialIdentitySync: {
+            identitySyncScheduler.schedule()
+          }
         )
         if openSyncSettingsOnLaunch {
           preferencesWindow.activate(.cloudSync)
@@ -342,6 +390,7 @@ struct CatermApp: App {
       .environmentObject(surfaceRegistry)
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
+      .environmentObject(credentialIdentityStore)
       .environmentObject(workspaceCoordinator)
       .environmentObject(workspaceTemplateStore)
       .background(
@@ -356,7 +405,13 @@ struct CatermApp: App {
             credentialSyncCoordinator: credentialSyncCoordinator,
             sessionStore: store,
             snippetStore: snippetStore,
-            bookmarkStore: remoteBookmarks
+            bookmarkStore: remoteBookmarks,
+            credentialIdentityStore: credentialIdentityStore,
+            credentialIdentityMaterialStore:
+              credentialIdentityMaterialStore,
+            triggerCredentialIdentitySync: {
+              credentialIdentitySyncScheduler.schedule()
+            }
           )
           preferencesWindow.activate(.cloudSync)
           preferencesWindow.showAndActivate()
@@ -376,6 +431,15 @@ struct CatermApp: App {
         if !cloudSyncDisabled, let cloudKitClient {
           try? await cloudKitClient.ensureHostSubscription()
         }
+      }
+      .task {
+        credentialIdentitySyncScheduler.schedule()
+      }
+      .onReceive(
+        NotificationCenter.default
+          .publisher(for: .catermCloudKitHostChanged)
+      ) { _ in
+        credentialIdentitySyncScheduler.schedule()
       }
       .task {
         if !cloudSyncDisabled, let cloudKitClient {
@@ -424,7 +488,13 @@ struct CatermApp: App {
             credentialSyncCoordinator: credentialSyncCoordinator,
             sessionStore: store,
             snippetStore: snippetStore,
-            bookmarkStore: remoteBookmarks
+            bookmarkStore: remoteBookmarks,
+            credentialIdentityStore: credentialIdentityStore,
+            credentialIdentityMaterialStore:
+              credentialIdentityMaterialStore,
+            triggerCredentialIdentitySync: {
+              credentialIdentitySyncScheduler.schedule()
+            }
           )
           preferencesWindow.showAndActivate()
         }
@@ -885,6 +955,35 @@ private func makeStore(
     controlMasterManager: ControlMasterManager.shared,
     managedKeyStore: managedKeyStore,
     historyRecorder: historyRecorder)
+}
+
+@MainActor
+private func makeCredentialIdentityStore() -> CredentialIdentityStore {
+  let supportDirectory = FileManager.default
+    .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+    .first
+    ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+  let fileURL = ProcessInfo.processInfo.environment[
+    "CATERM_CREDENTIAL_IDENTITIES_PATH"
+  ].map(URL.init(fileURLWithPath:))
+    ?? supportDirectory
+      .appendingPathComponent("Caterm", isDirectory: true)
+      .appendingPathComponent("credential-identities.json")
+  let store = CredentialIdentityStore(fileURL: fileURL)
+  do {
+    try store.load()
+  } catch {
+    NSLog(
+      "[CatermApp] Credential identities failed to load: %@",
+      String(describing: error)
+    )
+  }
+  return store
+}
+
+private func catermAccessGroup() -> String? {
+  let teamID = ProcessInfo.processInfo.environment["CATERM_TEAM_ID"] ?? ""
+  return teamID.isEmpty ? nil : "\(teamID).caterm.shared"
 }
 
 @MainActor

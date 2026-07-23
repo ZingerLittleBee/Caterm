@@ -1,6 +1,8 @@
 import AppKit
 import BackupArchive
 import BackupService
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import SessionStore
 import SettingsStore
 import SnippetStore
@@ -14,6 +16,8 @@ struct BackupSettingsSection: View {
 	let sessionStore: SessionStore
 	let snippetStore: SnippetStore?
 	let bookmarkStore: RemoteBookmarkStore?
+	let credentialIdentityStore: CredentialIdentityStore?
+	let credentialIdentityMaterialStore: CredentialIdentityMaterialStore?
 	@EnvironmentObject private var settingsStore: SettingsStore
 
 	@State private var showingExportSheet = false
@@ -107,7 +111,10 @@ struct BackupSettingsSection: View {
 			sessionStore: sessionStore,
 			snippets: snippetStore?.snippets ?? [],
 			settings: settingsStore.settings,
-			bookmarks: { hostId in bookmarkStore?.bookmarks(for: hostId) ?? [] }
+			bookmarks: { hostId in bookmarkStore?.bookmarks(for: hostId) ?? [] },
+			credentialIdentityStore: credentialIdentityStore,
+			credentialIdentityMaterialStore:
+				credentialIdentityMaterialStore
 		)
 		let plaintext = try payload.encoded()
 		// scrypt (N=2^17) takes a few hundred ms — keep it off the main actor.
@@ -146,6 +153,17 @@ struct BackupSettingsSection: View {
 				hostsNeedingCredentials.insert(host.id)
 			}
 		}
+		let localIdentities = credentialIdentityStore?.identities ?? []
+		var identitiesNeedingMaterial: Set<UUID> = []
+		if let credentialIdentityMaterialStore {
+			for identity in localIdentities {
+				if try await credentialIdentityMaterialStore.availability(
+					for: identity
+				) != .available {
+					identitiesNeedingMaterial.insert(identity.id)
+				}
+			}
+		}
 		let plan = BackupMergePlanner.plan(
 			payload: payload,
 			localHosts: localHosts,
@@ -153,7 +171,11 @@ struct BackupSettingsSection: View {
 			localSnippets: snippetStore?.snippets ?? [],
 			localSettingsRevision: settingsStore.settings.revision,
 			localBookmarks: { bookmarkStore?.bookmarks(for: $0) ?? [] },
-			localKnownHostsLines: knownHostsLines()
+			localKnownHostsLines: knownHostsLines(),
+			localCredentialIdentities: localIdentities,
+			identityNeedsMaterial: {
+				identitiesNeedingMaterial.contains($0.id)
+			}
 		)
 		importPrompt = nil
 		pendingImport = PendingImport(payload: payload, plan: plan)
@@ -170,7 +192,10 @@ struct BackupSettingsSection: View {
 				snippetStore: snippetStore,
 				settingsStore: settingsStore,
 				archiveSettings: pending.payload.settings,
-				bookmarkStore: bookmarkStore
+				bookmarkStore: bookmarkStore,
+				credentialIdentityStore: credentialIdentityStore,
+				credentialIdentityMaterialStore:
+					credentialIdentityMaterialStore
 			)
 		} catch {
 			importError = error.localizedDescription
@@ -185,6 +210,12 @@ struct BackupSettingsSection: View {
 
 	private func summaryText(_ s: BackupImportSummary) -> String {
 		var lines: [String] = []
+		lines.append(
+			"Credential identities: \(s.credentialIdentitiesAdded) added, "
+				+ "\(s.credentialIdentitiesUpdated) updated, "
+				+ "\(s.credentialIdentitiesMaterialOnly) credentials filled, "
+				+ "\(s.credentialIdentitiesSkipped) kept"
+		)
 		lines.append("Hosts: \(s.hostsAdded) added, \(s.hostsUpdated) updated, "
 			+ "\(s.hostsCredentialsOnly) credentials filled, \(s.hostsSkipped) kept (local newer)")
 		lines.append("Snippets: \(s.snippetsAdded) added, \(s.snippetsUpdated) updated, "

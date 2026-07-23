@@ -266,6 +266,10 @@ let package = Package(
                 "CloudKitSyncClient",
                 "CredentialSync",
                 "CredentialSyncStore",
+                "CredentialIdentityStore",
+                "CredentialIdentitySecurity",
+                "CredentialIdentityRuntime",
+                "CredentialIdentitySync",
                 "HostKeyProvisioning",
                 "ManagedKeyStore",
                 "BackupArchive",
@@ -420,7 +424,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermTests",
-            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient", "WorkspaceCore", "WorkspaceTemplateStore", "WorkspaceBroadcast"],
+            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient", "WorkspaceCore", "WorkspaceTemplateStore", "WorkspaceBroadcast", "CredentialIdentityStore", "CredentialIdentitySecurity", "CredentialIdentityRuntime"],
             path: "Tests/CatermTests"
         ),
         .testTarget(

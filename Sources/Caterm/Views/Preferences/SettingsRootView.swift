@@ -56,6 +56,11 @@ struct SettingsRootView: View {
           credentialSync: env.credentialSync,
           credentialSyncCoordinator: env.credentialSyncCoordinator,
           sessionStore: env.sessionStore,
+          credentialIdentityStore: env.credentialIdentityStore,
+          credentialIdentityMaterialStore:
+            env.credentialIdentityMaterialStore,
+          triggerCredentialIdentitySync:
+            env.triggerCredentialIdentitySync,
           triggerSync: { [weak syncStore = env.syncStore] in syncStore?.syncIfSignedIn() }
         )
       } else {
@@ -68,7 +73,10 @@ struct SettingsRootView: View {
         BackupSettingsView(
           sessionStore: sessionStore,
           snippetStore: env.snippetStore,
-          bookmarkStore: env.bookmarkStore
+          bookmarkStore: env.bookmarkStore,
+          credentialIdentityStore: env.credentialIdentityStore,
+          credentialIdentityMaterialStore:
+            env.credentialIdentityMaterialStore
         )
       } else {
         SyncUnavailableView()

@@ -81,6 +81,31 @@ final class HostFormBuildHostTests: XCTestCase {
 		}
 	}
 
+	func testEditModePreservesReusableIdentityAssignment() {
+		let reference = HostCredentialIdentityReference(
+			identityID: UUID(),
+			migrationState: .reversible
+		)
+		let original = SSHHost(
+			name: "h",
+			hostname: "h.example.com",
+			username: "legacy",
+			credential: .password,
+			credentialIdentity: reference
+		)
+
+		let result = HostFormView.buildHost(
+			mode: .edit(original),
+			name: "renamed",
+			hostname: "new.example.com",
+			port: 2222,
+			username: "legacy",
+			credential: .password
+		)
+
+		XCTAssertEqual(result.credentialIdentity, reference)
+	}
+
 	func testAddModeAllocatesFreshHostWithDefaults() {
 		let result = HostFormView.buildHost(
 			mode: .add,
