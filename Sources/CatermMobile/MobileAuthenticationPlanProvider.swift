@@ -1,4 +1,7 @@
 import CatermMobileTerminal
+import CredentialIdentityRuntime
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import CredentialSyncStore
 import Foundation
 import KeychainStore
@@ -12,6 +15,7 @@ public enum MobileCredentialUnavailableReason: Error, Equatable, Sendable {
 	case deviceBoundPrivateKeyUnavailable
 	case keychainLocked
 	case credentialReadFailed
+	case missingIdentity
 }
 
 extension MobileCredentialUnavailableReason: LocalizedError {
@@ -29,12 +33,24 @@ extension MobileCredentialUnavailableReason: LocalizedError {
 			"Unlock this device to access the saved credential."
 		case .credentialReadFailed:
 			"The saved credential could not be read."
+		case .missingIdentity:
+			"The selected credential identity is unavailable."
 		}
 	}
 }
 
+public struct MobilePreparedAuthentication: Equatable, Sendable {
+	public let host: SSHHost
+	public let plan: SSHAuthPlan
+
+	public init(host: SSHHost, plan: SSHAuthPlan) {
+		self.host = host
+		self.plan = plan
+	}
+}
+
 public enum MobileAuthenticationPlanResult: Equatable, Sendable {
-	case available(SSHAuthPlan)
+	case available(MobilePreparedAuthentication)
 	case unavailable(MobileCredentialUnavailableReason)
 }
 
@@ -43,15 +59,34 @@ public enum MobileAuthenticationPlanResult: Equatable, Sendable {
 /// device evaluates its own Known Hosts database when transport starts.
 public actor MobileAuthenticationPlanProvider {
 	private let materialStore: SessionCredentialMaterialStore
+	private let identityMaterialStore: CredentialIdentityMaterialStore?
+	private let identity:
+		@Sendable (UUID) async -> CredentialIdentity?
 
-	public init(materialStore: SessionCredentialMaterialStore) {
+	public init(
+		materialStore: SessionCredentialMaterialStore,
+		identityMaterialStore:
+			CredentialIdentityMaterialStore? = nil,
+		identity:
+			@escaping @Sendable (UUID) async
+				-> CredentialIdentity? = { _ in nil }
+	) {
 		self.materialStore = materialStore
+		self.identityMaterialStore = identityMaterialStore
+		self.identity = identity
 	}
 
 	public func resolve(
 		host: SSHHost,
 		credentialSyncState: CredentialSyncState
 	) async -> MobileAuthenticationPlanResult {
+		if let reference = host.credentialIdentity {
+			return await resolveIdentity(
+				host: host,
+				identityID: reference.identityID,
+				credentialSyncState: credentialSyncState
+			)
+		}
 		do {
 			let selection: CredentialMaterialSelection = switch host.credential {
 			case .password:
@@ -71,7 +106,8 @@ public actor MobileAuthenticationPlanProvider {
 				material: material,
 				credentialSyncState: credentialSyncState
 			)
-		} catch KeychainError.interactionNotAllowed {
+		} catch KeychainError.interactionNotAllowed,
+		        IdentityKeychainError.interactionNotAllowed {
 			return .unavailable(.keychainLocked)
 		} catch {
 			return .unavailable(.credentialReadFailed)
@@ -91,12 +127,15 @@ public actor MobileAuthenticationPlanProvider {
 					state: credentialSyncState
 				)
 			}
-			return .available(SSHAuthPlan.make(
+			return available(
 				host: host,
-				password: password,
-				keyBlob: nil,
-				passphrase: nil
-			))
+				plan: SSHAuthPlan.make(
+					host: host,
+					password: password,
+					keyBlob: nil,
+					passphrase: nil
+				)
+			)
 		case let .keyFile(path, hasPassphrase):
 			let keyBlob = material.managedPrivateKey
 				?? FileManager.default.contents(
@@ -115,20 +154,132 @@ public actor MobileAuthenticationPlanProvider {
 					state: credentialSyncState
 				)
 			}
-			return .available(SSHAuthPlan.make(
+			return available(
 				host: host,
-				password: nil,
-				keyBlob: keyBlob,
-				passphrase: passphrase
-			))
+				plan: SSHAuthPlan.make(
+					host: host,
+					password: nil,
+					keyBlob: keyBlob,
+					passphrase: passphrase
+				)
+			)
 		case .agent:
-			return .available(SSHAuthPlan.make(
+			return available(
 				host: host,
-				password: nil,
-				keyBlob: nil,
-				passphrase: nil
-			))
+				plan: SSHAuthPlan.make(
+					host: host,
+					password: nil,
+					keyBlob: nil,
+					passphrase: nil
+				)
+			)
 		}
+	}
+
+	private func resolveIdentity(
+		host: SSHHost,
+		identityID: UUID,
+		credentialSyncState: CredentialSyncState
+	) async -> MobileAuthenticationPlanResult {
+		guard let identityMaterialStore,
+		      let identity = await identity(identityID) else {
+			return .unavailable(.missingIdentity)
+		}
+		do {
+			let material = try await identityMaterialStore.snapshot(
+				for: identity
+			)
+			let resolved =
+				try CredentialIdentityConnectionResolver.resolve(
+					host: host,
+					identities: [identity],
+					material: material
+				)
+			switch resolved.payload {
+			case .legacyHostOwned:
+				return .unavailable(.missingIdentity)
+			case .password(let password):
+				guard let password = decode(password) else {
+					return unavailableForMissingMaterial(
+						fallback: .missingPassword,
+						state: credentialSyncState
+					)
+				}
+				return available(
+					host: resolved.host,
+					plan: SSHAuthPlan(
+						attempts: [.password(password)],
+						missing: nil
+					)
+				)
+			case .managedKey(
+				let privateKey,
+				let passphraseData,
+				let publicCertificate
+			):
+				let passphrase = decode(passphraseData)
+				let attempt: SSHAuthPlan.Attempt
+				if let publicCertificate {
+					attempt = .certifiedPrivateKey(
+						blob: privateKey,
+						passphrase: passphrase,
+						publicCertificate: publicCertificate
+					)
+				} else {
+					attempt = .privateKey(
+						blob: privateKey,
+						passphrase: passphrase
+					)
+				}
+				return available(
+					host: resolved.host,
+					plan: SSHAuthPlan(
+						attempts: [attempt],
+						missing: nil
+					)
+				)
+			case .secureEnclaveP256:
+				let key = try await identityMaterialStore
+					.secureEnclaveKey(
+						for: identity,
+						localizedReason:
+							"Use \(identity.name) to authenticate this SSH connection."
+					)
+				return available(
+					host: resolved.host,
+					plan: SSHAuthPlan(
+						attempts: [.secureEnclaveP256(key)],
+						missing: nil
+					)
+				)
+			}
+		} catch IdentityKeychainError.interactionNotAllowed {
+			return .unavailable(.keychainLocked)
+		} catch CredentialIdentityResolutionError
+			.secureEnclaveUnavailable {
+			return .unavailable(
+				.deviceBoundPrivateKeyUnavailable
+			)
+		} catch CredentialIdentityMaterialStoreError
+			.materialUnavailable {
+			return .unavailable(
+				.deviceBoundPrivateKeyUnavailable
+			)
+		} catch {
+			return .unavailable(.credentialReadFailed)
+		}
+	}
+
+	private func available(
+		host: SSHHost,
+		plan: SSHAuthPlan
+	) -> MobileAuthenticationPlanResult {
+		.available(
+			MobilePreparedAuthentication(
+				host: host,
+				plan: plan
+			)
+		)
 	}
 
 	private func unavailableForMissingMaterial(

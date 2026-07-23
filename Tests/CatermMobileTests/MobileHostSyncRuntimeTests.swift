@@ -441,8 +441,9 @@ private func mobileRepositoriesRoundTripMetadataAndCredentials() async throws {
 		host: pulledTarget,
 		credentialSyncState: .enabled
 	)
-	guard case let .available(plan) = keyPlan,
-		case let .privateKey(blob, passphrase)? = plan.attempts.first else {
+	guard case let .available(authentication) = keyPlan,
+		case let .privateKey(blob, passphrase)? =
+			authentication.plan.attempts.first else {
 		Issue.record("Expected a usable private-key authentication plan")
 		return
 	}
@@ -456,12 +457,15 @@ private func mobileRepositoriesRoundTripMetadataAndCredentials() async throws {
 		host: pulledPassword,
 		credentialSyncState: .enabled
 	)
-	guard case let .available(plan) = passwordPlan else {
+	guard case let .available(authentication) = passwordPlan else {
 		Issue.record("Expected a usable password authentication plan")
 		return
 	}
-	#expect(plan.attempts == [.password("swordfish")])
-	#expect(plan.missing == nil)
+	#expect(
+		authentication.plan.attempts
+			== [.password("swordfish")]
+	)
+	#expect(authentication.plan.missing == nil)
 	#expect(try HostPersistence.load(from: deviceB.hostsURL) == deviceB.store.hosts)
 }
 
@@ -1306,6 +1310,87 @@ private func mobileSyncCoordinatorSurfacesSettingsFailure() async throws {
 	}
 	settings.publish(.failed("External Settings failure"))
 	#expect(coordinator.status == .failed("External Settings failure"))
+}
+
+@Test("Mobile sync coordinator runs and surfaces credential identity sync")
+@MainActor
+private func mobileSyncCoordinatorRunsCredentialIdentityLane() async throws {
+	let fixture = try MobileSyncDeviceFixture()
+	defer { fixture.cleanup() }
+	let client = MobileSyncFixtureClient()
+	let master = KeychainSyncMasterKeyStore(
+		service: fixture.masterKeyService,
+		synchronizable: false
+	)
+	let device = fixture.makeDevice(
+		name: "coordinator-identities",
+		masterKey: master
+	)
+	let hostRuntime = MobileHostSyncRuntime(
+		hostStore: device.store,
+		syncEngine: device.engine(client),
+		client: client,
+		credentialSync: device.preferences,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let snippetStore = SnippetStore(
+		directory: fixture.root.appendingPathComponent(
+			"coordinator-identities-snippets"
+		)
+	)
+	try snippetStore.load()
+	let snippetClient = MobileSnippetFixtureClient()
+	let snippetRuntime = MobileSnippetSyncRuntime(
+		store: snippetStore,
+		sync: SnippetSyncStore(
+			store: snippetStore,
+			client: snippetClient
+		),
+		client: snippetClient,
+		isSignedIn: { true },
+		refreshAccount: {}
+	)
+	let identitySync = MobileCredentialIdentitySyncSpy()
+	let coordinator = MobileSyncCoordinator(
+		hostRuntime: hostRuntime,
+		snippetRuntime: snippetRuntime,
+		settingsSync: nil,
+		relatedSync: {
+			try await identitySync.sync()
+		}
+	)
+
+	await coordinator.launch()
+	#expect(await identitySync.count == 1)
+	guard case .upToDate = coordinator.status else {
+		Issue.record("Expected a successful identity sync lane")
+		return
+	}
+
+	await identitySync.setShouldFail()
+	await coordinator.syncNow()
+	#expect(await identitySync.count == 2)
+	guard case .failed = coordinator.status else {
+		Issue.record("Expected an identity sync failure to remain visible")
+		return
+	}
+}
+
+private actor MobileCredentialIdentitySyncSpy {
+	private(set) var count = 0
+	private var shouldFail = false
+
+	func setShouldFail() {
+		shouldFail = true
+	}
+
+	func sync() throws {
+		count += 1
+		if shouldFail {
+			throw CocoaError(.fileReadUnknown)
+		}
+	}
 }
 
 @Test("Mobile sync coordinator serializes the Settings lane")

@@ -89,6 +89,7 @@ public final class MobileSyncCoordinator: ObservableObject {
 	private let hostRuntime: MobileHostSyncRuntime
 	private let snippetRuntime: MobileSnippetSyncRuntime
 	private let settingsSync: (any MobileSettingsSyncing)?
+	private let relatedSync: @MainActor @Sendable () async throws -> Void
 	private let startObservingAccountChanges: () -> Void
 	private var activeTask: Task<MobileHostSyncExecutionResult, Never>?
 	private var activeRunID: UUID?
@@ -96,17 +97,21 @@ public final class MobileSyncCoordinator: ObservableObject {
 	private var cancellables: Set<AnyCancellable> = []
 	private var simulatorStatusOverride: MobileSyncStatus?
 	private var settingsResult: SettingsSyncExecutionResult?
+	private var relatedSyncFailure: String?
 
 	public init(
 		hostRuntime: MobileHostSyncRuntime,
 		snippetRuntime: MobileSnippetSyncRuntime,
 		settingsSync: (any MobileSettingsSyncing)?,
 		isAvailable: Bool = true,
+		relatedSync:
+			@escaping @MainActor @Sendable () async throws -> Void = {},
 		startObservingAccountChanges: @escaping () -> Void = {}
 	) {
 		self.hostRuntime = hostRuntime
 		self.snippetRuntime = snippetRuntime
 		self.settingsSync = settingsSync
+		self.relatedSync = relatedSync
 		self.isAvailable = isAvailable
 		self.startObservingAccountChanges = startObservingAccountChanges
 		self.simulatorStatusOverride = Self.makeSimulatorStatusOverride()
@@ -235,6 +240,13 @@ public final class MobileSyncCoordinator: ObservableObject {
 			snippetResult = await snippetRuntime.receivedCloudKitPushAfterIdentityCheck()
 			await synchronizeSettings(startIfNeeded: true)
 		}
+		do {
+			try await relatedSync()
+			relatedSyncFailure = nil
+		} catch {
+			relatedSyncFailure = error.localizedDescription
+			return .failed
+		}
 		return combined(hostResult, snippetResult, settingsResult)
 	}
 
@@ -314,6 +326,10 @@ public final class MobileSyncCoordinator: ObservableObject {
 		}
 		if case .failed(let message) = settingsResult {
 			status = .failed(message)
+			return
+		}
+		if let relatedSyncFailure {
+			status = .failed(relatedSyncFailure)
 			return
 		}
 		if case .checkingAccount = host {

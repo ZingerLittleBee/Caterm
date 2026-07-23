@@ -28,10 +28,13 @@ final class CloudSyncRuntimeOptionsTests: XCTestCase {
 	func testDisabledCloudSyncBootstrapDoesNotCreateCloudKitContainer() {
 		var createdContainer = false
 
-		let dependencies = CloudSyncBootstrap.make(disabled: true) {
+		let dependencies = CloudSyncBootstrap.make(
+			disabled: true,
+			cloudContainerFactory: {
 			createdContainer = true
 			fatalError("disabled cloud sync must not construct CKContainer")
-		}
+			}
+		)
 
 		XCTAssertFalse(createdContainer)
 		XCTAssertFalse(dependencies.accountSession.isSignedIn)

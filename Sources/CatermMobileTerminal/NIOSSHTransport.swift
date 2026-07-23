@@ -1,4 +1,5 @@
 import Crypto
+import CredentialIdentitySecurity
 import Foundation
 import NIOCore
 import NIOPosix
@@ -484,12 +485,83 @@ final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate,
 		case .privateKey:
 			nextChallengePromise.succeed(nil)
 
+		case let .certifiedPrivateKey(
+			blob,
+			passphrase,
+			publicCertificate
+		) where availableMethods.contains(.publicKey):
+			do {
+				let key = try OpenSSHPrivateKeyParser.parse(
+					blob,
+					passphrase: passphrase
+				)
+				guard let certificateText = String(
+					data: publicCertificate,
+					encoding: .utf8
+				) else {
+					throw MobileSSHAuthenticationKeyError
+						.invalidCertificate
+				}
+				let publicKey = try NIOSSHPublicKey(
+					openSSHPublicKey: certificateText
+				)
+				guard let certificate =
+					NIOSSHCertifiedPublicKey(publicKey) else {
+					throw MobileSSHAuthenticationKeyError
+						.invalidCertificate
+				}
+				let offer = NIOSSHUserAuthenticationOffer(
+					username: host.username,
+					serviceName: "",
+					offer: .privateKey(.init(
+						privateKey: key,
+						certifiedKey: certificate
+					))
+				)
+				nextChallengePromise.succeed(offer)
+			} catch {
+				sink(.failed(reason: error.localizedDescription))
+				nextChallengePromise.fail(error)
+			}
+
+		case .certifiedPrivateKey:
+			nextChallengePromise.succeed(nil)
+
+		case .secureEnclaveP256(let key)
+			where availableMethods.contains(.publicKey):
+			let offer = NIOSSHUserAuthenticationOffer(
+				username: host.username,
+				serviceName: "",
+				offer: .privateKey(.init(
+					privateKey: NIOSSHPrivateKey(
+						secureEnclaveP256Key: key.privateKey
+					)
+				))
+			)
+			nextChallengePromise.succeed(offer)
+
+		case .secureEnclaveP256:
+			nextChallengePromise.succeed(nil)
+
 		case .keyboardInteractive:
 			// swift-nio-ssh 0.13.0 exposes no keyboard-interactive offer; the
 			// only client offers are password / privateKey / hostBased / none.
 			// Surface a prompt for credentials instead of faking success.
 			sink(.authPrompt(.password))
 			nextChallengePromise.succeed(nil)
+		}
+	}
+}
+
+private enum MobileSSHAuthenticationKeyError: Error {
+	case invalidCertificate
+}
+
+extension MobileSSHAuthenticationKeyError: LocalizedError {
+	var errorDescription: String? {
+		switch self {
+		case .invalidCertificate:
+			"The SSH certificate is invalid."
 		}
 	}
 }

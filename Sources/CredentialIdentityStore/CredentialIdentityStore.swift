@@ -153,6 +153,18 @@ public final class CredentialIdentityStore: ObservableObject {
 		}
 	}
 
+	/// Clears account-scoped identities without creating CloudKit tombstones.
+	///
+	/// Account changes must not delete records owned by the previous account.
+	/// The caller is responsible for removing local secret material first.
+	public func resetForAccountChange() throws {
+		try persistMutation {
+			identities.removeAll()
+			locallyDirtyIdentityIDs.removeAll()
+			pendingDeletedIdentityIDs.removeAll()
+		}
+	}
+
 	private static func remoteWins(
 		local: CredentialIdentity,
 		remote: CredentialIdentity

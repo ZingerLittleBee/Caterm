@@ -31,6 +31,9 @@ public struct MobileHostDraft: Equatable {
 	public var port: String
 	public var username: String
 	public var credential: Credential
+	public var credentialIdentityID: UUID?
+	public var credentialIdentityMigrationState:
+		HostCredentialIdentityReference.MigrationState
 	public var jumpHostId: UUID?
 	public var forwards: [PortForward]
 	public var automation: HostAutomation
@@ -41,6 +44,10 @@ public struct MobileHostDraft: Equatable {
 		port: String = "22",
 		username: String = "",
 		credential: Credential = .password(secret: ""),
+		credentialIdentityID: UUID? = nil,
+		credentialIdentityMigrationState:
+			HostCredentialIdentityReference.MigrationState =
+				.reversible,
 		jumpHostId: UUID? = nil,
 		forwards: [PortForward] = [],
 		automation: HostAutomation = .disabled
@@ -50,6 +57,9 @@ public struct MobileHostDraft: Equatable {
 		self.port = port
 		self.username = username
 		self.credential = credential
+		self.credentialIdentityID = credentialIdentityID
+		self.credentialIdentityMigrationState =
+			credentialIdentityMigrationState
 		self.jumpHostId = jumpHostId
 		self.forwards = forwards
 		self.automation = automation
@@ -72,6 +82,10 @@ public struct MobileHostDraft: Equatable {
 		self.jumpHostId = host.jumpHostId
 		self.forwards = host.forwards
 		self.automation = host.automation
+		self.credentialIdentityID =
+			host.credentialIdentity?.identityID
+		self.credentialIdentityMigrationState =
+			host.credentialIdentity?.migrationState ?? .reversible
 	}
 
 	public func build(mode: MobileHostFormMode, allHosts: [SSHHost]) throws -> MobileHostDraftPayload {
@@ -126,6 +140,13 @@ public struct MobileHostDraft: Equatable {
 			allHosts.first(where: { $0.id == id })?.serverId
 		}
 		host.forwards = forwards
+		host.credentialIdentity = credentialIdentityID.map {
+			HostCredentialIdentityReference(
+				identityID: $0,
+				migrationState:
+					credentialIdentityMigrationState
+			)
+		}
 		do {
 			host.automation = try automation.validated()
 		} catch {

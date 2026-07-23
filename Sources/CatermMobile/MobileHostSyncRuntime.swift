@@ -26,7 +26,7 @@ public struct MobileAccountIdentityBoundary {
 	let acknowledge: () async -> Void
 	let beginRelatedSyncSuspension: @MainActor () -> Void
 	let drainRelatedSync: @MainActor () async -> Void
-	let resetRelatedLocalState: @MainActor () throws -> Void
+	let resetRelatedLocalState: @MainActor () async throws -> Void
 	let allowRelatedLocalMutationsWhileSuspended: @MainActor () -> Void
 	let resumeRelatedSync: @MainActor (_ identityChanged: Bool) async -> Void
 
@@ -35,7 +35,8 @@ public struct MobileAccountIdentityBoundary {
 		acknowledge: @escaping () async -> Void,
 		beginRelatedSyncSuspension: @escaping @MainActor () -> Void = {},
 		drainRelatedSync: @escaping @MainActor () async -> Void = {},
-		resetRelatedLocalState: @escaping @MainActor () throws -> Void = {},
+		resetRelatedLocalState:
+			@escaping @MainActor () async throws -> Void = {},
 		allowRelatedLocalMutationsWhileSuspended: @escaping @MainActor () -> Void = {},
 		resumeRelatedSync: @escaping @MainActor (_ identityChanged: Bool) async -> Void = { _ in }
 	) {
@@ -230,7 +231,7 @@ public final class MobileHostSyncRuntime: ObservableObject {
 					try await hostStore.resetForAccountChange()
 					guard generationIsCurrent(generation) else { return .cancelled }
 					resetCredentialSyncPreferences()
-					try identityBoundary.resetRelatedLocalState()
+					try await identityBoundary.resetRelatedLocalState()
 					relatedIdentityChanged = true
 					await identityBoundary.acknowledge()
 					try hostStore.finishAccountTransition()

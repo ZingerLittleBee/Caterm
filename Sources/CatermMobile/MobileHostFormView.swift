@@ -1,3 +1,4 @@
+import CredentialIdentityStore
 import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
@@ -6,6 +7,7 @@ struct MobileHostFormView: View {
 	let mode: MobileHostFormMode
 	let allHosts: [SSHHost]
 	let snippets: [Snippet]
+	let credentialIdentities: [CredentialIdentity]
 	let onSave: (MobileHostDraftPayload) -> Void
 	@Environment(\.dismiss) private var dismiss
 	@State private var draft: MobileHostDraft
@@ -15,11 +17,13 @@ struct MobileHostFormView: View {
 		mode: MobileHostFormMode,
 		allHosts: [SSHHost],
 		snippets: [Snippet] = [],
+		credentialIdentities: [CredentialIdentity] = [],
 		onSave: @escaping (MobileHostDraftPayload) -> Void
 	) {
 		self.mode = mode
 		self.allHosts = allHosts
 		self.snippets = snippets
+		self.credentialIdentities = credentialIdentities
 		self.onSave = onSave
 		switch mode {
 		case .add:
@@ -48,6 +52,32 @@ struct MobileHostFormView: View {
 			}
 
 			Section("Credentials") {
+				Picker(
+					"Reusable Identity",
+					selection: $draft.credentialIdentityID
+				) {
+					Text("None").tag(nil as UUID?)
+					ForEach(credentialIdentities) { identity in
+						Text(identity.name).tag(identity.id as UUID?)
+					}
+				}
+
+				if let identity = selectedCredentialIdentity {
+					LabeledContent(
+						"Connect as",
+						value: identity.username
+					)
+					Toggle(
+						"Keep Host credential for rollback",
+						isOn: keepsLegacyCredential
+					)
+					Text(
+						"The identity is used for authentication. The Host credential remains device-local and can be restored by choosing None."
+					)
+					.font(.caption)
+					.foregroundStyle(.secondary)
+				}
+
 				Picker("Method", selection: credentialKind) {
 					Text("Password").tag(MobileCredentialKind.password)
 					Text("Key File").tag(MobileCredentialKind.keyFile)
@@ -202,6 +232,22 @@ struct MobileHostFormView: View {
 			Button("OK") { validationError = nil }
 		} message: {
 			Text(validationMessage)
+		}
+	}
+
+	private var selectedCredentialIdentity: CredentialIdentity? {
+		guard let id = draft.credentialIdentityID else {
+			return nil
+		}
+		return credentialIdentities.first { $0.id == id }
+	}
+
+	private var keepsLegacyCredential: Binding<Bool> {
+		Binding {
+			draft.credentialIdentityMigrationState == .reversible
+		} set: { keep in
+			draft.credentialIdentityMigrationState =
+				keep ? .reversible : .confirmed
 		}
 	}
 

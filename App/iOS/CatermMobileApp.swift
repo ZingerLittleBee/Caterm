@@ -33,20 +33,38 @@ struct CatermMobileApp: App {
 
 	var body: some Scene {
 		WindowGroup {
-			MobileRootView(
-				hostStore: composition.hostStore,
-				credentialWriter: composition.credentialWriter,
-				snippetStore: composition.snippetStore,
-				snippetSyncRuntime: composition.snippetSyncRuntime,
-				settingsStore: composition.settingsStore,
-				syncCoordinator: composition.syncCoordinator,
-				transferLifecycle: composition.transferLifecycle,
-				terminalSessionFactory: composition.terminalSessionFactory,
-				remoteFileClientFactory: composition.remoteFileClientFactory,
-				fileTransferStore: composition.fileTransferStore,
-				transferWorkspace: composition.transferWorkspace,
-				prepareCredentialSyncForSave: composition.prepareCredentialSyncForSave
-			)
+			if let credentialIdentityStore =
+				composition.credentialIdentityStore,
+			   let credentialIdentityMaterialStore =
+				composition.credentialIdentityMaterialStore {
+				MobileRootView(
+					hostStore: composition.hostStore,
+					credentialWriter: composition.credentialWriter,
+					snippetStore: composition.snippetStore,
+					snippetSyncRuntime:
+						composition.snippetSyncRuntime,
+					settingsStore: composition.settingsStore,
+					syncCoordinator: composition.syncCoordinator,
+					transferLifecycle: composition.transferLifecycle,
+					terminalSessionFactory:
+						composition.terminalSessionFactory,
+					remoteFileClientFactory:
+						composition.remoteFileClientFactory,
+					fileTransferStore: composition.fileTransferStore,
+					transferWorkspace: composition.transferWorkspace,
+					credentialIdentityStore:
+						credentialIdentityStore,
+					credentialIdentityMaterialStore:
+						credentialIdentityMaterialStore,
+					prepareCredentialSyncForSave:
+						composition.prepareCredentialSyncForSave
+				)
+			} else {
+				ContentUnavailableView(
+					"Credential Store Unavailable",
+					systemImage: "key.slash"
+				)
+			}
 		}
 	}
 

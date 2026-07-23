@@ -219,7 +219,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "CredentialSync", "CredentialSyncStore", "CloudKitSyncClient", "ServerSyncClient", "SettingsStore", "SettingsSyncStore"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "CredentialSync", "CredentialSyncStore", "CloudKitSyncClient", "ServerSyncClient", "SettingsStore", "SettingsSyncStore", "CredentialIdentityStore", "CredentialIdentitySecurity", "CredentialIdentityRuntime", "CredentialIdentitySync"],
             path: "Sources/CatermMobile"
         ),
         .target(
@@ -228,6 +228,7 @@ let package = Package(
                 "SSHCommandBuilder",
                 "KeychainStore",
                 "HostAutomationRuntime",
+                "CredentialIdentitySecurity",
                 .product(name: "NIOSSH", package: "swift-nio-ssh"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
@@ -431,7 +432,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermMobileTests",
-            dependencies: ["CatermMobile", "CatermMobileTerminal", "CloudKitSyncClient", "SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "ServerSyncClient", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes"],
+            dependencies: ["CatermMobile", "CatermMobileTerminal", "CloudKitSyncClient", "SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "ServerSyncClient", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes", "CredentialIdentityStore", "CredentialIdentitySecurity"],
             path: "Tests/CatermMobileTests"
         ),
         .testTarget(

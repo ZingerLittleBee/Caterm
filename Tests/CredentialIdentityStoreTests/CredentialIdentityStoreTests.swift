@@ -172,6 +172,35 @@ struct CredentialIdentityStoreTests {
 		}
 		#expect(fixture.store.identities == [first])
 	}
+
+	@Test
+	func accountResetClearsMetadataWithoutCloudTombstones() throws {
+		let fixture = try Fixture()
+		defer { fixture.cleanup() }
+		let identity = CredentialIdentity(
+			name: "Previous Account",
+			username: "ops",
+			source: .password(materialID: CredentialMaterialID())
+		)
+		try fixture.store.upsert(identity)
+		try fixture.store.delete(id: identity.id)
+		let replacement = CredentialIdentity(
+			name: "Pending Upload",
+			username: "deploy",
+			source: .password(materialID: CredentialMaterialID())
+		)
+		try fixture.store.upsert(replacement)
+
+		try fixture.store.resetForAccountChange()
+
+		#expect(fixture.store.identities.isEmpty)
+		#expect(fixture.store.locallyDirtyIdentityIDs.isEmpty)
+		#expect(fixture.store.pendingDeletedIdentityIDs.isEmpty)
+		let reloaded = CredentialIdentityStore(fileURL: fixture.fileURL)
+		try reloaded.load()
+		#expect(reloaded.identities.isEmpty)
+		#expect(reloaded.pendingDeletedIdentityIDs.isEmpty)
+	}
 }
 
 @MainActor

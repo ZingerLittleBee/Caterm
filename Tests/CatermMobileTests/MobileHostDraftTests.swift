@@ -160,4 +160,43 @@ final class MobileHostDraftTests: XCTestCase {
 			}
 		}
 	}
+
+	func testReusableIdentityAssignmentRoundTripsMigrationState()
+		throws {
+		let identityID = UUID()
+		var draft = MobileHostDraft()
+		draft.hostname = "identity.example"
+		draft.username = "legacy-user"
+		draft.credential = .password(secret: "rollback")
+		draft.credentialIdentityID = identityID
+		draft.credentialIdentityMigrationState = .reversible
+
+		let reversible = try draft.build(
+			mode: .add,
+			allHosts: []
+		)
+		XCTAssertEqual(
+			reversible.host.credentialIdentity,
+			HostCredentialIdentityReference(
+				identityID: identityID,
+				migrationState: .reversible
+			)
+		)
+		XCTAssertEqual(reversible.host.credential, .password)
+
+		var confirmedDraft = MobileHostDraft(
+			host: reversible.host
+		)
+		confirmedDraft.credentialIdentityMigrationState =
+			.confirmed
+		let confirmed = try confirmedDraft.build(
+			mode: .edit(reversible.host),
+			allHosts: []
+		)
+
+		XCTAssertEqual(
+			confirmed.host.credentialIdentity?.migrationState,
+			.confirmed
+		)
+	}
 }

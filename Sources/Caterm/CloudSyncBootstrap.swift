@@ -16,6 +16,8 @@ struct CloudSyncBootstrap {
 	@MainActor
 	static func make(
 		disabled: Bool,
+		additionalIdentityBoundState:
+			@escaping @Sendable () async -> Bool = { false },
 		cloudContainerFactory: () -> CKContainer = {
 			CKContainer(identifier: "iCloud.com.caterm.app")
 		}
@@ -44,7 +46,8 @@ struct CloudSyncBootstrap {
 			tokensExist: {
 				let hostTokens = await client.hasAnyHostSyncTokens()
 				let snippetTokens = await client.hasAnySnippetSyncTokens()
-				return hostTokens || snippetTokens
+				let additionalState = await additionalIdentityBoundState()
+				return hostTokens || snippetTokens || additionalState
 			}
 		)
 		return CloudSyncBootstrap(

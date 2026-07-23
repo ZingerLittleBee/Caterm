@@ -1,4 +1,5 @@
 import CatermMobileTerminal
+import CredentialIdentityStore
 import Foundation
 import SnippetSyncClient
 import SSHCommandBuilder
@@ -7,6 +8,7 @@ import SwiftUI
 public struct MobileHostsView: View {
 	@Binding private var hosts: [SSHHost]
 	private let snippets: [Snippet]
+	private let credentialIdentities: [CredentialIdentity]
 	private let terminalPreferences: MobileTerminalPreferences
 	@Environment(\.mobileHostSave) private var hostSave
 	@Environment(\.mobileSyncStatus) private var syncStatus
@@ -19,10 +21,12 @@ public struct MobileHostsView: View {
 	public init(
 		hosts: Binding<[SSHHost]>,
 		snippets: [Snippet] = [],
+		credentialIdentities: [CredentialIdentity] = [],
 		terminalPreferences: MobileTerminalPreferences = .storedDefaults
 	) {
 		_hosts = hosts
 		self.snippets = snippets
+		self.credentialIdentities = credentialIdentities
 		self.terminalPreferences = terminalPreferences
 	}
 
@@ -80,7 +84,8 @@ public struct MobileHostsView: View {
 				MobileHostFormView(
 					mode: .edit(host),
 					allHosts: hosts,
-					snippets: snippets
+					snippets: snippets,
+					credentialIdentities: credentialIdentities
 				) { payload in
 					saveHost(payload) {
 						editingHost = nil
@@ -204,6 +209,7 @@ public struct MobileHostsView: View {
 				MobileHostDetailView(
 					host: host,
 					snippets: snippets,
+					credentialIdentities: credentialIdentities,
 					terminalPreferences: terminalPreferences,
 					onConnect: nil,
 					onDelete: { deleteHost(id: id) },
@@ -221,7 +227,8 @@ public struct MobileHostsView: View {
 				MobileHostFormView(
 					mode: .edit(host),
 					allHosts: hosts,
-					snippets: snippets
+					snippets: snippets,
+					credentialIdentities: credentialIdentities
 				) { payload in
 					saveHost(payload)
 				}
@@ -261,6 +268,7 @@ public struct MobileHostsView: View {
 struct MobileHostDetailView: View {
 	let host: SSHHost
 	let snippets: [Snippet]
+	let credentialIdentities: [CredentialIdentity]
 	let terminalPreferences: MobileTerminalPreferences
 	let onConnect: ((MobileHostRoute) -> Void)?
 	let onDelete: () -> Void
@@ -330,7 +338,8 @@ struct MobileHostDetailView: View {
 				MobileHostFormView(
 					mode: .edit(host),
 					allHosts: [host],
-					snippets: snippets
+					snippets: snippets,
+					credentialIdentities: credentialIdentities
 				) { payload in
 					if let hostSave {
 						Task { @MainActor in

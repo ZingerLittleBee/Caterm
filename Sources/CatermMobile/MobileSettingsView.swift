@@ -1,3 +1,5 @@
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import SnippetSyncClient
 import SSHCommandBuilder
 import SettingsStore
@@ -10,17 +12,26 @@ public struct MobileSettingsView: View {
 	private var hosts: Binding<[SSHHost]>?
 	private var snippets: Binding<[Snippet]>?
 	private var settingsStore: SettingsStore?
+	private var credentialIdentityStore: CredentialIdentityStore?
+	private var credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 
 	/// Pass the shell's host/snippet bindings to enable the Backup
 	/// (encrypted export/import) section; nil hides it (previews/tests).
 	public init(
 		hosts: Binding<[SSHHost]>? = nil,
 		snippets: Binding<[Snippet]>? = nil,
-		settingsStore: SettingsStore? = nil
+		settingsStore: SettingsStore? = nil,
+		credentialIdentityStore: CredentialIdentityStore? = nil,
+		credentialIdentityMaterialStore:
+			CredentialIdentityMaterialStore? = nil
 	) {
 		self.hosts = hosts
 		self.snippets = snippets
 		self.settingsStore = settingsStore
+		self.credentialIdentityStore = credentialIdentityStore
+		self.credentialIdentityMaterialStore =
+			credentialIdentityMaterialStore
 	}
 
 	public var body: some View {
@@ -29,10 +40,21 @@ public struct MobileSettingsView: View {
 			MobileSyncedSettingsForm(
 				store: settingsStore,
 				hosts: hosts,
-				snippets: snippets
+				snippets: snippets,
+				credentialIdentityStore:
+					credentialIdentityStore,
+				credentialIdentityMaterialStore:
+					credentialIdentityMaterialStore
 			)
 		} else {
-			MobileLegacySettingsForm(hosts: hosts, snippets: snippets)
+			MobileLegacySettingsForm(
+				hosts: hosts,
+				snippets: snippets,
+				credentialIdentityStore:
+					credentialIdentityStore,
+				credentialIdentityMaterialStore:
+					credentialIdentityMaterialStore
+			)
 		}
 		#else
 		Form {
@@ -49,6 +71,9 @@ public struct MobileSettingsView: View {
 private struct MobileLegacySettingsForm: View {
 	var hosts: Binding<[SSHHost]>?
 	var snippets: Binding<[Snippet]>?
+	var credentialIdentityStore: CredentialIdentityStore?
+	var credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 
 	@AppStorage(MobileTerminalSettings.Keys.defaultThemeID)
 	private var themeID: String = TerminalTheme.presets[0].id
@@ -63,7 +88,10 @@ private struct MobileLegacySettingsForm: View {
 			fontSize: $fontSize,
 			keyboardNative: $keyboardNative,
 			hosts: hosts,
-			snippets: snippets
+			snippets: snippets,
+			credentialIdentityStore: credentialIdentityStore,
+			credentialIdentityMaterialStore:
+				credentialIdentityMaterialStore
 		)
 	}
 }
@@ -72,6 +100,9 @@ private struct MobileSyncedSettingsForm: View {
 	@ObservedObject var store: SettingsStore
 	var hosts: Binding<[SSHHost]>?
 	var snippets: Binding<[Snippet]>?
+	var credentialIdentityStore: CredentialIdentityStore?
+	var credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 
 	var body: some View {
 		MobileSettingsContent(
@@ -96,7 +127,10 @@ private struct MobileSyncedSettingsForm: View {
 				}
 			),
 			hosts: hosts,
-			snippets: snippets
+			snippets: snippets,
+			credentialIdentityStore: credentialIdentityStore,
+			credentialIdentityMaterialStore:
+				credentialIdentityMaterialStore
 		)
 	}
 }
@@ -109,6 +143,9 @@ private struct MobileSettingsContent: View {
 	@Environment(\.mobileSyncAction) private var syncAction
 	var hosts: Binding<[SSHHost]>?
 	var snippets: Binding<[Snippet]>?
+	var credentialIdentityStore: CredentialIdentityStore?
+	var credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 
 	private var knownThemeIDs: Set<String> {
 		Set(TerminalTheme.presets.map(\.id))
@@ -149,6 +186,37 @@ private struct MobileSettingsContent: View {
 
 			if let hosts, let snippets {
 				MobileBackupSection(hosts: hosts, snippets: snippets)
+			}
+
+			if let credentialIdentityStore,
+			   let credentialIdentityMaterialStore,
+			   let hosts {
+				Section("Credentials") {
+					NavigationLink {
+						MobileCredentialIdentityListView(
+							store: credentialIdentityStore,
+							materialStore:
+								credentialIdentityMaterialStore,
+							hosts: hosts.wrappedValue,
+							triggerSync: {
+								guard let syncAction else {
+									return
+								}
+								Task {
+									await syncAction.syncNow()
+								}
+							}
+						)
+					} label: {
+						Label(
+							"Credential Identities",
+							systemImage: "key.horizontal"
+						)
+					}
+					.accessibilityHint(
+						"Manage reusable passwords, keys, certificates, and device-bound identities"
+					)
+				}
 			}
 
 			Section("Data") {

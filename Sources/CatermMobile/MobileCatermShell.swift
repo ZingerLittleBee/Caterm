@@ -1,5 +1,7 @@
 import CatermMobileTerminal
 import Combine
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import FileTransferStore
 import SnippetSyncClient
 import SnippetStore
@@ -39,7 +41,9 @@ public struct MobileCatermShell: View {
 			terminalPreferences: .storedDefaults,
 			remoteFileClientFactory: .unavailable,
 			fileTransferStore: nil,
-			transferWorkspace: nil
+			transferWorkspace: nil,
+			credentialIdentityStore: nil,
+			credentialIdentityMaterialStore: nil
 		)
 	}
 }
@@ -54,6 +58,10 @@ public struct MobileRootView: View {
 	@StateObject private var snippetSyncRuntime: MobileSnippetSyncRuntime
 	@StateObject private var settingsStore: SettingsStore
 	@StateObject private var syncCoordinator: MobileSyncCoordinator
+	@StateObject private var credentialIdentityStore:
+		CredentialIdentityStore
+	private let credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore
 	private let transferLifecycle: MobileTransferLifecycleCoordinator
 	@Environment(\.scenePhase) private var scenePhase
 	private let hostSaveCoordinator: MobileHostSaveCoordinator
@@ -79,6 +87,9 @@ public struct MobileRootView: View {
 		remoteFileClientFactory: MobileRemoteFileClientFactory,
 		fileTransferStore: FileTransferStore,
 		transferWorkspace: MobileTransferWorkspace,
+		credentialIdentityStore: CredentialIdentityStore,
+		credentialIdentityMaterialStore:
+			CredentialIdentityMaterialStore,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
 		remoteEntries: [RemoteEntry] = [],
 		transfers: [TransferTask] = []
@@ -88,6 +99,11 @@ public struct MobileRootView: View {
 		_snippetSyncRuntime = StateObject(wrappedValue: snippetSyncRuntime)
 		_settingsStore = StateObject(wrappedValue: settingsStore)
 		_syncCoordinator = StateObject(wrappedValue: syncCoordinator)
+		_credentialIdentityStore = StateObject(
+			wrappedValue: credentialIdentityStore
+		)
+		self.credentialIdentityMaterialStore =
+			credentialIdentityMaterialStore
 		self.transferLifecycle = transferLifecycle
 		self.hostSaveCoordinator = MobileHostSaveCoordinator(
 			hostStore: hostStore,
@@ -115,7 +131,10 @@ public struct MobileRootView: View {
 			terminalPreferences: terminalPreferences,
 			remoteFileClientFactory: remoteFileClientFactory,
 			fileTransferStore: fileTransferStore,
-			transferWorkspace: transferWorkspace
+			transferWorkspace: transferWorkspace,
+			credentialIdentityStore: credentialIdentityStore,
+			credentialIdentityMaterialStore:
+				credentialIdentityMaterialStore
 		)
 		.environment(\.mobileHostSave, MobileHostSaveAction(
 			save: { payload in
@@ -401,6 +420,9 @@ struct MobileShellBody: View {
 	let remoteFileClientFactory: MobileRemoteFileClientFactory
 	let fileTransferStore: FileTransferStore?
 	let transferWorkspace: MobileTransferWorkspace?
+	let credentialIdentityStore: CredentialIdentityStore?
+	let credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 	@State private var selection: MobileShellSelection?
 	@State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
 	@State private var showingAddHost = false
@@ -417,7 +439,11 @@ struct MobileShellBody: View {
 					terminalPreferences: terminalPreferences,
 					remoteFileClientFactory: remoteFileClientFactory,
 					fileTransferStore: fileTransferStore,
-					transferWorkspace: transferWorkspace
+					transferWorkspace: transferWorkspace,
+					credentialIdentityStore:
+						credentialIdentityStore,
+					credentialIdentityMaterialStore:
+						credentialIdentityMaterialStore
 				)
 			} else {
 				NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
@@ -437,7 +463,11 @@ struct MobileShellBody: View {
 						terminalPreferences: terminalPreferences,
 						remoteFileClientFactory: remoteFileClientFactory,
 						fileTransferStore: fileTransferStore,
-						transferWorkspace: transferWorkspace
+						transferWorkspace: transferWorkspace,
+						credentialIdentityStore:
+							credentialIdentityStore,
+						credentialIdentityMaterialStore:
+							credentialIdentityMaterialStore
 					)
 				}
 				.sheet(isPresented: $showingAddHost) {
@@ -445,7 +475,10 @@ struct MobileShellBody: View {
 						MobileHostFormView(
 							mode: .add,
 							allHosts: hosts,
-							snippets: snippets
+							snippets: snippets,
+							credentialIdentities:
+								credentialIdentityStore?
+									.identities ?? []
 						) { payload in
 							if let hostSave {
 								Task { @MainActor in
@@ -489,6 +522,9 @@ private struct MobileCompactShell: View {
 	let remoteFileClientFactory: MobileRemoteFileClientFactory
 	let fileTransferStore: FileTransferStore?
 	let transferWorkspace: MobileTransferWorkspace?
+	let credentialIdentityStore: CredentialIdentityStore?
+	let credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 	@State private var showingAddHost = false
 
 	var body: some View {
@@ -498,6 +534,8 @@ private struct MobileCompactShell: View {
 					MobileHostsView(
 						hosts: $hosts,
 						snippets: snippets,
+						credentialIdentities:
+							credentialIdentityStore?.identities ?? [],
 						terminalPreferences: terminalPreferences
 					)
 
@@ -534,7 +572,11 @@ private struct MobileCompactShell: View {
 				MobileSettingsView(
 					hosts: $hosts,
 					snippets: $snippets,
-					settingsStore: settingsStore
+					settingsStore: settingsStore,
+					credentialIdentityStore:
+						credentialIdentityStore,
+					credentialIdentityMaterialStore:
+						credentialIdentityMaterialStore
 				)
 			}
 			.tabItem { Label("Settings", systemImage: "gearshape") }
@@ -544,7 +586,9 @@ private struct MobileCompactShell: View {
 				MobileHostFormView(
 					mode: .add,
 					allHosts: hosts,
-					snippets: snippets
+					snippets: snippets,
+					credentialIdentities:
+						credentialIdentityStore?.identities ?? []
 				) { payload in
 					if let hostSave {
 						Task { @MainActor in
@@ -616,6 +660,9 @@ private struct MobileShellDetail: View {
 	let remoteFileClientFactory: MobileRemoteFileClientFactory
 	let fileTransferStore: FileTransferStore?
 	let transferWorkspace: MobileTransferWorkspace?
+	let credentialIdentityStore: CredentialIdentityStore?
+	let credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 
 	var body: some View {
 		switch selection {
@@ -624,6 +671,8 @@ private struct MobileShellDetail: View {
 				MobileHostDetailView(
 					host: binding.wrappedValue,
 					snippets: snippets,
+					credentialIdentities:
+						credentialIdentityStore?.identities ?? [],
 					terminalPreferences: terminalPreferences,
 					onConnect: { route in
 						switch route {
@@ -700,12 +749,18 @@ private struct MobileShellDetail: View {
 			MobileSettingsView(
 				hosts: $hosts,
 				snippets: $snippets,
-				settingsStore: settingsStore
+				settingsStore: settingsStore,
+				credentialIdentityStore:
+					credentialIdentityStore,
+				credentialIdentityMaterialStore:
+					credentialIdentityMaterialStore
 			)
 		case nil:
 			MobileHostsView(
 				hosts: $hosts,
 				snippets: snippets,
+				credentialIdentities:
+					credentialIdentityStore?.identities ?? [],
 				terminalPreferences: terminalPreferences
 			)
 		}

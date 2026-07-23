@@ -87,7 +87,16 @@ struct CatermApp: App {
     _historyStore = StateObject(wrappedValue: history)
     let surfaceRegistry = SurfaceRegistry()
     _surfaceRegistry = StateObject(wrappedValue: surfaceRegistry)
-    let cloudSync = CloudSyncBootstrap.make(disabled: cloudSyncDisabled)
+    let cloudSync = CloudSyncBootstrap.make(
+      disabled: cloudSyncDisabled,
+      additionalIdentityBoundState: {
+        await MainActor.run {
+          !identityStore.identities.isEmpty
+            || !identityStore.locallyDirtyIdentityIDs.isEmpty
+            || !identityStore.pendingDeletedIdentityIDs.isEmpty
+        }
+      }
+    )
     let icloudSession = cloudSync.accountSession
     self.icloudSession = icloudSession
     self.cloudKitClient = cloudSync.cloudKitClient
@@ -136,6 +145,11 @@ struct CatermApp: App {
       prefsStore: credentialSyncPrefs,
       sessionStore: session
     )
+    let credentialIdentityAccountReset =
+      CredentialIdentityAccountResetCoordinator(
+        store: identityStore,
+        materialStore: identityMaterialStore
+      )
     _credentialSync = StateObject(wrappedValue: credentialSyncPrefs)
     // `_store = StateObject(wrappedValue:)` is the underscore-prefixed
     // property-wrapper init — required because `@StateObject` cannot be
@@ -262,6 +276,9 @@ struct CatermApp: App {
         },
         resetCredentials: {
           try await credentialSyncAccountReset.resetForAccountChange()
+        },
+        resetCredentialIdentities: {
+          try await credentialIdentityAccountReset.resetForAccountChange()
         },
         wipeSnippets: {
           try snippetStoreInstance.wipeLocal()

@@ -2,6 +2,9 @@ import CatermMobileTerminal
 import CloudKit
 import CloudKitSyncClient
 import Combine
+import CredentialIdentitySecurity
+import CredentialIdentityStore
+import CredentialIdentitySync
 import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
@@ -32,6 +35,9 @@ public final class MobileAppComposition: ObservableObject {
 	public let transferWorkspace: MobileTransferWorkspace
 	public let transferLifecycle: MobileTransferLifecycleCoordinator
 	public let prepareCredentialSyncForSave: MobileCredentialSyncPreparation
+	public let credentialIdentityStore: CredentialIdentityStore?
+	public let credentialIdentityMaterialStore:
+		CredentialIdentityMaterialStore?
 	private var transferCancellables: Set<AnyCancellable> = []
 	private var knownTransferHostIDs: Set<UUID>
 
@@ -47,7 +53,12 @@ public final class MobileAppComposition: ObservableObject {
 		terminalSessionFactory: MobileTerminalSessionFactory,
 		remoteFileClientFactory: MobileRemoteFileClientFactory = .unavailable,
 		transferWorkspace: MobileTransferWorkspace? = nil,
+		credentialIdentityStore: CredentialIdentityStore? = nil,
+		credentialIdentityMaterialStore:
+			CredentialIdentityMaterialStore? = nil,
 		prepareCredentialSyncForSave: @escaping MobileCredentialSyncPreparation = { _ in },
+		syncCredentialIdentities:
+			@escaping @MainActor @Sendable () async throws -> Void = {},
 		startObservingAccountChanges: @escaping () -> Void = {}
 	) {
 		self.hostStore = hostStore
@@ -57,11 +68,15 @@ public final class MobileAppComposition: ObservableObject {
 		self.snippetStore = snippetStore
 		self.snippetSyncRuntime = snippetSyncRuntime
 		self.settingsStore = settingsStore
+		self.credentialIdentityStore = credentialIdentityStore
+		self.credentialIdentityMaterialStore =
+			credentialIdentityMaterialStore
 		let syncCoordinator = MobileSyncCoordinator(
 			hostRuntime: syncRuntime,
 			snippetRuntime: snippetSyncRuntime,
 			settingsSync: settingsSync,
 			isAvailable: cloudSyncAvailable,
+			relatedSync: syncCredentialIdentities,
 			startObservingAccountChanges: startObservingAccountChanges
 		)
 		self.syncCoordinator = syncCoordinator
@@ -189,6 +204,23 @@ public final class MobileAppComposition: ObservableObject {
 			keychainAccessGroup: nil,
 			managedKeyStore: managedKeyStore
 		)
+		let credentialIdentityStore = CredentialIdentityStore(
+			fileURL: applicationSupportURL.appendingPathComponent(
+				"credential-identities.json"
+			)
+		)
+		do {
+			try credentialIdentityStore.load()
+		} catch {
+			NSLog(
+				"[MobileAppComposition] Credential identities failed to load: \(error)"
+			)
+		}
+		let credentialIdentityMaterialStore =
+			CredentialIdentityMaterialStore(
+				secrets: IdentityKeychainSecretStore(),
+				managedKeys: managedKeyStore
+			)
 		let credentialWriter = MobileCredentialWriter(
 			keychain: KeychainStore(
 				service: SSHCredentialContract.keychainService,
@@ -221,7 +253,12 @@ public final class MobileAppComposition: ObservableObject {
 			masterKeyStore: masterKeyStore
 		)
 		let planProvider = MobileAuthenticationPlanProvider(
-			materialStore: materialStore
+			materialStore: materialStore,
+			identityMaterialStore:
+				credentialIdentityMaterialStore,
+			identity: { @MainActor id in
+				credentialIdentityStore.identity(id: id)
+			}
 		)
 		let knownHosts = MobileKnownHostsStore(
 			fileURL: applicationSupportURL.appendingPathComponent("known_hosts.json")
@@ -277,6 +314,10 @@ public final class MobileAppComposition: ObservableObject {
 				terminalSessionFactory: terminalFactory,
 				remoteFileClientFactory: remoteFileFactory,
 				transferWorkspace: makeTransferWorkspace(),
+				credentialIdentityStore:
+					credentialIdentityStore,
+				credentialIdentityMaterialStore:
+					credentialIdentityMaterialStore,
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
 						transactionIsCurrent: transactionIsCurrent
@@ -327,6 +368,10 @@ public final class MobileAppComposition: ObservableObject {
 				terminalSessionFactory: terminalFactory,
 				remoteFileClientFactory: remoteFileFactory,
 				transferWorkspace: makeTransferWorkspace(),
+				credentialIdentityStore:
+					credentialIdentityStore,
+				credentialIdentityMaterialStore:
+					credentialIdentityMaterialStore,
 				prepareCredentialSyncForSave: { transactionIsCurrent in
 					try await credentialSyncCoordinator.enable(
 						transactionIsCurrent: transactionIsCurrent
@@ -380,9 +425,22 @@ public final class MobileAppComposition: ObservableObject {
 						|| !snippetStore.pendingDeletedSnippetIDs.isEmpty
 				}
 				if hasSnippetState { return true }
+				let hasIdentityState = await MainActor.run {
+					!credentialIdentityStore.identities.isEmpty
+						|| !credentialIdentityStore
+							.locallyDirtyIdentityIDs.isEmpty
+						|| !credentialIdentityStore
+							.pendingDeletedIdentityIDs.isEmpty
+				}
+				if hasIdentityState { return true }
 				return await hostStore.hasIdentityBoundState()
 			}
 		)
+		let credentialIdentityAccountReset =
+			CredentialIdentityAccountResetCoordinator(
+				store: credentialIdentityStore,
+				materialStore: credentialIdentityMaterialStore
+			)
 		let identityBoundary = MobileAccountIdentityBoundary(
 			evaluate: {
 				await identityTracker.handleAccountChange(client: client)
@@ -397,6 +455,8 @@ public final class MobileAppComposition: ObservableObject {
 				await snippetRuntime.drainForAccountChange()
 			},
 			resetRelatedLocalState: {
+				try await credentialIdentityAccountReset
+					.resetForAccountChange()
 				try snippetRuntime.resetLocalStateForAccountChange()
 			},
 			allowRelatedLocalMutationsWhileSuspended: {
@@ -417,6 +477,14 @@ public final class MobileAppComposition: ObservableObject {
 			refreshAccount: { await accountSession.refresh() },
 			identityBoundary: identityBoundary
 		)
+		let credentialIdentitySync =
+			CredentialIdentitySyncCoordinator(
+				store: credentialIdentityStore,
+				materialStore:
+					credentialIdentityMaterialStore,
+				client: client,
+				masterKeys: masterKeyStore
+			)
 
 		return MobileAppComposition(
 			hostStore: hostStore,
@@ -429,10 +497,17 @@ public final class MobileAppComposition: ObservableObject {
 			terminalSessionFactory: terminalFactory,
 			remoteFileClientFactory: remoteFileFactory,
 			transferWorkspace: makeTransferWorkspace(),
+			credentialIdentityStore: credentialIdentityStore,
+			credentialIdentityMaterialStore:
+				credentialIdentityMaterialStore,
 			prepareCredentialSyncForSave: { transactionIsCurrent in
 				try await credentialSyncCoordinator.enable(
 					transactionIsCurrent: transactionIsCurrent
 				)
+			},
+			syncCredentialIdentities: {
+				guard accountSession.isSignedIn else { return }
+				try await credentialIdentitySync.sync()
 			},
 			startObservingAccountChanges: {
 				accountSession.startObservingAccountChanges()
@@ -464,21 +539,25 @@ public final class MobileAppComposition: ObservableObject {
 		knownHosts: MobileKnownHostsStore
 	) -> MobileTerminalSessionFactory {
 		MobileTerminalSessionFactory { host in
-			let plan = try await resolvePlan(
+			let authentication = try await resolveAuthentication(
 				for: host,
 				planProvider: planProvider,
 				credentialSync: credentialSync
 			)
-			let environment = host.automation.isEnabled
-				? try host.automation.validated().environment
+			let environment = authentication.host.automation.isEnabled
+				? try authentication.host.automation
+					.validated().environment
 				: []
 			let transport = NIOSSHTransport(
-				host: host,
-				plan: plan,
+				host: authentication.host,
+				plan: authentication.plan,
 				knownHosts: knownHosts,
 				environment: environment
 			)
-			return SSHTerminalSession(host: host, transport: transport)
+			return SSHTerminalSession(
+				host: authentication.host,
+				transport: transport
+			)
 		}
 	}
 
@@ -488,34 +567,39 @@ public final class MobileAppComposition: ObservableObject {
 		knownHosts: MobileKnownHostsStore
 	) -> MobileRemoteFileClientFactory {
 		MobileRemoteFileClientFactory { host in
-			let plan = try await resolvePlan(
+			let authentication = try await resolveAuthentication(
 				for: host,
 				planProvider: planProvider,
 				credentialSync: credentialSync
 			)
 			return MobileRemoteFileClient(
-				host: host,
-				plan: plan,
+				host: authentication.host,
+				plan: authentication.plan,
 				knownHosts: knownHosts
 			)
 		}
 	}
 
-	private static func resolvePlan(
+	private static func resolveAuthentication(
 		for host: SSHHost,
 		planProvider: MobileAuthenticationPlanProvider,
 		credentialSync: CredentialSyncPreferencesStore
-	) async throws -> SSHAuthPlan {
+	) async throws -> MobilePreparedAuthentication {
 		let result = await planProvider.resolve(
 			host: host,
 			credentialSyncState: credentialSync.prefs.state
 		)
 		switch result {
-		case .available(let plan):
-			return plan
+		case .available(let authentication):
+			return authentication
 		case .unavailable(let reason):
 			#if targetEnvironment(simulator)
-			if let injected = simulatorPlan(host: host) { return injected }
+			if let injected = simulatorPlan(host: host) {
+				return MobilePreparedAuthentication(
+					host: host,
+					plan: injected
+				)
+			}
 			#endif
 			throw reason
 		}
