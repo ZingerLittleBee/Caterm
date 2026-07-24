@@ -134,7 +134,7 @@ struct WorkspacePaneCommands: Commands {
 			Button("Close Pane") {
 				handler?(.closePane)
 			}
-			.keyboardShortcut("w", modifiers: [.command, .option])
+			.keyboardShortcut("w", modifiers: [.command, .control])
 			.disabled(handler == nil)
 		}
 	}

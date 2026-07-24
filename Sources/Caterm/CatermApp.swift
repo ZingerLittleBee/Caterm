@@ -756,16 +756,41 @@ struct WorkspaceSceneRoot: View {
   @ViewBuilder
   var body: some View {
     if case .workspace(let workspace) = windowState {
-      MainWindow(
-        workspace: Binding(
-          get: { windowState.workspace ?? workspace },
-          set: { windowState = .workspace($0) }
-        )
+      WorkspaceSceneContent(
+        restoredWorkspace: workspace,
+        windowState: $windowState
       )
       .id(workspace.id)
     } else {
       LandingView(windowState: $windowState)
     }
+  }
+}
+
+private struct WorkspaceSceneContent: View {
+  let restoredWorkspace: Workspace
+  @Binding var windowState: WorkspaceWindowState
+  @State private var workspace: Workspace
+
+  init(
+    restoredWorkspace: Workspace,
+    windowState: Binding<WorkspaceWindowState>
+  ) {
+    self.restoredWorkspace = restoredWorkspace
+    _windowState = windowState
+    _workspace = State(initialValue: restoredWorkspace)
+  }
+
+  var body: some View {
+    MainWindow(workspace: $workspace)
+      .onChange(of: workspace) { _, updatedWorkspace in
+        guard windowState.workspace != updatedWorkspace else { return }
+        windowState = .workspace(updatedWorkspace)
+      }
+      .onChange(of: restoredWorkspace) { _, updatedWorkspace in
+        guard workspace != updatedWorkspace else { return }
+        workspace = updatedWorkspace
+      }
   }
 }
 
