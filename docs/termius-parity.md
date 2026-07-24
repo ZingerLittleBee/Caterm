@@ -67,7 +67,7 @@ The status vocabulary is intentionally strict:
 | Reviewed multi-Host and multi-Pane Snippet execution | **Implemented** | [`WorkspaceBroadcast`](../Sources/WorkspaceBroadcast) freezes the selected recipients, requires one complete-command review, and reports per-Pane outcomes. The native review surface lives in [`WorkspaceBroadcastViews.swift`](../Sources/Caterm/Views/WorkspaceBroadcastViews.swift), with execution and policy coverage in [`WorkspaceBroadcastTests.swift`](../Tests/WorkspaceBroadcastTests/WorkspaceBroadcastTests.swift). |
 | Synchronized shell command history | **Deliberately excluded** | Caterm records local connection metadata, not terminal commands or output. This is a privacy boundary, not a missing sync lane. [`SessionHistory`](../Sources/SessionHistory) stores Host, timing, state, and outcome only. |
 | Recorded session logs and log bookmarks | **Deliberately excluded** | Caterm does not persist or synchronize terminal output by default. Connection history exists for operational diagnostics, but it is not a replayable terminal log. |
-| Desktop dual-pane SFTP, cross-Host copy, drag and drop, transfer tracking, and external-editor upload-back | **Deferred** | The native implementation and focused/real-OpenSSH tests exist in [`SFTPTaskWindowView.swift`](../Sources/Caterm/Views/SFTPTaskWindowView.swift), [`RemoteExternalEditorCoordinator.swift`](../Sources/Caterm/Views/RemoteExternalEditorCoordinator.swift), and [`RealOpenSSHTransferTests.swift`](../Tests/FileTransferStoreTests/RealOpenSSHTransferTests.swift). Ad-hoc signed real-SSH GUI runs covered local-to-remote and remote-to-remote copy, relaying disclosure, Keep Both conflicts, exact byte integrity, private external-editor staging, automatic in-place-save detection, remote-change conflict choices, atomic upload-back, cancellation, unrelated terminal-Pane independence, editor exit, task-window close, application quit, and clean and modified-draft cleanup. Automated watcher tests separately cover atomic replacement followed by later in-place writes. Caterm deliberately remains outside App Sandbox because the current libghostty PTY child cannot execute OpenSSH in a sandbox-signed prototype; [ADR 0007](adr/0007-keep-macos-transport-outside-app-sandbox.md) records that shipping boundary. Apple Development-signed shipping-configuration acceptance remains open in [#59](https://github.com/ZingerLittleBee/Caterm/issues/59) because the current signing attempt fails with `errSecInternalComponent`. |
+| Desktop dual-pane SFTP, cross-Host copy, drag and drop, transfer tracking, and external-editor upload-back | **Implemented** | The native implementation and focused/real-OpenSSH tests live in [`SFTPTaskWindowView.swift`](../Sources/Caterm/Views/SFTPTaskWindowView.swift), [`RemoteExternalEditorCoordinator.swift`](../Sources/Caterm/Views/RemoteExternalEditorCoordinator.swift), and [`RealOpenSSHTransferTests.swift`](../Tests/FileTransferStoreTests/RealOpenSSHTransferTests.swift). An Apple Development-signed application connected to disposable localhost Hosts and verified local-to-remote copy, remote-to-remote relay through the Mac, Keep Both conflict handling, exact SHA-256 integrity, private `0700`/`0600` external-editor staging, automatic in-place-change detection, remote-change conflict metadata, cancellation, atomic upload-back, clean-session cleanup, and task-window and application quit confirmation. Automated watcher tests separately cover atomic replacement followed by later in-place writes. Caterm deliberately remains outside App Sandbox because the current libghostty PTY child cannot execute OpenSSH in a sandbox-signed prototype; [ADR 0007](adr/0007-keep-macos-transport-outside-app-sandbox.md) records that shipping boundary. |
 | iPhone and iPad SFTP with Files integration, mutations, transfer state, and drag and drop | **Implemented** | NIO SFTP browsing/mutations and the shared transfer coordinator are composed in [`MobileAppComposition.swift`](../Sources/CatermMobile/MobileAppComposition.swift), [`MobileFileBrowserView.swift`](../Sources/CatermMobile/MobileFileBrowserView.swift), and [`MobileFileTransfer.swift`](../Sources/CatermMobile/MobileFileTransfer.swift). Mobile transport, real-fixture, Files, lifecycle, conflict, cancellation, and accessibility tests live under [`CatermMobileTests`](../Tests/CatermMobileTests). |
 | Mobile cross-Host SFTP copy | **Deliberately excluded** | The mobile product keeps transfer ownership inside one active Host session and provides explicit download, Files export, and upload workflows. It does not expose a multi-session remote-copy API or imply that the deferred desktop dual-pane workflow ships on iPhone or iPad. |
 | Mobile-native terminal input and hardware keyboard support | **Implemented** | The iOS terminal provides a programmable key strip, native-keyboard choice, hardware-keyboard routing, snippets, resize handling, and reconnect through [`CatermMobileTerminal`](../Sources/CatermMobileTerminal) and [`MobileTerminalSessionView.swift`](../Sources/CatermMobileTerminal/MobileTerminalSessionView.swift), with focused mobile terminal tests. Caterm does not claim Termius voice input or AI command generation. |
@@ -105,16 +105,17 @@ the roadmap.
   plus one Swift Testing case. An ad-hoc signed GUI run then connected to a
   disposable OpenSSH fixture, authorized a local folder, listed the remote
   location, uploaded an exact 43-byte file, and refreshed the remote pane.
-- Further ad-hoc signed #59 GUI coverage passed remote-to-remote relay and
-  conflict flows plus external-editor save detection, remote-conflict choices,
-  atomic upload-back, cancellation, editor-exit handling, and explicit draft
-  discard. That run exposed an in-place-save detection defect; the production
-  watcher was fixed test-first, and 12 external-editor Swift Testing cases now
-  cover both in-place writes and atomic replacement followed by later in-place
-  writes. A later run verified that closing an unrelated terminal Pane leaves
-  the draft intact; both task-window close and application quit require
-  explicit confirmation, preserve the draft when cancelled, and clean staging
-  without uploading when confirmed.
+- Apple Development-signed #59 GUI coverage passed local-to-remote copy,
+  remote-to-remote relay disclosure, Keep Both conflict handling, and exact
+  SHA-256 integrity against disposable localhost Hosts. External editing used
+  a private `0700` directory and `0600` draft, detected an in-place change,
+  presented the changed remote size, retained both versions after Cancel, and
+  atomically published the selected draft after Replace Remote. No partial
+  file remained. Clean stop removed staging; task-window and application quit
+  both preserved the draft after Cancel and removed staging without uploading
+  after explicit discard. The watcher fix remains covered by 12 Swift Testing
+  cases for in-place writes and atomic replacement followed by later in-place
+  writes.
 - Ad-hoc signed #55 GUI coverage found and fixed a terminal-lifecycle defect:
   embedded libghostty wakeups now drain on the main actor so child exit state
   reaches the Pane. A separate Workspace restoration defect was also fixed:
@@ -129,19 +130,19 @@ the roadmap.
 - The full unfiltered `make test` run remains non-green because suite-composed
   execution stalls in an XCTest asynchronous wait; focused affected suites
   pass and isolated suites around the last buffered output also pass.
-- A prior `make run-app` acceptance produced and launched a development-signed
-  application whose disposable SSH fixture completed startup automation.
-  The current rerun reaches the signing step but fails with
-  `errSecInternalComponent`; desktop SFTP Apple Development-signed
-  shipping-configuration proof remains a separate gate.
+- A prior `make run-app` acceptance produced and launched an Apple
+  Development-signed application. That product completed startup automation
+  and the desktop SFTP shipping-configuration matrix against disposable
+  localhost fixtures. A later attempt to package the Workspace split-layout
+  fix still fails in the automation shell with `errSecInternalComponent`;
+  this is the remaining #55 replay gate, not a desktop SFTP evidence gap.
 - Signed physical-device acceptance created a Secure Enclave identity,
   restarted Caterm before connecting, and authenticated to a disposable
   OpenSSH fixture with no password fallback. Cleanup then confirmed that the
   identity metadata, device-bound Keychain accounts, temporary Host, and
   server authorization were absent.
-- Signed macOS Workspace restoration/accessibility/load proof and Apple
-  Development-signed desktop SFTP shipping-configuration acceptance remain
-  scoped by #55 and #59.
+- Signed macOS Workspace restoration/accessibility/load proof remains scoped
+  by #55.
 - No private Host address, account identity, credential, terminal content,
   screenshot, application log, or local fixture is included in this document
   or committed elsewhere by the parity audit.
