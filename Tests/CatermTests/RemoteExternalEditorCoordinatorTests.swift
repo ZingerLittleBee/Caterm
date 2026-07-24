@@ -115,6 +115,93 @@ struct RemoteExternalEditorCoordinatorTests {
 	}
 
 	@Test
+	func inPlaceEditorWriteAutomaticallyMarksDraftModified() async throws {
+		let root = temporaryRoot()
+		let client = ExternalEditRemoteClient(
+			data: Data("original".utf8),
+			modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+		)
+		let host = makeHost()
+		let store = FileTransferStore { _ in client }
+		let coordinator = RemoteExternalEditorCoordinator(
+			rootURL: root,
+			openEditor: { _, _ in nil }
+		)
+		await coordinator.start(
+			side: .right,
+			remotePath: "/srv/config.txt",
+			editorURL: URL(fileURLWithPath: "/Applications/Zed.app"),
+			host: host,
+			transferStore: store
+		)
+		let session = try #require(coordinator.session(for: .right))
+		let handle = try FileHandle(forWritingTo: session.stagedURL)
+		try handle.truncate(atOffset: 0)
+		try handle.write(contentsOf: Data("in-place edit".utf8))
+		try handle.synchronize()
+		try handle.close()
+
+		let detected = await waitForExternalEditState {
+			coordinator.session(for: .right)?.state == .modified
+		}
+
+		#expect(detected)
+		await coordinator.closeAll()
+	}
+
+	@Test
+	func atomicReplacementRearmsWatcherForLaterInPlaceWrite() async throws {
+		let root = temporaryRoot()
+		let client = ExternalEditRemoteClient(
+			data: Data("original".utf8),
+			modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+		)
+		let host = makeHost()
+		let store = FileTransferStore { _ in client }
+		let coordinator = RemoteExternalEditorCoordinator(
+			rootURL: root,
+			openEditor: { _, _ in nil }
+		)
+		await coordinator.start(
+			side: .left,
+			remotePath: "/srv/config.txt",
+			editorURL: URL(fileURLWithPath: "/Applications/TextEdit.app"),
+			host: host,
+			transferStore: store
+		)
+		let session = try #require(coordinator.session(for: .left))
+		try Data("atomic edit".utf8).write(
+			to: session.stagedURL,
+			options: .atomic
+		)
+		#expect(await waitForExternalEditState {
+			coordinator.session(for: .left)?.state == .modified
+		})
+		try Data("original".utf8).write(
+			to: session.stagedURL,
+			options: .atomic
+		)
+		#expect(await waitForExternalEditState {
+			guard case .watching(uploadedAt: nil) =
+				coordinator.session(for: .left)?.state else {
+				return false
+			}
+			return true
+		})
+
+		let handle = try FileHandle(forWritingTo: session.stagedURL)
+		try handle.truncate(atOffset: 0)
+		try handle.write(contentsOf: Data("in-place after atomic".utf8))
+		try handle.synchronize()
+		try handle.close()
+
+		#expect(await waitForExternalEditState {
+			coordinator.session(for: .left)?.state == .modified
+		})
+		await coordinator.closeAll()
+	}
+
+	@Test
 	func changedRemoteOffersDownloadNewerInsteadOfOverwriting() async throws {
 		let root = temporaryRoot()
 		let client = ExternalEditRemoteClient(
@@ -471,6 +558,20 @@ struct RemoteExternalEditorCoordinatorTests {
 			credential: .agent
 		)
 	}
+}
+
+@MainActor
+private func waitForExternalEditState(
+	timeout: Duration = .seconds(2),
+	condition: @MainActor () -> Bool
+) async -> Bool {
+	let clock = ContinuousClock()
+	let deadline = clock.now.advanced(by: timeout)
+	while !condition() {
+		guard clock.now < deadline else { return false }
+		try? await Task.sleep(for: .milliseconds(50))
+	}
+	return true
 }
 
 private extension RemoteExternalEditSession.State {

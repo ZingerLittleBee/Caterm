@@ -192,7 +192,7 @@ final class RemoteExternalEditorCoordinator: ObservableObject {
 	private var hosts: [SFTPTaskSide: SSHHost] = [:]
 	private var transferStores: [SFTPTaskSide: FileTransferStore] = [:]
 	private var activeTaskIDs: [SFTPTaskSide: TaskId] = [:]
-	private var watchers: [SFTPTaskSide: DirectoryWatcher] = [:]
+	private var watchers: [SFTPTaskSide: DraftWatcher] = [:]
 	private var watcherDebounceTasks: [SFTPTaskSide: Task<Void, Never>] = [:]
 	private var editorTerminationObservers: [SFTPTaskSide: NSObjectProtocol] = [:]
 
@@ -284,7 +284,11 @@ final class RemoteExternalEditorCoordinator: ObservableObject {
 				digest
 			)
 			sessions[side]?.baselineDigest = digest
-			try installWatcher(side: side, directoryURL: directoryURL)
+			try installWatcher(
+				side: side,
+				directoryURL: directoryURL,
+				fileURL: stagedURL
+			)
 			do {
 				let processIdentifier = try await openEditor(
 					stagedURL,
@@ -638,14 +642,19 @@ final class RemoteExternalEditorCoordinator: ObservableObject {
 
 	private func installWatcher(
 		side: SFTPTaskSide,
-		directoryURL: URL
+		directoryURL: URL,
+		fileURL: URL
 	) throws {
-		let watcher = try DirectoryWatcher(directoryURL: directoryURL) {
+		let watcher = try DraftWatcher(
+			directoryURL: directoryURL,
+			fileURL: fileURL
+		) {
 			[weak self] in
 			Task { @MainActor in
 				self?.scheduleModificationRefresh(side: side)
 			}
 		}
+		watchers[side]?.cancel()
 		watchers[side] = watcher
 	}
 
@@ -655,7 +664,27 @@ final class RemoteExternalEditorCoordinator: ObservableObject {
 			do {
 				try await Task.sleep(for: .milliseconds(200))
 				guard !Task.isCancelled else { return }
-				await self?.refreshLocalModification(side: side)
+				guard let self,
+					let session = sessions[side] else {
+					return
+				}
+				await refreshLocalModification(side: side)
+				guard sessions[side]?.id == session.id else { return }
+				do {
+					try installWatcher(
+						side: side,
+						directoryURL:
+							session.stagedURL.deletingLastPathComponent(),
+						fileURL: session.stagedURL
+					)
+				} catch {
+					fail(
+						side: side,
+						id: session.id,
+						error: error,
+						retry: .refresh
+					)
+				}
 			} catch {
 				return
 			}
@@ -978,21 +1007,63 @@ final class RemoteExternalEditorCoordinator: ObservableObject {
 	}
 }
 
-private final class DirectoryWatcher: @unchecked Sendable {
+private final class DraftWatcher: @unchecked Sendable {
+	private let directoryWatcher: FileSystemWatcher
+	private let fileWatcher: FileSystemWatcher
+
+	init(
+		directoryURL: URL,
+		fileURL: URL,
+		onChange: @escaping @Sendable () -> Void
+	) throws {
+		let directoryWatcher = try FileSystemWatcher(
+			url: directoryURL,
+			eventMask: [.write, .rename, .delete, .attrib, .revoke],
+			onChange: onChange
+		)
+		do {
+			let fileWatcher = try FileSystemWatcher(
+				url: fileURL,
+				eventMask: [
+					.write, .extend, .rename, .delete, .attrib, .revoke,
+				],
+				onChange: onChange
+			)
+			self.directoryWatcher = directoryWatcher
+			self.fileWatcher = fileWatcher
+		} catch {
+			directoryWatcher.cancel()
+			throw error
+		}
+	}
+
+	func cancel() {
+		directoryWatcher.cancel()
+		fileWatcher.cancel()
+	}
+}
+
+private final class FileSystemWatcher: @unchecked Sendable {
 	private let source: DispatchSourceFileSystemObject
 	private let descriptor: Int32
 
 	init(
-		directoryURL: URL,
+		url: URL,
+		eventMask: DispatchSource.FileSystemEvent,
 		onChange: @escaping @Sendable () -> Void
 	) throws {
-		descriptor = open(directoryURL.path, O_EVTONLY)
+		descriptor = open(url.path, O_EVTONLY)
 		guard descriptor >= 0 else {
-			throw CocoaError(.fileReadNoPermission)
+			let errorNumber = errno
+			throw FileSystemWatcherError.openFailed(
+				path: url.path,
+				errorNumber: errorNumber,
+				reason: String(cString: strerror(errorNumber))
+			)
 		}
 		source = DispatchSource.makeFileSystemObjectSource(
 			fileDescriptor: descriptor,
-			eventMask: [.write, .rename, .delete, .extend, .attrib],
+			eventMask: eventMask,
 			queue: .global(qos: .utility)
 		)
 		source.setEventHandler(handler: onChange)
@@ -1008,5 +1079,16 @@ private final class DirectoryWatcher: @unchecked Sendable {
 
 	deinit {
 		source.cancel()
+	}
+}
+
+private enum FileSystemWatcherError: LocalizedError {
+	case openFailed(path: String, errorNumber: Int32, reason: String)
+
+	var errorDescription: String? {
+		switch self {
+		case .openFailed(let path, let errorNumber, let reason):
+			"Could not monitor \(path) (errno \(errorNumber)): \(reason)"
+		}
 	}
 }
