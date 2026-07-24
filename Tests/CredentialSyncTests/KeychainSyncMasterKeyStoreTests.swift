@@ -1,6 +1,31 @@
 import CryptoKit
-import CredentialSyncStore
+@testable import CredentialSyncStore
+import Security
 import XCTest
+
+private struct FixedSyncMasterKeyReader: SyncMasterKeyReading, @unchecked Sendable {
+    let result: SyncMasterKeyReadResult
+
+    func read(query _: [String: Any]) -> SyncMasterKeyReadResult { result }
+}
+
+private final class CapturingSyncMasterKeyReader: SyncMasterKeyReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var capturedQuery: [String: Any] = [:]
+
+    func read(query: [String: Any]) -> SyncMasterKeyReadResult {
+        lock.lock()
+        capturedQuery = query
+        lock.unlock()
+        return SyncMasterKeyReadResult(status: errSecItemNotFound, value: nil)
+    }
+
+    func accessGroup() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedQuery[kSecAttrAccessGroup as String] as? String
+    }
+}
 
 final class KeychainSyncMasterKeyStoreTests: XCTestCase {
     /// We use a unique service per test so concurrent runs don't collide.
@@ -41,5 +66,51 @@ final class KeychainSyncMasterKeyStoreTests: XCTestCase {
         await store.remove(keyID: id)  // second call: must not throw / crash
         let afterRemove = await store.load(keyID: id)
         XCTAssertNil(afterRemove)
+    }
+
+    func test_lookupAny_distinguishesMissingFromUnavailable() async throws {
+        let missing = KeychainSyncMasterKeyStore(
+            service: "test",
+            synchronizable: false,
+            reader: FixedSyncMasterKeyReader(
+                result: SyncMasterKeyReadResult(
+                    status: errSecItemNotFound,
+                    value: nil
+                )
+            )
+        )
+        let unavailable = KeychainSyncMasterKeyStore(
+            service: "test",
+            synchronizable: false,
+            reader: FixedSyncMasterKeyReader(
+                result: SyncMasterKeyReadResult(
+                    status: errSecInteractionNotAllowed,
+                    value: nil
+                )
+            )
+        )
+
+        let missingResult = try await missing.lookupAny()
+        XCTAssertNil(missingResult)
+        do {
+            _ = try await unavailable.lookupAny()
+            XCTFail("Expected a Keychain availability error")
+        } catch let error as KeychainSyncMasterKeyStore.Error {
+            XCTAssertEqual(error, .keychainOSError(errSecInteractionNotAllowed))
+        }
+    }
+
+    func test_lookupAny_scopesSharedMasterKeyToConfiguredAccessGroup() async throws {
+        let reader = CapturingSyncMasterKeyReader()
+        let store = KeychainSyncMasterKeyStore(
+            service: "test",
+            synchronizable: true,
+            reader: reader,
+            accessGroup: "TEAM.caterm.shared"
+        )
+
+        _ = try await store.lookupAny()
+
+        XCTAssertEqual(reader.accessGroup(), "TEAM.caterm.shared")
     }
 }

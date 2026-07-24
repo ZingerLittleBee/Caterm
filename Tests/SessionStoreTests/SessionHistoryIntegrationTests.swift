@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class SessionHistoryIntegrationTests: XCTestCase {
-	func testOneTimeConnectionRecordsCompletedLifecycle() throws {
+	func testOneTimeConnectionRecordsCompletedLifecycle() async throws {
 		let history = SessionHistoryStore(fileURL: temporaryURL("history.json"))
 		let store = makeStore(historyRecorder: history)
 		let host = SSHHost(
@@ -36,7 +36,7 @@ final class SessionHistoryIntegrationTests: XCTestCase {
 		XCTAssertEqual(outcome, .completed)
 	}
 
-	func testBrokenSavedHostChainRecordsFailure() throws {
+	func testBrokenSavedHostChainRecordsFailure() async throws {
 		let history = SessionHistoryStore(fileURL: temporaryURL("history.json"))
 		let store = makeStore(historyRecorder: history)
 		let host = SSHHost(
@@ -46,7 +46,7 @@ final class SessionHistoryIntegrationTests: XCTestCase {
 			credential: .agent,
 			jumpHostId: UUID()
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 
 		_ = store.openTab(host: host)
 
@@ -58,7 +58,7 @@ final class SessionHistoryIntegrationTests: XCTestCase {
 		XCTAssertEqual(outcome, .failed)
 	}
 
-	func testRetryStartsANewHistoryEntry() {
+	func testRetryStartsANewHistoryEntry() async {
 		let history = SessionHistoryStore(fileURL: temporaryURL("history.json"))
 		let store = makeStore(historyRecorder: history)
 		let tabID = store.openTab(

@@ -34,6 +34,35 @@ let package = Package(
             path: "Sources/SSHCredentialContract"
         ),
         .target(
+            name: "CredentialIdentityStore",
+            path: "Sources/CredentialIdentityStore"
+        ),
+        .target(
+            name: "CredentialIdentitySecurity",
+            dependencies: ["CredentialIdentityStore", "ManagedKeyStore"],
+            path: "Sources/CredentialIdentitySecurity"
+        ),
+        .target(
+            name: "CredentialIdentityRuntime",
+            dependencies: [
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "ManagedKeyStore",
+                "SSHCommandBuilder",
+            ],
+            path: "Sources/CredentialIdentityRuntime"
+        ),
+        .target(
+            name: "CredentialIdentitySync",
+            dependencies: [
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "CredentialSyncStore",
+                "CredentialSyncTypes",
+            ],
+            path: "Sources/CredentialIdentitySync"
+        ),
+        .target(
             name: "SSHCommandBuilder",
             dependencies: ["SSHCredentialContract"],
             path: "Sources/SSHCommandBuilder",
@@ -65,6 +94,25 @@ let package = Package(
             path: "Sources/SessionHistory"
         ),
         .target(
+            name: "WorkspaceCore",
+            path: "Sources/WorkspaceCore"
+        ),
+        .target(
+            name: "WorkspaceTemplateStore",
+            dependencies: ["WorkspaceCore"],
+            path: "Sources/WorkspaceTemplateStore"
+        ),
+        .target(
+            name: "WorkspaceBroadcast",
+            dependencies: ["WorkspaceCore"],
+            path: "Sources/WorkspaceBroadcast"
+        ),
+        .target(
+            name: "HostRepositoryCore",
+            dependencies: ["SSHCommandBuilder", "ServerSyncClient", "MergeDecision"],
+            path: "Sources/HostRepositoryCore"
+        ),
+        .target(
             name: "KnownHostsStore",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
@@ -73,7 +121,7 @@ let package = Package(
         ),
         .target(
             name: "SessionStore",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "KeychainStore", "ManagedKeyStore", "ServerSyncClient", "SessionHistory", "HostRepositoryCore", "HostAutomationRuntime", "CredentialIdentityStore", "CredentialIdentityRuntime"],
             path: "Sources/SessionStore"
         ),
         .target(
@@ -83,12 +131,12 @@ let package = Package(
         ),
         .target(
             name: "HostSyncStore",
-            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes", "MergeDecision", "SyncScheduler"],
+            dependencies: ["ServerSyncClient", "SessionStore", "SSHCommandBuilder", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes", "MergeDecision", "SyncScheduler", "HostRepositoryCore"],
             path: "Sources/HostSyncStore"
         ),
         .target(
             name: "CloudKitSyncClient",
-            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SettingsSyncStore", "SnippetSyncClient"],
+            dependencies: ["ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "CredentialIdentityStore", "SettingsSyncStore", "SnippetSyncClient"],
             path: "Sources/CloudKitSyncClient"
         ),
         .target(
@@ -123,6 +171,11 @@ let package = Package(
             path: "Sources/SnippetStore"
         ),
         .target(
+            name: "HostAutomationRuntime",
+            dependencies: ["SSHCommandBuilder", "SnippetSyncClient"],
+            path: "Sources/HostAutomationRuntime"
+        ),
+        .target(
             name: "FileTransferStore",
             dependencies: ["SSHCommandBuilder", "SFTPCommandBuilder"],
             path: "Sources/FileTransferStore"
@@ -147,7 +200,7 @@ let package = Package(
         ),
         .target(
             name: "BackupService",
-            dependencies: ["BackupArchive", "SessionStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "MergeDecision"],
+            dependencies: ["BackupArchive", "SessionStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "MergeDecision", "CredentialIdentityStore", "CredentialIdentitySecurity"],
             path: "Sources/BackupService"
         ),
         .target(
@@ -157,7 +210,7 @@ let package = Package(
         ),
         .target(
             name: "CredentialSync",
-            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore", "KeychainStore"],
+            dependencies: ["SessionStore", "ServerSyncClient", "CredentialSyncTypes", "CredentialSyncStore", "KeychainStore", "HostRepositoryCore"],
             path: "Sources/CredentialSync"
         ),
         .target(
@@ -166,7 +219,7 @@ let package = Package(
         ),
         .target(
             name: "CatermMobile",
-            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore"],
+            dependencies: ["SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "CatermMobileTerminal", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "CredentialSync", "CredentialSyncStore", "CloudKitSyncClient", "ServerSyncClient", "SettingsStore", "SettingsSyncStore", "CredentialIdentityStore", "CredentialIdentitySecurity", "CredentialIdentityRuntime", "CredentialIdentitySync"],
             path: "Sources/CatermMobile"
         ),
         .target(
@@ -174,6 +227,8 @@ let package = Package(
             dependencies: [
                 "SSHCommandBuilder",
                 "KeychainStore",
+                "HostAutomationRuntime",
+                "CredentialIdentitySecurity",
                 .product(name: "NIOSSH", package: "swift-nio-ssh"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
@@ -199,6 +254,10 @@ let package = Package(
                 "SSHCredentialContract",
                 "SessionStore",
                 "SessionHistory",
+                "WorkspaceCore",
+                "WorkspaceTemplateStore",
+                "WorkspaceBroadcast",
+                "HostAutomationRuntime",
                 "KnownHostsStore",
                 "KeychainStore",
                 "ConfigStore",
@@ -209,6 +268,10 @@ let package = Package(
                 "CloudKitSyncClient",
                 "CredentialSync",
                 "CredentialSyncStore",
+                "CredentialIdentityStore",
+                "CredentialIdentitySecurity",
+                "CredentialIdentityRuntime",
+                "CredentialIdentitySync",
                 "HostKeyProvisioning",
                 "ManagedKeyStore",
                 "BackupArchive",
@@ -252,9 +315,55 @@ let package = Package(
             path: "Tests/SSHCredentialContractTests"
         ),
         .testTarget(
+            name: "CredentialIdentityStoreTests",
+            dependencies: ["CredentialIdentityStore"],
+            path: "Tests/CredentialIdentityStoreTests"
+        ),
+        .testTarget(
+            name: "CredentialIdentitySecurityTests",
+            dependencies: [
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "ManagedKeyStore",
+            ],
+            path: "Tests/CredentialIdentitySecurityTests"
+        ),
+        .testTarget(
+            name: "CredentialIdentityRuntimeTests",
+            dependencies: [
+                "CredentialIdentityRuntime",
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "ManagedKeyStore",
+                "SSHCommandBuilder",
+            ],
+            path: "Tests/CredentialIdentityRuntimeTests"
+        ),
+        .testTarget(
+            name: "CredentialIdentitySyncTests",
+            dependencies: [
+                "CredentialIdentitySync",
+                "CredentialIdentitySecurity",
+                "CredentialIdentityStore",
+                "CredentialSyncStore",
+                "CredentialSyncTypes",
+                "ManagedKeyStore",
+            ],
+            path: "Tests/CredentialIdentitySyncTests"
+        ),
+        .testTarget(
             name: "SSHCommandBuilderTests",
             dependencies: ["SSHCommandBuilder"],
             path: "Tests/SSHCommandBuilderTests"
+        ),
+        .testTarget(
+            name: "HostAutomationRuntimeTests",
+            dependencies: [
+                "HostAutomationRuntime",
+                "SSHCommandBuilder",
+                "SnippetSyncClient",
+            ],
+            path: "Tests/HostAutomationRuntimeTests"
         ),
         .testTarget(
             name: "KeychainStoreTests",
@@ -263,13 +372,33 @@ let package = Package(
         ),
         .testTarget(
             name: "SessionStoreTests",
-            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder"],
+            dependencies: ["SessionStore", "SessionHistory", "KeychainStore", "ManagedKeyStore", "SSHCommandBuilder", "HostAutomationRuntime", "CredentialIdentityStore", "CredentialIdentitySecurity", "CredentialIdentityRuntime"],
             path: "Tests/SessionStoreTests"
         ),
         .testTarget(
             name: "SessionHistoryTests",
             dependencies: ["SessionHistory"],
             path: "Tests/SessionHistoryTests"
+        ),
+        .testTarget(
+            name: "WorkspaceCoreTests",
+            dependencies: ["WorkspaceCore"],
+            path: "Tests/WorkspaceCoreTests"
+        ),
+        .testTarget(
+            name: "WorkspaceTemplateStoreTests",
+            dependencies: ["WorkspaceTemplateStore", "WorkspaceCore"],
+            path: "Tests/WorkspaceTemplateStoreTests"
+        ),
+        .testTarget(
+            name: "WorkspaceBroadcastTests",
+            dependencies: ["WorkspaceBroadcast", "WorkspaceCore"],
+            path: "Tests/WorkspaceBroadcastTests"
+        ),
+        .testTarget(
+            name: "HostRepositoryCoreTests",
+            dependencies: ["HostRepositoryCore", "ServerSyncClient", "SSHCommandBuilder", "SessionStore", "CatermMobile", "KeychainStore"],
+            path: "Tests/HostRepositoryCoreTests"
         ),
         .testTarget(
             name: "ConfigStoreTests",
@@ -298,17 +427,17 @@ let package = Package(
         ),
         .testTarget(
             name: "CatermTests",
-            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient"],
+            dependencies: ["Caterm", "SessionStore", "SSHCommandBuilder", "KeychainStore", "ServerSyncClient", "HostSyncStore", "SettingsStore", "ConfigStore", "SnippetStore", "SnippetSyncClient", "WorkspaceCore", "WorkspaceTemplateStore", "WorkspaceBroadcast", "CredentialIdentityStore", "CredentialIdentitySecurity", "CredentialIdentityRuntime"],
             path: "Tests/CatermTests"
         ),
         .testTarget(
             name: "CatermMobileTests",
-            dependencies: ["CatermMobile", "SSHCommandBuilder", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore"],
+            dependencies: ["CatermMobile", "CatermMobileTerminal", "CloudKitSyncClient", "SSHCommandBuilder", "SSHCredentialContract", "SessionStore", "SnippetStore", "SnippetSyncClient", "FileTransferStore", "KeychainStore", "BackupArchive", "BackupService", "ManagedKeyStore", "HostRepositoryCore", "ServerSyncClient", "CredentialSync", "CredentialSyncStore", "CredentialSyncTypes", "CredentialIdentityStore", "CredentialIdentitySecurity"],
             path: "Tests/CatermMobileTests"
         ),
         .testTarget(
             name: "CatermMobileTerminalTests",
-            dependencies: ["CatermMobileTerminal", "SSHCommandBuilder", "KeychainStore"],
+            dependencies: ["CatermMobileTerminal", "SSHCommandBuilder", "KeychainStore", "HostAutomationRuntime"],
             path: "Tests/CatermMobileTerminalTests"
         ),
         .testTarget(
@@ -348,7 +477,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CloudKitSyncClientTests",
-            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "SnippetSyncClient"],
+            dependencies: ["CloudKitSyncClient", "ServerSyncClient", "SSHCommandBuilder", "CredentialSyncTypes", "CredentialIdentityStore", "SnippetSyncClient"],
             path: "Tests/CloudKitSyncClientTests"
         ),
         .testTarget(
@@ -363,7 +492,7 @@ let package = Package(
         ),
         .testTarget(
             name: "BackupServiceTests",
-            dependencies: ["BackupService", "BackupArchive", "SessionStore", "ManagedKeyStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "KeychainStore"],
+            dependencies: ["BackupService", "BackupArchive", "SessionStore", "ManagedKeyStore", "SnippetStore", "SnippetSyncClient", "SettingsStore", "SSHCommandBuilder", "KeychainStore", "CredentialIdentityStore", "CredentialIdentitySecurity"],
             path: "Tests/BackupServiceTests"
         ),
         .testTarget(

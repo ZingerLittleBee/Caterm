@@ -103,7 +103,17 @@ public final class GhosttyApp {
 	// a surface pointer back to the Swift wrapper.
 
 	private static let wakeupCallback: ghostty_runtime_wakeup_cb = { _ in
-		// Tick is currently driven by libghostty internally; nothing to do.
+		// libghostty's embedded runtime queues IO-thread messages in the app
+		// mailbox and invokes this callback to ask the host to drain them.
+		// Always defer the tick to the main queue: surface callbacks and the
+		// Swift registry are main-actor isolated, and an asynchronous hop
+		// avoids re-entering libghostty from inside its wakeup callback.
+		DispatchQueue.main.async {
+			MainActor.assumeIsolated {
+				guard let instance else { return }
+				ghostty_app_tick(instance.raw)
+			}
+		}
 	}
 
 	private static let actionCallback: ghostty_runtime_action_cb = { _, target, action in

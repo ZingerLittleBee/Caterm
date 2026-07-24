@@ -2,7 +2,7 @@ import Foundation
 import SFTPCommandBuilder
 import SSHCommandBuilder
 
-public actor RemoteFileSystem {
+public actor RemoteFileSystem: RemoteFileClient {
 	private let host: SSHHost
 	private let controlPath: URL
 	private let credentials: SFTPCredentials
@@ -25,11 +25,84 @@ public actor RemoteFileSystem {
 			host: host, controlPath: controlPath,
 			credentials: credentials, operation: .list(remoteDir: path)
 		)
-		let (out, code) = try await runner.run(inv)
+		let (out, code) = try await run(inv)
 		if code != 0 {
-			throw RemoteFileSystemError.subprocessFailed(exitCode: code, stderrTail: tail(out))
+			throw classifyFailure(output: out, exitCode: code)
 		}
 		return try parseLsOutput(out)
+	}
+
+	public func stat(_ path: String) async throws -> RemoteEntry? {
+		let parent = remoteParent(of: path)
+		let name = (path as NSString).lastPathComponent
+		return try await list(parent).first { $0.name == name }
+	}
+
+	public func upload(
+		localURL: URL,
+		remotePath: String,
+		isDirectory: Bool,
+		resume: Bool,
+		replaceExisting: Bool,
+		progress: @escaping TransferProgressHandler
+	) async throws -> RemoteFileTransferResult {
+		_ = replaceExisting
+		try await ensureAlive()
+		let total = await localByteCount(at: localURL)
+		await progress(TransferProgress(bytesTransferred: 0, totalBytes: total))
+		try await runVoidOp(.put(
+			localPath: localURL,
+			remotePath: remotePath,
+			recursive: isDirectory,
+			resume: resume
+		))
+		try Task.checkCancellation()
+		let transferred = total ?? 0
+		await progress(TransferProgress(
+			bytesTransferred: transferred,
+			totalBytes: total
+		))
+		return RemoteFileTransferResult(bytesTransferred: transferred)
+	}
+
+	public func download(
+		remotePath: String,
+		localURL: URL,
+		isDirectory: Bool,
+		resume: Bool,
+		progress: @escaping TransferProgressHandler
+	) async throws -> RemoteFileTransferResult {
+		try await ensureAlive()
+		let total: Int64?
+		if isDirectory {
+			total = nil
+		} else {
+			total = try await stat(remotePath)?.size
+		}
+		await progress(TransferProgress(bytesTransferred: 0, totalBytes: total))
+		try await runVoidOp(.get(
+			remotePath: remotePath,
+			localPath: localURL,
+			recursive: isDirectory,
+			resume: resume
+		))
+		try Task.checkCancellation()
+		let measured: Int64?
+		if total == nil {
+			measured = await localByteCount(at: localURL)
+		} else {
+			measured = nil
+		}
+		let transferred = total ?? measured ?? 0
+		await progress(TransferProgress(
+			bytesTransferred: transferred,
+			totalBytes: total
+		))
+		return RemoteFileTransferResult(bytesTransferred: transferred)
+	}
+
+	public func createDirectory(_ path: String) async throws {
+		try await mkdir(path)
 	}
 
 	public func mkdir(_ path: String) async throws {
@@ -42,27 +115,127 @@ public actor RemoteFileSystem {
 		try await runVoidOp(.remove(remotePath: path, isDirectory: isDirectory))
 	}
 
+	public func delete(_ path: String, isDirectory: Bool) async throws {
+		try await remove(path, isDirectory: isDirectory)
+	}
+
 	public func rename(from: String, to: String) async throws {
 		try await ensureAlive()
 		try await runVoidOp(.rename(from: from, to: to))
 	}
 
 	private func runVoidOp(_ op: SFTPOperation) async throws {
+		try Task.checkCancellation()
 		let inv = try SFTPCommandBuilder.invocation(
 			host: host, controlPath: controlPath, credentials: credentials, operation: op)
-		let (out, code) = try await runner.run(inv)
+		let (out, code) = try await run(inv)
+		try Task.checkCancellation()
 		if code != 0 {
-			throw RemoteFileSystemError.subprocessFailed(exitCode: code, stderrTail: tail(out))
+			throw classifyFailure(output: out, exitCode: code)
+		}
+	}
+
+	private func run(_ invocation: SFTPInvocation) async throws -> (String, Int32) {
+		do {
+			return try await runner.run(invocation)
+		} catch is CancellationError {
+			throw RemoteFileError.cancelled
+		} catch let error as RemoteFileError {
+			throw error
+		} catch {
+			throw RemoteFileError.transport(message: String(describing: error))
 		}
 	}
 
 	private func ensureAlive() async throws {
 		if !(await liveness.isAlive(hostId: host.id)) {
-			throw RemoteFileSystemError.sessionGone
+			throw RemoteFileError.sessionUnavailable
 		}
 	}
 
 	private func tail(_ s: String) -> String { String(s.suffix(1024)) }
+
+	private func classifyFailure(output: String, exitCode: Int32) -> RemoteFileError {
+		let detail = tail(output)
+		let normalized = detail.lowercased()
+		if normalized.contains("permission denied") {
+			return .permissionDenied(message: detail)
+		}
+		if normalized.contains("no such file") || normalized.contains("not found") {
+			return .notFound(path: detail)
+		}
+		return .transport(message: "SFTP exited with code \(exitCode): \(detail)")
+	}
+
+	private func remoteParent(of path: String) -> String {
+		if path == "~" || path == "/" { return path }
+		let parent = (path as NSString).deletingLastPathComponent
+		return parent.isEmpty ? "." : parent
+	}
+
+	private func localByteCount(at url: URL) async -> Int64? {
+		await Task.detached(priority: .utility) {
+			Self.calculateLocalByteCount(at: url)
+		}.value
+	}
+
+	nonisolated private static func calculateLocalByteCount(
+		at url: URL
+	) -> Int64? {
+		let keys: Set<URLResourceKey> = [
+			.isDirectoryKey,
+			.isRegularFileKey,
+			.fileSizeKey,
+			.totalFileAllocatedSizeKey,
+		]
+		let rootValues: URLResourceValues
+		do {
+			rootValues = try url.resourceValues(forKeys: keys)
+		} catch {
+			return nil
+		}
+		guard rootValues.isDirectory == true else {
+			return Int64(
+				rootValues.fileSize
+					?? rootValues.totalFileAllocatedSize
+					?? 0
+			)
+		}
+		var enumerationFailed = false
+		guard let enumerator = FileManager.default.enumerator(
+			at: url,
+			includingPropertiesForKeys: Array(keys),
+			options: [],
+			errorHandler: { _, _ in
+				enumerationFailed = true
+				return false
+			}
+		) else {
+			return nil
+		}
+		var total: Int64 = 0
+		for case let child as URL in enumerator {
+			let values: URLResourceValues
+			do {
+				values = try child.resourceValues(forKeys: keys)
+			} catch {
+				return nil
+			}
+			guard values.isRegularFile == true else {
+				continue
+			}
+			let size = Int64(
+				values.fileSize
+					?? values.totalFileAllocatedSize
+					?? 0
+			)
+			let (sum, overflow) = total.addingReportingOverflow(
+				max(0, size)
+			)
+			total = overflow ? Int64.max : sum
+		}
+		return enumerationFailed ? nil : total
+	}
 }
 
 func parseLsOutput(_ stdout: String) throws -> [RemoteEntry] {
@@ -70,13 +243,15 @@ func parseLsOutput(_ stdout: String) throws -> [RemoteEntry] {
 	// Skip lines that don't match (sftp prompts, blank lines, ".", "..").
 	var out: [RemoteEntry] = []
 	for raw in stdout.split(separator: "\n") {
-		let line = raw.trimmingCharacters(in: .whitespaces)
-		if line.isEmpty || line.hasPrefix("sftp>") { continue }
-		let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-		guard parts.count >= 9 else { continue }
-		let perms = parts[0]
-		guard let size = Int64(parts[4]) else { continue }
-		let name = parts[8...].joined(separator: " ")
+		let line = String(raw)
+		let normalized = line.trimmingCharacters(in: .whitespaces)
+		if normalized.isEmpty || normalized.hasPrefix("sftp>") { continue }
+		guard let (metadata, filename) = splitLsMetadataAndFilename(line) else {
+			continue
+		}
+		let perms = metadata[0]
+		guard let size = Int64(metadata[4]) else { continue }
+		let name = String(filename)
 		if name == "." || name == ".." { continue }
 		out.append(RemoteEntry(
 			name: name,
@@ -87,4 +262,28 @@ func parseLsOutput(_ stdout: String) throws -> [RemoteEntry] {
 		))
 	}
 	return out
+}
+
+private func splitLsMetadataAndFilename(
+	_ line: String
+) -> ([Substring], Substring)? {
+	var fields: [Substring] = []
+	var index = line.startIndex
+
+	for _ in 0..<8 {
+		while index < line.endIndex, line[index].isWhitespace {
+			index = line.index(after: index)
+		}
+		guard index < line.endIndex else { return nil }
+		let start = index
+		while index < line.endIndex, !line[index].isWhitespace {
+			index = line.index(after: index)
+		}
+		fields.append(line[start..<index])
+	}
+
+	guard index < line.endIndex, line[index].isWhitespace else { return nil }
+	index = line.index(after: index)
+	guard index < line.endIndex else { return nil }
+	return (fields, line[index...])
 }

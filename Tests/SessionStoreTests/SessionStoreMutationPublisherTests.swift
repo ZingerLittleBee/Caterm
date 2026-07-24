@@ -38,32 +38,64 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
         try? FileManager.default.removeItem(at: tmpHostsURL)
     }
 
-    func testAddHostEmits() throws {
+    func testAddHostEmits() async throws {
         var received = 0
         sut.mutationsForSync.sink { _ in received += 1 }
             .store(in: &cancellables)
 
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sut.addHost(h)
+        try await sut.addHost(h)
 
         XCTAssertEqual(received, 1)
     }
 
-    func testUpdateHostEmits() throws {
+	func testAddHostPersistenceFailureDoesNotPublishInMemoryHost() async throws {
+		try Data().write(to: tmpHostsURL)
+		let failingStore = SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: tmpHostsURL.appendingPathComponent("hosts.json"),
+			keychain: KeychainStore(
+				service: "com.caterm.test.\(UUID().uuidString)",
+				accessGroup: nil
+			)
+		)
+		var received = 0
+		failingStore.mutationsForSync.sink { _ in received += 1 }
+			.store(in: &cancellables)
+		let host = SSHHost(
+			name: "unpersisted",
+			hostname: "example.invalid",
+			username: "tester",
+			credential: .agent
+		)
+
+		do {
+			try await failingStore.addHost(host)
+			XCTFail("Expected persistence failure")
+		} catch {}
+
+		XCTAssertTrue(failingStore.hosts.isEmpty)
+		XCTAssertEqual(received, 0)
+	}
+
+    func testUpdateHostEmits() async throws {
         var h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sut.addHost(h)  // baseline (before subscribe — not counted)
+        try await sut.addHost(h)  // baseline (before subscribe — not counted)
 
         var received = 0
         sut.mutationsForSync.sink { _ in received += 1 }
             .store(in: &cancellables)
 
         h.name = "alpha-renamed"
-        try sut.updateHost(h)
+        try await sut.updateHost(h)
 
         XCTAssertEqual(received, 1)
     }
 
-    func testUpdateHostsPersistsBatchAndEmitsOnce() throws {
+    func testUpdateHostsPersistsBatchAndEmitsOnce() async throws {
         let originalCredential = CredentialSource.keyFile(
             keyPath: "/tmp/id_ed25519",
             hasPassphrase: true
@@ -80,8 +112,8 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sut.addHost(alpha)
-        try sut.addHost(beta)
+        try await sut.addHost(alpha)
+        try await sut.addHost(beta)
 
         var received = 0
         sut.mutationsForSync.sink { _ in received += 1 }
@@ -97,7 +129,7 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
             tags: ["Database"]
         )
 
-        try sut.updateHosts([alpha, beta])
+        try await sut.updateHosts([alpha, beta])
 
         let persisted = try HostPersistence.load(from: tmpHostsURL)
         XCTAssertEqual(persisted.count, 2)
@@ -110,7 +142,7 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
 
     func testDeleteHostEmits() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sut.addHost(h)  // baseline
+        try await sut.addHost(h)  // baseline
 
         var received = 0
         sut.mutationsForSync.sink { _ in received += 1 }
@@ -121,21 +153,21 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
         XCTAssertEqual(received, 1)
     }
 
-    func testSetCredentialOnlyDoesNotEmit() throws {
+    func testSetCredentialOnlyDoesNotEmit() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sut.addHost(h)  // baseline
+        try await sut.addHost(h)  // baseline
 
         var received = 0
         sut.mutationsForSync.sink { _ in received += 1 }
             .store(in: &cancellables)
 
-        try sut.setCredentialOnly(.password, for: h.id)
+        try await sut.setCredentialOnly(.password, for: h.id)
 
         XCTAssertEqual(received, 0,
             "Credential is a device-local overlay; must not trigger sync (spec §3.2)")
     }
 
-    func testRemoteApplyDoesNotEmit() throws {
+    func testRemoteApplyDoesNotEmit() async throws {
         var received = 0
         sut.mutationsForSync.sink { _ in received += 1 }
             .store(in: &cancellables)
@@ -144,12 +176,12 @@ final class SessionStoreMutationPublisherTests: XCTestCase {
         let remote = RemoteHost(id: "srv-1", name: "alpha", hostname: "x",
                                 port: 22, username: "u", authType: "key",
                                 createdAt: now, updatedAt: now)
-        try sut.addRemoteHost(remote)
+        try await sut.addRemoteHost(remote)
 
         // applyRemoteMetadata + setServerId on the just-added pulled host
         let pulled = sut.hosts.first(where: { $0.serverId == "srv-1" })!
-        try sut.applyRemoteMetadata(localHostId: pulled.id, remote: remote)
-        try sut.setServerId("srv-1", for: pulled.id)
+        try await sut.applyRemoteMetadata(localHostId: pulled.id, remote: remote)
+        try await sut.setServerId("srv-1", for: pulled.id)
 
         XCTAssertEqual(received, 0,
             "Remote-apply ops are sync OUTPUTS; emitting would create echo loop (spec §3.2)")

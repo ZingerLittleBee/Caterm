@@ -6,12 +6,15 @@ import SnippetSyncClient
 public enum SnippetStoreError: Error, Equatable {
 	case writeFailed(String)
 	case readFailed(String)
+	case unsupportedSchema(found: Int, supported: Int)
+	case duplicateSnippetID(UUID)
 }
 
 private struct SnippetsEnvelope: Codable {
 	let schemaVersion: Int
 	let snippets: [Snippet]
 	let locallyDirtySnippetIDs: [UUID]?
+	let pendingDeletedSnippetIDs: [UUID]?
 }
 
 private struct OutboxEnvelope: Codable {
@@ -38,59 +41,91 @@ public final class SnippetStore: ObservableObject {
 	}
 
 	public func load() throws {
-		if let data = try? Data(contentsOf: snippetsURL) {
-			let env = try JSONDecoder().decode(SnippetsEnvelope.self, from: data)
-			self.snippets = env.snippets
-			self.locallyDirtySnippetIDs = Set(env.locallyDirtySnippetIDs ?? [])
-		}
-		if let data = try? Data(contentsOf: outboxURL) {
-			let env = try JSONDecoder().decode(OutboxEnvelope.self, from: data)
-			self.pendingDeletedSnippetIDs = Set(env.pendingDeletedSnippetIDs)
-		}
+		let hasEmbeddedOutbox = try loadSnippets()
+		guard !hasEmbeddedOutbox else { return }
+		try loadOutbox()
+		guard FileManager.default.fileExists(atPath: outboxURL.path) else { return }
+		try writeState()
+		try? FileManager.default.removeItem(at: outboxURL)
 	}
 
 	public func upsert(_ s: Snippet) throws {
-		let originalSnippets = snippets
-		let originalDirtyIDs = locallyDirtySnippetIDs
-		var copy = s
-		if let existingIdx = snippets.firstIndex(where: { $0.id == s.id }) {
-			let existing = snippets[existingIdx]
-			copy.revision = existing.revision + 1
-			copy.updatedAt = Date()
-			copy.createdAt = existing.createdAt
-			snippets[existingIdx] = copy
-		} else {
-			snippets.append(copy)
-		}
-		locallyDirtySnippetIDs.insert(copy.id)
-		do {
-			try writeSnippets()
-		} catch {
-			snippets = originalSnippets
-			locallyDirtySnippetIDs = originalDirtyIDs
-			throw error
+		try persistMutation {
+			var copy = s
+			if let existingIdx = snippets.firstIndex(where: { $0.id == s.id }) {
+				let existing = snippets[existingIdx]
+				copy.revision = existing.revision + 1
+				copy.updatedAt = Date()
+				copy.createdAt = existing.createdAt
+				snippets[existingIdx] = copy
+			} else {
+				snippets.append(copy)
+			}
+			locallyDirtySnippetIDs.insert(copy.id)
 		}
 	}
 
 	public func delete(id: UUID) throws {
-		snippets.removeAll { $0.id == id }
-		locallyDirtySnippetIDs.remove(id)
-		pendingDeletedSnippetIDs.insert(id)
-		try writeSnippets()
-		try writeOutbox()
+		try persistMutation {
+			snippets.removeAll { $0.id == id }
+			locallyDirtySnippetIDs.remove(id)
+			pendingDeletedSnippetIDs.insert(id)
+		}
+	}
+
+	/// Reorders the local presentation without changing snippet content or
+	/// CloudKit revision metadata. Ordering is device-local because the shared
+	/// Snippet record schema has no ordering field.
+	public func move(fromOffsets: IndexSet, toOffset: Int) throws {
+		guard !fromOffsets.isEmpty else { return }
+		let validOffsets = fromOffsets.filter { snippets.indices.contains($0) }
+		guard !validOffsets.isEmpty else { return }
+		try persistMutation {
+			let moved = validOffsets.map { snippets[$0] }
+			for index in validOffsets.sorted(by: >) {
+				snippets.remove(at: index)
+			}
+			let removedBeforeDestination = validOffsets.filter { $0 < toOffset }.count
+			let insertionIndex = min(
+				max(0, toOffset - removedBeforeDestination),
+				snippets.count
+			)
+			snippets.insert(contentsOf: moved, at: insertionIndex)
+		}
+	}
+
+	/// Persists a complete local snapshot supplied by a shared UI binding.
+	/// Changed records become dirty and removed records enter the deletion
+	/// outbox, preserving the same sync semantics as individual mutations.
+	public func replaceLocalSnapshot(_ newSnippets: [Snippet]) throws {
+		try Self.validateUniqueIDs(newSnippets)
+		try persistMutation {
+			let oldByID = Dictionary(uniqueKeysWithValues: snippets.map { ($0.id, $0) })
+			let newIDs = Set(newSnippets.map(\.id))
+			let removedIDs = Set(oldByID.keys).subtracting(newIDs)
+			let changedIDs = Set(newSnippets.compactMap { snippet in
+				oldByID[snippet.id] == snippet ? nil : snippet.id
+			})
+
+			snippets = newSnippets
+			locallyDirtySnippetIDs.subtract(removedIDs)
+			locallyDirtySnippetIDs.formUnion(changedIDs)
+			pendingDeletedSnippetIDs.formUnion(removedIDs)
+		}
 	}
 
 	public func clearOutboxEntry(_ id: UUID) throws {
-		pendingDeletedSnippetIDs.remove(id)
-		try writeOutbox()
+		try persistMutation {
+			pendingDeletedSnippetIDs.remove(id)
+		}
 	}
 
 	public func wipeLocal() throws {
-		snippets = []
-		pendingDeletedSnippetIDs = []
-		locallyDirtySnippetIDs = []
-		try writeSnippets()
-		try writeOutbox()
+		try persistMutation {
+			snippets = []
+			pendingDeletedSnippetIDs = []
+			locallyDirtySnippetIDs = []
+		}
 	}
 
 	public func search(_ query: String) -> [Snippet] {
@@ -116,58 +151,123 @@ public final class SnippetStore: ObservableObject {
 	///   4. tie → remote (cloud) wins
 	@discardableResult
 	public func applyRemote(_ s: Snippet) throws -> Bool {
-		let originalSnippets = snippets
-		let originalDirtyIDs = locallyDirtySnippetIDs
-		let index = SnippetMergePolicy.makeIdentityIndex(snippets)
-		if let local = SnippetMergePolicy.match(s, in: index),
-		   let idx = snippets.firstIndex(where: { $0.id == local.id }) {
-			if SnippetMergePolicy.decide(local: local, incoming: s) == .local {
-				return false
+		var applied = false
+		try persistMutation {
+			let index = SnippetMergePolicy.makeIdentityIndex(snippets)
+			if let local = SnippetMergePolicy.match(s, in: index),
+			   let idx = snippets.firstIndex(where: { $0.id == local.id }) {
+				if SnippetMergePolicy.decide(local: local, incoming: s) == .local {
+					return
+				}
+				snippets[idx] = s
+			} else {
+				snippets.append(s)
 			}
-			snippets[idx] = s
-		} else {
-			snippets.append(s)
+			locallyDirtySnippetIDs.remove(s.id)
+			applied = true
 		}
-		locallyDirtySnippetIDs.remove(s.id)
-		do {
-			try writeSnippets()
-		} catch {
-			snippets = originalSnippets
-			locallyDirtySnippetIDs = originalDirtyIDs
-			throw error
-		}
-		return true
+		return applied
 	}
 
 	/// Remove the snippet from local state. Also clears any outbox entry —
 	/// a tombstone observed in the cloud supersedes our pending delete.
 	public func applyRemoteTombstone(id: UUID) throws {
-		snippets.removeAll { $0.id == id }
-		pendingDeletedSnippetIDs.remove(id)
-		locallyDirtySnippetIDs.remove(id)
-		try writeSnippets()
-		try writeOutbox()
+		try persistMutation {
+			snippets.removeAll { $0.id == id }
+			pendingDeletedSnippetIDs.remove(id)
+			locallyDirtySnippetIDs.remove(id)
+		}
 	}
 
 	// MARK: - Persistence
 
-	private func writeSnippets() throws {
+	private func loadSnippets() throws -> Bool {
+		guard FileManager.default.fileExists(atPath: snippetsURL.path) else { return false }
+		do {
+			let data = try Data(contentsOf: snippetsURL)
+			let envelope = try JSONDecoder().decode(SnippetsEnvelope.self, from: data)
+			guard envelope.schemaVersion == Self.schemaVersion else {
+				throw SnippetStoreError.unsupportedSchema(
+					found: envelope.schemaVersion,
+					supported: Self.schemaVersion
+				)
+			}
+			try Self.validateUniqueIDs(envelope.snippets)
+			snippets = envelope.snippets
+			locallyDirtySnippetIDs = Set(envelope.locallyDirtySnippetIDs ?? [])
+			if let embeddedOutbox = envelope.pendingDeletedSnippetIDs {
+				pendingDeletedSnippetIDs = Set(embeddedOutbox)
+				return true
+			}
+		} catch {
+			try quarantine(snippetsURL)
+		}
+		return false
+	}
+
+	private func loadOutbox() throws {
+		guard FileManager.default.fileExists(atPath: outboxURL.path) else { return }
+		do {
+			let data = try Data(contentsOf: outboxURL)
+			let envelope = try JSONDecoder().decode(OutboxEnvelope.self, from: data)
+			guard envelope.schemaVersion == Self.schemaVersion else {
+				throw SnippetStoreError.unsupportedSchema(
+					found: envelope.schemaVersion,
+					supported: Self.schemaVersion
+				)
+			}
+			pendingDeletedSnippetIDs = Set(envelope.pendingDeletedSnippetIDs)
+		} catch {
+			try quarantine(outboxURL)
+		}
+	}
+
+	private func quarantine(_ url: URL) throws {
+		let stamp = ISO8601DateFormatter().string(from: Date())
+			.replacingOccurrences(of: ":", with: "-")
+		let destination = url.deletingLastPathComponent()
+			.appendingPathComponent("\(url.lastPathComponent).broken-\(stamp)")
+		do {
+			try FileManager.default.moveItem(at: url, to: destination)
+		} catch {
+			throw SnippetStoreError.readFailed(error.localizedDescription)
+		}
+	}
+
+	private static func validateUniqueIDs(_ snippets: [Snippet]) throws {
+		var seen: Set<UUID> = []
+		for snippet in snippets where !seen.insert(snippet.id).inserted {
+			throw SnippetStoreError.duplicateSnippetID(snippet.id)
+		}
+	}
+
+	private func writeState() throws {
 		let env = SnippetsEnvelope(
 			schemaVersion: Self.schemaVersion,
 			snippets: snippets,
 			locallyDirtySnippetIDs: locallyDirtySnippetIDs.sorted {
+				$0.uuidString < $1.uuidString
+			},
+			pendingDeletedSnippetIDs: pendingDeletedSnippetIDs.sorted {
 				$0.uuidString < $1.uuidString
 			}
 		)
 		try atomicWrite(JSONEncoder().encode(env), to: snippetsURL)
 	}
 
-	private func writeOutbox() throws {
-		let env = OutboxEnvelope(
-			schemaVersion: Self.schemaVersion,
-			pendingDeletedSnippetIDs: Array(pendingDeletedSnippetIDs)
-		)
-		try atomicWrite(JSONEncoder().encode(env), to: outboxURL)
+	private func persistMutation(_ mutation: () -> Void) throws {
+		let originalSnippets = snippets
+		let originalDirtyIDs = locallyDirtySnippetIDs
+		let originalDeletedIDs = pendingDeletedSnippetIDs
+		mutation()
+		do {
+			try writeState()
+		} catch {
+			snippets = originalSnippets
+			locallyDirtySnippetIDs = originalDirtyIDs
+			pendingDeletedSnippetIDs = originalDeletedIDs
+			throw error
+		}
 	}
 
 	private func atomicWrite(_ data: Data, to url: URL) throws {

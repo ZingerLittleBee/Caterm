@@ -6,7 +6,7 @@ import XCTest
 @testable import KeychainStore
 
 /// Tests for the debug-only menu helper that picks a target host for the
-/// "Open Tab for First Host" command (⌃⌥⌘O). The helper exists so UI
+/// "Open Workspace for First Host" command (⌃⌥⌘O). The helper exists so UI
 /// automation (Computer Use / cliclick / osascript) has a reliable AX-level
 /// hook into the same `connect(_:)` path the sidebar's double-click uses,
 /// without having to drive a SwiftUI List row.
@@ -43,7 +43,7 @@ final class DebugMenuSupportTests: XCTestCase {
 	func testSingleUnlockedHostIsPicked() async throws {
 		let h = SSHHost(name: "unlocked", hostname: "a", port: 22,
 		                username: "u", credential: .agent)
-		try sut.addHost(h)
+		try await sut.addHost(h)
 
 		let target = await debugPickConnectTarget(in: sut)
 		XCTAssertEqual(target?.id, h.id)
@@ -63,8 +63,8 @@ final class DebugMenuSupportTests: XCTestCase {
 			name: "remote-2", hostname: "h", port: 22, username: "u",
 			credential: .password
 		)
-		try sut.addHost(locked1)
-		try sut.addHost(locked2)
+		try await sut.addHost(locked1)
+		try await sut.addHost(locked2)
 
 		let target = await debugPickConnectTarget(in: sut)
 		XCTAssertEqual(target?.id, locked1.id)
@@ -81,8 +81,8 @@ final class DebugMenuSupportTests: XCTestCase {
 		)
 		let unlocked = SSHHost(name: "unlocked", hostname: "a", port: 22,
 		                       username: "u", credential: .agent)
-		try sut.addHost(locked)
-		try sut.addHost(unlocked)
+		try await sut.addHost(locked)
+		try await sut.addHost(unlocked)
 
 		let target = await debugPickConnectTarget(in: sut)
 		XCTAssertEqual(target?.id, unlocked.id)

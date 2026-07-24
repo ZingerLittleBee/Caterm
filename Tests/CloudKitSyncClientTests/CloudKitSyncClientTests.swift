@@ -101,16 +101,16 @@ final class CloudKitSyncClientTests: XCTestCase {
         XCTAssertEqual(fakeDb.saveCallCount, 1)
     }
 
-    func testUpdateHostMissingRecordThrowsHttp() async throws {
-        // Record id not present in the fake — `record(for:)` throws
-        // CKError.unknownItem, which CloudKitErrorMapping maps to .http(...).
+    func testUpdateHostMissingRecordRequestsFullReconciliation() async throws {
+        // A stale incremental token can leave a local Server ID whose record
+        // was deleted remotely. Surface that state explicitly so the sync
+        // coordinator can retry once with a full snapshot.
         let input = RemoteHostUpdateInput(id: "missing")
         do {
             try await sut.updateHost(input)
             XCTFail("expected throw")
         } catch let e as ServerSyncError {
-            if case .http = e { return }
-            XCTFail("expected .http, got \(e)")
+			XCTAssertEqual(e, .remoteHostNotFound(serverID: "missing"))
         }
     }
 

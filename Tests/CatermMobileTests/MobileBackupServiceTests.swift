@@ -3,27 +3,116 @@ import BackupArchive
 import BackupService
 import KeychainStore
 import ManagedKeyStore
+import SessionStore
 import SnippetSyncClient
 import SSHCommandBuilder
 @testable import CatermMobile
 
+private actor BackupCommitGate {
+	private var isBlocked = false
+	private var entryContinuation: CheckedContinuation<Void, Never>?
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+	func block() async {
+		isBlocked = true
+		entryContinuation?.resume()
+		entryContinuation = nil
+		await withCheckedContinuation { continuation in
+			releaseContinuation = continuation
+		}
+	}
+
+	func waitUntilBlocked() async {
+		guard !isBlocked else { return }
+		await withCheckedContinuation { continuation in
+			entryContinuation = continuation
+		}
+	}
+
+	func release() {
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
+
+	func blocked() -> Bool { isBlocked }
+}
+
+private actor BackupPersistenceGate {
+	private var entryContinuation: CheckedContinuation<Void, Never>?
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+	private var isReleased = false
+
+	func block() async {
+		guard !isReleased else { return }
+		await withCheckedContinuation { continuation in
+			entryContinuation = continuation
+		}
+		guard !isReleased else { return }
+		await withCheckedContinuation { continuation in
+			releaseContinuation = continuation
+		}
+	}
+
+	func waitUntilBlocked() async {
+		while entryContinuation == nil {
+			await Task.yield()
+		}
+		entryContinuation?.resume()
+		entryContinuation = nil
+	}
+
+	func release() {
+		isReleased = true
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
+}
+
+private final class InMemoryBackupCredentialStore: MobileCredentialStoring {
+	enum Failure: Error {
+		case deleteRejected
+	}
+
+	var values: [String: String] = [:]
+	var failingDeleteAccounts: Set<String> = []
+
+	func set(account: String, secret: String) throws {
+		values[account] = secret
+	}
+
+	func get(
+		account: String,
+		interaction _: KeychainReadInteraction
+	) throws -> String {
+		guard let value = values[account] else { throw KeychainError.notFound }
+		return value
+	}
+
+	func delete(account: String) throws {
+		guard !failingDeleteAccounts.contains(account) else {
+			throw Failure.deleteRejected
+		}
+		guard values.removeValue(forKey: account) != nil else {
+			throw KeychainError.notFound
+		}
+	}
+}
+
 @MainActor
 final class MobileBackupServiceTests: XCTestCase {
-	private var keychain: KeychainStore!
+	private var keychain: InMemoryBackupCredentialStore!
 	private var managedKeys: ManagedKeyStore!
 	private var keysRoot: URL!
 
 	override func setUp() async throws {
 		try await super.setUp()
-		keychain = KeychainStore(
-			service: "com.caterm.test.mobile-backup.\(UUID())", accessGroup: nil)
+		keychain = InMemoryBackupCredentialStore()
 		keysRoot = FileManager.default.temporaryDirectory
 			.appendingPathComponent("mobile-keys-\(UUID())", isDirectory: true)
 		managedKeys = ManagedKeyStore(rootURL: keysRoot)
 	}
 
 	override func tearDown() async throws {
-		try? keychain?.deleteAll(prefix: "")
 		try? FileManager.default.removeItem(at: keysRoot)
 		try await super.tearDown()
 	}
@@ -85,7 +174,10 @@ final class MobileBackupServiceTests: XCTestCase {
 		                        hasPassphrase: true))
 		XCTAssertEqual(try managedKeys.read(hostId: archiveId), Data("PEM".utf8))
 		XCTAssertEqual(
-			try keychain.get(account: MobileCredentialPlan.keyPassphraseAccount(archiveId)),
+			try keychain.get(
+				account: MobileCredentialPlan.keyPassphraseAccount(archiveId),
+				interaction: .userInitiated
+			),
 			"pp")
 	}
 
@@ -133,5 +225,404 @@ final class MobileBackupServiceTests: XCTestCase {
 
 		let target = result.hosts.first { $0.id == targetId }!
 		XCTAssertEqual(target.jumpHostId, bastionId)
+	}
+
+	func test_accountChangeDuringImportRollsBackAllCredentialMaterial() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-hosts-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys
+		)
+		let credentials = InMemoryBackupCredentialStore()
+		let gate = BackupCommitGate()
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: credentials,
+			managedKeys: managedKeys,
+			beforeCommit: { await gate.block() }
+		)
+		let archiveID = UUID()
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: archiveID,
+				serverId: "account-a-server",
+				name: "account-a",
+				hostname: "account-a.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "keyFile",
+				hasPassphrase: true,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil,
+				password: "account-a-password",
+				passphrase: "account-a-passphrase",
+				privateKey: Data("ACCOUNT-A-KEY".utf8)
+			)]
+		)
+		let importTask = Task { @MainActor in
+			do {
+				_ = try await coordinator.apply(
+					payload: payload,
+					snippets: []
+				)
+				return false
+			} catch {
+				return true
+			}
+		}
+
+		await gate.waitUntilBlocked()
+		do {
+			try await store.upsert(Host(
+				name: "concurrent-account-a",
+				hostname: "concurrent.example.com",
+				port: 22,
+				username: "deploy",
+				credential: .agent
+			))
+			XCTFail("Expected exclusive import to reject a concurrent upsert")
+		} catch {
+			XCTAssertEqual(
+				error as? MobileHostStore.StoreError,
+				.accountTransitionInProgress
+			)
+		}
+		do {
+			try await store.delete(id: archiveID)
+			XCTFail("Expected exclusive import to reject a concurrent deletion")
+		} catch {
+			XCTAssertEqual(
+				error as? MobileHostStore.StoreError,
+				.accountTransitionInProgress
+			)
+		}
+		let resetTask = Task { @MainActor in
+			try await store.resetForAccountChange()
+		}
+		await waitUntil { store.isAccountTransitionInProgress }
+		await gate.release()
+
+		let importWasRejected = await importTask.value
+		XCTAssertTrue(importWasRejected)
+		try await resetTask.value
+		try store.finishAccountTransition()
+		XCTAssertTrue(store.hosts.isEmpty)
+		XCTAssertTrue(try HostPersistence.load(from: hostsURL).isEmpty)
+		XCTAssertThrowsError(try credentials.get(
+			account: MobileCredentialPlan.passwordAccount(archiveID),
+			interaction: .userInitiated
+		))
+		XCTAssertThrowsError(try credentials.get(
+			account: MobileCredentialPlan.keyPassphraseAccount(archiveID),
+			interaction: .userInitiated
+		))
+		XCTAssertNil(try managedKeys.read(hostId: archiveID))
+	}
+
+	func test_importWaitsForInFlightWriteAndUsesCanonicalHostSnapshot() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-race-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let persistenceGate = BackupPersistenceGate()
+		let persistence = MobileHostPersistence(
+			hostsURL: hostsURL,
+			beforeMutation: { await persistenceGate.block() }
+		)
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys,
+			persistence: persistence
+		)
+		let credentials = InMemoryBackupCredentialStore()
+		let importGate = BackupCommitGate()
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: credentials,
+			managedKeys: managedKeys,
+			beforeCommit: { await importGate.block() }
+		)
+		let directHost = Host(
+			name: "direct-write",
+			hostname: "direct.example.com",
+			port: 22,
+			username: "deploy",
+			credential: .agent
+		)
+		let archiveID = UUID()
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: archiveID,
+				serverId: nil,
+				name: "backup-write",
+				hostname: "backup.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "password",
+				hasPassphrase: false,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil
+			)]
+		)
+		let directWrite = Task { @MainActor in
+			try await store.add(directHost)
+		}
+
+		await persistenceGate.waitUntilBlocked()
+		let importTask = Task { @MainActor in
+			try await coordinator.apply(
+				payload: payload,
+				snippets: []
+			)
+		}
+		for _ in 0..<20 { await Task.yield() }
+		let importReachedCommit = await importGate.blocked()
+		XCTAssertFalse(importReachedCommit)
+
+		await persistenceGate.release()
+		try await directWrite.value
+		await importGate.waitUntilBlocked()
+		await importGate.release()
+		_ = try await importTask.value
+
+		XCTAssertEqual(Set(store.hosts.map(\.id)), [directHost.id, archiveID])
+		XCTAssertEqual(
+			Set(try HostPersistence.load(from: hostsURL).map(\.id)),
+			[directHost.id, archiveID]
+		)
+	}
+
+	func test_importReplansConcurrentSameIDAddWithoutDuplicate() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-same-id-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let persistenceGate = BackupPersistenceGate()
+		let persistence = MobileHostPersistence(
+			hostsURL: hostsURL,
+			beforeMutation: { await persistenceGate.block() }
+		)
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys,
+			persistence: persistence
+		)
+		let credentials = InMemoryBackupCredentialStore()
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: credentials,
+			managedKeys: managedKeys
+		)
+		let sharedID = UUID()
+		let directHost = Host(
+			id: sharedID,
+			name: "direct",
+			hostname: "direct.example.com",
+			port: 22,
+			username: "deploy",
+			credential: .agent,
+			createdAt: date(1),
+			updatedAt: date(1)
+		)
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: sharedID,
+				serverId: nil,
+				name: "archive",
+				hostname: "archive.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "agent",
+				hasPassphrase: false,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil
+			)]
+		)
+		let preview = MobileBackupService.plan(
+			payload: payload,
+			hosts: [],
+			snippets: [],
+			keychain: credentials
+		)
+		XCTAssertEqual(preview.hosts.first?.kind, .add)
+
+		let directWrite = Task { @MainActor in
+			try await store.add(directHost)
+		}
+		await persistenceGate.waitUntilBlocked()
+		let importTask = Task { @MainActor in
+			try await coordinator.apply(payload: payload, snippets: [])
+		}
+		for _ in 0..<20 { await Task.yield() }
+		await persistenceGate.release()
+		try await directWrite.value
+		_ = try await importTask.value
+
+		XCTAssertEqual(store.hosts.count, 1)
+		XCTAssertEqual(store.hosts.first?.id, sharedID)
+		XCTAssertEqual(store.hosts.first?.name, "archive")
+		let persisted = try HostPersistence.load(from: hostsURL)
+		XCTAssertEqual(persisted.count, 1)
+		XCTAssertEqual(persisted.first?.id, sharedID)
+	}
+
+	func test_importReplansAfterConcurrentNewerLocalUpdate() async throws {
+		let hostsURL = FileManager.default.temporaryDirectory
+			.appendingPathComponent("mobile-backup-newer-local-\(UUID()).json")
+		defer { try? FileManager.default.removeItem(at: hostsURL) }
+		let sharedID = UUID()
+		let original = Host(
+			id: sharedID,
+			name: "original",
+			hostname: "original.example.com",
+			port: 22,
+			username: "deploy",
+			credential: .agent,
+			createdAt: date(1),
+			updatedAt: date(1)
+		)
+		try HostPersistence.save([original], to: hostsURL)
+		let persistenceGate = BackupPersistenceGate()
+		let persistence = MobileHostPersistence(
+			hostsURL: hostsURL,
+			beforeMutation: { await persistenceGate.block() }
+		)
+		let store = MobileHostStore(
+			fileURL: hostsURL,
+			managedKeyStore: managedKeys,
+			persistence: persistence
+		)
+		let credentials = InMemoryBackupCredentialStore()
+		let coordinator = MobileBackupImportCoordinator(
+			hostStore: store,
+			keychain: credentials,
+			managedKeys: managedKeys
+		)
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: sharedID,
+				serverId: nil,
+				name: "archive",
+				hostname: "archive.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "agent",
+				hasPassphrase: false,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil
+			)]
+		)
+		let preview = MobileBackupService.plan(
+			payload: payload,
+			hosts: [original],
+			snippets: [],
+			keychain: credentials
+		)
+		XCTAssertEqual(preview.hosts.first?.kind, .update)
+		var newer = original
+		newer.name = "local-newer"
+		newer.hostname = "local-newer.example.com"
+		newer.updatedAt = date(3)
+
+		let directWrite = Task { @MainActor in
+			try await store.update(newer)
+		}
+		await persistenceGate.waitUntilBlocked()
+		let importTask = Task { @MainActor in
+			try await coordinator.apply(payload: payload, snippets: [])
+		}
+		for _ in 0..<20 { await Task.yield() }
+		await persistenceGate.release()
+		try await directWrite.value
+		let result = try await importTask.value
+
+		XCTAssertEqual(result.summary.hostsSkipped, 1)
+		XCTAssertEqual(store.hosts.count, 1)
+		XCTAssertEqual(store.hosts.first?.name, "local-newer")
+		XCTAssertEqual(store.hosts.first?.updatedAt, date(3))
+		let persisted = try HostPersistence.load(from: hostsURL)
+		XCTAssertEqual(persisted.first?.name, "local-newer")
+		XCTAssertEqual(persisted.first?.updatedAt, date(3))
+	}
+
+	func test_rollbackContinuesAfterOneCredentialItemFails() async throws {
+		enum CommitFailure: Error { case rejected }
+		let credentials = InMemoryBackupCredentialStore()
+		let archiveID = UUID()
+		let passwordAccount = MobileCredentialPlan.passwordAccount(archiveID)
+		let passphraseAccount = MobileCredentialPlan.keyPassphraseAccount(archiveID)
+		credentials.failingDeleteAccounts = [passwordAccount]
+		let payload = BackupPayload(
+			exportedAt: date(2),
+			hosts: [BackupHost(
+				id: archiveID,
+				serverId: nil,
+				name: "rollback",
+				hostname: "rollback.example.com",
+				port: 22,
+				username: "deploy",
+				credentialKind: "keyFile",
+				hasPassphrase: true,
+				createdAt: date(1),
+				updatedAt: date(2),
+				jumpHostId: nil,
+				forwards: [],
+				icon: nil,
+				password: "password",
+				passphrase: "passphrase",
+				privateKey: Data("PRIVATE-KEY".utf8)
+			)]
+		)
+		let plan = BackupMergePlanner.plan(
+			payload: payload,
+			localHosts: [],
+			needsCredentialSetup: { _ in true },
+			localSnippets: [],
+			localSettingsRevision: nil,
+			localBookmarks: { _ in [] },
+			localKnownHostsLines: []
+		)
+
+		do {
+			_ = try await MobileBackupService.apply(
+				plan: plan,
+				hosts: [],
+				snippets: [],
+				keychain: credentials,
+				managedKeys: managedKeys,
+				commit: { _ in throw CommitFailure.rejected }
+			)
+			XCTFail("Expected rollback failure")
+		} catch MobileBackupService.ApplyError.rollbackFailed {
+			// Expected.
+		}
+
+		XCTAssertEqual(credentials.values[passwordAccount], "password")
+		XCTAssertNil(credentials.values[passphraseAccount])
+		XCTAssertNil(try managedKeys.read(hostId: archiveID))
+	}
+
+	private func waitUntil(
+		_ predicate: @MainActor () -> Bool
+	) async {
+		for _ in 0..<100 where !predicate() {
+			await Task.yield()
+		}
 	}
 }

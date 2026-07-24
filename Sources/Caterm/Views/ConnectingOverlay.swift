@@ -23,6 +23,7 @@ struct ConnectingOverlay: View {
 	let chain: [SSHHost]
 
 	@State private var now = Date()
+	@Environment(\.accessibilityReduceMotion) private var reduceMotion
 	private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
 	private var elapsed: TimeInterval {
@@ -77,16 +78,19 @@ struct ConnectingOverlay: View {
 						.foregroundColor(.white.opacity(0.55))
 						.multilineTextAlignment(.center)
 						.frame(maxWidth: 360)
-						.transition(.opacity)
+						.transition(reduceMotion ? .identity : .opacity)
 						.id(currentTip)
-						.animation(.easeInOut(duration: 0.3), value: currentTip)
+						.animation(
+							WorkspaceMotionPolicy.tipAnimation(reduceMotion: reduceMotion),
+							value: currentTip
+						)
 				}
 			}
 			.padding(.vertical, 20)
 			.padding(.horizontal, 28)
 		}
 		.onReceive(timer) { now = $0 }
-		.transition(.opacity)
+		.transition(reduceMotion ? .identity : .opacity)
 	}
 
 	private var hostLine: some View {

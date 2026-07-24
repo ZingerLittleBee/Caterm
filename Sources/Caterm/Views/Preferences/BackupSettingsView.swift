@@ -1,3 +1,5 @@
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import SessionStore
 import SnippetStore
 import SwiftUI
@@ -10,16 +12,27 @@ struct BackupSettingsView: View {
     @ObservedObject var sessionStore: SessionStore
     let snippetStore: SnippetStore?
     let bookmarkStore: RemoteBookmarkStore?
+    let credentialIdentityStore: CredentialIdentityStore?
+    let credentialIdentityMaterialStore: CredentialIdentityMaterialStore?
 
     var body: some View {
         Form {
             BackupSettingsSection(
                 sessionStore: sessionStore,
                 snippetStore: snippetStore,
-                bookmarkStore: bookmarkStore
+                bookmarkStore: bookmarkStore,
+                credentialIdentityStore: credentialIdentityStore,
+                credentialIdentityMaterialStore:
+                    credentialIdentityMaterialStore
             )
             Section("What's Included") {
                 LabeledContent("Hosts", value: "\(sessionStore.hosts.count)")
+                if let credentialIdentityStore {
+                    LabeledContent(
+                        "Credential identities",
+                        value: "\(credentialIdentityStore.identities.count)"
+                    )
+                }
                 if let snippetStore {
                     LabeledContent("Snippets", value: "\(snippetStore.snippets.count)")
                 }

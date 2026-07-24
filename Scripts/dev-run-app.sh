@@ -70,6 +70,14 @@ mkdir -p "$APP/Contents/Resources"
 cp "$BIN_DIR/caterm" "$APP/Contents/MacOS/caterm"
 cp "$BIN_DIR/caterm-askpass" "$APP/Contents/MacOS/caterm-askpass"
 
+# SwiftPM emits target and dependency resources as sibling `.bundle`
+# directories. A hand-assembled macOS app must move them under
+# Contents/Resources; otherwise Bundle.module falls back to a build-machine
+# absolute path that Launch Services may block and distributed apps cannot use.
+bash "$ROOT/Scripts/embed-swiftpm-resources.sh" \
+    "$BIN_DIR" \
+    "$APP/Contents/Resources"
+
 # Carry over GhosttyKit if Caterm uses it as a runtime-loaded resource.
 # (Static-linked .a inside the xcframework needs no runtime copy.)
 

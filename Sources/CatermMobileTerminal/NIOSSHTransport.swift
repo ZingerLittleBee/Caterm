@@ -1,4 +1,5 @@
 import Crypto
+import CredentialIdentitySecurity
 import Foundation
 import NIOCore
 import NIOPosix
@@ -20,6 +21,7 @@ public final class NIOSSHTransport: SSHChannelTransport, @unchecked Sendable {
 	private let host: SSHHost
 	private let plan: SSHAuthPlan
 	private let knownHosts: MobileKnownHostsStore
+	private let environment: [HostEnvironmentVariable]
 	private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 	private let lock = NSLock()
 	private var connection: Channel?
@@ -27,10 +29,16 @@ public final class NIOSSHTransport: SSHChannelTransport, @unchecked Sendable {
 	private var sink: (@Sendable (SSHTransportEvent) -> Void)?
 	private var closed = false
 
-	public init(host: SSHHost, plan: SSHAuthPlan, knownHosts: MobileKnownHostsStore) {
+	public init(
+		host: SSHHost,
+		plan: SSHAuthPlan,
+		knownHosts: MobileKnownHostsStore,
+		environment: [HostEnvironmentVariable] = []
+	) {
 		self.host = host
 		self.plan = plan
 		self.knownHosts = knownHosts
+		self.environment = environment
 	}
 
 	public func start(onEvent: @escaping @Sendable (SSHTransportEvent) -> Void) {
@@ -86,15 +94,11 @@ public final class NIOSSHTransport: SSHChannelTransport, @unchecked Sendable {
 				onEvent(.failed(reason: "pipeline: \(error)"))
 			case .success(let ssh):
 				ssh.createChannel(promise, channelType: .session) { child, _ in
-					let shell = ShellHandler(
-						sink: onEvent,
-						ready: {
-							self.lock.lock()
-							self.child = child
-							self.lock.unlock()
-							onEvent(.connected)
-						})
-					return child.pipeline.addHandler(shell)
+					let shell = ShellHandler(sink: onEvent)
+					return child.pipeline.addHandlers([
+						ChannelRequestReplyHandler(),
+						shell,
+					])
 				}
 			}
 		}
@@ -103,23 +107,170 @@ public final class NIOSSHTransport: SSHChannelTransport, @unchecked Sendable {
 			onEvent(.failed(reason: "channel: \(error)"))
 		}
 		promise.futureResult.whenSuccess { child in
-			let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
-				wantReply: true,
-				term: "xterm-256color",
-				terminalCharacterWidth: 80,
-				terminalRowHeight: 24,
-				terminalPixelWidth: 0,
-				terminalPixelHeight: 0,
-				terminalModes: SSHTerminalModes([:]))
-			child.triggerUserOutboundEvent(pty).whenComplete { result in
+			child.pipeline.handler(
+				type: ChannelRequestReplyHandler.self
+			).whenComplete { result in
 				switch result {
 				case .failure(let error):
-					onEvent(.failed(reason: "pty: \(error)"))
-				case .success:
-					let shell = SSHChannelRequestEvent.ShellRequest(wantReply: true)
-					child.triggerUserOutboundEvent(shell, promise: nil)
+					onEvent(.failed(reason: "request replies: \(error)"))
+				case .success(let replies):
+					self.requestEnvironment(
+						self.environment,
+						on: child,
+						replies: replies,
+						onEvent: onEvent
+					)
 				}
 			}
+		}
+	}
+
+	private func requestEnvironment(
+		_ variables: [HostEnvironmentVariable],
+		on child: Channel,
+		replies: ChannelRequestReplyHandler,
+		onEvent: @escaping @Sendable (SSHTransportEvent) -> Void
+	) {
+		guard !variables.isEmpty else {
+			requestPTY(on: child, replies: replies, onEvent: onEvent)
+			return
+		}
+		onEvent(.environmentRequestsStarted(names: variables.map(\.name)))
+		requestEnvironment(
+			variables,
+			at: 0,
+			accepted: [],
+			rejected: [],
+			on: child,
+			replies: replies,
+			onEvent: onEvent
+		)
+	}
+
+	private func requestEnvironment(
+		_ variables: [HostEnvironmentVariable],
+		at index: Int,
+		accepted: [String],
+		rejected: [String],
+		on child: Channel,
+		replies: ChannelRequestReplyHandler,
+		onEvent: @escaping @Sendable (SSHTransportEvent) -> Void
+	) {
+		guard index < variables.count else {
+			onEvent(
+				.environmentRequestsCompleted(
+					accepted: accepted,
+					rejected: rejected
+				)
+			)
+			requestPTY(on: child, replies: replies, onEvent: onEvent)
+			return
+		}
+		let variable = variables[index]
+		let request = SSHChannelRequestEvent.EnvironmentRequest(
+			wantReply: true,
+			name: variable.name,
+			value: variable.value
+		)
+		var timeout: Scheduled<Void>?
+		let requestToken = replies.expectReply { acceptedByServer in
+			timeout?.cancel()
+			var nextAccepted = accepted
+			var nextRejected = rejected
+			if acceptedByServer {
+				nextAccepted.append(variable.name)
+			} else {
+				nextRejected.append(variable.name)
+			}
+			self.requestEnvironment(
+				variables,
+				at: index + 1,
+				accepted: nextAccepted,
+				rejected: nextRejected,
+				on: child,
+				replies: replies,
+				onEvent: onEvent
+			)
+		}
+		timeout = child.eventLoop.scheduleTask(in: .seconds(5)) {
+			guard replies.cancelPendingReply(requestToken) else { return }
+			onEvent(
+				.failed(
+					reason: "environment request timed out: \(variable.name)"
+				)
+			)
+			child.close(promise: nil)
+		}
+		child.triggerUserOutboundEvent(request).whenFailure { error in
+			timeout?.cancel()
+			guard replies.cancelPendingReply(requestToken) else { return }
+			onEvent(
+				.failed(
+					reason: "environment request \(variable.name): \(error)"
+				)
+			)
+			child.close(promise: nil)
+		}
+	}
+
+	private func requestPTY(
+		on child: Channel,
+		replies: ChannelRequestReplyHandler,
+		onEvent: @escaping @Sendable (SSHTransportEvent) -> Void
+	) {
+		let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
+			wantReply: true,
+			term: "xterm-256color",
+			terminalCharacterWidth: 80,
+			terminalRowHeight: 24,
+			terminalPixelWidth: 0,
+			terminalPixelHeight: 0,
+			terminalModes: SSHTerminalModes([:])
+		)
+		var ptyTimeout: Scheduled<Void>?
+		let ptyToken = replies.expectReply { acceptedByServer in
+			ptyTimeout?.cancel()
+			guard acceptedByServer else {
+				onEvent(.failed(reason: "server rejected PTY request"))
+				child.close(promise: nil)
+				return
+			}
+			let shell = SSHChannelRequestEvent.ShellRequest(wantReply: true)
+			var shellTimeout: Scheduled<Void>?
+			let shellToken = replies.expectReply { acceptedByServer in
+				shellTimeout?.cancel()
+				guard acceptedByServer else {
+					onEvent(.failed(reason: "server rejected shell request"))
+					child.close(promise: nil)
+					return
+				}
+				self.lock.lock()
+				self.child = child
+				self.lock.unlock()
+				onEvent(.connected)
+			}
+			shellTimeout = child.eventLoop.scheduleTask(in: .seconds(10)) {
+				guard replies.cancelPendingReply(shellToken) else { return }
+				onEvent(.failed(reason: "shell request timed out"))
+				child.close(promise: nil)
+			}
+			child.triggerUserOutboundEvent(shell).whenFailure { error in
+				shellTimeout?.cancel()
+				guard replies.cancelPendingReply(shellToken) else { return }
+				onEvent(.failed(reason: "shell request: \(error)"))
+				child.close(promise: nil)
+			}
+		}
+		ptyTimeout = child.eventLoop.scheduleTask(in: .seconds(10)) {
+			guard replies.cancelPendingReply(ptyToken) else { return }
+			onEvent(.failed(reason: "PTY request timed out"))
+			child.close(promise: nil)
+		}
+		child.triggerUserOutboundEvent(pty).whenFailure { error in
+			ptyTimeout?.cancel()
+			guard replies.cancelPendingReply(ptyToken) else { return }
+			onEvent(.failed(reason: "PTY request: \(error)"))
+			child.close(promise: nil)
 		}
 	}
 
@@ -171,6 +322,64 @@ public final class NIOSSHTransport: SSHChannelTransport, @unchecked Sendable {
 	}
 }
 
+// MARK: - Request replies
+
+final class ChannelRequestReplyHandler: ChannelInboundHandler {
+	typealias InboundIn = SSHChannelData
+
+	private var pendingReply: (token: UInt64, callback: (Bool) -> Void)?
+	private var nextToken: UInt64 = 0
+
+	@discardableResult
+	func expectReply(_ reply: @escaping (Bool) -> Void) -> UInt64 {
+		precondition(pendingReply == nil, "SSH channel requests must be serialized")
+		nextToken &+= 1
+		pendingReply = (nextToken, reply)
+		return nextToken
+	}
+
+	func cancelPendingReply(_ token: UInt64) -> Bool {
+		guard pendingReply?.token == token else { return false }
+		pendingReply = nil
+		return true
+	}
+
+	@discardableResult
+	func cancelPendingReply() -> Bool {
+		guard pendingReply != nil else { return false }
+		pendingReply = nil
+		return true
+	}
+
+	func receiveReply(_ accepted: Bool) {
+		let reply = pendingReply?.callback
+		pendingReply = nil
+		reply?(accepted)
+	}
+
+	func userInboundEventTriggered(
+		context: ChannelHandlerContext,
+		event: Any
+	) {
+		if event is ChannelSuccessEvent {
+			receiveReply(true)
+		} else if event is ChannelFailureEvent {
+			receiveReply(false)
+		} else {
+			context.fireUserInboundEventTriggered(event)
+		}
+	}
+
+	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+		context.fireChannelRead(data)
+	}
+
+	func channelInactive(context: ChannelHandlerContext) {
+		cancelPendingReply()
+		context.fireChannelInactive()
+	}
+}
+
 // MARK: - Shell channel handler
 
 private final class ShellHandler: ChannelDuplexHandler {
@@ -180,23 +389,9 @@ private final class ShellHandler: ChannelDuplexHandler {
 	typealias OutboundOut = SSHChannelData
 
 	private let sink: @Sendable (SSHTransportEvent) -> Void
-	private let ready: () -> Void
-	private var announced = false
 
-	init(
-		sink: @escaping @Sendable (SSHTransportEvent) -> Void,
-		ready: @escaping () -> Void
-	) {
+	init(sink: @escaping @Sendable (SSHTransportEvent) -> Void) {
 		self.sink = sink
-		self.ready = ready
-	}
-
-	func channelActive(context: ChannelHandlerContext) {
-		if !announced {
-			announced = true
-			ready()
-		}
-		context.fireChannelActive()
 	}
 
 	func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -223,10 +418,12 @@ private final class ShellHandler: ChannelDuplexHandler {
 
 // MARK: - User authentication delegate
 
-private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
+final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate,
+	@unchecked Sendable {
 	private let host: SSHHost
 	private let plan: SSHAuthPlan
 	private let sink: @Sendable (SSHTransportEvent) -> Void
+	private var nextAttemptIndex = 0
 
 	init(
 		host: SSHHost,
@@ -248,10 +445,12 @@ private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
 			return
 		}
 
-		guard let attempt = plan.attempts.first else {
+		guard nextAttemptIndex < plan.attempts.count else {
 			nextChallengePromise.succeed(nil)
 			return
 		}
+		let attempt = plan.attempts[nextAttemptIndex]
+		nextAttemptIndex += 1
 
 		switch attempt {
 		case .password(let password) where availableMethods.contains(.password):
@@ -265,12 +464,83 @@ private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
 			// Server does not accept password auth.
 			nextChallengePromise.succeed(nil)
 
+		case let .privateKey(blob, passphrase)
+			where availableMethods.contains(.publicKey):
+			do {
+				let key = try OpenSSHPrivateKeyParser.parse(
+					blob,
+					passphrase: passphrase
+				)
+				let offer = NIOSSHUserAuthenticationOffer(
+					username: host.username,
+					serviceName: "",
+					offer: .privateKey(.init(privateKey: key))
+				)
+				nextChallengePromise.succeed(offer)
+			} catch {
+				sink(.failed(reason: error.localizedDescription))
+				nextChallengePromise.fail(error)
+			}
+
 		case .privateKey:
-			// swift-nio-ssh 0.13.0 has no OpenSSH private key (PEM) initializer
-			// on NIOSSHPrivateKey — only typed CryptoKit key inits. We cannot
-			// parse an arbitrary OpenSSH key blob, so report this honestly
-			// rather than inventing an API.
-			sink(.failed(reason: "private key auth unsupported by NIOSSH 0.13.0"))
+			nextChallengePromise.succeed(nil)
+
+		case let .certifiedPrivateKey(
+			blob,
+			passphrase,
+			publicCertificate
+		) where availableMethods.contains(.publicKey):
+			do {
+				let key = try OpenSSHPrivateKeyParser.parse(
+					blob,
+					passphrase: passphrase
+				)
+				guard let certificateText = String(
+					data: publicCertificate,
+					encoding: .utf8
+				) else {
+					throw MobileSSHAuthenticationKeyError
+						.invalidCertificate
+				}
+				let publicKey = try NIOSSHPublicKey(
+					openSSHPublicKey: certificateText
+				)
+				guard let certificate =
+					NIOSSHCertifiedPublicKey(publicKey) else {
+					throw MobileSSHAuthenticationKeyError
+						.invalidCertificate
+				}
+				let offer = NIOSSHUserAuthenticationOffer(
+					username: host.username,
+					serviceName: "",
+					offer: .privateKey(.init(
+						privateKey: key,
+						certifiedKey: certificate
+					))
+				)
+				nextChallengePromise.succeed(offer)
+			} catch {
+				sink(.failed(reason: error.localizedDescription))
+				nextChallengePromise.fail(error)
+			}
+
+		case .certifiedPrivateKey:
+			nextChallengePromise.succeed(nil)
+
+		case .secureEnclaveP256(let key)
+			where availableMethods.contains(.publicKey):
+			let offer = NIOSSHUserAuthenticationOffer(
+				username: host.username,
+				serviceName: "",
+				offer: .privateKey(.init(
+					privateKey: NIOSSHPrivateKey(
+						secureEnclaveP256Key: key.privateKey
+					)
+				))
+			)
+			nextChallengePromise.succeed(offer)
+
+		case .secureEnclaveP256:
 			nextChallengePromise.succeed(nil)
 
 		case .keyboardInteractive:
@@ -283,25 +553,54 @@ private final class NIOSSHAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
 	}
 }
 
-// MARK: - Host key validation delegate
-
-private struct HostKeyMismatchError: Error {
-	let endpoint: String
+private enum MobileSSHAuthenticationKeyError: Error {
+	case invalidCertificate
 }
 
-private final class NIOSSHHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate {
+extension MobileSSHAuthenticationKeyError: LocalizedError {
+	var errorDescription: String? {
+		switch self {
+		case .invalidCertificate:
+			"The SSH certificate is invalid."
+		}
+	}
+}
+
+// MARK: - Host key validation delegate
+
+public enum MobileSSHTrustError: Error, Equatable, Sendable {
+	case changed(endpoint: String)
+	case persistenceFailed(endpoint: String)
+}
+
+extension MobileSSHTrustError: LocalizedError {
+	public var errorDescription: String? {
+		switch self {
+		case .changed(let endpoint):
+			"The SSH host key changed for \(endpoint)."
+		case .persistenceFailed(let endpoint):
+			"Caterm could not save the SSH host key for \(endpoint)."
+		}
+	}
+}
+
+final class NIOSSHHostKeyDelegate: NIOSSHClientServerAuthenticationDelegate,
+	@unchecked Sendable {
 	private let endpoint: String
 	private let knownHosts: MobileKnownHostsStore
 	private let sink: @Sendable (SSHTransportEvent) -> Void
+	private let onFailure: @Sendable (MobileSSHTrustError) -> Void
 
 	init(
 		endpoint: String,
 		knownHosts: MobileKnownHostsStore,
-		sink: @escaping @Sendable (SSHTransportEvent) -> Void
+		sink: @escaping @Sendable (SSHTransportEvent) -> Void,
+		onFailure: @escaping @Sendable (MobileSSHTrustError) -> Void = { _ in }
 	) {
 		self.endpoint = endpoint
 		self.knownHosts = knownHosts
 		self.sink = sink
+		self.onFailure = onFailure
 	}
 
 	func validateHostKey(
@@ -309,16 +608,31 @@ private final class NIOSSHHostKeyDelegate: NIOSSHClientServerAuthenticationDeleg
 		validationCompletePromise: EventLoopPromise<Void>
 	) {
 		let fingerprint = Self.fingerprint(for: hostKey)
-		switch knownHosts.evaluate(endpoint: endpoint, fingerprint: fingerprint) {
-		case .trusted:
-			validationCompletePromise.succeed(())
-		case .unknown:
-			sink(.hostKeyPrompt(endpoint: endpoint, fingerprint: fingerprint))
-			try? knownHosts.trust(endpoint: endpoint, fingerprint: fingerprint)
-			validationCompletePromise.succeed(())
-		case .mismatch:
-			sink(.failed(reason: "host key mismatch for \(endpoint)"))
-			validationCompletePromise.fail(HostKeyMismatchError(endpoint: endpoint))
+		do {
+			switch try knownHosts.evaluate(
+				endpoint: endpoint,
+				fingerprint: fingerprint
+			) {
+			case .trusted:
+				validationCompletePromise.succeed(())
+			case .unknown:
+				sink(.hostKeyPrompt(endpoint: endpoint, fingerprint: fingerprint))
+				try knownHosts.trust(endpoint: endpoint, fingerprint: fingerprint)
+				validationCompletePromise.succeed(())
+			case .mismatch:
+				sink(.failed(reason: "host key mismatch for \(endpoint)"))
+				let failure = MobileSSHTrustError.changed(endpoint: endpoint)
+				onFailure(failure)
+				validationCompletePromise.fail(failure)
+			}
+		} catch MobileKnownHostsError.concurrentKeyChange {
+			let failure = MobileSSHTrustError.changed(endpoint: endpoint)
+			onFailure(failure)
+			validationCompletePromise.fail(failure)
+		} catch {
+			let failure = MobileSSHTrustError.persistenceFailed(endpoint: endpoint)
+			onFailure(failure)
+			validationCompletePromise.fail(failure)
 		}
 	}
 

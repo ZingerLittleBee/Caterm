@@ -6,7 +6,7 @@ import Foundation
 /// inside this module and existing tests.
 public typealias SSHHost = Host
 
-public struct Host: Codable, Identifiable, Hashable {
+public struct Host: Codable, Identifiable, Hashable, Sendable {
 	public let id: UUID
 	public var serverId: String?
 	public var name: String
@@ -39,6 +39,13 @@ public struct Host: Codable, Identifiable, Hashable {
 	/// Synced group hierarchy and tags used to organize large host lists.
 	/// Legacy hosts without this field decode to `.empty`.
 	public var organization: HostOrganization
+	/// Explicit, non-secret startup behavior. Snippet identity and environment
+	/// values sync as Host metadata; credential material remains separate.
+	public var automation: HostAutomation
+	/// Optional reference to a reusable credential identity. The embedded
+	/// username and credential remain the reversible legacy fallback until
+	/// migration is explicitly confirmed.
+	public var credentialIdentity: HostCredentialIdentityReference?
 
 	public init(id: UUID = UUID(), serverId: String? = nil,
 	            name: String, hostname: String, port: Int = 22,
@@ -49,7 +56,9 @@ public struct Host: Codable, Identifiable, Hashable {
 	            jumpHostServerId: String? = nil,
 	            forwards: [PortForward] = [],
 	            icon: String? = nil,
-	            organization: HostOrganization = .empty) {
+	            organization: HostOrganization = .empty,
+	            automation: HostAutomation = .disabled,
+	            credentialIdentity: HostCredentialIdentityReference? = nil) {
 		self.id = id
 		self.serverId = serverId
 		self.name = name
@@ -65,6 +74,8 @@ public struct Host: Codable, Identifiable, Hashable {
 		self.forwards = forwards
 		self.icon = icon
 		self.organization = organization
+		self.automation = automation
+		self.credentialIdentity = credentialIdentity
 	}
 
 	// Explicit decoder so legacy hosts.json (no `credentialMaterialDirty`
@@ -78,6 +89,8 @@ public struct Host: Codable, Identifiable, Hashable {
 		case forwards
 		case icon
 		case organization
+		case automation
+		case credentialIdentity
 	}
 
 	public init(from decoder: Decoder) throws {
@@ -99,11 +112,18 @@ public struct Host: Codable, Identifiable, Hashable {
 		organization = try c.decodeIfPresent(
 			HostOrganization.self, forKey: .organization
 		) ?? .empty
+		automation = try c.decodeIfPresent(
+			HostAutomation.self, forKey: .automation
+		) ?? .disabled
+		credentialIdentity = try c.decodeIfPresent(
+			HostCredentialIdentityReference.self,
+			forKey: .credentialIdentity
+		)
 	}
 	// Synthesized encode(to:) is fine — it writes all keys.
 }
 
-public enum CredentialSource: Codable, Hashable {
+public enum CredentialSource: Codable, Hashable, Sendable {
 	case password
 	case keyFile(keyPath: String, hasPassphrase: Bool)
 	case agent

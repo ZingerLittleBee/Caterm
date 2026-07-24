@@ -4,6 +4,7 @@ import HostSyncStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+import WorkspaceCore
 
 enum HostCredentialEditRoute: Equatable {
 	case preserveCurrent
@@ -32,18 +33,18 @@ enum HostCredentialEditRouting {
 /// - Add (toolbar + ⌘T notification)
 /// - Edit (context menu)
 /// - Delete (context menu)
-/// - Connect (context menu / double-click) — delegates "open this new tab"
-///   to the owning window via `onOpenTab`. A LandingView swaps its tab
-///   identity in-place (so the empty Landing window becomes the new tab);
-///   a MainWindow calls `openWindow(value:)` to spawn a sibling tab.
+/// - Connect (context menu / double-click) — delegates the new Workspace shell
+///   to the owning window via `onOpenWorkspace`. A LandingView swaps its scene
+///   value in place; a MainWindow opens a sibling native tab.
 ///   This avoids the previous behavior of always spawning a new window
 ///   and leaving the original Landing window around as a blank tab.
 struct HostListSidebar: View {
 	@EnvironmentObject var store: SessionStore
 	@EnvironmentObject var syncStore: HostSyncStore       // NEW (v1.4)
 	@EnvironmentObject var preferences: SyncPreferences   // NEW (v1.4)
+	@EnvironmentObject var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
-	let onOpenTab: (UUID) -> Void
+	let onOpenWorkspace: (Workspace) -> Void
 	@State private var selectedHostId: UUID?
 	@State private var showingAddSheet = false
 	@State private var editingHost: SSHHost?
@@ -108,7 +109,18 @@ struct HostListSidebar: View {
 				}
 			}
 			.overlay {
-				if store.hosts.isEmpty, quickDestination == nil {
+				if case .failed = store.hostRepositoryLoadState {
+					ContentUnavailableView(
+						"Unable to Load Hosts",
+						systemImage: "exclamationmark.triangle",
+						description: Text(
+							"Check the saved Host data and relaunch Caterm."
+						)
+					)
+				} else if store.hostRepositoryLoadState == .loading,
+					store.hosts.isEmpty {
+					ProgressView("Loading Hosts…")
+				} else if store.hosts.isEmpty, quickDestination == nil {
 					VStack(spacing: 8) {
 						Image(systemName: "server.rack")
 							.font(.system(size: 32))
@@ -167,12 +179,17 @@ struct HostListSidebar: View {
 				HostFormView(mode: .add) { host, secret, keyMaterial in
 					Task { @MainActor in
 						do {
-							try store.addHost(host)
-							try await applyCredentialChange(
-								hostId: host.id, credential: host.credential,
-								secret: secret, keyMaterial: keyMaterial,
-								forceTransaction: true
-							)
+							try await store.addHost(host)
+							if host.credentialIdentity?.migrationState
+								!= .confirmed {
+								try await applyCredentialChange(
+									hostId: host.id,
+									credential: host.credential,
+									secret: secret,
+									keyMaterial: keyMaterial,
+									forceTransaction: true
+								)
+							}
 							showingAddSheet = false
 						} catch {
 							errorMessage = error.localizedDescription
@@ -191,27 +208,29 @@ struct HostListSidebar: View {
 								editingHost = nil
 								return
 							}
-							let route = HostCredentialEditRouting.route(
-								initial: host.credential,
-								current: current.credential,
-								updated: updated.credential,
-								hasSecret: secret != nil,
-								hasKeyMaterial: keyMaterial != nil
-							)
-							switch route {
-							case .preserveCurrent:
-								break
-							case let .transact(forceSourceCommit):
-								// Commit material and its source first, then merge the
-								// remaining form fields without replacing the resolved
-								// managed-key path or dirty bit.
-								try await applyCredentialChange(
-									hostId: updated.id,
-									credential: updated.credential,
-									secret: secret,
-									keyMaterial: keyMaterial,
-									forceTransaction: forceSourceCommit
+							let identityIsConfirmed =
+								updated.credentialIdentity?.migrationState
+									== .confirmed
+							if !identityIsConfirmed {
+								let route = HostCredentialEditRouting.route(
+									initial: host.credential,
+									current: current.credential,
+									updated: updated.credential,
+									hasSecret: secret != nil,
+									hasKeyMaterial: keyMaterial != nil
 								)
+								switch route {
+								case .preserveCurrent:
+									break
+								case let .transact(forceSourceCommit):
+									try await applyCredentialChange(
+										hostId: updated.id,
+										credential: updated.credential,
+										secret: secret,
+										keyMaterial: keyMaterial,
+										forceTransaction: forceSourceCommit
+									)
+								}
 							}
 							if let committed = store.hosts.first(where: {
 								$0.id == updated.id
@@ -220,7 +239,14 @@ struct HostListSidebar: View {
 								metadataUpdate.credential = committed.credential
 								metadataUpdate.credentialMaterialDirty =
 									committed.credentialMaterialDirty
-								try store.updateHost(metadataUpdate)
+								if identityIsConfirmed {
+									try await store
+										.confirmCredentialIdentityMigration(
+											metadataUpdate
+										)
+								} else {
+									try await store.updateHost(metadataUpdate)
+								}
 							}
 							editingHost = nil
 						} catch {
@@ -367,6 +393,23 @@ struct HostListSidebar: View {
 			.buttonStyle(.plain)
 			.accessibilityHint("Opens forwarding rules for saved hosts")
 			Button {
+				openWindow(id: SFTPTaskWindow.id)
+			} label: {
+				HStack(spacing: 8) {
+					Image(systemName: "arrow.left.arrow.right.square")
+					Text("File Transfer")
+					Spacer()
+					Text("⌥⌘F")
+						.foregroundStyle(.tertiary)
+				}
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.padding(.horizontal, 12)
+				.padding(.vertical, 7)
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityHint("Opens the dual-pane local and remote file workspace")
+			Button {
 				openWindow(id: KnownHostsWindow.id)
 			} label: {
 				HStack(spacing: 8) {
@@ -449,11 +492,15 @@ struct HostListSidebar: View {
 			case .promptCredentials:
 				pendingCredentialHost = current
 			case .openTab:
-				let tabId = store.openTab(
-					host: current,
-					installTerminfo: preferences.installTerminfoEnabled
-				)
-				onOpenTab(tabId)
+				do {
+					let workspace = try workspaceCoordinator.openSavedHost(
+						current,
+						installTerminfo: preferences.installTerminfoEnabled
+					)
+					onOpenWorkspace(workspace)
+				} catch {
+					errorMessage = error.localizedDescription
+				}
 			}
 		}
 	}
@@ -473,12 +520,15 @@ struct HostListSidebar: View {
 	}
 
 	private func connectOnce(_ destination: QuickConnectDestination) {
-		let tabId = store.openTab(
-			host: destination.makeHost(),
-			installTerminfo: preferences.installTerminfoEnabled,
-			authenticationMode: .interactive
-		)
-		onOpenTab(tabId)
+		do {
+			let workspace = try workspaceCoordinator.openOneTimeHost(
+				destination.makeHost(),
+				installTerminfo: preferences.installTerminfoEnabled
+			)
+			onOpenWorkspace(workspace)
+		} catch {
+			errorMessage = error.localizedDescription
+		}
 	}
 
 	private func deleteHost(_ host: SSHHost) {
@@ -563,12 +613,14 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 
 	@MainActor
 	final class Coordinator: NSObject {
+		static let installedAction = #selector(forwardSingleAction(_:))
 		static let installedDoubleAction = #selector(openClickedRow(_:))
 
 		private var hosts: [SSHHost] = []
 		private var onDoubleClick: ((SSHHost) -> Void)?
 		private weak var tableView: NSTableView?
 		private weak var previousTarget: AnyObject?
+		private var previousAction: Selector?
 		private var previousDoubleAction: Selector?
 
 		func update(hosts: [SSHHost], onDoubleClick: @escaping (SSHHost) -> Void) {
@@ -586,10 +638,21 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 		func restorePreviousDoubleAction() {
 			guard let tableView else { return }
 			tableView.target = previousTarget
+			tableView.action = previousAction
 			tableView.doubleAction = previousDoubleAction
 			self.tableView = nil
 			previousTarget = nil
+			previousAction = nil
 			previousDoubleAction = nil
+		}
+
+		@objc func forwardSingleAction(_ sender: NSTableView) {
+			guard let previousAction else { return }
+			NSApplication.shared.sendAction(
+				previousAction,
+				to: previousTarget,
+				from: sender
+			)
 		}
 
 		@objc func openClickedRow(_ sender: NSTableView) {
@@ -598,14 +661,26 @@ struct HostListDoubleClickConnector: NSViewRepresentable {
 			onDoubleClick?(hosts[row])
 		}
 
+		// SwiftUI can restore its table action between representable updates
+		// while leaving this coordinator installed as the target.
+		@objc func onAction(_ sender: NSTableView) {
+			if NSApp.currentEvent?.clickCount == 2 {
+				openClickedRow(sender)
+			} else {
+				forwardSingleAction(sender)
+			}
+		}
+
 		func install(on tableView: NSTableView) {
 			if tableView !== self.tableView {
 				restorePreviousDoubleAction()
 				previousTarget = tableView.target as AnyObject?
+				previousAction = tableView.action
 				previousDoubleAction = tableView.doubleAction
 				self.tableView = tableView
 			}
 			tableView.target = self
+			tableView.action = Self.installedAction
 			tableView.doubleAction = Self.installedDoubleAction
 		}
 

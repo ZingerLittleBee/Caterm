@@ -2,15 +2,16 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A native macOS SSH terminal manager with iCloud sync and no self-hosted server.
+A native SSH terminal manager for macOS, iPhone, and iPad with iCloud sync
+and no self-hosted server.
 
 [![Latest release](https://img.shields.io/github/v/release/ZingerLittleBee/Caterm)](https://github.com/ZingerLittleBee/Caterm/releases/latest)
 
-Caterm is a SwiftUI app built on [libghostty](https://github.com/ghostty-org/ghostty)
-for the terminal engine. Hosts, credentials, settings, and snippets sync
-across your Macs over iCloud — credentials are end-to-end encrypted and never
-leave your devices in the clear. There is no account to create and no backend
-to run.
+Caterm uses [libghostty](https://github.com/ghostty-org/ghostty) on macOS and
+a native NIO SSH terminal on iOS. Hosts, reusable credential identities,
+compatible settings, and snippets sync across your devices over iCloud.
+Credential secrets are end-to-end encrypted and never leave your devices in
+the clear. There is no Caterm account to create and no backend to run.
 
 ## Download
 
@@ -18,11 +19,17 @@ to run.
 The app is Developer ID signed, notarized, and stapled. Grab
 `Caterm-<version>.dmg`, open it, and drag Caterm to Applications.
 
-Requires **macOS 14.0 or later**.
+Requires **macOS 14.0 or later**. The iOS companion targets **iOS and
+iPadOS 17.0 or later** and is currently built from source.
 
-Sync needs the Mac to be signed into iCloud — there is no separate account.
-Signed out, Caterm still works fully as a local-only terminal manager; it
-just doesn't sync. No degraded mode, no nag screens.
+The feature inventory below describes the current `main`/Unreleased source.
+The latest packaged release may not include every listed capability; see
+[CHANGELOG.md](CHANGELOG.md) for the release boundary.
+
+Sync needs the device to be signed into iCloud — there is no separate
+account. Signed out or temporarily offline, Caterm keeps cached Hosts and
+snippets available locally and pauses remote sync work. Routine sync is
+automatic, with explicit status and manual recovery when attention is needed.
 
 ## Screenshots
 
@@ -40,27 +47,45 @@ just doesn't sync. No degraded mode, no nag screens.
 
 ### Terminal
 
-- Ghostty-powered terminal surfaces with tabbed sessions and a collapsible
-  host-list sidebar (`⌘B` to toggle).
+- Ghostty-powered macOS terminal surfaces with native window tabs and a
+  collapsible Host sidebar (`⌘B` to toggle).
+- Native macOS Workspaces with horizontal and vertical Panes, directional
+  focus, Focus/Split presentation, and independent reconnect and close
+  behavior.
+- Reviewed command broadcast takes a frozen snapshot of eligible Panes in the
+  focused Workspace, shows the exact recipients before delivery, reports one
+  result per Pane, and never buffers commands for disconnected or reconnecting
+  sessions.
 - Bundled `xterm-ghostty` terminfo with opt-in remote install per host.
 - Full terminal settings UI (font, cursor, colors, behavior) backed by a
   managed Ghostty config snapshot with diagnostic surfacing.
 - Theme catalog extracted from Ghostty with a searchable picker, favorites
   grid, and per-host theme overrides.
+- Native iPhone and iPad terminal sessions with a mobile key strip, software
+  and hardware keyboard support, synchronized snippets, reconnect, and
+  device-local host-key verification.
 
 ### SSH
 
 - Host CRUD with optional labels (falls back to `user@host`).
+- Nested Host groups and tags with search and bulk organization.
 - Host chaining via `ProxyJump`, with a Via-host picker, chain preview,
   cycle detection, and per-session `ssh_config` generation.
 - Port forwarding (local/remote/dynamic) per host.
 - ControlMaster connection multiplexing with deterministic teardown.
 - Chain-aware askpass for credential prompts across hops.
+- Reusable credential identities for passwords, private keys, and SSH
+  certificates. Portable secrets remain encrypted.
 
-### SFTP
+### SFTP and files
 
-- File transfer drawer with a transfer queue.
-- Persisted remote-path bookmarks per host.
+- A macOS file drawer that follows the active Workspace Pane, with a shared
+  transfer queue and persisted remote-path bookmarks.
+- Real iPhone and iPad SFTP over NIO: browse, create folders, rename, delete,
+  upload from Files, download to an explicit export/share destination, drag
+  completed files on iPad, and inspect transfer progress and typed failures.
+- iOS backgrounding cancels unfinished transfers safely. Caterm does not claim
+  that SSH or SFTP continues indefinitely after the app is suspended.
 
 ### iCloud sync (serverless)
 
@@ -72,6 +97,37 @@ just doesn't sync. No degraded mode, no nag screens.
 - Settings sync via `NSUbiquitousKeyValueStore` with revision-based
   last-writer-wins and quarantine on corrupt/incompatible blobs.
 - Snippet store and sync.
+- The live iOS composition uses durable Host, snippet, settings, credential,
+  and transfer stores. Launch, foreground, pull-to-refresh, silent push,
+  account change, and manual refresh enter one serialized sync coordinator.
+- Cached Hosts and snippets remain available while iCloud is signed out,
+  temporarily unavailable, or offline.
+
+## Deliberate boundaries
+
+- Known Hosts trust is device-local. Each Mac, iPhone, and iPad verifies a
+  server independently; an iCloud-synced Host does not carry another device's
+  trust decision.
+- Workspace templates describe fresh sessions, not resumable live remote
+  processes. Use `tmux`, `screen`, or another server-side multiplexer when the
+  remote process must survive a client disconnect.
+- iOS may suspend Caterm shortly after it enters the background. Cached data
+  stays available, but terminals, tunnels, and transfers are not advertised
+  as always-on background services.
+- Caterm is SSH-first. Telnet, Serial, Mosh, RDP, VNC, SCP, cloud-provider
+  inventory, AI command generation, raw-keystroke broadcast, synchronized
+  terminal output, and team collaboration are not part of the current
+  individual-user product.
+- Workspace template restoration, signed Pane accessibility/load acceptance,
+  and the desktop dual-pane/external-editor SFTP workspace are verified in
+  shipping configuration. A Workspace template's defined contract creates
+  fresh SSH sessions; it never preserves a live PTY, socket, remote process,
+  working directory, or terminal output.
+- Secure Enclave SSH identities are physically verified on signed iOS:
+  device-bound creation, restart restoration, and authentication to a
+  disposable OpenSSH fixture succeeded without exporting private key material.
+- See the [Termius parity matrix](docs/termius-parity.md) for the evidence and
+  disposition of every verified comparison capability.
 
 ## Security
 
@@ -82,17 +138,21 @@ Caterm syncs SSH credentials, so the encryption model is deliberate:
   host, field, and revision) before it ever leaves the device.
 - **The master key lives only in your iCloud Keychain.** It is a 256-bit
   symmetric key stored as a *synchronizable* Keychain item, so it
-  propagates between your Macs through Apple's end-to-end-encrypted iCloud
-  Keychain — Apple cannot read it.
+  propagates between authorized devices through Apple's end-to-end-encrypted
+  iCloud Keychain — Apple cannot read it. Device-bound private material is
+  not portable and does not synchronize.
 - **Different data, different paths.** Sealed credential blobs ride on
   CloudKit `Host` records; the master key rides iCloud Keychain. Apple sees
   only ciphertext on the CloudKit side and never holds the key to it.
 - **Settings** sync via `NSUbiquitousKeyValueStore` and are not sensitive;
   a corrupt or schema-incompatible blob is quarantined rather than applied.
-- **Losing a device** does not expose credentials: the blobs are useless
-  without the master key, which is gated by your Apple ID and the iCloud
-  Keychain security code. Revoke a lost Mac from Apple ID device management
-  as usual.
+- **Known Hosts trust stays local to each device.** Caterm syncs connection
+  metadata, not host-key authorization decisions.
+- **CloudKit never receives the credential key.** A lost device may already
+  hold locally accessible Keychain material, so Caterm relies on the device
+  passcode, FileVault, Keychain access control, and Apple's device-management
+  or remote-erase controls. Removing a device from Apple ID prevents future
+  account access; it is not a substitute for remote erase.
 
 There is no Caterm server and no Caterm account — nothing to breach on our
 side because there is no "our side".

@@ -295,4 +295,28 @@ final class SessionStoreConnectionFlowTests: XCTestCase {
 		XCTAssertGreaterThanOrEqual(fake.probeCount, 2,
 			"scheduleReconnect should route through startConnection")
 	}
+
+	func testFailedReconnectPreflightPreservesPriorSurfaceGeneration() async {
+		let fake = FakePreflight()
+		fake.nextOutcome = .ok
+		let store = makeStore(preflight: fake)
+		let id = store.openTab(host: makeHost())
+		await store.awaitConnectionAttempt(tabId: id)
+		store.markConnected(tabId: id)
+		let priorGeneration = store.tabs.first(where: { $0.id == id })?.surfaceGeneration
+		fake.nextOutcome = .failed(.timedOut)
+
+		store.markChildExited(tabId: id, exitCode: 255)
+		let deadline = Date().addingTimeInterval(3)
+		while fake.probeCount < 2, Date() < deadline {
+			try? await Task.sleep(nanoseconds: 50_000_000)
+		}
+		await store.awaitConnectionAttempt(tabId: id)
+
+		guard let tab = store.tabs.first(where: { $0.id == id }) else {
+			return XCTFail("tab missing")
+		}
+		XCTAssertEqual(tab.state, .failed(.networkUnreachable(.timedOut)))
+		XCTAssertEqual(tab.surfaceGeneration, priorGeneration)
+	}
 }

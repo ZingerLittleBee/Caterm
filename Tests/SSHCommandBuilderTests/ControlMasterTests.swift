@@ -22,4 +22,23 @@ final class ControlMasterTests: XCTestCase {
 		XCTAssertTrue(out.command.contains("ControlPath="))
 		XCTAssertTrue(out.command.contains("11111111-1111-1111-1111-111111111111"))
 	}
+
+	func testExplicitControlPathOverridesHomeRelativeDefault() throws {
+		let host = Host(
+			id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+			name: "demo", hostname: "h.example", port: 22,
+			username: "alice", credential: .password
+		)
+		let path = "/tmp/caterm isolated/cm/\(host.id.uuidString).sock"
+		let out = try SSHCommandBuilder.buildValidated(
+			host: host,
+			askpassPath: "/tmp/askpass",
+			knownHostsCaterm: "/tmp/caterm_kh",
+			knownHostsUser: "/tmp/user_kh",
+			controlPath: path
+		)
+
+		XCTAssertTrue(out.command.contains("'ControlPath=\"\(path)\"'"))
+		XCTAssertFalse(out.command.contains("~/Library/Caches/Caterm/cm/"))
+	}
 }

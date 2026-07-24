@@ -1,4 +1,5 @@
 import BackupArchive
+import CredentialIdentityStore
 import Foundation
 import MergeDecision
 import SessionStore
@@ -11,6 +12,22 @@ import SSHCommandBuilder
 /// newer side wins per entity, local entities absent from the archive are
 /// never deleted.
 public struct BackupMergePlan: Equatable {
+	public struct CredentialIdentityAction: Equatable, Identifiable {
+		public enum Kind: Equatable {
+			case add
+			case update
+			case materialOnly
+			case skipLocalNewer
+		}
+
+		public let kind: Kind
+		public let archiveIdentity: BackupCredentialIdentity
+		public let localIdentityID: UUID?
+		public let appliesSecrets: Bool
+
+		public var id: UUID { archiveIdentity.id }
+	}
+
 	public struct HostAction: Equatable, Identifiable {
 		public enum Kind: Equatable {
 			case add
@@ -62,6 +79,7 @@ public struct BackupMergePlan: Equatable {
 	}
 
 	public var hosts: [HostAction]
+	public var credentialIdentities: [CredentialIdentityAction]
 	public var snippets: [SnippetAction]
 	public var settings: SettingsAction
 	public var bookmarks: [BookmarkAction]
@@ -71,9 +89,15 @@ public struct BackupMergePlan: Equatable {
 	/// or the archive id itself for `.add`). Drives jump-chain and
 	/// settings-override remapping in apply.
 	public var hostIdMapping: [UUID: UUID]
+	/// Archive identity id → local identity id. Host assignments use this
+	/// mapping so matching by server id cannot leave a dangling reference.
+	public var credentialIdentityIdMapping: [UUID: UUID]
 
 	public var isEmpty: Bool {
 		hosts.allSatisfy { $0.kind == .skipLocalNewer }
+			&& credentialIdentities.allSatisfy {
+				$0.kind == .skipLocalNewer
+			}
 			&& snippets.allSatisfy { $0.kind == .skipLocalNewer }
 			&& (settings == .none || settings == .skipLocalNewer)
 			&& bookmarks.allSatisfy { $0.kind != .add }
@@ -93,7 +117,9 @@ public enum BackupMergePlanner {
 		localSnippets: [Snippet],
 		localSettingsRevision: String?,
 		localBookmarks: (UUID) -> [RemoteBookmark],
-		localKnownHostsLines: [String]
+		localKnownHostsLines: [String],
+		localCredentialIdentities: [CredentialIdentity] = [],
+		identityNeedsMaterial: (CredentialIdentity) -> Bool = { _ in false }
 	) -> BackupMergePlan {
 		var mapping: [UUID: UUID] = [:]
 		var hostActions: [BackupMergePlan.HostAction] = []
@@ -106,6 +132,65 @@ public enum BackupMergePlanner {
 			local: { $0.updatedAt },
 			incoming: { $0.updatedAt }
 		)
+		var identityMapping: [UUID: UUID] = [:]
+		var identityActions: [BackupMergePlan.CredentialIdentityAction] = []
+		let identityIndex = MergeIdentityIndex(
+			localCredentialIdentities,
+			localID: { $0.id },
+			serverID: { $0.serverID }
+		)
+		let identityPolicy = MergePolicy<
+			CredentialIdentity,
+			BackupCredentialIdentity
+		>(
+			local: { $0.updatedAt },
+			incoming: { $0.updatedAt }
+		)
+		for archiveIdentity in payload.credentialIdentities {
+			let local = identityIndex.match(
+				localID: archiveIdentity.id,
+				serverID: archiveIdentity.serverId
+			)
+			let hasSecrets = archiveIdentity.password != nil
+				|| archiveIdentity.passphrase != nil
+				|| archiveIdentity.privateKey != nil
+			guard let local else {
+				identityMapping[archiveIdentity.id] = archiveIdentity.id
+				identityActions.append(.init(
+					kind: .add,
+					archiveIdentity: archiveIdentity,
+					localIdentityID: nil,
+					appliesSecrets: hasSecrets
+				))
+				continue
+			}
+			identityMapping[archiveIdentity.id] = local.id
+			if identityPolicy.decide(
+				local: local,
+				incoming: archiveIdentity
+			) == .incoming {
+				identityActions.append(.init(
+					kind: .update,
+					archiveIdentity: archiveIdentity,
+					localIdentityID: local.id,
+					appliesSecrets: hasSecrets
+				))
+			} else if hasSecrets, identityNeedsMaterial(local) {
+				identityActions.append(.init(
+					kind: .materialOnly,
+					archiveIdentity: archiveIdentity,
+					localIdentityID: local.id,
+					appliesSecrets: true
+				))
+			} else {
+				identityActions.append(.init(
+					kind: .skipLocalNewer,
+					archiveIdentity: archiveIdentity,
+					localIdentityID: local.id,
+					appliesSecrets: false
+				))
+			}
+		}
 
 		for archiveHost in payload.hosts {
 			let local = hostIndex.match(
@@ -199,11 +284,13 @@ public enum BackupMergePlanner {
 
 		return BackupMergePlan(
 			hosts: hostActions,
+			credentialIdentities: identityActions,
 			snippets: snippetActions,
 			settings: settingsAction,
 			bookmarks: bookmarkActions,
 			knownHostsToAppend: newLines,
-			hostIdMapping: mapping
+			hostIdMapping: mapping,
+			credentialIdentityIdMapping: identityMapping
 		)
 	}
 

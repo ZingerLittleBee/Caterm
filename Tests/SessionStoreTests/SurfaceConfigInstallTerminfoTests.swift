@@ -5,6 +5,24 @@ import XCTest
 
 @MainActor
 final class SurfaceConfigInstallTerminfoTests: XCTestCase {
+	private final class ImmediatePreflight:
+		PreflightProbing, @unchecked Sendable {
+		func probe(
+			host _: String,
+			port _: UInt16,
+			timeout _: TimeInterval
+		) async -> PreflightOutcome {
+			.ok
+		}
+
+		func probeLocalBind(
+			address _: String,
+			port _: UInt16
+		) async -> PortBindOutcome {
+			.available
+		}
+	}
+
 	private func makeStore() -> SessionStore {
 		let tmp = FileManager.default.temporaryDirectory
 			.appendingPathComponent("caterm-tabs-\(UUID()).json")
@@ -14,7 +32,8 @@ final class SurfaceConfigInstallTerminfoTests: XCTestCase {
 		                    knownHostsUser: "/dev/null",
 		                    accessGroup: nil,
 		                    hostsURL: tmp,
-		                    keychain: kc)
+		                    keychain: kc,
+		                    preflight: ImmediatePreflight())
 	}
 
 	private func sampleHost() -> SSHHost {
@@ -22,9 +41,10 @@ final class SurfaceConfigInstallTerminfoTests: XCTestCase {
 		        username: "alice", credential: .agent)
 	}
 
-	func testOpenTimeDisabledIgnoresLaterEnabledPreference() throws {
+	func testOpenTimeDisabledIgnoresLaterEnabledPreference() async throws {
 		let store = makeStore()
 		let tabId = store.openTab(host: sampleHost(), installTerminfo: false)
+		await store.awaitConnectionAttempt(tabId: tabId)
 
 		guard let cfg = store.surfaceConfig(for: tabId, installTerminfo: true) else {
 			XCTFail("surfaceConfig returned nil for a tab we just opened")
@@ -34,9 +54,10 @@ final class SurfaceConfigInstallTerminfoTests: XCTestCase {
 		XCTAssertFalse(cfg.env.contains(where: { $0.0 == "TERM" }), "no TERM override when installTerminfo: false")
 	}
 
-	func testOpenTimeEnabledIgnoresLaterDisabledPreference() throws {
+	func testOpenTimeEnabledIgnoresLaterDisabledPreference() async throws {
 		let store = makeStore()
 		let tabId = store.openTab(host: sampleHost(), installTerminfo: true)
+		await store.awaitConnectionAttempt(tabId: tabId)
 
 		guard let cfg = store.surfaceConfig(for: tabId, installTerminfo: false) else {
 			XCTFail("surfaceConfig returned nil for a tab we just opened")
@@ -46,12 +67,13 @@ final class SurfaceConfigInstallTerminfoTests: XCTestCase {
 		XCTAssertTrue(cfg.env.contains(where: { $0.0 == "TERM" && $0.1 == "xterm-ghostty" }))
 	}
 
-	func testInteractiveAuthenticationModeIsSnapshottedAtOpenTime() throws {
+	func testInteractiveAuthenticationModeIsSnapshottedAtOpenTime() async throws {
 		let store = makeStore()
 		let tabId = store.openTab(
 			host: sampleHost(),
 			authenticationMode: .interactive
 		)
+		await store.awaitConnectionAttempt(tabId: tabId)
 
 		let cfg = try XCTUnwrap(store.surfaceConfig(for: tabId))
 		XCTAssertFalse(cfg.command.contains("BatchMode=yes"))

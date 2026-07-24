@@ -24,6 +24,23 @@ final class FileTransferStoreTests: XCTestCase {
 		SSHHost(id: id, name: "x", hostname: "h", port: 22, username: "u", credential: .agent)
 	}
 
+	func makeUploadFiles(_ names: [String]) throws -> [URL] {
+		let directory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-transfer-store-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: directory,
+			withIntermediateDirectories: true
+		)
+		addTeardownBlock {
+			try? FileManager.default.removeItem(at: directory)
+		}
+		return try names.map { name in
+			let url = directory.appendingPathComponent(name)
+			try Data(name.utf8).write(to: url)
+			return url
+		}
+	}
+
 	func testSerialFifoForOneHost() async throws {
 		let runner = ScriptedRunner()
 		runner.script = [("", 0), ("", 0), ("", 0)]
@@ -34,13 +51,17 @@ final class FileTransferStoreTests: XCTestCase {
 			liveness: AlwaysAlive()
 		)
 		let host = makeHost()
+		let localFiles = try makeUploadFiles(["a", "b", "c"])
 		let ids = store.enqueueUpload(
-			localPaths: [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b"), URL(fileURLWithPath: "/c")],
+			localPaths: localFiles,
 			remoteDir: "/srv", host: host
 		)
 		XCTAssertEqual(ids.count, 3)
 		try await store.waitIdle()
-		let kinds = runner.calls.map { $0.scriptStdin }.map { String($0.prefix(3)) }
+		let kinds = runner.calls
+			.map(\.scriptStdin)
+			.filter { $0.hasPrefix("put") }
+			.map { String($0.prefix(3)) }
 		XCTAssertEqual(kinds, ["put", "put", "put"])
 		for id in ids {
 			XCTAssertEqual(store.task(id: id)?.status, .completed)
@@ -56,10 +77,14 @@ final class FileTransferStoreTests: XCTestCase {
 			liveness: AlwaysAlive()
 		)
 		let h1 = makeHost(); let h2 = makeHost()
-		_ = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/a")], remoteDir: "/", host: h1)
-		_ = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/b")], remoteDir: "/", host: h2)
+		let localFiles = try makeUploadFiles(["a", "b"])
+		_ = store.enqueueUpload(localPaths: [localFiles[0]], remoteDir: "/", host: h1)
+		_ = store.enqueueUpload(localPaths: [localFiles[1]], remoteDir: "/", host: h2)
 		try await store.waitIdle()
-		XCTAssertEqual(runner.calls.count, 2)
+		XCTAssertEqual(
+			runner.calls.filter { $0.scriptStdin.hasPrefix("put") }.count,
+			2
+		)
 	}
 
 	func testRetryUsesResumeFlag() async throws {
@@ -72,7 +97,8 @@ final class FileTransferStoreTests: XCTestCase {
 			liveness: AlwaysAlive()
 		)
 		let host = makeHost()
-		let ids = store.enqueueUpload(localPaths: [URL(fileURLWithPath: "/a")], remoteDir: "/", host: host)
+		let localFiles = try makeUploadFiles(["a"])
+		let ids = store.enqueueUpload(localPaths: localFiles, remoteDir: "/", host: host)
 		try await store.waitIdle()
 		XCTAssertEqual(store.task(id: ids[0])?.status, .failed)
 		runner.script = [("", 0)]
@@ -92,8 +118,9 @@ final class FileTransferStoreTests: XCTestCase {
 			liveness: AlwaysAlive()
 		)
 		let host = makeHost()
+		let localFiles = try makeUploadFiles(["a", "b", "c"])
 		let ids = store.enqueueUpload(
-			localPaths: [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b"), URL(fileURLWithPath: "/c")],
+			localPaths: localFiles,
 			remoteDir: "/", host: host
 		)
 		store.cancel(ids[2])
@@ -105,6 +132,13 @@ final class FileTransferStoreTests: XCTestCase {
 
 	func testDeadControlMasterFailsBeforeInvokingSFTP() async throws {
 		let runner = ScriptedRunner()
+		let localDirectory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-dead-master-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: localDirectory,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: localDirectory) }
 		let store = FileTransferStore(
 			controlPathFor: { _ in URL(fileURLWithPath: "/sock") },
 			credentialsFor: { _ in defaultCreds() },
@@ -113,7 +147,7 @@ final class FileTransferStoreTests: XCTestCase {
 		)
 		let ids = store.enqueueDownload(
 			remotePaths: ["/remote/file"],
-			localDir: URL(fileURLWithPath: "/local"),
+			localDir: localDirectory,
 			host: makeHost()
 		)
 

@@ -206,13 +206,14 @@ test-e2e: ## include the Docker E2E SSH integration test
 # --- iOS (mobile shell + SSH terminal) ---
 #
 # The iOS app is built by SwiftPM and hand-wrapped into a .app by
-# Scripts/build-ios-app.sh. We do NOT use Xcode's SwiftPM integration:
-# Xcode 26.5's explicitly-built-modules path fails to compile swift-nio's
+# Scripts/build-ios-app.sh. We do not use Xcode's SwiftPM integration for the
+# app product: Xcode 26.5's explicitly-built-modules path fails to compile swift-nio's
 # C targets (swift-atomics _AtomicsShims, CNIOPosix) for the
 # iphonesimulator SDK ("module file ... .pcm not found" with explicit
 # modules, "no such module DequeModule/Atomics" without). SwiftPM's own
-# build system compiles the same graph cleanly, so we drive it directly
-# (mirrors the macOS hand-wrap in Scripts/dev-run-app.sh).
+# build system compiles the same graph cleanly, so we drive the app directly
+# (mirrors the macOS hand-wrap in Scripts/dev-run-app.sh). The isolated mobile
+# transfer test scheme is test-only and runs through Xcode on Simulator.
 IOS_BUNDLE_ID := app.caterm.mobile
 IOS_APP       := build/ios/Caterm.app
 IOS_SIM = $(shell xcrun simctl list devices booted 2>/dev/null | grep -oE '[0-9A-F-]{36}' | head -1)
@@ -231,6 +232,16 @@ run-ios: ios-build ## build + boot simulator + install + launch mobile app
 	open -a Simulator
 	xcrun simctl install $(IOS_SIM) "$(IOS_APP)"
 	xcrun simctl launch $(IOS_SIM) $(IOS_BUNDLE_ID)
+
+.PHONY: test-ios-host-sync
+test-ios-host-sync: ## signed-Simulator offline cache + deterministic Host sync proof
+	@test -n "$(IOS_SIM)" || { echo "No iOS simulator available"; exit 1; }
+	xcrun simctl boot $(IOS_SIM) 2>/dev/null || true
+	IOS_SIM=$(IOS_SIM) bash Scripts/ios-host-sync-e2e.sh
+
+.PHONY: test-ios-transfers
+test-ios-transfers: ## run mobile Files and transfer tests on an iOS Simulator
+	IOS_SIM=$(IOS_SIM) bash Scripts/test-ios-transfers.sh
 
 .PHONY: clean
 clean: ## remove .build (forces full rebuild)

@@ -61,6 +61,89 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 		              "expected command to contain '\(expectedFlag)', got: \(out.command)")
 	}
 
+	func testChainUsesExplicitControlPathForEveryHop() throws {
+		let bastion = host("bastion", "rh-bastion")
+		let target = host("target", "rh-target", jump: "rh-bastion")
+		let bastionPath = "/tmp/caterm isolated/\(bastion.id.uuidString).sock"
+		let targetPath = "/tmp/caterm isolated/\(target.id.uuidString).sock"
+		let sink = InMemorySSHConfigSink()
+
+		_ = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [bastion],
+			configSink: sink,
+			askpassPath: "/usr/local/bin/caterm-askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			controlPaths: [
+				bastion.id: bastionPath,
+				target.id: targetPath,
+			]
+		)
+		let config = try XCTUnwrap(sink.writes.first?.1)
+
+		XCTAssertTrue(config.contains("ControlPath \"\(bastionPath)\""))
+		XCTAssertTrue(config.contains("ControlPath \"\(targetPath)\""))
+		XCTAssertFalse(config.contains("~/Library/Caches/Caterm/cm/"))
+	}
+
+	func testChainScopesCertificateAndAgentToTheirHosts() throws {
+		let bastion = host(
+			"bastion",
+			"rh-bastion",
+			cred: .agent
+		)
+		let target = host(
+			"target",
+			"rh-target",
+			jump: "rh-bastion",
+			cred: .keyFile(
+				keyPath: "/managed/key",
+				hasPassphrase: false
+			)
+		)
+		let sink = InMemorySSHConfigSink()
+
+		_ = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [bastion],
+			configSink: sink,
+			askpassPath: "/askpass",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			runtimeIdentities: [
+				bastion.id: .init(
+					identityAgentPath: "/session/bastion.sock"
+				),
+				target.id: .init(
+					certificatePath: "/session/target-cert.pub"
+				),
+			]
+		)
+		let config = try XCTUnwrap(sink.writes.first?.1)
+		let bastionBlock = blockFor(
+			"caterm-h-\(bastion.id.uuidString)",
+			in: config
+		)
+		let targetBlock = blockFor(
+			"caterm-h-\(target.id.uuidString)",
+			in: config
+		)
+
+		XCTAssertTrue(
+			bastionBlock.contains(
+				"IdentityAgent /session/bastion.sock"
+			)
+		)
+		XCTAssertFalse(bastionBlock.contains("CertificateFile"))
+		XCTAssertTrue(
+			targetBlock.contains(
+				"CertificateFile /session/target-cert.pub"
+			)
+		)
+		XCTAssertFalse(targetBlock.contains("IdentityAgent"))
+	}
+
 	func testKnownHostsFilesAreSeparateTokensInGeneratedConfig() throws {
 		let bastion = host("bastion", "rh-bastion")
 		let target = host("target", "rh-target", jump: "rh-bastion")
@@ -139,6 +222,55 @@ final class SSHCommandBuilderChainTests: XCTestCase {
 			XCTAssertTrue(config.contains("Host \(alias)"),
 			              "alias \(alias) missing from ssh_config")
 		}
+	}
+
+	func testChainCarriesPerHopIdentityCredentialLocations() throws {
+		let bastion = host("bastion", "rh-bastion")
+		let target = host(
+			"target",
+			"rh-target",
+			jump: "rh-bastion",
+			cred: .keyFile(keyPath: "/managed/key", hasPassphrase: true)
+		)
+		let lookup = SSHCommandBuilder.CredentialLookup(
+			service: "com.caterm.identities",
+			passphraseAccount: "identity.material.passphrase",
+			useDataProtectionKeychain: true
+		)
+		let output = try SSHCommandBuilder.build(
+			host: target,
+			ancestors: [bastion],
+			configSink: InMemorySSHConfigSink(),
+			askpassPath: "/askpass",
+			knownHostsCaterm: "/k1",
+			knownHostsUser: "/k2",
+			terminfoDump: "",
+			credentialLookups: [target.id: lookup]
+		)
+		let json = try XCTUnwrap(
+			output.env.first { $0.0 == "CATERM_CHAIN" }?.1
+		)
+		let entries = try XCTUnwrap(
+			JSONSerialization.jsonObject(with: Data(json.utf8))
+				as? [[String: Any]]
+		)
+		let targetEntry = try XCTUnwrap(entries.first {
+			$0["alias"] as? String
+				== "caterm-h-\(target.id.uuidString)"
+		})
+
+		XCTAssertEqual(
+			targetEntry["credentialService"] as? String,
+			"com.caterm.identities"
+		)
+		XCTAssertEqual(
+			targetEntry["passphraseAccount"] as? String,
+			"identity.material.passphrase"
+		)
+		XCTAssertEqual(
+			targetEntry["useDataProtectionKeychain"] as? Bool,
+			true
+		)
 	}
 
 	func testCATERMChainStatePathTracksConfigFilePath() throws {

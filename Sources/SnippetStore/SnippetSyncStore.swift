@@ -3,6 +3,10 @@ import SnippetSyncClient
 import SyncScheduler
 import os
 
+public enum SnippetSyncStoreError: Error, Equatable {
+	case accountTransitionInProgress
+}
+
 @MainActor
 public final class SnippetSyncStore: ObservableObject {
 	private static let log = Logger(subsystem: "com.caterm.app", category: "snippet-sync")
@@ -13,6 +17,8 @@ public final class SnippetSyncStore: ObservableObject {
 	private var debouncedMode: SnippetSyncMode?
 	private var isSuspendedForAccountChange = false
 	private var pendingWhileSuspended: SnippetSyncMode?
+	private var submittedMode: SnippetSyncMode?
+	private var submissionGeneration: UInt64 = 0
 	private lazy var scheduler = SyncScheduler<SnippetSyncMode>(
 		strategy: .coalescing { _, incoming in incoming },
 		operation: { [weak self] mode in
@@ -36,7 +42,8 @@ public final class SnippetSyncStore: ObservableObject {
 		guard debounceMs > 0 else {
 			debounce = nil
 			debouncedMode = nil
-			_ = scheduler.submit(mode)
+			let submission = submit(mode)
+			observe(submission.task, generation: submission.generation)
 			return
 		}
 		debouncedMode = mode
@@ -46,25 +53,22 @@ public final class SnippetSyncStore: ObservableObject {
 			      !self.isSuspendedForAccountChange else { return }
 			self.debouncedMode = nil
 			self.debounce = nil
-			_ = self.scheduler.submit(mode)
+			let submission = self.submit(mode)
+			self.observe(submission.task, generation: submission.generation)
 		}
 	}
 
 	/// Directly awaitable sync pass used by callers that need to wait for
 	/// completion (e.g., tests, forced triggers from the UI).
 	/// Uses the same single-flight queue as fire-and-forget triggers.
-	public func runSyncPass(mode: SnippetSyncMode) async {
+	public func runSyncPass(mode: SnippetSyncMode) async throws {
 		guard !isSuspendedForAccountChange else {
 			pendingWhileSuspended = mode
-			return
+			throw SnippetSyncStoreError.accountTransitionInProgress
 		}
-		do {
-			try await scheduler.submit(mode).value
-		} catch is CancellationError {
-			// Account and lifecycle cancellation is an expected terminal state.
-		} catch {
-			Self.log.error("snippet scheduler failed: \(error.localizedDescription, privacy: .public)")
-		}
+		let submission = submit(mode)
+		defer { finishSubmission(generation: submission.generation) }
+		try await submission.task.value
 	}
 
 	/// Close the snippet lane synchronously before any account-scoped store is
@@ -73,9 +77,19 @@ public final class SnippetSyncStore: ObservableObject {
 		guard !isSuspendedForAccountChange else { return }
 		isSuspendedForAccountChange = true
 		if let debouncedMode {
-			pendingWhileSuspended = debouncedMode
+			pendingWhileSuspended = strongerMode(
+				pendingWhileSuspended,
+				debouncedMode
+			)
+		}
+		if let submittedMode {
+			pendingWhileSuspended = strongerMode(
+				pendingWhileSuspended,
+				submittedMode
+			)
 		}
 		debouncedMode = nil
+		submittedMode = nil
 		debounce?.cancel()
 		debounce = nil
 		scheduler.cancel()
@@ -96,15 +110,22 @@ public final class SnippetSyncStore: ObservableObject {
 	/// Re-open the lane after account transition. A changed identity discards
 	/// old dirty bookkeeping and replaces any suspended trigger with force-full.
 	public func resumeAfterAccountChange(identityChanged: Bool) {
-		guard isSuspendedForAccountChange else { return }
+		guard let mode = resumeRequestAfterAccountChange(
+			identityChanged: identityChanged
+		) else { return }
+		scheduleSyncPass(mode: mode)
+	}
+
+	/// Re-opens the lane while leaving execution to a lifecycle owner that must
+	/// install subscriptions and surface the pass result to UI state.
+	public func resumeRequestAfterAccountChange(
+		identityChanged: Bool
+	) -> SnippetSyncMode? {
+		guard isSuspendedForAccountChange else { return nil }
 		isSuspendedForAccountChange = false
 		let suspendedMode = pendingWhileSuspended
 		pendingWhileSuspended = nil
-		if identityChanged {
-			scheduleSyncPass(mode: .forceFull)
-		} else {
-			scheduleSyncPass(mode: suspendedMode ?? .incremental)
-		}
+		return identityChanged ? .forceFull : suspendedMode
 	}
 
 	func waitUntilIdle() async {
@@ -114,58 +135,82 @@ public final class SnippetSyncStore: ObservableObject {
 	// MARK: - Core pass
 
 	private func executeSyncPass(mode: SnippetSyncMode) async throws {
-		do {
-			// Step 1 — drain pending-delete outbox before fetch.
-			let pendingDeletes = store.pendingDeletedSnippetIDs
-			for id in pendingDeletes {
-				try Task.checkCancellation()
-				do {
-					try await client.deleteSnippet(id: id)
-					try Task.checkCancellation()
-					try store.clearOutboxEntry(id)
-				} catch {
-					if error is CancellationError || Task.isCancelled {
-						throw CancellationError()
-					}
-					Self.log.error("deleteSnippet failed for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-					// Leave in outbox; next pass retries.
-				}
-			}
+		try await client.ensureSnippetSubscription()
+		try Task.checkCancellation()
 
-			// Step 2 — fetch.
-			let batch: SnippetChangeBatch
-			switch mode {
-			case .forceFull:
-				batch = try await client.fetchSnippetSnapshotAndCheckpoint()
-			case .incremental:
-				batch = try await client.fetchSnippetChanges()
-			}
+		// Step 1 — drain pending-delete outbox before fetch.
+		let pendingDeletes = store.pendingDeletedSnippetIDs
+		for id in pendingDeletes {
 			try Task.checkCancellation()
+			try await client.deleteSnippet(id: id)
+			try Task.checkCancellation()
+			try store.clearOutboxEntry(id)
+		}
 
-			if batch.tokenExpired {
-				Self.log.info("token expired — falling back to forceFull")
-				let snapshot = try await client.fetchSnippetSnapshotAndCheckpoint()
-				try Task.checkCancellation()
-				try await applyBatch(snapshot)
-				if let cp = snapshot.checkpoint {
-					try Task.checkCancellation()
-					try await client.commitSnippetCheckpoint(cp)
-				}
-				return
-			}
+		// Step 2 — fetch.
+		let batch: SnippetChangeBatch
+		switch mode {
+		case .forceFull:
+			batch = try await client.fetchSnippetSnapshotAndCheckpoint()
+		case .incremental:
+			batch = try await client.fetchSnippetChanges()
+		}
+		try Task.checkCancellation()
 
-			// Step 3 — apply then commit.
-			try await applyBatch(batch)
-			if let cp = batch.checkpoint {
+		if batch.tokenExpired {
+			Self.log.info("token expired — falling back to forceFull")
+			let snapshot = try await client.fetchSnippetSnapshotAndCheckpoint()
+			try Task.checkCancellation()
+			try await applyBatch(snapshot)
+			if let cp = snapshot.checkpoint {
 				try Task.checkCancellation()
 				try await client.commitSnippetCheckpoint(cp)
 			}
-		} catch {
-			if error is CancellationError || Task.isCancelled {
-				throw CancellationError()
-			}
-			Self.log.error("snippet sync pass failed: \(error.localizedDescription, privacy: .public)")
+			return
 		}
+
+		// Step 3 — apply then commit.
+		try await applyBatch(batch)
+		if let cp = batch.checkpoint {
+			try Task.checkCancellation()
+			try await client.commitSnippetCheckpoint(cp)
+		}
+	}
+
+	private func submit(
+		_ mode: SnippetSyncMode
+	) -> (task: Task<Void, Error>, generation: UInt64) {
+		submissionGeneration &+= 1
+		submittedMode = strongerMode(submittedMode, mode)
+		return (scheduler.submit(mode), submissionGeneration)
+	}
+
+	private func observe(_ task: Task<Void, Error>, generation: UInt64) {
+		Task { @MainActor in
+			defer { finishSubmission(generation: generation) }
+			do {
+				try await task.value
+			} catch is CancellationError {
+				// Account and lifecycle cancellation is an expected terminal state.
+			} catch {
+				Self.log.error(
+					"snippet scheduler failed: \(error.localizedDescription, privacy: .public)"
+				)
+			}
+		}
+	}
+
+	private func finishSubmission(generation: UInt64) {
+		guard generation == submissionGeneration else { return }
+		submittedMode = nil
+	}
+
+	private func strongerMode(
+		_ current: SnippetSyncMode?,
+		_ incoming: SnippetSyncMode
+	) -> SnippetSyncMode {
+		guard current != .forceFull else { return .forceFull }
+		return incoming
 	}
 
 	// MARK: - Force-full periodic timer
@@ -213,27 +258,11 @@ public final class SnippetSyncStore: ObservableObject {
 			case .applyTombstone(let id):
 				try store.applyRemoteTombstone(id: id)
 			case .pushLocal(let s):
-				do {
-					let saved = try await client.pushSnippet(s)
-					try Task.checkCancellation()
-					do {
-						// SnippetStore clears the durable dirty flag only when
-						// this acknowledgement actually wins the merge. A newer
-						// concurrent local edit therefore stays pending.
-						_ = try store.applyRemote(saved)
-					} catch {
-						if error is CancellationError || Task.isCancelled {
-							throw CancellationError()
-						}
-						Self.log.error("applyRemote after push failed for \(s.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-					}
-				} catch {
-					if error is CancellationError || Task.isCancelled {
-						throw CancellationError()
-					}
-					Self.log.error("pushSnippet failed for \(s.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-					// Stay dirty; next pass retries.
-				}
+				let saved = try await client.pushSnippet(s)
+				try Task.checkCancellation()
+				// SnippetStore clears the durable dirty flag only when this
+				// acknowledgement wins. A newer edit therefore stays pending.
+				_ = try store.applyRemote(saved)
 			}
 		}
 	}

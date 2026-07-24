@@ -10,11 +10,11 @@ struct MobileTerminalPlaceholderView: View {
 			Label("Terminal Unavailable", systemImage: "terminal")
 		} description: {
 			if let host {
-				Text("Mobile terminal rendering is isolated in this phase. \(host.name) can still be configured here.")
+				Text("A terminal session could not be created for \(host.name) in this app configuration. The saved Host remains available.")
 			} else if let snippet {
-				Text("Mobile terminal dispatch is isolated in this phase. The snippet is ready when a mobile renderer lands: \(snippet)")
+				Text("Open a Host terminal, then run or paste \(snippet) from the terminal Snippets panel.")
 			} else {
-				Text("Mobile terminal rendering is isolated in this phase.")
+				Text("Open a Host to start a terminal session. Saved Hosts and snippets remain available when the network is offline.")
 			}
 		}
 		.navigationTitle("Terminal")

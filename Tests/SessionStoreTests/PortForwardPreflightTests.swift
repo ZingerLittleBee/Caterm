@@ -73,6 +73,7 @@ final class PortForwardPreflightTests: XCTestCase {
 		let tabId = store.openTab(host: host)
 		await store.awaitConnectionAttempt(tabId: tabId)
 		XCTAssertEqual(store.skippedForwardNotices.count, 1)
+		XCTAssertEqual(store.skippedForwardNotices.first?.tabId, tabId)
 		XCTAssertEqual(store.skippedForwardNotices.first?.hostId, host.id)
 		XCTAssertEqual(store.skippedForwardNotices.first?.forward.bindPort, 1080)
 		XCTAssertEqual(store.skippedForwardNotices.first?.reason, .alreadyInUse)
@@ -117,5 +118,24 @@ final class PortForwardPreflightTests: XCTestCase {
 		await store.awaitConnectionAttempt(tabId: tabId)
 		XCTAssertEqual(store.skippedForwardNotices.count, 1,
 		               "stale notices must be cleared before re-populating")
+	}
+
+	func test_sameHostNoticesRemainScopedToTheirTabs() async {
+		let fake = FakePreflight()
+		fake.bindOutcomes["127.0.0.1:1080"] = .unavailable(.alreadyInUse)
+		let store = makeStore(preflight: fake)
+		let host = makeHost(forwards: [
+			PortForward(kind: .dynamic, bindPort: 1080, required: false),
+		])
+		let first = store.openTab(host: host)
+		await store.awaitConnectionAttempt(tabId: first)
+		let second = store.openTab(host: host)
+		await store.awaitConnectionAttempt(tabId: second)
+
+		XCTAssertEqual(Set(store.skippedForwardNotices.map(\.tabId)), [first, second])
+
+		store.clearSkippedForwardNotices(forTab: second)
+
+		XCTAssertEqual(store.skippedForwardNotices.map(\.tabId), [first])
 	}
 }

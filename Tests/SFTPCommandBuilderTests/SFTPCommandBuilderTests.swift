@@ -29,7 +29,11 @@ final class SFTPCommandBuilderTests: XCTestCase {
 		XCTAssertTrue(argvJoined.contains("-o BatchMode=yes"))
 		XCTAssertTrue(argvJoined.contains("-o PreferredAuthentications=none"))
 		XCTAssertTrue(argvJoined.contains("-o ProxyCommand=none"))
-		XCTAssertTrue(argvJoined.contains("-o ControlPath=/tmp/cm/x.sock"))
+		XCTAssertTrue(argvJoined.contains("-o ControlPath=x.sock"))
+		XCTAssertEqual(
+			inv.workingDirectory,
+			URL(fileURLWithPath: "/tmp/cm", isDirectory: true)
+		)
 		XCTAssertTrue(inv.argv.first == "/usr/bin/sftp")
 	}
 

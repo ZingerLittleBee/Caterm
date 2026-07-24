@@ -6,10 +6,15 @@ import XCTest
 /// Records calls to `tearDown` / `tearDownAll` so tests can assert which
 /// host ids were torn down (and which were not). `@unchecked Sendable` is
 /// safe because all access happens on the main actor in tests.
-private final class TeardownSpy: ControlMasterTearDowning, @unchecked Sendable {
+private final class TeardownSpy: ControlMasterManaging, @unchecked Sendable {
 	var registered: [UUID] = []
 	var torn: [UUID] = []
 	var allCount = 0
+
+	@MainActor
+	func socketPath(for hostId: UUID) -> URL {
+		URL(fileURLWithPath: "/tmp/\(hostId.uuidString).sock")
+	}
 
 	@MainActor
 	func register(hostId: UUID, destination: String) {

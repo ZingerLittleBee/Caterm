@@ -2,6 +2,7 @@ import HostSyncStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+import WorkspaceCore
 
 enum HostManagerWindow {
 	static let id = "host-manager"
@@ -31,6 +32,7 @@ private struct HostManagerRow: Identifiable {
 struct HostManagerView: View {
 	@EnvironmentObject private var store: SessionStore
 	@EnvironmentObject private var preferences: SyncPreferences
+	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
 	@State private var scope: HostManagerScope? = .all
 	@State private var selection: Set<UUID> = []
@@ -115,7 +117,18 @@ struct HostManagerView: View {
 					if selectedIDs.count == 1 { connect(selectedIDs.first) }
 				}
 				.overlay {
-					if rows.isEmpty {
+					if case .failed = store.hostRepositoryLoadState {
+						ContentUnavailableView(
+							"Unable to Load Hosts",
+							systemImage: "exclamationmark.triangle",
+							description: Text(
+								"Check the saved Host data and relaunch Caterm."
+							)
+						)
+					} else if store.hostRepositoryLoadState == .loading,
+						store.hosts.isEmpty {
+						ProgressView("Loading Hosts…")
+					} else if rows.isEmpty {
 						if store.hosts.isEmpty {
 							ContentUnavailableView(
 								"No Hosts",
@@ -156,7 +169,9 @@ struct HostManagerView: View {
 				existingGroups: groups,
 				existingTags: tags
 			) { result in
-				apply(result, to: request.selectedIDs)
+				Task {
+					await apply(result, to: request.selectedIDs)
+				}
 			}
 		}
 		.confirmationDialog(
@@ -247,11 +262,15 @@ struct HostManagerView: View {
 	private func connect(_ hostID: UUID?) {
 		guard let hostID,
 		      let host = store.hosts.first(where: { $0.id == hostID }) else { return }
-		let tabID = store.openTab(
-			host: host,
-			installTerminfo: preferences.installTerminfoEnabled
-		)
-		openWindow(value: tabID)
+		do {
+			let workspace = try workspaceCoordinator.openSavedHost(
+				host,
+				installTerminfo: preferences.installTerminfoEnabled
+			)
+			openWindow(value: WorkspaceWindowState.workspace(workspace))
+		} catch {
+			errorMessage = error.localizedDescription
+		}
 	}
 
 	private func presentEditor(
@@ -270,7 +289,7 @@ struct HostManagerView: View {
 	private func apply(
 		_ result: HostOrganizationEditorResult,
 		to selectedIDs: Set<UUID>
-	) {
+	) async {
 		do {
 			let updatedHosts = store.hosts.compactMap { host -> SSHHost? in
 				guard selectedIDs.contains(host.id) else { return nil }
@@ -278,7 +297,7 @@ struct HostManagerView: View {
 				updated.organization = result.apply(to: host.organization)
 				return updated
 			}
-			try store.updateHosts(updatedHosts)
+			try await store.updateHosts(updatedHosts)
 			editorRequest = nil
 		} catch {
 			errorMessage = error.localizedDescription

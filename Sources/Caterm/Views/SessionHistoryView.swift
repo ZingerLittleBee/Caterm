@@ -3,6 +3,7 @@ import SessionHistory
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+import WorkspaceCore
 
 enum SessionHistoryWindow {
 	static let id = "session-history"
@@ -12,6 +13,7 @@ struct SessionHistoryView: View {
 	@EnvironmentObject private var historyStore: SessionHistoryStore
 	@EnvironmentObject private var sessionStore: SessionStore
 	@EnvironmentObject private var preferences: SyncPreferences
+	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
 	@State private var selection: Set<UUID> = []
 	@State private var query = ""
@@ -162,11 +164,11 @@ struct SessionHistoryView: View {
 
 	private func reconnect(_ entry: SessionHistoryEntry) {
 		let host: SSHHost
-		let authenticationMode: SSHAuthenticationMode
+		let isSavedHost: Bool
 		if let savedHostID = entry.host.savedHostID,
 		   let savedHost = sessionStore.hosts.first(where: { $0.id == savedHostID }) {
 			host = savedHost
-			authenticationMode = .configuredCredential
+			isSavedHost = true
 		} else {
 			host = SSHHost(
 				id: entry.host.savedHostID ?? UUID(),
@@ -176,14 +178,24 @@ struct SessionHistoryView: View {
 				username: entry.host.username,
 				credential: .agent
 			)
-			authenticationMode = .interactive
+			isSavedHost = false
 		}
-		let tabID = sessionStore.openTab(
-			host: host,
-			installTerminfo: preferences.installTerminfoEnabled,
-			authenticationMode: authenticationMode
-		)
-		openWindow(value: tabID)
+		do {
+			let workspace = if isSavedHost {
+				try workspaceCoordinator.openSavedHost(
+					host,
+					installTerminfo: preferences.installTerminfoEnabled
+				)
+			} else {
+				try workspaceCoordinator.openOneTimeHost(
+					host,
+					installTerminfo: preferences.installTerminfoEnabled
+				)
+			}
+			openWindow(value: WorkspaceWindowState.workspace(workspace))
+		} catch {
+			errorMessage = error.localizedDescription
+		}
 	}
 }
 

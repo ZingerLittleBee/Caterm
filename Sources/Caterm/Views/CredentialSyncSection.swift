@@ -42,11 +42,13 @@ struct CredentialSyncSection: View {
 					isPresented: $confirmingDelete
 				) {
 					Button("Delete", role: .destructive) {
-						DestructiveDeletionFlow.confirm(
-							sessionStore: sessionStore,
-							credentialSync: prefsStore,
-							triggerSync: triggerSync
-						)
+						Task {
+							await DestructiveDeletionFlow.confirm(
+								sessionStore: sessionStore,
+								credentialSync: prefsStore,
+								triggerSync: triggerSync
+							)
+						}
 					}
 					Button("Cancel", role: .cancel) {}
 				} message: {

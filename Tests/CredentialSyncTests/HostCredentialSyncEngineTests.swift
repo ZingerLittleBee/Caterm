@@ -93,7 +93,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         XCTAssertFalse(preferences.prefs.credentialsNeedFullScan)
     }
 
-    func testCredentialHostIDsReturnDirtyHostsOnlyWhenEnabled() throws {
+    func testCredentialHostIDsReturnDirtyHostsOnlyWhenEnabled() async throws {
         var host = SSHHost(
             name: "dirty",
             hostname: "host.example",
@@ -101,7 +101,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password
         )
         host.credentialMaterialDirty = true
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         let sut = makeEngine()
 
         preferences.mutate { $0.state = .disabled }
@@ -153,7 +153,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .password
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [host.id]
@@ -171,7 +171,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         XCTAssertTrue(preferences.prefs.cloudCredentialsCleared)
     }
 
-    func testLocalCredentialChangeDuringDeletionClearsDirtyAndSuppressesSync() throws {
+    func testLocalCredentialChangeDuringDeletionClearsDirtyAndSuppressesSync() async throws {
         var host = SSHHost(
             name: "host",
             hostname: "host.example",
@@ -179,7 +179,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password
         )
         host.credentialMaterialDirty = true
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [host.id]
@@ -187,7 +187,8 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         }
         let sut = makeEngine()
 
-        XCTAssertFalse(sut.handleLocalCredentialChange(hostId: host.id))
+		let shouldSync = await sut.handleLocalCredentialChange(hostId: host.id)
+		XCTAssertFalse(shouldSync)
         XCTAssertFalse(sessionStore.hosts[0].credentialMaterialDirty)
     }
 
@@ -199,7 +200,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password
         )
         host.credentialMaterialDirty = true
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let materialStore = InMemoryCredentialMaterialStore(
             snapshotError: TestCredentialError.materialReadFailed
@@ -237,7 +238,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let materialStore = InMemoryCredentialMaterialStore(
             snapshotError: TestCredentialError.materialReadFailed
@@ -264,7 +265,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         credentialSecretStore.set(
             account: SSHCredentialContract.account(
@@ -292,7 +293,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         credentialSecretStore.failReads(with: KeychainError.interactionNotAllowed)
         let sut = makeEngine(materialWorker: StubCredentialMaterialWorker())
@@ -320,7 +321,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         _ = try await managedKeyStore.write(
             hostId: host.id,
             bytes: Data("stale-key".utf8)
@@ -349,7 +350,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let localCommit = try await sessionStore.credentialMaterialStore
             .applyLocal(
@@ -366,7 +367,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
         guard case let .keyFile(path, hasPassphrase) = localCommit.source else {
             return XCTFail("expected a managed key credential source")
         }
-        try sessionStore.setCredentialOnly(
+        try await sessionStore.setCredentialOnly(
             .keyFile(keyPath: path, hasPassphrase: hasPassphrase),
             for: host.id
         )
@@ -388,7 +389,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let gatedClient = GatedCredentialClient(gate: gate)
@@ -439,7 +440,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let materialStore = InMemoryCredentialMaterialStore()
@@ -479,7 +480,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             credential: .agent,
             credentialMaterialDirty: true
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let worker = GatedPullMaterialWorker(gate: gate)
@@ -515,7 +516,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let materialStore = InMemoryCredentialMaterialStore()
         let sut = makeEngine(
@@ -544,7 +545,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let materialStore = InMemoryCredentialMaterialStore()
@@ -578,7 +579,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let materialStore = InMemoryCredentialMaterialStore()
@@ -612,7 +613,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let localCommit = try await sessionStore.credentialMaterialStore
             .applyLocal(
@@ -645,7 +646,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let materialStore = InMemoryCredentialMaterialStore(
@@ -688,7 +689,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let materialStore = InMemoryCredentialMaterialStore(
@@ -731,7 +732,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .agent
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate { $0.state = .enabled }
         let gate = AsyncOperationGate()
         let materialStore = InMemoryCredentialMaterialStore(
@@ -779,7 +780,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .password
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [host.id]
@@ -817,8 +818,8 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .password
         )
-        try sessionStore.addHost(hostA)
-        try sessionStore.addHost(hostB)
+        try await sessionStore.addHost(hostA)
+        try await sessionStore.addHost(hostB)
         preferences.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [hostA.id, hostB.id]
@@ -857,7 +858,7 @@ final class HostCredentialSyncEngineTests: XCTestCase {
             username: "root",
             credential: .password
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         preferences.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [host.id]

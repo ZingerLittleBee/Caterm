@@ -4,6 +4,8 @@ public enum SSHTransportEvent: Sendable {
 	case connecting
 	case hostKeyPrompt(endpoint: String, fingerprint: String)
 	case authPrompt(SSHAuthPlan.Missing)
+	case environmentRequestsStarted(names: [String])
+	case environmentRequestsCompleted(accepted: [String], rejected: [String])
 	case connected
 	case data([UInt8])
 	case failed(reason: String)

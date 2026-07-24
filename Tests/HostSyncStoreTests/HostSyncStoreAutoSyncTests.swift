@@ -105,7 +105,7 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
     func testMutationTriggersDebouncedSync() async throws {
         // debounceInterval is 0.05 from setUp.
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
 
         // Immediately after addHost, debounce timer hasn't fired yet.
         XCTAssertEqual(fakeClient.listCallCount, 0,
@@ -119,7 +119,7 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
     func testRapidMutationsCoalesce() async throws {
         for i in 0..<5 {
             let h = SSHHost(name: "h\(i)", hostname: "x", username: "u", credential: .agent)
-            try sessionStore.addHost(h)
+            try await sessionStore.addHost(h)
         }
         // 5 rapid sends within the 0.05 s debounce window → 1 fire.
         try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount >= 1 }
@@ -131,11 +131,11 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
 
     func testCredentialOnlyDoesNotTriggerSync() async throws {
         let h = SSHHost(name: "alpha", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
         // Wait for the addHost-triggered sync.
         try await waitFor(timeout: 1.0) { self.fakeClient.listCallCount == 1 }
 
-        try sessionStore.setCredentialOnly(.password, for: h.id)
+        try await sessionStore.setCredentialOnly(.password, for: h.id)
         // Wait past the debounce window.
         try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s
         XCTAssertEqual(fakeClient.listCallCount, 1,
@@ -209,7 +209,7 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
         // 0.05 s later and call scheduleAutoSync — which must skip due
         // to manualInProgress and set pendingAutoAfterManual instead.
         let h = SSHHost(name: "during-manual", hostname: "x", username: "u", credential: .agent)
-        try sessionStore.addHost(h)
+        try await sessionStore.addHost(h)
 
         // Wait past the debounce window.
         try await Task.sleep(nanoseconds: 100_000_000)  // 0.1 s
@@ -270,7 +270,7 @@ final class HostSyncStoreAutoSyncTests: XCTestCase {
         // .createRemote (the path that calls client.createHost).
         let unsynced = SSHHost(name: "x", hostname: "h", port: 22, username: "u",
                                credential: .agent)
-        try sessionStore.addHost(unsynced)
+        try await sessionStore.addHost(unsynced)
 
         let fake = FakeIncrementalHostSyncClient()
         fake.fetchSnapshotResult = HostChangeBatch(

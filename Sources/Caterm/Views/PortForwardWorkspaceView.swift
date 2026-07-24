@@ -2,6 +2,7 @@ import HostSyncStore
 import SessionStore
 import SSHCommandBuilder
 import SwiftUI
+import WorkspaceCore
 
 enum PortForwardWorkspaceWindow {
 	static let id = "port-forwarding"
@@ -70,6 +71,7 @@ enum PortForwardWorkspaceModel {
 struct PortForwardWorkspaceView: View {
 	@EnvironmentObject private var store: SessionStore
 	@EnvironmentObject private var preferences: SyncPreferences
+	@EnvironmentObject private var workspaceCoordinator: WorkspaceCoordinator
 	@Environment(\.openWindow) private var openWindow
 	@State private var selection: Set<UUID> = []
 	@State private var query = ""
@@ -77,6 +79,7 @@ struct PortForwardWorkspaceView: View {
 	@State private var sortOrder = [
 		KeyPathComparator(\PortForwardWorkspaceRow.hostName)
 	]
+	@State private var connectionErrorMessage: String?
 
 	private struct EditorRequest: Identifiable {
 		let id = UUID()
@@ -182,7 +185,7 @@ struct PortForwardWorkspaceView: View {
 						throw PortForwardWorkspaceError.hostWasDeleted
 					}
 					current.forwards = forwards
-					try store.updateHost(current)
+					try await store.updateHost(current)
 				}
 			} else {
 				ContentUnavailableView(
@@ -191,6 +194,18 @@ struct PortForwardWorkspaceView: View {
 				)
 				.frame(width: 440, height: 240)
 			}
+		}
+		.alert(
+			"Unable to Open Workspace",
+			isPresented: Binding(
+				get: { connectionErrorMessage != nil },
+				set: { if !$0 { connectionErrorMessage = nil } }
+			),
+			presenting: connectionErrorMessage
+		) { _ in
+			Button("OK") { connectionErrorMessage = nil }
+		} message: { message in
+			Text(message)
 		}
 		.frame(minWidth: 760, minHeight: 420)
 	}
@@ -215,11 +230,15 @@ struct PortForwardWorkspaceView: View {
 
 	private func connect(_ hostID: UUID) {
 		guard let host = store.hosts.first(where: { $0.id == hostID }) else { return }
-		let tabID = store.openTab(
-			host: host,
-			installTerminfo: preferences.installTerminfoEnabled
-		)
-		openWindow(value: tabID)
+		do {
+			let workspace = try workspaceCoordinator.openSavedHost(
+				host,
+				installTerminfo: preferences.installTerminfoEnabled
+			)
+			openWindow(value: WorkspaceWindowState.workspace(workspace))
+		} catch {
+			connectionErrorMessage = error.localizedDescription
+		}
 	}
 }
 
@@ -233,7 +252,7 @@ private enum PortForwardWorkspaceError: LocalizedError {
 
 private struct PortForwardEditorSheet: View {
 	let host: SSHHost
-	let onSave: ([PortForward]) throws -> Void
+	let onSave: ([PortForward]) async throws -> Void
 	@Environment(\.dismiss) private var dismiss
 	@State private var forwards: [PortForward]
 	@State private var errorMessage: String?
@@ -241,7 +260,7 @@ private struct PortForwardEditorSheet: View {
 	init(
 		host: SSHHost,
 		addingNewRule: Bool,
-		onSave: @escaping ([PortForward]) throws -> Void
+		onSave: @escaping ([PortForward]) async throws -> Void
 	) {
 		self.host = host
 		self.onSave = onSave
@@ -289,11 +308,13 @@ private struct PortForwardEditorSheet: View {
 					.keyboardShortcut(.cancelAction)
 				Spacer()
 				Button("Save") {
-					do {
-						try onSave(forwards)
-						dismiss()
-					} catch {
-						errorMessage = error.localizedDescription
+					Task {
+						do {
+							try await onSave(forwards)
+							dismiss()
+						} catch {
+							errorMessage = error.localizedDescription
+						}
 					}
 				}
 				.keyboardShortcut(.defaultAction)

@@ -11,6 +11,7 @@ struct FailureOverlay: View {
 	let chain: [SSHHost]
 	let onRetry: () -> Void
 	let onEditHost: (() -> Void)?
+	var onClosePane: (() -> Void)? = nil
 
 	private var presentation: FailurePresentation {
 		FailurePresentation.from(failure: failure, host: host)
@@ -72,6 +73,9 @@ struct FailureOverlay: View {
 			Button("Retry", action: onRetry).buttonStyle(.borderedProminent)
 			if let onEditHost {
 				Button("Edit Host", action: onEditHost).buttonStyle(.bordered)
+			}
+			if let onClosePane {
+				Button("Close Pane", action: onClosePane).buttonStyle(.bordered)
 			}
 		}
 	}

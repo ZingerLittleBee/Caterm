@@ -1,11 +1,31 @@
 import SnippetSyncClient
 import SwiftUI
 
+@MainActor
+struct MobileSnippetMutationAction {
+	let upsert: @MainActor (Snippet) throws -> Void
+	let delete: @MainActor (UUID) throws -> Void
+	let move: @MainActor (IndexSet, Int) throws -> Void
+}
+
+private struct MobileSnippetMutationActionKey: EnvironmentKey {
+	static let defaultValue: MobileSnippetMutationAction? = nil
+}
+
+extension EnvironmentValues {
+	var mobileSnippetMutation: MobileSnippetMutationAction? {
+		get { self[MobileSnippetMutationActionKey.self] }
+		set { self[MobileSnippetMutationActionKey.self] = newValue }
+	}
+}
+
 public struct MobileSnippetsView: View {
 	@Binding private var snippets: [Snippet]
 	@State private var searchText = ""
 	@State private var showingEditor = false
 	@State private var editingSnippet: Snippet?
+	@State private var errorMessage: String?
+	@Environment(\.mobileSnippetMutation) private var mutation
 
 	public init(snippets: Binding<[Snippet]>) {
 		_snippets = snippets
@@ -31,12 +51,13 @@ public struct MobileSnippetsView: View {
 					}
 					.swipeActions {
 						Button(role: .destructive) {
-							snippets.removeAll { $0.id == snippet.id }
+							delete(snippet.id)
 						} label: {
 							Label("Delete", systemImage: "trash")
 						}
 					}
 				}
+				.onMove(perform: move)
 			}
 		}
 		.navigationTitle("Snippets")
@@ -45,6 +66,13 @@ public struct MobileSnippetsView: View {
 			destination(for: route)
 		}
 		.toolbar {
+			#if canImport(UIKit)
+			if searchText.isEmpty, snippets.count > 1 {
+				ToolbarItem(placement: .secondaryAction) {
+					EditButton()
+				}
+			}
+			#endif
 			ToolbarItem(placement: .primaryAction) {
 				Button {
 					editingSnippet = nil
@@ -58,14 +86,17 @@ public struct MobileSnippetsView: View {
 		.sheet(isPresented: $showingEditor) {
 			NavigationStack {
 				MobileSnippetEditorView(snippet: editingSnippet) { snippet in
-					if let index = snippets.firstIndex(where: { $0.id == snippet.id }) {
-						snippets[index] = snippet
-					} else {
-						snippets.append(snippet)
-					}
-					showingEditor = false
+					save(snippet)
 				}
 			}
+		}
+		.alert("Couldn’t Save Snippets", isPresented: Binding(
+			get: { errorMessage != nil },
+			set: { if !$0 { errorMessage = nil } }
+		)) {
+			Button("OK") { errorMessage = nil }
+		} message: {
+			if let errorMessage { Text(errorMessage) }
 		}
 	}
 
@@ -94,9 +125,7 @@ public struct MobileSnippetsView: View {
 		case .edit(let id):
 			if let snippet = snippets.first(where: { $0.id == id }) {
 				MobileSnippetEditorView(snippet: snippet) { updated in
-					if let index = snippets.firstIndex(where: { $0.id == id }) {
-						snippets[index] = updated
-					}
+					save(updated)
 				}
 			} else {
 				ContentUnavailableView("Snippet Not Found", systemImage: "text.cursor")
@@ -108,6 +137,52 @@ public struct MobileSnippetsView: View {
 			)
 		case .hostTerminal:
 			MobileTerminalPlaceholderView(host: nil, snippet: nil)
+		}
+	}
+
+	private func save(_ snippet: Snippet) {
+		do {
+			if let mutation {
+				try mutation.upsert(snippet)
+			} else if let index = snippets.firstIndex(where: { $0.id == snippet.id }) {
+				snippets[index] = snippet
+			} else {
+				snippets.append(snippet)
+			}
+			showingEditor = false
+		} catch {
+			errorMessage = error.localizedDescription
+		}
+	}
+
+	private func delete(_ id: UUID) {
+		do {
+			if let mutation {
+				try mutation.delete(id)
+			} else {
+				snippets.removeAll { $0.id == id }
+			}
+		} catch {
+			errorMessage = error.localizedDescription
+		}
+	}
+
+	private func move(from source: IndexSet, to destination: Int) {
+		guard searchText.isEmpty else { return }
+		do {
+			if let mutation {
+				try mutation.move(source, destination)
+			} else {
+				var reordered = snippets
+				let moved = source.map { reordered[$0] }
+				for index in source.sorted(by: >) { reordered.remove(at: index) }
+				let removedBefore = source.filter { $0 < destination }.count
+				let insertion = min(destination - removedBefore, reordered.count)
+				reordered.insert(contentsOf: moved, at: insertion)
+				snippets = reordered
+			}
+		} catch {
+			errorMessage = error.localizedDescription
 		}
 	}
 }

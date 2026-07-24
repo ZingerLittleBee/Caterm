@@ -1,5 +1,7 @@
 import XCTest
 import BackupArchive
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import Foundation
 import KeychainStore
 import ManagedKeyStore
@@ -122,14 +124,14 @@ final class BackupServiceTests: XCTestCase {
 	func test_export_roundTripsHostWithSecretsAndManagedKey() async throws {
 		let host = Host(name: "web", hostname: "h", port: 22, username: "u",
 		                credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(password: Data("pw".utf8)),
 			credentialSource: .password, for: host.id)
 
 		let keyHost = Host(name: "db", hostname: "d", port: 22, username: "u",
 		                   credential: .password)
-		try store.addHost(keyHost)
+		try await store.addHost(keyHost)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(passphrase: Data("pp".utf8), privateKeyBytes: Data("KEY".utf8)),
 			credentialSource: .keyFile(keyPath: "", hasPassphrase: true),
@@ -152,7 +154,7 @@ final class BackupServiceTests: XCTestCase {
 	func test_export_withoutSecrets_carriesNoSecretMaterial() async throws {
 		let host = Host(name: "web", hostname: "h", port: 22, username: "u",
 		                credential: .password)
-		try store.addHost(host)
+		try await store.addHost(host)
 		try await store.setHostCredentialMaterial(
 			secrets: HostSecrets(password: Data("pw".utf8)),
 			credentialSource: .password, for: host.id)
@@ -165,15 +167,26 @@ final class BackupServiceTests: XCTestCase {
 		XCTAssertNil(payload.hosts[0].privateKey)
 	}
 
-	func test_hostOrganizationRoundTripsThroughBackup() async throws {
+	func test_hostOrganizationAndAutomationRoundTripThroughBackup() async throws {
 		let organization = HostOrganization(
 			groupPath: ["Production", "API"], tags: ["Linux", "Critical"]
 		)
+		let automation = HostAutomation(
+			isEnabled: true,
+			startupSnippetID: UUID(),
+			environment: [
+				HostEnvironmentVariable(name: "DEPLOY_REGION", value: "west")
+			],
+			reviewPolicy: .always,
+			reconnectPolicy: .everyConnection
+		)
 		let host = Host(
 			name: "web", hostname: "web.example", username: "deploy",
-			credential: .agent, organization: organization
+			credential: .agent,
+			organization: organization,
+			automation: automation
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 
 		let payload = try await BackupExporter.makePayload(
 			includeSecrets: false,
@@ -185,6 +198,8 @@ final class BackupServiceTests: XCTestCase {
 		let archived = try XCTUnwrap(payload.hosts.first)
 		XCTAssertEqual(archived.groupPath, organization.groupPath)
 		XCTAssertEqual(archived.tags, organization.tags)
+		XCTAssertEqual(archived.automation?.startupSnippetID, automation.startupSnippetID)
+		XCTAssertEqual(archived.automation?.environment.map(\.name), ["DEPLOY_REGION"])
 
 		let destination = SessionStore(
 			askpassPath: "/x",
@@ -216,6 +231,70 @@ final class BackupServiceTests: XCTestCase {
 		)
 
 		XCTAssertEqual(destination.hosts.first?.organization, organization)
+		XCTAssertEqual(destination.hosts.first?.automation, automation)
+	}
+
+	func test_legacyArchiveUpdatePreservesExistingHostAutomation() async throws {
+		let automation = HostAutomation(
+			isEnabled: true,
+			startupSnippetID: UUID(),
+			environment: [
+				HostEnvironmentVariable(name: "REGION", value: "west")
+			]
+		)
+		let host = Host(
+			id: UUID(),
+			name: "local",
+			hostname: "local.example",
+			username: "deploy",
+			credential: .agent,
+			updatedAt: date(1_000),
+			automation: automation
+		)
+		try await store.addHost(host)
+		let legacy = archiveHost(
+			id: host.id,
+			name: "archive",
+			hostname: "archive.example",
+			updatedAt: date(2_000)
+		)
+
+		let plan = await computePlan(makePayload(hosts: [legacy]))
+		_ = try await applyPlan(plan)
+
+		XCTAssertEqual(store.hosts.first?.name, "archive")
+		XCTAssertEqual(store.hosts.first?.automation, automation)
+	}
+
+	func test_invalidArchiveAutomationFailsBeforeWritingAnyHost() async {
+		var archived = archiveHost(updatedAt: date(2_000))
+		archived.automation = BackupHostAutomation(
+			isEnabled: true,
+			environment: [
+				BackupHostEnvironmentVariable(
+					id: UUID(),
+					name: "1INVALID",
+					value: "value"
+				)
+			],
+			reviewPolicy: HostAutomationReviewPolicy.always.rawValue,
+			reconnectPolicy:
+				HostAutomationReconnectPolicy.oncePerSession.rawValue
+		)
+		let plan = await computePlan(makePayload(hosts: [archived]))
+
+		do {
+			_ = try await applyPlan(plan)
+			XCTFail("Expected invalid Host automation to stop the import")
+		} catch let error as BackupImportError {
+			guard case .invalidHostAutomation(let hostID, _) = error else {
+				return XCTFail("Unexpected import error: \(error)")
+			}
+			XCTAssertEqual(hostID, archived.id)
+		} catch {
+			XCTFail("Unexpected import error: \(error)")
+		}
+		XCTAssertTrue(store.hosts.isEmpty)
 	}
 
 	func test_export_retriesWhenHostGraphChangesDuringCredentialRead() async throws {
@@ -225,7 +304,7 @@ final class BackupServiceTests: XCTestCase {
 			username: "root",
 			credential: .agent
 		)
-		try store.addHost(target)
+		try await store.addHost(target)
 		let provisional = try await store.credentialMaterialStore.applyLocal(
 			HostSecrets(),
 			source: .agent,
@@ -251,9 +330,9 @@ final class BackupServiceTests: XCTestCase {
 			username: "root",
 			credential: .agent
 		)
-		try store.addHost(jump)
+		try await store.addHost(jump)
 		target.jumpHostId = jump.id
-		try store.updateHost(target)
+		try await store.updateHost(target)
 		_ = bookmarkStore.add(
 			RemoteBookmark(label: "logs", path: "/var/log"),
 			for: jump.id
@@ -307,8 +386,8 @@ final class BackupServiceTests: XCTestCase {
 			username: "root",
 			credential: .password
 		)
-		try isolatedStore.addHost(hostA)
-		try isolatedStore.addHost(hostB)
+		try await isolatedStore.addHost(hostA)
+		try await isolatedStore.addHost(hostB)
 		try await isolatedStore.setHostCredentialMaterial(
 			secrets: HostSecrets(privateKeyBytes: keyA),
 			credentialSource: .keyFile(keyPath: "", hasPassphrase: false),
@@ -366,12 +445,12 @@ final class BackupServiceTests: XCTestCase {
 		var localById = Host(name: "a", hostname: "h", port: 22, username: "u",
 		                     credential: .password)
 		localById.updatedAt = date(100)
-		try store.addHost(localById)
+		try await store.addHost(localById)
 		var localBySid = Host(name: "b", hostname: "h2", port: 22, username: "u",
 		                      credential: .password)
 		localBySid.serverId = "srv-9"
 		localBySid.updatedAt = date(100)
-		try store.addHost(localBySid)
+		try await store.addHost(localBySid)
 
 		let payload = makePayload(hosts: [
 			archiveHost(id: localById.id, updatedAt: date(200)),          // newer → update
@@ -402,8 +481,8 @@ final class BackupServiceTests: XCTestCase {
 		)
 		localByServerID.serverId = "server-b"
 		localByServerID.updatedAt = date(100)
-		try store.addHost(localByID)
-		try store.addHost(localByServerID)
+		try await store.addHost(localByID)
+		try await store.addHost(localByServerID)
 		let archive = archiveHost(
 			id: localByID.id,
 			serverId: "server-b",
@@ -424,7 +503,7 @@ final class BackupServiceTests: XCTestCase {
 			credential: .password
 		)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		let archive = archiveHost(
 			name: "archive",
 			hostname: "shared.example",
@@ -444,7 +523,7 @@ final class BackupServiceTests: XCTestCase {
 			credential: .password
 		)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		let archive = archiveHost(
 			id: local.id,
 			name: "archive",
@@ -511,7 +590,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "a", hostname: "h", port: 22, username: "u",
 		                 credential: .password) // no keychain item → needsCredentialSetup
 		local.updatedAt = date(300)
-		try store.addHost(local)
+		try await store.addHost(local)
 
 		let payload = makePayload(hosts: [
 			archiveHost(id: local.id, updatedAt: date(100), password: "pw"),
@@ -561,7 +640,7 @@ final class BackupServiceTests: XCTestCase {
 		                 username: "u", credential: .password)
 		local.serverId = "srv-1"
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		try store.setHostSecret("localpw", hostId: local.id, kind: .password)
 
 		let a = archiveHost(id: local.id, name: "renamed", hostname: "new.example",
@@ -581,7 +660,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "keep-name", hostname: "keep.example", port: 22,
 		                 username: "u", credential: .password)
 		local.updatedAt = date(300)
-		try store.addHost(local)
+		try await store.addHost(local)
 
 		let a = archiveHost(id: local.id, name: "archive-name",
 		                    updatedAt: date(100), password: "importedpw")
@@ -601,7 +680,7 @@ final class BackupServiceTests: XCTestCase {
 		                   credential: .password)
 		bastion.serverId = "srv-bastion"
 		bastion.updatedAt = date(100)
-		try store.addHost(bastion)
+		try await store.addHost(bastion)
 		try store.setHostSecret("x", hostId: bastion.id, kind: .password)
 
 		let archiveBastionId = UUID() // exporting device's UUID for the same bastion
@@ -645,7 +724,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "local-only", hostname: "l", port: 22, username: "u",
 		                 credential: .password)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		var current = settingsStore.settings
 		current.hostOverrides[HostId(local.id.uuidString)] = PartialSettings()
 		try settingsStore.save(current)
@@ -656,7 +735,7 @@ final class BackupServiceTests: XCTestCase {
 		                   credential: .password)
 		matched.serverId = "srv-m"
 		matched.updatedAt = date(100)
-		try store.addHost(matched)
+		try await store.addHost(matched)
 		try store.setHostSecret("x", hostId: matched.id, kind: .password)
 		let archiveHostId = UUID()
 		let payload = makePayload(
@@ -684,7 +763,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "a", hostname: "h", port: 22, username: "u",
 		                 credential: .password)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		try store.setHostSecret("x", hostId: local.id, kind: .password)
 		_ = bookmarkStore.add(RemoteBookmark(label: "www", path: "/var/www"),
 		                      for: local.id)
@@ -713,7 +792,7 @@ final class BackupServiceTests: XCTestCase {
 		var local = Host(name: "survivor", hostname: "s", port: 22, username: "u",
 		                 credential: .password)
 		local.updatedAt = date(100)
-		try store.addHost(local)
+		try await store.addHost(local)
 		try snippetStore.upsert(Snippet(id: UUID(), name: "s", content: "c",
 		                                createdAt: date(0), updatedAt: date(0)))
 
@@ -722,6 +801,311 @@ final class BackupServiceTests: XCTestCase {
 
 		XCTAssertEqual(store.hosts.count, 1)
 		XCTAssertEqual(snippetStore.snippets.count, 1)
+	}
+
+	func test_reusableIdentityAndHostAssignmentRoundTripThroughBackup()
+		async throws {
+		let sourceIdentities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent("source-identities.json")
+		)
+		let sourceMaterials = CredentialIdentityMaterialStore(
+			secrets: InMemoryBackupIdentitySecretStore(),
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent("source-identity-keys")
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let certificate = Data(
+			"ssh-ed25519-cert-v01@openssh.com AAAA".utf8
+		)
+		let identity = CredentialIdentity(
+			name: "Production certificate",
+			username: "deploy",
+			source: .sshCertificate(
+				materialID: CredentialMaterialID(),
+				publicCertificate: certificate,
+				hasPassphrase: true
+			)
+		)
+		try await sourceIdentities.upsert(identity)
+		try await sourceMaterials.replaceMaterial(
+			for: identity,
+			with: CredentialIdentityMaterial(
+				passphrase: Data("passphrase".utf8),
+				privateKey: Data("PRIVATE KEY".utf8)
+			)
+		)
+		let host = Host(
+			name: "api",
+			hostname: "api.example",
+			username: "legacy-user",
+			credential: .password,
+			credentialIdentity: HostCredentialIdentityReference(
+				identityID: identity.id,
+				migrationState: .reversible
+			)
+		)
+		try await store.addHost(host)
+
+		let payload = try await BackupExporter.makePayload(
+			includeSecrets: true,
+			sessionStore: store,
+			snippets: [],
+			settings: nil,
+			bookmarks: { _ in [] },
+			credentialIdentityStore: sourceIdentities,
+			credentialIdentityMaterialStore: sourceMaterials
+		)
+
+		let archivedIdentity = try XCTUnwrap(
+			payload.credentialIdentities.first
+		)
+		XCTAssertEqual(archivedIdentity.kind, "sshCertificate")
+		XCTAssertEqual(archivedIdentity.publicCertificate, certificate)
+		XCTAssertEqual(
+			archivedIdentity.privateKey,
+			Data("PRIVATE KEY".utf8)
+		)
+		XCTAssertEqual(
+			payload.hosts.first?.credentialIdentity?.identityID,
+			identity.id
+		)
+
+		let destinationKeychain = KeychainStore(
+			service: "com.caterm.test.backup-identity.\(UUID())",
+			accessGroup: nil
+		)
+		defer { try? destinationKeychain.deleteAll(prefix: "") }
+		let destinationSession = SessionStore(
+			askpassPath: "/x",
+			knownHostsCaterm: root.appendingPathComponent(
+				"identity-known-hosts"
+			).path,
+			knownHostsUser: "/B",
+			accessGroup: nil,
+			hostsURL: root.appendingPathComponent("identity-hosts.json"),
+			keychain: destinationKeychain,
+			managedKeyStore: ManagedKeyStore(
+				rootURL: root.appendingPathComponent(
+					"destination-host-keys"
+				)
+			)
+		)
+		let destinationIdentities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent(
+				"destination-identities.json"
+			)
+		)
+		let destinationMaterials = CredentialIdentityMaterialStore(
+			secrets: InMemoryBackupIdentitySecretStore(),
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent(
+					"destination-identity-keys"
+				)
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let plan = BackupMergePlanner.plan(
+			payload: payload,
+			localHosts: [],
+			needsCredentialSetup: { _ in false },
+			localSnippets: [],
+			localSettingsRevision: nil,
+			localBookmarks: { _ in [] },
+			localKnownHostsLines: [],
+			localCredentialIdentities: []
+		)
+
+		let summary = try await BackupImporter.apply(
+			plan: plan,
+			sessionStore: destinationSession,
+			snippetStore: nil,
+			settingsStore: nil,
+			archiveSettings: nil,
+			bookmarkStore: nil,
+			credentialIdentityStore: destinationIdentities,
+			credentialIdentityMaterialStore: destinationMaterials
+		)
+
+		XCTAssertEqual(summary.credentialIdentitiesAdded, 1)
+		let restoredIdentity = try XCTUnwrap(
+			destinationIdentities.identity(id: identity.id)
+		)
+		XCTAssertNil(restoredIdentity.serverID)
+		guard case .sshCertificate(
+			_,
+			let restoredCertificate,
+			let hasPassphrase
+		) = restoredIdentity.source else {
+			return XCTFail("Expected an SSH certificate identity")
+		}
+		XCTAssertEqual(restoredCertificate, certificate)
+		XCTAssertTrue(hasPassphrase)
+		let restoredMaterial = try await destinationMaterials.snapshot(
+			for: restoredIdentity
+		)
+		XCTAssertEqual(
+			restoredMaterial.privateKey,
+			Data("PRIVATE KEY".utf8)
+		)
+		XCTAssertEqual(
+			restoredMaterial.passphrase,
+			Data("passphrase".utf8)
+		)
+		XCTAssertEqual(
+			destinationSession.hosts.first?.credentialIdentity,
+			HostCredentialIdentityReference(
+				identityID: identity.id,
+				migrationState: .reversible
+			)
+		)
+	}
+
+	func test_secureEnclaveBackupNeverExportsPrivateHandle() async throws {
+		let identities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent("enclave-identities.json")
+		)
+		let secrets = InMemoryBackupIdentitySecretStore()
+		let materials = CredentialIdentityMaterialStore(
+			secrets: secrets,
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent("enclave-identity-keys")
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let identity = CredentialIdentity(
+			name: "This Mac",
+			username: "admin",
+			source: .secureEnclaveP256(
+				materialID: CredentialMaterialID(),
+				publicKey: Data([4, 1, 2, 3]),
+				originDeviceID: UUID()
+			)
+		)
+		try await identities.upsert(identity)
+		try await materials.replaceMaterial(
+			for: identity,
+			with: CredentialIdentityMaterial(
+				secureEnclaveKeyBlob: Data("opaque-handle".utf8)
+			)
+		)
+
+		let payload = try await BackupExporter.makePayload(
+			includeSecrets: true,
+			sessionStore: store,
+			snippets: [],
+			settings: nil,
+			bookmarks: { _ in [] },
+			credentialIdentityStore: identities,
+			credentialIdentityMaterialStore: materials
+		)
+
+		let archived = try XCTUnwrap(payload.credentialIdentities.first)
+		XCTAssertEqual(archived.kind, "secureEnclaveP256")
+		XCTAssertEqual(archived.publicKey, Data([4, 1, 2, 3]))
+		XCTAssertNil(archived.password)
+		XCTAssertNil(archived.passphrase)
+		XCTAssertNil(archived.privateKey)
+		let encoded = try payload.encoded()
+		XCTAssertFalse(
+			String(decoding: encoded, as: UTF8.self)
+				.contains(Data("opaque-handle".utf8).base64EncodedString())
+		)
+	}
+
+	func testIdentityBackupWaitsForConsistentMetadataAndMaterial()
+		async throws {
+		let identities = CredentialIdentityStore(
+			fileURL: root.appendingPathComponent(
+				"consistent-backup-identities.json"
+			)
+		)
+		let materials = CredentialIdentityMaterialStore(
+			secrets: InMemoryBackupIdentitySecretStore(),
+			managedKeys: ManagedKeyStore(
+				rootURL: root.appendingPathComponent(
+					"consistent-backup-keys"
+				)
+			),
+			secureEnclave: UnavailableBackupSecureEnclaveProvider()
+		)
+		let identity = CredentialIdentity(
+			name: "Consistent",
+			username: "deploy",
+			source: .password(materialID: CredentialMaterialID())
+		)
+		try await identities.upsert(identity)
+		try await materials.replaceMaterial(
+			for: identity,
+			with: .init(password: Data("secret".utf8))
+		)
+		let blocker = BackupIdentityTransactionBlocker()
+		let transaction = Task { @MainActor in
+			try await identities.withTransaction {
+				await blocker.block()
+			}
+		}
+		await blocker.waitUntilBlocked()
+		let completion = BackupIdentityCompletionFlag()
+		let export = Task { @MainActor in
+			let payload = try await BackupExporter.makePayload(
+				includeSecrets: true,
+				sessionStore: store,
+				snippets: [],
+				settings: nil,
+				bookmarks: { _ in [] },
+				credentialIdentityStore: identities,
+				credentialIdentityMaterialStore: materials
+			)
+			await completion.finish()
+			return payload
+		}
+		for _ in 0..<20 {
+			await Task.yield()
+		}
+		let finishedWhileTransactionHeld = await completion.isFinished
+		XCTAssertFalse(finishedWhileTransactionHeld)
+
+		await blocker.release()
+		try await transaction.value
+		let payload = try await export.value
+		XCTAssertEqual(
+			payload.credentialIdentities.first?.password,
+			Data("secret".utf8)
+		)
+	}
+}
+
+private actor BackupIdentityTransactionBlocker {
+	private var blocked = false
+	private var waiters: [CheckedContinuation<Void, Never>] = []
+	private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+	func block() async {
+		blocked = true
+		waiters.forEach { $0.resume() }
+		waiters.removeAll()
+		await withCheckedContinuation {
+			releaseContinuation = $0
+		}
+	}
+
+	func waitUntilBlocked() async {
+		guard !blocked else { return }
+		await withCheckedContinuation { waiters.append($0) }
+	}
+
+	func release() {
+		releaseContinuation?.resume()
+		releaseContinuation = nil
+	}
+}
+
+private actor BackupIdentityCompletionFlag {
+	private(set) var isFinished = false
+
+	func finish() {
+		isFinished = true
 	}
 }
 
@@ -760,5 +1144,45 @@ private final class InMemoryBackupCredentialSecretStore:
 		lock.lock()
 		values = values.filter { !$0.key.hasPrefix(prefix) }
 		lock.unlock()
+	}
+}
+
+private final class InMemoryBackupIdentitySecretStore:
+	IdentitySecretStoring, @unchecked Sendable {
+	private let lock = NSLock()
+	private var values: [String: Data] = [:]
+
+	func read(account: String) throws -> Data? {
+		lock.lock()
+		defer { lock.unlock() }
+		return values[account]
+	}
+
+	func write(_ data: Data, account: String) throws {
+		lock.lock()
+		values[account] = data
+		lock.unlock()
+	}
+
+	func delete(account: String) throws {
+		lock.lock()
+		values[account] = nil
+		lock.unlock()
+	}
+}
+
+private struct UnavailableBackupSecureEnclaveProvider:
+	SecureEnclaveIdentityKeyProviding {
+	let isAvailable = false
+
+	func create(localizedReason: String) throws -> SecureEnclaveIdentityKey {
+		throw SecureEnclaveIdentityError.unavailable
+	}
+
+	func restore(
+		dataRepresentation: Data,
+		localizedReason: String
+	) throws -> SecureEnclaveIdentityKey {
+		throw SecureEnclaveIdentityError.unavailable
 	}
 }

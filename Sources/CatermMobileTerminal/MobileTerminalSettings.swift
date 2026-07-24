@@ -1,5 +1,9 @@
-#if canImport(UIKit)
 import Foundation
+
+public enum TerminalKeyboardMode: Equatable, Sendable {
+	case custom
+	case native
+}
 
 /// User-tunable defaults for new terminal sessions. The Settings screen
 /// writes these through `@AppStorage`; the session models read them here
@@ -30,4 +34,35 @@ public enum MobileTerminalSettings {
 		store.bool(forKey: Keys.defaultKeyboardNative) ? .native : .custom
 	}
 }
-#endif
+
+public struct MobileTerminalPreferences: Equatable, Sendable {
+	public var themeID: String
+	public var fontSize: Double
+	public var keyboardMode: TerminalKeyboardMode
+
+	public init(
+		themeID: String,
+		fontSize: Double,
+		keyboardMode: TerminalKeyboardMode
+	) {
+		self.themeID = themeID
+		self.fontSize = min(
+			max(fontSize, MobileTerminalSettings.fontSizeRange.lowerBound),
+			MobileTerminalSettings.fontSizeRange.upperBound
+		)
+		self.keyboardMode = keyboardMode
+	}
+
+	public static var storedDefaults: MobileTerminalPreferences {
+		MobileTerminalPreferences(
+			themeID: MobileTerminalSettings.defaultTheme.id,
+			fontSize: MobileTerminalSettings.fontSize,
+			keyboardMode: MobileTerminalSettings.defaultKeyboardMode
+		)
+	}
+
+	public var theme: TerminalTheme {
+		TerminalTheme.presets.first { $0.id == themeID }
+			?? TerminalTheme.presets[0]
+	}
+}

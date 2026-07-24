@@ -22,7 +22,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 		let client = FakeSnippetSyncClient()
 		let sync = SnippetSyncStore(store: store, client: client)
 
-		await sync.runSyncPass(mode: .incremental)
+		try await sync.runSyncPass(mode: .incremental)
 		XCTAssertEqual(client.deleted, [id])
 		XCTAssertFalse(store.pendingDeletedSnippetIDs.contains(id))
 	}
@@ -48,7 +48,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 		)
 		let sync = SnippetSyncStore(store: store, client: client)
 
-		await sync.runSyncPass(mode: .incremental)
+		try await sync.runSyncPass(mode: .incremental)
 		XCTAssertEqual(store.snippets.first?.name, "remote")
 		XCTAssertTrue(store.locallyDirtySnippetIDs.isEmpty)
 		XCTAssertTrue(client.pushed.isEmpty,
@@ -68,7 +68,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 			checkpoint: nil, tokenExpired: false, mode: .incremental
 		)
 		let sync = SnippetSyncStore(store: store, client: client)
-		await sync.runSyncPass(mode: .incremental)
+		try await sync.runSyncPass(mode: .incremental)
 
 		XCTAssertTrue(store.snippets.isEmpty)
 		XCTAssertTrue(client.pushed.isEmpty)
@@ -84,8 +84,58 @@ final class SnippetSyncStoreTests: XCTestCase {
 			checkpoint: cp, tokenExpired: false, mode: .incremental
 		)
 		let sync = SnippetSyncStore(store: store, client: client)
-		await sync.runSyncPass(mode: .incremental)
+		try await sync.runSyncPass(mode: .incremental)
 		XCTAssertEqual(client.committedCheckpoints.count, 1)
+	}
+
+	func test_runSyncPass_propagatesFetchFailure() async throws {
+		let store = SnippetStore(directory: tempDir())
+		try store.load()
+		let client = FakeSnippetSyncClient()
+		client.fetchError = TestSnippetSyncError.fetchFailed
+		let sync = SnippetSyncStore(store: store, client: client)
+
+		do {
+			try await sync.runSyncPass(mode: .incremental)
+			XCTFail("Expected the fetch failure to propagate")
+		} catch {
+			XCTAssertEqual(error as? TestSnippetSyncError, .fetchFailed)
+		}
+	}
+
+	func test_runSyncPass_propagatesCheckpointFailure() async throws {
+		let store = SnippetStore(directory: tempDir())
+		try store.load()
+		let client = FakeSnippetSyncClient()
+		client.queuedFetch = SnippetChangeBatch(
+			changedSnippets: [], deletedSnippetIDs: [],
+			checkpoint: StubCheckpoint(), tokenExpired: false, mode: .incremental
+		)
+		client.checkpointError = TestSnippetSyncError.checkpointFailed
+		let sync = SnippetSyncStore(store: store, client: client)
+
+		do {
+			try await sync.runSyncPass(mode: .incremental)
+			XCTFail("Expected the checkpoint failure to propagate")
+		} catch {
+			XCTAssertEqual(error as? TestSnippetSyncError, .checkpointFailed)
+		}
+	}
+
+	func test_runSyncPass_installsSubscriptionBeforeFetching() async throws {
+		let store = SnippetStore(directory: tempDir())
+		try store.load()
+		let client = FakeSnippetSyncClient()
+		client.subscriptionError = TestSnippetSyncError.subscriptionFailed
+		let sync = SnippetSyncStore(store: store, client: client)
+
+		do {
+			try await sync.runSyncPass(mode: .forceFull)
+			XCTFail("Expected the subscription failure to propagate")
+		} catch {
+			XCTAssertEqual(error as? TestSnippetSyncError, .subscriptionFailed)
+		}
+		XCTAssertEqual(client.fetchCallCount, 0)
 	}
 
 	func test_equivalentPushAcknowledgementClearsDirtyState() async throws {
@@ -104,8 +154,8 @@ final class SnippetSyncStoreTests: XCTestCase {
 		client.pushResult = saved
 		let sync = SnippetSyncStore(store: store, client: client)
 
-		await sync.runSyncPass(mode: .incremental)
-		await sync.runSyncPass(mode: .incremental)
+		try await sync.runSyncPass(mode: .incremental)
+		try await sync.runSyncPass(mode: .incremental)
 
 		XCTAssertEqual(client.pushed.count, 1)
 		XCTAssertTrue(store.locallyDirtySnippetIDs.isEmpty)
@@ -129,7 +179,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 		let client = FakeSnippetSyncClient()
 		let sync = SnippetSyncStore(store: afterRestart, client: client)
 
-		await sync.runSyncPass(mode: .forceFull)
+		try await sync.runSyncPass(mode: .forceFull)
 
 		XCTAssertEqual(client.pushed.map(\.id), [snippet.id])
 		XCTAssertEqual(afterRestart.snippets.map(\.id), [snippet.id])
@@ -154,7 +204,12 @@ final class SnippetSyncStoreTests: XCTestCase {
 			store: beforeFailure, client: failingClient
 		)
 
-		await failingSync.runSyncPass(mode: .incremental)
+		do {
+			try await failingSync.runSyncPass(mode: .incremental)
+			XCTFail("Expected the push failure to propagate")
+		} catch {
+			XCTAssertEqual(error as? TestSnippetSyncError, .pushFailed)
+		}
 		XCTAssertEqual(failingClient.pushAttempts, [snippet.id])
 		XCTAssertEqual(beforeFailure.locallyDirtySnippetIDs, [snippet.id])
 
@@ -165,7 +220,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 			store: afterRestart, client: recoveryClient
 		)
 
-		await recoverySync.runSyncPass(mode: .forceFull)
+		try await recoverySync.runSyncPass(mode: .forceFull)
 
 		XCTAssertEqual(recoveryClient.pushed.map(\.id), [snippet.id])
 		XCTAssertTrue(afterRestart.locallyDirtySnippetIDs.isEmpty)
@@ -198,7 +253,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 
 		sync.scheduleSyncPass(mode: .incremental)
 		await waitUntil { client.fetchCallCount == 1 }
-		await sync.runSyncPass(mode: .forceFull)
+		try await sync.runSyncPass(mode: .forceFull)
 
 		XCTAssertEqual(client.recordedModes, [.incremental, .forceFull])
 		XCTAssertEqual(client.maximumActiveFetchCount, 1)
@@ -211,14 +266,14 @@ final class SnippetSyncStoreTests: XCTestCase {
 		client.fetchDelay = .milliseconds(50)
 		let sync = SnippetSyncStore(store: store, client: client)
 
-		let first = Task { await sync.runSyncPass(mode: .incremental) }
+		let first = Task { try await sync.runSyncPass(mode: .incremental) }
 		await waitUntil { client.fetchCallCount == 1 }
-		let forceFull = Task { await sync.runSyncPass(mode: .forceFull) }
+		let forceFull = Task { try await sync.runSyncPass(mode: .forceFull) }
 		await Task.yield()
-		let latest = Task { await sync.runSyncPass(mode: .incremental) }
-		await first.value
-		await forceFull.value
-		await latest.value
+		let latest = Task { try await sync.runSyncPass(mode: .incremental) }
+		try await first.value
+		try await forceFull.value
+		try await latest.value
 
 		XCTAssertEqual(client.recordedModes, [.incremental, .incremental])
 		XCTAssertEqual(client.maximumActiveFetchCount, 1)
@@ -231,7 +286,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 		client.suspendNextFetch = true
 		let sync = SnippetSyncStore(store: store, client: client)
 
-		let active = Task { await sync.runSyncPass(mode: .incremental) }
+		let active = Task { try await sync.runSyncPass(mode: .incremental) }
 		await waitUntil { client.fetchCallCount == 1 }
 		var suspensionCompleted = false
 		let suspension = Task {
@@ -245,7 +300,7 @@ final class SnippetSyncStoreTests: XCTestCase {
 		XCTAssertEqual(client.fetchCallCount, 1)
 
 		client.releaseSuspendedFetch()
-		await active.value
+		_ = await active.result
 		await suspension.value
 		sync.resumeAfterAccountChange(identityChanged: true)
 		await waitUntil { client.fetchCallCount == 2 }
@@ -304,12 +359,12 @@ final class SnippetSyncStoreTests: XCTestCase {
 		client.suspendNextFetch = true
 		let sync = SnippetSyncStore(store: store, client: client)
 
-		let active = Task { await sync.runSyncPass(mode: .incremental) }
+		let active = Task { try await sync.runSyncPass(mode: .incremental) }
 		await waitUntil { client.fetchCallCount == 1 }
 		sync.beginAccountChangeSuspension()
 		let drain = Task { await sync.drainForAccountChange() }
 		client.releaseSuspendedFetch()
-		await active.value
+		_ = await active.result
 		await drain.value
 
 		XCTAssertEqual(store.snippets.map(\.id), [localID])
@@ -330,8 +385,11 @@ private struct StubCheckpoint: SnippetSyncCheckpoint {
 	let id = UUID()
 }
 
-private enum TestSnippetSyncError: Error {
+private enum TestSnippetSyncError: Error, Equatable {
 	case pushFailed
+	case fetchFailed
+	case checkpointFailed
+	case subscriptionFailed
 }
 
 @MainActor
@@ -341,6 +399,9 @@ private final class FakeSnippetSyncClient: IncrementalSnippetSyncClient {
 	var pushAttempts: [UUID] = []
 	var pushResult: Snippet?
 	var pushError: Error?
+	var fetchError: Error?
+	var checkpointError: Error?
+	var subscriptionError: Error?
 	var deleted: [UUID] = []
 	var committedCheckpoints: [any SnippetSyncCheckpoint] = []
 	var fetchCallCount = 0
@@ -356,14 +417,14 @@ private final class FakeSnippetSyncClient: IncrementalSnippetSyncClient {
 	func preferredSnippetSyncMode() async -> SnippetSyncMode { .incremental }
 
 	func fetchSnippetChanges() async throws -> SnippetChangeBatch {
-		await fetch(mode: .incremental)
+		try await fetch(mode: .incremental)
 	}
 
 	func fetchSnippetSnapshotAndCheckpoint() async throws -> SnippetChangeBatch {
-		await fetch(mode: .forceFull)
+		try await fetch(mode: .forceFull)
 	}
 
-	private func fetch(mode: SnippetSyncMode) async -> SnippetChangeBatch {
+	private func fetch(mode: SnippetSyncMode) async throws -> SnippetChangeBatch {
 		fetchCallCount += 1
 		recordedModes.append(mode)
 		activeFetchCount += 1
@@ -376,6 +437,7 @@ private final class FakeSnippetSyncClient: IncrementalSnippetSyncClient {
 			}
 		}
 		if fetchDelay > .zero { try? await Task.sleep(for: fetchDelay) }
+		if let fetchError { throw fetchError }
 		return queuedFetch ?? SnippetChangeBatch(
 			changedSnippets: [], deletedSnippetIDs: [],
 			checkpoint: nil, tokenExpired: false, mode: mode
@@ -388,11 +450,13 @@ private final class FakeSnippetSyncClient: IncrementalSnippetSyncClient {
 	}
 
 	func commitSnippetCheckpoint(_ checkpoint: any SnippetSyncCheckpoint) async throws {
+		if let checkpointError { throw checkpointError }
 		committedCheckpoints.append(checkpoint)
 	}
 
 	func resetSnippetSyncState() async { hasTokens = false }
 	func ensureSnippetSubscription() async throws {
+		if let subscriptionError { throw subscriptionError }
 		subscriptions.insert("snippet")
 	}
 	func deleteSnippetSubscription() async throws {

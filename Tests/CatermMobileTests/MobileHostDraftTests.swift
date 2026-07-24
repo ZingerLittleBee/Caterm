@@ -19,6 +19,43 @@ final class MobileHostDraftTests: XCTestCase {
 		XCTAssertEqual(payload.host.username, "deploy")
 		XCTAssertEqual(payload.host.credential, .password)
 		XCTAssertEqual(payload.secret, "pw")
+		XCTAssertTrue(payload.host.credentialMaterialDirty)
+	}
+
+	func testChangingCredentialSourceMarksMaterialDirtyWithoutNewSecret() throws {
+		let existing = SSHHost(
+			id: UUID(),
+			name: "Box",
+			hostname: "box.example.com",
+			username: "deploy",
+			credential: .password,
+			credentialMaterialDirty: false
+		)
+		var draft = MobileHostDraft(host: existing)
+		draft.credential = .agent
+
+		let payload = try draft.build(mode: .edit(existing), allHosts: [])
+
+		XCTAssertEqual(payload.host.credential, .agent)
+		XCTAssertNil(payload.secret)
+		XCTAssertTrue(payload.host.credentialMaterialDirty)
+	}
+
+	func testMetadataOnlyEditPreservesCleanCredentialMaterial() throws {
+		let existing = SSHHost(
+			id: UUID(),
+			name: "Old",
+			hostname: "box.example.com",
+			username: "deploy",
+			credential: .password,
+			credentialMaterialDirty: false
+		)
+		var draft = MobileHostDraft(host: existing)
+		draft.label = "New"
+
+		let payload = try draft.build(mode: .edit(existing), allHosts: [])
+
+		XCTAssertFalse(payload.host.credentialMaterialDirty)
 	}
 
 	func testBlankLabelFallsBackToUserAtHost() throws {
@@ -76,5 +113,90 @@ final class MobileHostDraftTests: XCTestCase {
 		XCTAssertEqual(payload.host.updatedAt, existing.updatedAt)
 		XCTAssertTrue(payload.host.credentialMaterialDirty)
 		XCTAssertEqual(payload.secret, "phrase")
+	}
+
+	func testAutomationRoundTripsThroughMobileDraft() throws {
+		let automation = HostAutomation(
+			isEnabled: true,
+			startupSnippetID: UUID(),
+			environment: [
+				HostEnvironmentVariable(name: "REGION", value: "west")
+			],
+			reviewPolicy: .always,
+			reconnectPolicy: .everyConnection
+		)
+		let existing = SSHHost(
+			name: "Automated",
+			hostname: "automated.example",
+			username: "deploy",
+			credential: .password,
+			automation: automation
+		)
+		let draft = MobileHostDraft(host: existing)
+
+		let payload = try draft.build(mode: .edit(existing), allHosts: [])
+
+		XCTAssertEqual(draft.automation, automation)
+		XCTAssertEqual(payload.host.automation, automation)
+	}
+
+	func testInvalidAutomationFailsInsteadOfSavingSilently() {
+		var draft = MobileHostDraft()
+		draft.hostname = "automated.example"
+		draft.username = "deploy"
+		draft.automation = HostAutomation(
+			isEnabled: true,
+			environment: [
+				HostEnvironmentVariable(name: "1INVALID", value: "value")
+			]
+		)
+
+		XCTAssertThrowsError(
+			try draft.build(mode: .add, allHosts: [])
+		) { error in
+			guard case .invalidAutomation =
+				error as? MobileHostDraft.ValidationError else {
+				return XCTFail("Expected invalid automation, got \(error)")
+			}
+		}
+	}
+
+	func testReusableIdentityAssignmentRoundTripsMigrationState()
+		throws {
+		let identityID = UUID()
+		var draft = MobileHostDraft()
+		draft.hostname = "identity.example"
+		draft.username = "legacy-user"
+		draft.credential = .password(secret: "rollback")
+		draft.credentialIdentityID = identityID
+		draft.credentialIdentityMigrationState = .reversible
+
+		let reversible = try draft.build(
+			mode: .add,
+			allHosts: []
+		)
+		XCTAssertEqual(
+			reversible.host.credentialIdentity,
+			HostCredentialIdentityReference(
+				identityID: identityID,
+				migrationState: .reversible
+			)
+		)
+		XCTAssertEqual(reversible.host.credential, .password)
+
+		var confirmedDraft = MobileHostDraft(
+			host: reversible.host
+		)
+		confirmedDraft.credentialIdentityMigrationState =
+			.confirmed
+		let confirmed = try confirmedDraft.build(
+			mode: .edit(reversible.host),
+			allHosts: []
+		)
+
+		XCTAssertEqual(
+			confirmed.host.credentialIdentity?.migrationState,
+			.confirmed
+		)
 	}
 }

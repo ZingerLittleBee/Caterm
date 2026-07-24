@@ -13,13 +13,16 @@ import SettingsStore
 /// cross-device identity hint for import matching; imports never write a
 /// foreign serverId into local state.
 public struct BackupPayload: Codable, Equatable {
-	public static let contentVersion = 1
+	public static let contentVersion = 2
 
 	public var contentVersion: Int
 	public var exportedAt: Date
 	/// Marketing version of the exporting app, for diagnostics only.
 	public var appVersion: String?
 	public var hosts: [BackupHost]
+	/// Reusable credential metadata and optional secret material. Secure
+	/// Enclave private-key handles are device-bound and never appear here.
+	public var credentialIdentities: [BackupCredentialIdentity]
 	public var snippets: [BackupSnippet]
 	public var settings: BackupSettings?
 	public var bookmarks: [BackupBookmark]
@@ -32,6 +35,7 @@ public struct BackupPayload: Codable, Equatable {
 		exportedAt: Date,
 		appVersion: String? = nil,
 		hosts: [BackupHost] = [],
+		credentialIdentities: [BackupCredentialIdentity] = [],
 		snippets: [BackupSnippet] = [],
 		settings: BackupSettings? = nil,
 		bookmarks: [BackupBookmark] = [],
@@ -41,10 +45,57 @@ public struct BackupPayload: Codable, Equatable {
 		self.exportedAt = exportedAt
 		self.appVersion = appVersion
 		self.hosts = hosts
+		self.credentialIdentities = credentialIdentities
 		self.snippets = snippets
 		self.settings = settings
 		self.bookmarks = bookmarks
 		self.knownHosts = knownHosts
+	}
+
+	private enum CodingKeys: String, CodingKey {
+		case contentVersion
+		case exportedAt
+		case appVersion
+		case hosts
+		case credentialIdentities
+		case snippets
+		case settings
+		case bookmarks
+		case knownHosts
+	}
+
+	public init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		contentVersion = try container.decode(Int.self, forKey: .contentVersion)
+		exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+		appVersion = try container.decodeIfPresent(
+			String.self,
+			forKey: .appVersion
+		)
+		hosts = try container.decodeIfPresent(
+			[BackupHost].self,
+			forKey: .hosts
+		) ?? []
+		credentialIdentities = try container.decodeIfPresent(
+			[BackupCredentialIdentity].self,
+			forKey: .credentialIdentities
+		) ?? []
+		snippets = try container.decodeIfPresent(
+			[BackupSnippet].self,
+			forKey: .snippets
+		) ?? []
+		settings = try container.decodeIfPresent(
+			BackupSettings.self,
+			forKey: .settings
+		)
+		bookmarks = try container.decodeIfPresent(
+			[BackupBookmark].self,
+			forKey: .bookmarks
+		) ?? []
+		knownHosts = try container.decodeIfPresent(
+			[String].self,
+			forKey: .knownHosts
+		) ?? []
 	}
 
 	/// Canonical payload encoding (ISO-8601 dates, sorted keys).
@@ -95,6 +146,11 @@ public struct BackupHost: Codable, Equatable {
 	/// Optional for backward compatibility with content-version 1 archives.
 	public var groupPath: [String]?
 	public var tags: [String]?
+	/// Optional for backward compatibility with content-version 1 archives.
+	public var automation: BackupHostAutomation?
+	/// Optional for backward compatibility with archives written before
+	/// reusable identities were introduced.
+	public var credentialIdentity: BackupHostCredentialIdentityReference?
 
 	// Secret material (present only when exported with secrets).
 	public var password: String?
@@ -108,6 +164,8 @@ public struct BackupHost: Codable, Equatable {
 		hasPassphrase: Bool, createdAt: Date, updatedAt: Date,
 		jumpHostId: UUID?, forwards: [BackupPortForward], icon: String?,
 		groupPath: [String]? = nil, tags: [String]? = nil,
+		automation: BackupHostAutomation? = nil,
+		credentialIdentity: BackupHostCredentialIdentityReference? = nil,
 		password: String? = nil, passphrase: String? = nil,
 		privateKey: Data? = nil
 	) {
@@ -126,9 +184,117 @@ public struct BackupHost: Codable, Equatable {
 		self.icon = icon
 		self.groupPath = groupPath
 		self.tags = tags
+		self.automation = automation
+		self.credentialIdentity = credentialIdentity
 		self.password = password
 		self.passphrase = passphrase
 		self.privateKey = privateKey
+	}
+}
+
+public struct BackupHostCredentialIdentityReference: Codable, Equatable {
+	public var identityID: UUID
+	/// "reversible" keeps the host-owned credential available until the
+	/// user confirms migration; "confirmed" makes the identity authoritative.
+	public var migrationState: String
+
+	public init(identityID: UUID, migrationState: String) {
+		self.identityID = identityID
+		self.migrationState = migrationState
+	}
+}
+
+/// Stable backup DTO for a reusable credential identity. The source is
+/// represented by explicit fields rather than the live enum's Codable
+/// shape so future model refactors do not invalidate existing archives.
+public struct BackupCredentialIdentity: Codable, Equatable {
+	/// "password" | "managedKey" | "sshCertificate" |
+	/// "secureEnclaveP256".
+	public var kind: String
+	public var id: UUID
+	public var serverId: String?
+	public var materialId: UUID
+	public var name: String
+	public var username: String
+	public var hasPassphrase: Bool
+	public var publicCertificate: Data?
+	public var publicKey: Data?
+	public var originDeviceId: UUID?
+	public var createdAt: Date
+	public var updatedAt: Date
+
+	// Secret material, present only when exported with secrets. A Secure
+	// Enclave key has no exportable private material by design.
+	public var password: Data?
+	public var passphrase: Data?
+	public var privateKey: Data?
+
+	public init(
+		kind: String,
+		id: UUID,
+		serverId: String? = nil,
+		materialId: UUID,
+		name: String,
+		username: String,
+		hasPassphrase: Bool = false,
+		publicCertificate: Data? = nil,
+		publicKey: Data? = nil,
+		originDeviceId: UUID? = nil,
+		createdAt: Date,
+		updatedAt: Date,
+		password: Data? = nil,
+		passphrase: Data? = nil,
+		privateKey: Data? = nil
+	) {
+		self.kind = kind
+		self.id = id
+		self.serverId = serverId
+		self.materialId = materialId
+		self.name = name
+		self.username = username
+		self.hasPassphrase = hasPassphrase
+		self.publicCertificate = publicCertificate
+		self.publicKey = publicKey
+		self.originDeviceId = originDeviceId
+		self.createdAt = createdAt
+		self.updatedAt = updatedAt
+		self.password = password
+		self.passphrase = passphrase
+		self.privateKey = privateKey
+	}
+}
+
+public struct BackupHostAutomation: Codable, Equatable {
+	public var isEnabled: Bool
+	public var startupSnippetID: UUID?
+	public var environment: [BackupHostEnvironmentVariable]
+	public var reviewPolicy: String
+	public var reconnectPolicy: String
+
+	public init(
+		isEnabled: Bool,
+		startupSnippetID: UUID? = nil,
+		environment: [BackupHostEnvironmentVariable] = [],
+		reviewPolicy: String,
+		reconnectPolicy: String
+	) {
+		self.isEnabled = isEnabled
+		self.startupSnippetID = startupSnippetID
+		self.environment = environment
+		self.reviewPolicy = reviewPolicy
+		self.reconnectPolicy = reconnectPolicy
+	}
+}
+
+public struct BackupHostEnvironmentVariable: Codable, Equatable {
+	public var id: UUID
+	public var name: String
+	public var value: String
+
+	public init(id: UUID, name: String, value: String) {
+		self.id = id
+		self.name = name
+		self.value = value
 	}
 }
 

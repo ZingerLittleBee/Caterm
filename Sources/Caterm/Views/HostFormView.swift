@@ -1,7 +1,10 @@
 import AppKit
+import CredentialIdentityStore
 import HostKeyProvisioning
 import SessionStore
 import SettingsStore
+import SnippetStore
+import SnippetSyncClient
 import SSHCommandBuilder
 import SwiftUI
 
@@ -23,8 +26,12 @@ enum HostFormMode {
 struct HostFormView: View {
 	let mode: HostFormMode
 	let onSubmit: (SSHHost, String?, PendingKeyMaterial?) -> Void
+	let isSubmitting: Bool
 	@Environment(\.dismiss) private var dismiss
 	@EnvironmentObject private var sessionStore: SessionStore
+	@EnvironmentObject private var snippetStore: SnippetStore
+	@EnvironmentObject private var credentialIdentityStore:
+		CredentialIdentityStore
 
 	@State private var label = ""
 	@State private var hostname = ""
@@ -37,11 +44,29 @@ struct HostFormView: View {
 	@State private var existingKeyPath: String? = nil
 	@State private var hasPassphrase = false
 	@State private var pendingSecret = ""
+	@State private var credentialIdentityID: UUID?
+	@State private var credentialIdentityMigrationState:
+		HostCredentialIdentityReference.MigrationState = .reversible
 	@State private var jumpHostSelection = JumpHostSelection.none
 	@State private var forwards: [PortForward] = []
 	@State private var icon: String? = nil
 	@State private var groupText = ""
 	@State private var tagsText = ""
+	@State private var automationEnabled = false
+	@State private var startupSnippetID: UUID?
+	@State private var automationEnvironment: [HostEnvironmentVariable] = []
+	@State private var automationReviewPolicy: HostAutomationReviewPolicy = .always
+	@State private var automationReconnectPolicy: HostAutomationReconnectPolicy = .oncePerSession
+
+	init(
+		mode: HostFormMode,
+		isSubmitting: Bool = false,
+		onSubmit: @escaping (SSHHost, String?, PendingKeyMaterial?) -> Void
+	) {
+		self.mode = mode
+		self.isSubmitting = isSubmitting
+		self.onSubmit = onSubmit
+	}
 
 	var body: some View {
 		let validation = formValidation
@@ -51,6 +76,7 @@ struct HostFormView: View {
 					connectionCard(preview: validation.chainPreview)
 					organizationCard
 					authenticationCard
+					automationCard
 					portForwardingCard
 					// Theme override only makes sense for an existing host —
 					// the override key is the host's UUID, which doesn't exist
@@ -73,16 +99,206 @@ struct HostFormView: View {
 			HStack {
 				Button("Cancel") { dismiss() }
 					.keyboardShortcut(.cancelAction)
+					.disabled(isSubmitting)
 				Spacer()
+				if isSubmitting {
+					ProgressView()
+						.controlSize(.small)
+				}
 				Button("Save") { submit() }
 					.keyboardShortcut(.defaultAction)
-					.disabled(!validation.isValid)
+					.disabled(!validation.isValid || isSubmitting)
 			}
 			.padding(.horizontal, 20)
 			.padding(.vertical, 14)
 		}
 		.frame(width: 560, height: 720)
+		.interactiveDismissDisabled(isSubmitting)
 		.onAppear { populate() }
+	}
+
+	private var automationCard: some View {
+		FormCard("Startup Automation") {
+			Toggle("Enable automation for new sessions", isOn: $automationEnabled)
+
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Startup snippet")
+				HStack {
+					Picker("Startup snippet", selection: $startupSnippetID) {
+						Text("(none)").tag(nil as UUID?)
+						if let startupSnippetID,
+						   !snippetStore.snippets.contains(where: {
+							$0.id == startupSnippetID
+						   }) {
+							Text("(deleted snippet)")
+								.tag(startupSnippetID as UUID?)
+						}
+						ForEach(snippetStore.snippets) { snippet in
+							Text(snippet.name).tag(snippet.id as UUID?)
+						}
+					}
+					.labelsHidden()
+					.frame(maxWidth: .infinity, alignment: .leading)
+
+					if startupSnippetID != nil {
+						Button("Remove") {
+							startupSnippetID = nil
+						}
+					}
+				}
+			}
+
+			if let snippet = selectedStartupSnippet {
+				VStack(alignment: .leading, spacing: 6) {
+					HStack {
+						FieldLabel("Complete command")
+						Spacer()
+						Text("Runs after the terminal is live")
+							.font(.caption)
+							.foregroundStyle(.secondary)
+					}
+					ScrollView {
+						Text(snippet.content)
+							.font(.system(.body, design: .monospaced))
+							.textSelection(.enabled)
+							.frame(maxWidth: .infinity, alignment: .leading)
+					}
+					.frame(maxHeight: 160)
+					.padding(10)
+					.background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+					if let placeholders = snippet.placeholders,
+					   !placeholders.isEmpty {
+						Label(
+							"Startup snippets cannot require input: \(placeholders.joined(separator: ", "))",
+							systemImage: "exclamationmark.triangle"
+						)
+						.font(.caption)
+						.foregroundStyle(.red)
+					}
+				}
+			} else if startupSnippetID != nil {
+				Label(
+					"The selected snippet was deleted. Choose another snippet or remove it.",
+					systemImage: "exclamationmark.triangle"
+				)
+				.font(.caption)
+				.foregroundStyle(.red)
+			}
+
+			Divider()
+
+			VStack(alignment: .leading, spacing: 8) {
+				HStack {
+					FieldLabel("Remote environment")
+					Spacer()
+					Button {
+						automationEnvironment.append(
+							HostEnvironmentVariable(name: "", value: "")
+						)
+					} label: {
+						Label("Add variable", systemImage: "plus")
+					}
+				}
+				if automationEnvironment.isEmpty {
+					Text("No environment variables")
+						.font(.callout)
+						.foregroundStyle(.secondary)
+				} else {
+					ForEach($automationEnvironment) { $variable in
+						HStack(spacing: 8) {
+							TextField("NAME", text: $variable.name)
+								.font(.system(.body, design: .monospaced))
+								.accessibilityLabel("Environment variable name")
+							TextField("value", text: $variable.value)
+								.font(.system(.body, design: .monospaced))
+								.accessibilityLabel(
+									"Value for \(variable.name.isEmpty ? "environment variable" : variable.name)"
+								)
+							Button {
+								automationEnvironment.removeAll {
+									$0.id == variable.id
+								}
+							} label: {
+								Image(systemName: "trash")
+							}
+							.buttonStyle(.borderless)
+							.accessibilityLabel(
+								"Remove \(variable.name.isEmpty ? "environment variable" : variable.name)"
+							)
+						}
+					}
+				}
+				Text("Values are synchronized as non-secret Host metadata. Do not put passwords, tokens, or private keys here.")
+					.font(.caption)
+					.foregroundStyle(.secondary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+
+			HStack(alignment: .top, spacing: 12) {
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("Before connecting")
+					Picker("Before connecting", selection: $automationReviewPolicy) {
+						Text("Review before session").tag(HostAutomationReviewPolicy.always)
+						Text("Run without review").tag(HostAutomationReviewPolicy.never)
+					}
+					.labelsHidden()
+				}
+				VStack(alignment: .leading, spacing: 5) {
+					FieldLabel("On reconnect")
+					Picker("On reconnect", selection: $automationReconnectPolicy) {
+						Text("First connection only")
+							.tag(HostAutomationReconnectPolicy.oncePerSession)
+						Text("Every connection")
+							.tag(HostAutomationReconnectPolicy.everyConnection)
+					}
+					.labelsHidden()
+				}
+			}
+
+			if let message = automationValidationMessage {
+				Label(message, systemImage: "exclamationmark.circle")
+					.font(.caption)
+					.foregroundStyle(.red)
+			}
+		}
+	}
+
+	private var selectedStartupSnippet: Snippet? {
+		guard let startupSnippetID else { return nil }
+		return snippetStore.snippets.first { $0.id == startupSnippetID }
+	}
+
+	private var automationDraft: HostAutomation {
+		HostAutomation(
+			isEnabled: automationEnabled,
+			startupSnippetID: startupSnippetID,
+			environment: automationEnvironment,
+			reviewPolicy: automationReviewPolicy,
+			reconnectPolicy: automationReconnectPolicy
+		)
+	}
+
+	private var automationValidationMessage: String? {
+		if automationEnabled, startupSnippetID != nil {
+			guard let snippet = selectedStartupSnippet else {
+				return "The selected startup snippet is unavailable."
+			}
+			if let placeholders = snippet.placeholders, !placeholders.isEmpty {
+				return "Choose a startup snippet that does not require input."
+			}
+			if snippet.content.trimmingCharacters(
+				in: .whitespacesAndNewlines
+			).isEmpty {
+				return "The selected startup snippet has no command."
+			}
+		}
+		do {
+			_ = try automationDraft.validated()
+			return nil
+		} catch {
+			return (error as? LocalizedError)?.errorDescription
+				?? String(describing: error)
+		}
 	}
 
 	private var organizationCard: some View {
@@ -175,23 +391,91 @@ struct HostFormView: View {
 
 	private var authenticationCard: some View {
 		FormCard("Authentication") {
-			Picker("Method", selection: $credKind) {
-				ForEach(CredKind.allCases) { kind in
-					Text(kind.displayName).tag(kind)
+			VStack(alignment: .leading, spacing: 5) {
+				FieldLabel("Credential identity")
+				Picker(
+					"Credential identity",
+					selection: $credentialIdentityID
+				) {
+					Text("Host-owned credential").tag(nil as UUID?)
+					if let credentialIdentityID,
+					   selectedIdentity == nil {
+						Text("(deleted identity)")
+							.tag(credentialIdentityID as UUID?)
+					}
+					ForEach(credentialIdentityStore.identities) {
+						Text("\($0.name) · \($0.username)")
+							.tag($0.id as UUID?)
+					}
+				}
+				.labelsHidden()
+				.frame(maxWidth: .infinity, alignment: .leading)
+			}
+
+			if let selectedIdentity {
+				LabeledContent("Connect as", value: selectedIdentity.username)
+					.accessibilityLabel(
+						"Identity username \(selectedIdentity.username)"
+					)
+				Picker(
+					"Migration",
+					selection: $credentialIdentityMigrationState
+				) {
+					Text("Keep host credential as fallback")
+						.tag(
+							HostCredentialIdentityReference
+								.MigrationState.reversible
+						)
+					Text("Identity only")
+						.tag(
+							HostCredentialIdentityReference
+								.MigrationState.confirmed
+						)
+				}
+				Text(
+					credentialIdentityMigrationState == .reversible
+						? "The existing host-owned credential remains available until you confirm the migration."
+						: "The selected identity is authoritative for new connections."
+				)
+					.font(.caption)
+					.foregroundStyle(.secondary)
+					.fixedSize(horizontal: false, vertical: true)
+			}
+
+			if credentialIdentityID == nil
+				|| credentialIdentityMigrationState == .reversible {
+				DisclosureGroup(
+					credentialIdentityID == nil
+						? "Host-owned credential"
+						: "Host-owned fallback"
+				) {
+					VStack(alignment: .leading, spacing: 10) {
+						Picker("Method", selection: $credKind) {
+							ForEach(CredKind.allCases) { kind in
+								Text(kind.displayName).tag(kind)
+							}
+						}
+						.pickerStyle(.segmented)
+						.labelsHidden()
+
+						AuthMethodFields(
+							credKind: $credKind,
+							pendingKey: $pendingKey,
+							hasPassphrase: $hasPassphrase,
+							pendingSecret: $pendingSecret,
+							hasExistingManagedKey: existingKeyPath != nil
+						)
+						.frame(minHeight: 96, alignment: .top)
+					}
+					.padding(.top, 8)
 				}
 			}
-			.pickerStyle(.segmented)
-			.labelsHidden()
-
-			AuthMethodFields(
-				credKind: $credKind,
-				pendingKey: $pendingKey,
-				hasPassphrase: $hasPassphrase,
-				pendingSecret: $pendingSecret,
-				hasExistingManagedKey: existingKeyPath != nil
-			)
-			.frame(minHeight: 96, alignment: .top)
 		}
+	}
+
+	private var selectedIdentity: CredentialIdentity? {
+		guard let credentialIdentityID else { return nil }
+		return credentialIdentityStore.identity(id: credentialIdentityID)
 	}
 
 	private var portForwardingCard: some View {
@@ -225,12 +509,21 @@ struct HostFormView: View {
 		let resolution = selectedChainResolution
 		let fieldsAreValid = !hostname.isEmpty
 			&& !username.isEmpty
-			&& (credKind != .keyFile || pendingKey != nil || existingKeyPath != nil)
+			&& (credentialIdentityID == nil || selectedIdentity != nil)
+			&& (
+				credentialIdentityID != nil
+					|| credKind != .keyFile
+					|| pendingKey != nil
+					|| existingKeyPath != nil
+			)
 			&& (Int(port).map { (1...65535).contains($0) } ?? false)
 		let forwardsAreValid = (try? PortForward.validateCollection(forwards)) != nil
 		return FormValidation(
 			chainPreview: chainPreview(for: resolution),
-			isValid: fieldsAreValid && resolution.isComplete && forwardsAreValid
+			isValid: fieldsAreValid
+				&& resolution.isComplete
+				&& forwardsAreValid
+				&& automationValidationMessage == nil
 		)
 	}
 
@@ -448,6 +741,14 @@ struct HostFormView: View {
 		icon = host.icon
 		groupText = HostOrganizationText.groupText(host.organization)
 		tagsText = HostOrganizationText.tagsText(host.organization)
+		automationEnabled = host.automation.isEnabled
+		startupSnippetID = host.automation.startupSnippetID
+		automationEnvironment = host.automation.environment
+		automationReviewPolicy = host.automation.reviewPolicy
+		automationReconnectPolicy = host.automation.reconnectPolicy
+		credentialIdentityID = host.credentialIdentity?.identityID
+		credentialIdentityMigrationState =
+			host.credentialIdentity?.migrationState ?? .reversible
 	}
 
 	/// Credential as it should be persisted on the host. For a brand-new
@@ -480,6 +781,13 @@ struct HostFormView: View {
 		host.organization = HostOrganizationText.makeOrganization(
 			group: groupText, tags: tagsText
 		)
+		host.automation = automationDraft
+		host.credentialIdentity = credentialIdentityID.map {
+			HostCredentialIdentityReference(
+				identityID: $0,
+				migrationState: credentialIdentityMigrationState
+			)
+		}
 		let secret: String? = {
 			if pendingSecret.isEmpty { return nil }
 			switch cred {

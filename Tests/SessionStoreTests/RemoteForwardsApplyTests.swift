@@ -34,19 +34,21 @@ final class RemoteForwardsApplyTests: XCTestCase {
 		try await super.tearDown()
 	}
 
-	private func addLocalHost(forwards: [PortForward]) throws -> SSHHost {
+	private func addLocalHost(
+		forwards: [PortForward]
+	) async throws -> SSHHost {
 		let host = SSHHost(
 			serverId: nil,
 			name: "h", hostname: "h.example", port: 22,
 			username: "u", credential: .password,
 			forwards: forwards
 		)
-		try store.addHost(host)
+		try await store.addHost(host)
 		return store.hosts.first(where: { $0.id == host.id })!
 	}
 
-	func test_applyRemoteMetadata_copiesForwards() throws {
-		let host = try addLocalHost(forwards: [])
+	func test_applyRemoteMetadata_copiesForwards() async throws {
+		let host = try await addLocalHost(forwards: [])
 		let remote = RemoteHost(
 			id: "rid",
 			name: host.name,
@@ -61,7 +63,7 @@ final class RemoteForwardsApplyTests: XCTestCase {
 				            remoteHost: "db", remotePort: 5432),
 			]
 		)
-		try store.applyRemoteMetadata(localHostId: host.id, remote: remote)
+		try await store.applyRemoteMetadata(localHostId: host.id, remote: remote)
 		XCTAssertEqual(
 			store.hosts.first(where: { $0.id == host.id })?.forwards.count, 1)
 		XCTAssertEqual(
@@ -69,14 +71,14 @@ final class RemoteForwardsApplyTests: XCTestCase {
 			5432)
 	}
 
-	func test_addRemoteHost_carriesForwards() throws {
+	func test_addRemoteHost_carriesForwards() async throws {
 		let remote = RemoteHost(
 			id: "rid", name: "h", hostname: "h.example", port: 22,
 			username: "u", authType: "key",
 			createdAt: Date(), updatedAt: Date(),
 			forwards: [PortForward(kind: .dynamic, bindPort: 1080)]
 		)
-		try store.addRemoteHost(remote)
+		try await store.addRemoteHost(remote)
 		let saved = store.hosts.first(where: { $0.serverId == "rid" })
 		XCTAssertNotNil(saved)
 		XCTAssertEqual(saved?.forwards.first?.kind, .dynamic)
@@ -84,12 +86,12 @@ final class RemoteForwardsApplyTests: XCTestCase {
 	}
 
 	func test_updateHost_changingForwards_advancesUpdatedAt() async throws {
-		let initial = try addLocalHost(forwards: [])
+		let initial = try await addLocalHost(forwards: [])
 		let before = store.hosts.first(where: { $0.id == initial.id })!.updatedAt
 		try await Task.sleep(nanoseconds: 10_000_000)  // ensure clock advance
 		var edited = initial
 		edited.forwards = [PortForward(kind: .dynamic, bindPort: 1080)]
-		try store.updateHost(edited)
+		try await store.updateHost(edited)
 		let after = store.hosts.first(where: { $0.id == initial.id })!.updatedAt
 		XCTAssertGreaterThan(after, before)
 	}

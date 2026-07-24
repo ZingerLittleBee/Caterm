@@ -1,4 +1,6 @@
 import BackupArchive
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import Foundation
 import SessionStore
 import SettingsStore
@@ -8,6 +10,10 @@ import SSHCommandBuilder
 
 /// What an apply actually did, for the post-import summary.
 public struct BackupImportSummary: Equatable {
+	public var credentialIdentitiesAdded = 0
+	public var credentialIdentitiesUpdated = 0
+	public var credentialIdentitiesMaterialOnly = 0
+	public var credentialIdentitiesSkipped = 0
 	public var hostsAdded = 0
 	public var hostsUpdated = 0
 	public var hostsCredentialsOnly = 0
@@ -20,6 +26,28 @@ public struct BackupImportSummary: Equatable {
 	public var knownHostsAppended = 0
 
 	public init() {}
+}
+
+public enum BackupImportError: Error, Equatable {
+	case invalidHostAutomation(hostID: UUID, reason: String)
+	case invalidCredentialIdentity(identityID: UUID, reason: String)
+	case unresolvedCredentialIdentity(hostID: UUID, identityID: UUID)
+	case credentialIdentityStoresUnavailable
+}
+
+extension BackupImportError: LocalizedError {
+	public var errorDescription: String? {
+		switch self {
+		case .invalidHostAutomation(let hostID, let reason):
+			"Host \(hostID.uuidString) has invalid startup automation: \(reason)"
+		case .invalidCredentialIdentity(let identityID, let reason):
+			"Credential identity \(identityID.uuidString) is invalid: \(reason)"
+		case .unresolvedCredentialIdentity(let hostID, let identityID):
+			"Host \(hostID.uuidString) references unavailable credential identity \(identityID.uuidString)"
+		case .credentialIdentityStoresUnavailable:
+			"Credential identity stores are unavailable"
+		}
+	}
 }
 
 /// Applies a confirmed `BackupMergePlan`. All writes go through the same
@@ -37,15 +65,66 @@ public enum BackupImporter {
 		snippetStore: SnippetStore?,
 		settingsStore: SettingsStore?,
 		archiveSettings: BackupSettings?,
-		bookmarkStore: RemoteBookmarkStore?
+		bookmarkStore: RemoteBookmarkStore?,
+		credentialIdentityStore: CredentialIdentityStore? = nil,
+		credentialIdentityMaterialStore: CredentialIdentityMaterialStore? = nil
 	) async throws -> BackupImportSummary {
+		try validateHostAutomation(in: plan.hosts)
+		try validateCredentialIdentities(
+			in: plan,
+			store: credentialIdentityStore
+		)
 		var summary = BackupImportSummary()
+
+		// Credential identities land before hosts so assignments never
+		// point at metadata that has not been persisted yet.
+		if !plan.credentialIdentities.isEmpty {
+			guard let credentialIdentityStore,
+			      let credentialIdentityMaterialStore else {
+				throw BackupImportError.credentialIdentityStoresUnavailable
+			}
+			try await credentialIdentityStore.withTransaction {
+				for action in plan.credentialIdentities {
+					switch action.kind {
+					case .add:
+						try await applyCredentialIdentity(
+							action,
+							store: credentialIdentityStore,
+							materialStore:
+								credentialIdentityMaterialStore
+						)
+						summary.credentialIdentitiesAdded += 1
+					case .update:
+						try await applyCredentialIdentity(
+							action,
+							store: credentialIdentityStore,
+							materialStore:
+								credentialIdentityMaterialStore
+						)
+						summary.credentialIdentitiesUpdated += 1
+					case .materialOnly:
+						try await applyCredentialIdentityMaterialOnly(
+							action,
+							store: credentialIdentityStore,
+							materialStore:
+								credentialIdentityMaterialStore
+						)
+						summary.credentialIdentitiesMaterialOnly += 1
+					case .skipLocalNewer:
+						summary.credentialIdentitiesSkipped += 1
+					}
+				}
+			}
+		}
 
 		// Pass 1 — host metadata (adds first so jump targets exist).
 		for action in plan.hosts {
 			switch action.kind {
 			case .add:
-				try sessionStore.addHost(hostForAdd(action.archiveHost))
+				try await sessionStore.addHost(try hostForAdd(
+					action.archiveHost,
+					identityMapping: plan.credentialIdentityIdMapping
+				))
 				summary.hostsAdded += 1
 			case .update:
 				guard var local = sessionStore.hosts.first(where: { $0.id == action.localHostId })
@@ -60,7 +139,21 @@ public enum BackupImporter {
 				local.organization = HostOrganization(
 					groupPath: a.groupPath ?? [], tags: a.tags ?? []
 				)
-				try sessionStore.updateHost(local)
+				if let automation = a.automation {
+					local.automation = try hostAutomation(
+						from: automation,
+						hostID: a.id
+					)
+				}
+				if let reference = a.credentialIdentity {
+					local.credentialIdentity = try hostIdentityReference(
+						from: reference,
+						hostID: a.id,
+						identityMapping:
+							plan.credentialIdentityIdMapping
+					)
+				}
+				try await sessionStore.updateHost(local)
 				summary.hostsUpdated += 1
 			case .credentialsOnly:
 				summary.hostsCredentialsOnly += 1
@@ -81,7 +174,7 @@ public enum BackupImporter {
 			local.jumpHostId = localTargetId
 			local.jumpHostServerId = sessionStore.hosts
 				.first { $0.id == localTargetId }?.serverId
-			try sessionStore.updateHost(local)
+			try await sessionStore.updateHost(local)
 		}
 
 		// Pass 3 — credential material through the Plan C entry point.
@@ -164,7 +257,10 @@ public enum BackupImporter {
 	/// preserved (they ARE the entity's identity/history); the foreign
 	/// `serverId` is stripped so the host is local-new to whatever iCloud
 	/// account this device syncs with. Jump references land in pass 2.
-	private static func hostForAdd(_ a: BackupHost) -> SSHHost {
+	private static func hostForAdd(
+		_ a: BackupHost,
+		identityMapping: [UUID: UUID]
+	) throws -> SSHHost {
 		SSHHost(
 			id: a.id,
 			serverId: nil,
@@ -179,8 +275,306 @@ public enum BackupImporter {
 			icon: a.icon,
 			organization: HostOrganization(
 				groupPath: a.groupPath ?? [], tags: a.tags ?? []
-			)
+			),
+			automation: try a.automation.map {
+				try hostAutomation(from: $0, hostID: a.id)
+			} ?? .disabled,
+			credentialIdentity: try a.credentialIdentity.map {
+				try hostIdentityReference(
+					from: $0,
+					hostID: a.id,
+					identityMapping: identityMapping
+				)
+			}
 		)
+	}
+
+	private static func hostIdentityReference(
+		from backup: BackupHostCredentialIdentityReference,
+		hostID: UUID,
+		identityMapping: [UUID: UUID]
+	) throws -> HostCredentialIdentityReference {
+		guard let identityID = identityMapping[backup.identityID] else {
+			throw BackupImportError.unresolvedCredentialIdentity(
+				hostID: hostID,
+				identityID: backup.identityID
+			)
+		}
+		guard let migrationState =
+			HostCredentialIdentityReference.MigrationState(
+				rawValue: backup.migrationState
+			) else {
+			throw BackupImportError.invalidCredentialIdentity(
+				identityID: backup.identityID,
+				reason: "unknown migration state \(backup.migrationState)"
+			)
+		}
+		return HostCredentialIdentityReference(
+			identityID: identityID,
+			migrationState: migrationState
+		)
+	}
+
+	private static func hostAutomation(
+		from backup: BackupHostAutomation,
+		hostID: UUID
+	) throws -> HostAutomation {
+		guard let reviewPolicy = HostAutomationReviewPolicy(
+			rawValue: backup.reviewPolicy
+		) else {
+			throw BackupImportError.invalidHostAutomation(
+				hostID: hostID,
+				reason: "unknown review policy \(backup.reviewPolicy)"
+			)
+		}
+		guard let reconnectPolicy = HostAutomationReconnectPolicy(
+			rawValue: backup.reconnectPolicy
+		) else {
+			throw BackupImportError.invalidHostAutomation(
+				hostID: hostID,
+				reason: "unknown reconnect policy \(backup.reconnectPolicy)"
+			)
+		}
+		let automation = HostAutomation(
+			isEnabled: backup.isEnabled,
+			startupSnippetID: backup.startupSnippetID,
+			environment: backup.environment.map {
+				HostEnvironmentVariable(
+					id: $0.id,
+					name: $0.name,
+					value: $0.value
+				)
+			},
+			reviewPolicy: reviewPolicy,
+			reconnectPolicy: reconnectPolicy
+		)
+		do {
+			return try automation.validated()
+		} catch {
+			throw BackupImportError.invalidHostAutomation(
+				hostID: hostID,
+				reason: (error as? LocalizedError)?.errorDescription
+					?? String(describing: error)
+			)
+		}
+	}
+
+	private static func validateHostAutomation(
+		in actions: [BackupMergePlan.HostAction]
+	) throws {
+		for action in actions
+		where action.kind == .add || action.kind == .update {
+			guard let automation = action.archiveHost.automation else {
+				continue
+			}
+			_ = try hostAutomation(
+				from: automation,
+				hostID: action.archiveHost.id
+			)
+		}
+	}
+
+	private static func validateCredentialIdentities(
+		in plan: BackupMergePlan,
+		store: CredentialIdentityStore?
+	) throws {
+		if !plan.credentialIdentities.isEmpty, store == nil {
+			throw BackupImportError.credentialIdentityStoresUnavailable
+		}
+		for action in plan.credentialIdentities
+		where action.kind == .add || action.kind == .update {
+			_ = try identity(
+				from: action.archiveIdentity,
+				id: action.localIdentityID ?? action.archiveIdentity.id,
+				materialID: action.localIdentityID.flatMap {
+					store?.identity(id: $0)?.source.materialID
+				} ?? CredentialMaterialID(
+					rawValue: action.archiveIdentity.materialId
+				)
+			)
+		}
+		for action in plan.hosts
+		where action.kind == .add || action.kind == .update {
+			guard let reference = action.archiveHost.credentialIdentity else {
+				continue
+			}
+			_ = try hostIdentityReference(
+				from: reference,
+				hostID: action.archiveHost.id,
+				identityMapping: plan.credentialIdentityIdMapping
+			)
+		}
+	}
+
+	private static func applyCredentialIdentity(
+		_ action: BackupMergePlan.CredentialIdentityAction,
+		store: CredentialIdentityStore,
+		materialStore: CredentialIdentityMaterialStore
+	) async throws {
+		let archive = action.archiveIdentity
+		let localID = action.localIdentityID ?? archive.id
+		let previous = store.identity(id: localID)
+		let materialID = previous?.source.materialID
+			?? CredentialMaterialID(rawValue: archive.materialId)
+		let candidate = try identity(
+			from: archive,
+			id: localID,
+			materialID: materialID
+		)
+		let previousMaterial: CredentialIdentityMaterial?
+		if let previous {
+			previousMaterial = try await materialStore.snapshot(for: previous)
+		} else {
+			previousMaterial = nil
+		}
+		do {
+			if action.appliesSecrets {
+				try await materialStore.replaceMaterial(
+					for: candidate,
+					with: material(from: archive)
+				)
+			} else if let previous,
+			          !sameSourceFamily(
+			           previous.source,
+			           candidate.source
+			          ) {
+				try await materialStore.delete(identity: previous)
+			}
+			try await store.upsert(candidate)
+		} catch {
+			let operationError = error
+			if let previous, let previousMaterial {
+				do {
+					try await materialStore.replaceMaterial(
+						for: previous,
+						with: previousMaterial
+					)
+				} catch {
+					throw CredentialIdentityRollbackError(
+						operation: operationError,
+						rollback: error
+					)
+				}
+			} else if previous == nil {
+				do {
+					try await materialStore.delete(identity: candidate)
+				} catch {
+					throw CredentialIdentityRollbackError(
+						operation: operationError,
+						rollback: error
+					)
+				}
+			}
+			throw operationError
+		}
+	}
+
+	private static func applyCredentialIdentityMaterialOnly(
+		_ action: BackupMergePlan.CredentialIdentityAction,
+		store: CredentialIdentityStore,
+		materialStore: CredentialIdentityMaterialStore
+	) async throws {
+		guard let localID = action.localIdentityID,
+		      let local = store.identity(id: localID) else {
+			throw BackupImportError.invalidCredentialIdentity(
+				identityID: action.archiveIdentity.id,
+				reason: "matched local identity is missing"
+			)
+		}
+		try await materialStore.replaceMaterial(
+			for: local,
+			with: material(from: action.archiveIdentity)
+		)
+	}
+
+	private static func identity(
+		from backup: BackupCredentialIdentity,
+		id: UUID,
+		materialID: CredentialMaterialID
+	) throws -> CredentialIdentity {
+		let source: CredentialIdentitySource
+		switch backup.kind {
+		case "password":
+			source = .password(materialID: materialID)
+		case "managedKey":
+			source = .managedKey(
+				materialID: materialID,
+				hasPassphrase: backup.hasPassphrase
+			)
+		case "sshCertificate":
+			guard let certificate = backup.publicCertificate else {
+				throw BackupImportError.invalidCredentialIdentity(
+					identityID: backup.id,
+					reason: "SSH certificate is missing its public half"
+				)
+			}
+			source = .sshCertificate(
+				materialID: materialID,
+				publicCertificate: certificate,
+				hasPassphrase: backup.hasPassphrase
+			)
+		case "secureEnclaveP256":
+			guard let publicKey = backup.publicKey,
+			      let originDeviceID = backup.originDeviceId else {
+				throw BackupImportError.invalidCredentialIdentity(
+					identityID: backup.id,
+					reason: "Secure Enclave public metadata is incomplete"
+				)
+			}
+			source = .secureEnclaveP256(
+				materialID: materialID,
+				publicKey: publicKey,
+				originDeviceID: originDeviceID
+			)
+		default:
+			throw BackupImportError.invalidCredentialIdentity(
+				identityID: backup.id,
+				reason: "unknown source \(backup.kind)"
+			)
+		}
+		do {
+			return try CredentialIdentity(
+				id: id,
+				serverID: nil,
+				name: backup.name,
+				username: backup.username,
+				source: source,
+				createdAt: backup.createdAt,
+				updatedAt: backup.updatedAt
+			).validated()
+		} catch let error as BackupImportError {
+			throw error
+		} catch {
+			throw BackupImportError.invalidCredentialIdentity(
+				identityID: backup.id,
+				reason: String(describing: error)
+			)
+		}
+	}
+
+	private static func material(
+		from backup: BackupCredentialIdentity
+	) -> CredentialIdentityMaterial {
+		CredentialIdentityMaterial(
+			password: backup.password,
+			passphrase: backup.passphrase,
+			privateKey: backup.privateKey
+		)
+	}
+
+	private static func sameSourceFamily(
+		_ lhs: CredentialIdentitySource,
+		_ rhs: CredentialIdentitySource
+	) -> Bool {
+		switch (lhs, rhs) {
+		case (.password, .password),
+		     (.managedKey, .managedKey),
+		     (.sshCertificate, .sshCertificate),
+		     (.secureEnclaveP256, .secureEnclaveP256):
+			true
+		default:
+			false
+		}
 	}
 
 	/// Credential shape before (or without) secret material. A keyFile

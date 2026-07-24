@@ -2,6 +2,35 @@ import Foundation
 import SSHCredentialContract
 
 public enum SSHCommandBuilder {
+	public struct CredentialLookup: Equatable, Sendable {
+		public let service: String
+		public let passwordAccount: String?
+		public let passphraseAccount: String?
+		public let useDataProtectionKeychain: Bool
+
+		public init(
+			service: String,
+			passwordAccount: String? = nil,
+			passphraseAccount: String? = nil,
+			useDataProtectionKeychain: Bool
+		) {
+			self.service = service
+			self.passwordAccount = passwordAccount
+			self.passphraseAccount = passphraseAccount
+			self.useDataProtectionKeychain =
+				useDataProtectionKeychain
+		}
+
+		func account(for kind: SSHCredentialKind) -> String? {
+			switch kind {
+			case .password:
+				passwordAccount
+			case .keyPassphrase:
+				passphraseAccount
+			}
+		}
+	}
+
 	public struct Output: Equatable {
 		public let command: String
 		public let env: [(String, String)]
@@ -97,9 +126,47 @@ public enum SSHCommandBuilder {
 		knownHostsCaterm: String,
 		knownHostsUser: String,
 		installTerminfo: Bool = false,
-		authenticationMode: SSHAuthenticationMode = .configuredCredential
+		authenticationMode: SSHAuthenticationMode = .configuredCredential,
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookup: CredentialLookup? = nil,
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil,
+		controlPath: String? = nil
 	) -> Output {
-		_build(
+		do {
+			return try buildValidated(
+				host: host,
+				askpassPath: askpassPath,
+				knownHostsCaterm: knownHostsCaterm,
+				knownHostsUser: knownHostsUser,
+				installTerminfo: installTerminfo,
+				authenticationMode: authenticationMode,
+				automationEnvironment: automationEnvironment,
+				credentialLookup: credentialLookup,
+				runtimeIdentity: runtimeIdentity,
+				controlPath: controlPath
+			)
+		} catch {
+			NSLog("[SSHCommandBuilder] failed to build SSH command: \(error)")
+			return Output(command: "/usr/bin/false", env: [])
+		}
+	}
+
+	/// Throwing production entry point for connection flows that can surface
+	/// invalid options or Host automation instead of replacing them with a
+	/// sentinel command.
+	public static func buildValidated(
+		host: Host,
+		askpassPath: String,
+		knownHostsCaterm: String,
+		knownHostsUser: String,
+		installTerminfo: Bool = false,
+		authenticationMode: SSHAuthenticationMode = .configuredCredential,
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookup: CredentialLookup? = nil,
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil,
+		controlPath: String? = nil
+	) throws -> Output {
+		try _buildValidated(
 			host: host,
 			askpassPath: askpassPath,
 			knownHostsCaterm: knownHostsCaterm,
@@ -107,7 +174,11 @@ public enum SSHCommandBuilder {
 			installTerminfo: installTerminfo,
 			sshPath: "/usr/bin/ssh",
 			terminfoDump: TerminfoSource.terminfoDump(),
-			authenticationMode: authenticationMode
+			authenticationMode: authenticationMode,
+			automationEnvironment: automationEnvironment,
+			credentialLookup: credentialLookup,
+			runtimeIdentity: runtimeIdentity,
+			controlPath: controlPath
 		)
 	}
 
@@ -125,8 +196,47 @@ public enum SSHCommandBuilder {
 		installTerminfo: Bool,
 		sshPath: String,
 		terminfoDump: String?,
-		authenticationMode: SSHAuthenticationMode = .configuredCredential
+		authenticationMode: SSHAuthenticationMode = .configuredCredential,
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookup: CredentialLookup? = nil,
+		runtimeIdentity: SSHRuntimeIdentityOptions? = nil,
+		controlPath: String? = nil
 	) -> Output {
+		do {
+			return try _buildValidated(
+				host: host,
+				askpassPath: askpassPath,
+				knownHostsCaterm: knownHostsCaterm,
+				knownHostsUser: knownHostsUser,
+				installTerminfo: installTerminfo,
+				sshPath: sshPath,
+				terminfoDump: terminfoDump,
+				authenticationMode: authenticationMode,
+				automationEnvironment: automationEnvironment,
+				credentialLookup: credentialLookup,
+				runtimeIdentity: runtimeIdentity,
+				controlPath: controlPath
+			)
+		} catch {
+			NSLog("[SSHCommandBuilder] failed to build test SSH command: \(error)")
+			return Output(command: "/usr/bin/false", env: [])
+		}
+	}
+
+	private static func _buildValidated(
+		host: Host,
+		askpassPath: String,
+		knownHostsCaterm: String,
+		knownHostsUser: String,
+		installTerminfo: Bool,
+		sshPath: String,
+		terminfoDump: String?,
+		authenticationMode: SSHAuthenticationMode,
+		automationEnvironment: [HostEnvironmentVariable]?,
+		credentialLookup: CredentialLookup?,
+		runtimeIdentity: SSHRuntimeIdentityOptions?,
+		controlPath: String?
+	) throws -> Output {
 		let sshArg: Arg = sshPath == "/usr/bin/ssh" ? .raw(sshPath) : .quoted(sshPath)
 		var args: [Arg] = [sshArg]
 
@@ -134,22 +244,42 @@ public enum SSHCommandBuilder {
 			for: host,
 			role: .target,
 			knownHostsFiles: [knownHostsCaterm, knownHostsUser],
-			authenticationMode: authenticationMode
+			authenticationMode: authenticationMode,
+			runtimeIdentity: runtimeIdentity,
+			controlPath: controlPath
 		)
-		guard let renderedOptions = try? invocationArgs(for: plan.options) else {
-			// The non-throwing legacy API cannot surface config encoding errors.
-			// Fail closed instead of launching ssh with a partially parsed option.
-			return Output(command: "/usr/bin/false", env: [])
-		}
-		args += renderedOptions
+		args += try invocationArgs(for: plan.options)
 
 		var env: [(String, String)] = []
 		if let kind = plan.credentialKind {
-			env = SSHCredentialContract.askpassEnvironment(
-				executable: askpassPath,
-				hostID: host.id,
-				kind: kind
-			)
+			if let credentialLookup,
+			   let account = credentialLookup.account(for: kind) {
+				env = SSHCredentialContract.askpassEnvironment(
+					executable: askpassPath,
+					kind: kind,
+					service: credentialLookup.service,
+					account: account,
+					useDataProtectionKeychain:
+						credentialLookup.useDataProtectionKeychain
+				)
+			} else {
+				env = SSHCredentialContract.askpassEnvironment(
+					executable: askpassPath,
+					hostID: host.id,
+					kind: kind
+				)
+			}
+		}
+
+		let resolvedAutomationEnvironment = try environment(
+			for: host,
+			override: automationEnvironment
+		)
+		for variable in resolvedAutomationEnvironment {
+			args += [
+				.raw("-o"),
+				.quoted("SetEnv=\(variable.name)=\(variable.value)"),
+			]
 		}
 
 		args += [.raw("-p"), .raw(String(host.port))]
@@ -196,14 +326,18 @@ public enum SSHCommandBuilder {
 		knownHostsUser: String,
 		installTerminfo: Bool = false,
 		sshPath: String = "/usr/bin/ssh",
-		terminfoDump: String? = nil
+		terminfoDump: String? = nil,
+		automationEnvironment: [HostEnvironmentVariable]? = nil,
+		credentialLookups: [UUID: CredentialLookup] = [:],
+		runtimeIdentities: [UUID: SSHRuntimeIdentityOptions] = [:],
+		controlPaths: [UUID: String] = [:]
 	) throws -> Output {
 		// Resolve the terminfo dump from the bundle when not supplied by the
 		// caller. This mirrors the direct-path build overload which always
 		// calls TerminfoSource.terminfoDump() internally.
 		let resolvedDump: String? = terminfoDump ?? TerminfoSource.terminfoDump()
 		if ancestors.isEmpty {
-			return _build(
+			return try _buildValidated(
 				host: host,
 				askpassPath: askpassPath,
 				knownHostsCaterm: knownHostsCaterm,
@@ -211,7 +345,11 @@ public enum SSHCommandBuilder {
 				installTerminfo: installTerminfo,
 				sshPath: sshPath,
 				terminfoDump: resolvedDump,
-				authenticationMode: .configuredCredential
+				authenticationMode: .configuredCredential,
+				automationEnvironment: automationEnvironment,
+				credentialLookup: credentialLookups[host.id],
+				runtimeIdentity: runtimeIdentities[host.id],
+				controlPath: controlPaths[host.id]
 			)
 		}
 		return try buildChain(
@@ -223,7 +361,11 @@ public enum SSHCommandBuilder {
 			knownHostsUser: knownHostsUser,
 			installTerminfo: installTerminfo,
 			sshPath: sshPath,
-			terminfoDump: resolvedDump
+			terminfoDump: resolvedDump,
+			automationEnvironment: automationEnvironment,
+			credentialLookups: credentialLookups,
+			runtimeIdentities: runtimeIdentities,
+			controlPaths: controlPaths
 		)
 	}
 
@@ -240,7 +382,11 @@ public enum SSHCommandBuilder {
 		knownHostsUser: String,
 		installTerminfo: Bool,
 		sshPath: String,
-		terminfoDump: String?
+		terminfoDump: String?,
+		automationEnvironment: [HostEnvironmentVariable]?,
+		credentialLookups: [UUID: CredentialLookup],
+		runtimeIdentities: [UUID: SSHRuntimeIdentityOptions],
+		controlPaths: [UUID: String]
 	) throws -> Output {
 		// Full hop list in dial order: [deepest ancestor … target]
 		let hops: [SSHHost] = ancestors + [target]
@@ -254,7 +400,9 @@ public enum SSHCommandBuilder {
 			let plan = SSHConnectionPolicy.interactiveHostPlan(
 				for: hop,
 				role: index == hops.count - 1 ? .target : .jump,
-				knownHostsFiles: [knownHostsCaterm, knownHostsUser]
+				knownHostsFiles: [knownHostsCaterm, knownHostsUser],
+				runtimeIdentity: runtimeIdentities[hop.id],
+				controlPath: controlPaths[hop.id]
 			)
 			plans.append(plan)
 
@@ -272,6 +420,15 @@ public enum SSHCommandBuilder {
 
 			for option in plan.options {
 				lines.append("\t\(try option.configLine())")
+			}
+			if index == hops.count - 1 {
+				for variable in try environment(
+					for: hop,
+					override: automationEnvironment
+				) {
+					let assignment = "\(variable.name)=\(variable.value)"
+					lines.append("\tSetEnv \(try SSHConfigQuote.encode(assignment))")
+				}
 			}
 
 			blocks.append(lines.joined(separator: "\n"))
@@ -297,6 +454,13 @@ public enum SSHCommandBuilder {
 				"hostname": hop.hostname,
 				"port": hop.port,
 			]
+			if let lookup = credentialLookups[hop.id] {
+				entry["credentialService"] = lookup.service
+				entry["passwordAccount"] = lookup.passwordAccount
+				entry["passphraseAccount"] = lookup.passphraseAccount
+				entry["useDataProtectionKeychain"] =
+					lookup.useDataProtectionKeychain
+			}
 			if case let .keyFile(keyPath, _) = hop.credential {
 				entry["keyPath"] = keyPath
 			}
@@ -332,5 +496,18 @@ public enum SSHCommandBuilder {
 
 		let cmd = cmdParts.joined(separator: " ")
 		return Output(command: cmd, env: env, configURL: configURL)
+	}
+
+	private static func environment(
+		for host: SSHHost,
+		override: [HostEnvironmentVariable]?
+	) throws -> [HostEnvironmentVariable] {
+		if let override {
+			return try HostAutomation(
+				environment: override
+			).validated().environment
+		}
+		guard host.automation.isEnabled else { return [] }
+		return try host.automation.validated().environment
 	}
 }

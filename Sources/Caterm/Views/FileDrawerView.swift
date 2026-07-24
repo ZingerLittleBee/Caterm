@@ -4,30 +4,39 @@ import UniformTypeIdentifiers
 import FileTransferStore
 import SessionStore
 import SSHCommandBuilder
+import WorkspaceCore
 
 @MainActor
 struct FileDrawerView: View {
+	let paneID: PaneID
+	let context: ActivePaneFileContext
 	let host: SSHHost?
 	let fs: RemoteFileSystem?
 	let fileTransferStore: FileTransferStore?
+	let currentContext: () -> ActivePaneFileContext
 	@State private var path: String = "~"
 	@State private var entries: [RemoteEntry] = []
 	@State private var selection: RemoteEntry.ID?
 	@State private var error: String?
 	@State private var sheetMode: SheetMode?
 	@State private var showBookmarks: Bool = false
+	@State private var resultGate = FileDrawerResultGate()
 	@EnvironmentObject private var bookmarkStore: RemoteBookmarkStore
 
 	private enum SheetMode: Identifiable {
-		case rename(RemoteEntry)
-		case mkdir
+		case rename(RemoteEntry, FileDrawerTaskIdentity, String)
+		case mkdir(FileDrawerTaskIdentity, String)
 
 		var id: String {
 			switch self {
-			case .rename(let entry): return "rename:\(entry.id)"
+			case .rename(let entry, _, _): return "rename:\(entry.id)"
 			case .mkdir: return "mkdir"
 			}
 		}
+	}
+
+	private var taskIdentity: FileDrawerTaskIdentity {
+		FileDrawerTaskIdentity(paneID: paneID, context: context)
 	}
 
 	var body: some View {
@@ -37,6 +46,7 @@ struct FileDrawerView: View {
 					Image(systemName: "chevron.left")
 				}
 				.buttonStyle(.borderless)
+				.accessibilityLabel("Up to Parent Folder")
 				.help("Up to parent folder")
 				.disabled(!canGoUp)
 				.keyboardShortcut(.upArrow, modifiers: [.command])
@@ -52,6 +62,7 @@ struct FileDrawerView: View {
 							  ? "bookmark.fill" : "bookmark")
 					}
 					.buttonStyle(.borderless)
+					.accessibilityLabel("Remote Bookmarks")
 					.help("Bookmarks")
 					.popover(isPresented: $showBookmarks, arrowEdge: .bottom) {
 						RemoteBookmarkPopover(
@@ -66,16 +77,18 @@ struct FileDrawerView: View {
 						.environmentObject(bookmarkStore)
 					}
 				}
-				Button { sheetMode = .mkdir } label: {
+				Button { sheetMode = .mkdir(taskIdentity, path) } label: {
 					Image(systemName: "folder.badge.plus")
 				}
 				.buttonStyle(.borderless)
+				.accessibilityLabel("New Folder")
 				.help("New Folder")
 				.disabled(host == nil || fs == nil)
 				Button { Task { await refresh() } } label: {
 					Image(systemName: "arrow.clockwise")
 				}
 				.buttonStyle(.borderless)
+				.accessibilityLabel("Refresh Files")
 				.help("Refresh")
 			}
 			// Match the List's trailing inset so the refresh button doesn't
@@ -94,11 +107,11 @@ struct FileDrawerView: View {
 			// have that issue, which is why the squashing only showed in the empty
 			// / error / not-connected states.
 			Group {
-				if host == nil {
+				if case .unavailable(let unavailable) = context {
 					ContentUnavailableView(
-						"Not connected",
+						unavailable.title,
 						systemImage: "wifi.slash",
-						description: Text("Connect to a host to browse files.")
+						description: Text(unavailable.message)
 					)
 				} else if let err = error {
 					if err == "Reconnect host to browse files" {
@@ -136,7 +149,9 @@ struct FileDrawerView: View {
 							handleDrop(urls: urls, remoteDir: folderPath)
 						},
 						onDownload: { entry in handleDownload(entry) },
-						onRename: { entry in sheetMode = .rename(entry) },
+						onRename: { entry in
+							sheetMode = .rename(entry, taskIdentity, path)
+						},
 						onDelete: { entry in handleDelete(entry) },
 						onCopyPath: { entry in handleCopyPath(entry) }
 					)
@@ -151,20 +166,36 @@ struct FileDrawerView: View {
 			}
 		}
 		.frame(minWidth: 240)
-		.task(id: host?.id) { await refresh() }
+		.task(id: taskIdentity) {
+			resultGate.begin(taskIdentity)
+			path = "~"
+			entries = []
+			selection = nil
+			error = nil
+			guard case .ready = context else { return }
+			await refresh(expected: taskIdentity)
+		}
 		.onDrop(of: [.fileURL], isTargeted: nil) { providers in
-			guard host != nil, fileTransferStore != nil else { return false }
+			guard let host, let fileTransferStore,
+			      case .ready(let target) = context else { return false }
+			let expected = taskIdentity
+			let remoteDir = path
 			Task {
 				let urls = await loadURLs(from: providers)
-				if !urls.isEmpty {
-					handleDrop(urls: urls, remoteDir: path)
-				}
+				guard !urls.isEmpty,
+				      isCurrent(expected, target: target) else { return }
+				_ = fileTransferStore.enqueueUpload(
+					localPaths: urls,
+					remoteDir: remoteDir,
+					host: host
+				)
+				await refresh(expected: expected)
 			}
 			return true
 		}
 		.sheet(item: $sheetMode) { mode in
 			switch mode {
-			case .rename(let entry):
+			case .rename(let entry, let expected, let parent):
 				SimpleTextSheet(
 					title: "Rename",
 					prompt: "New name",
@@ -172,11 +203,16 @@ struct FileDrawerView: View {
 					submitLabel: "Rename",
 					onSubmit: { newName in
 						sheetMode = nil
-						handleRename(entry, newName: newName)
+						handleRename(
+							entry,
+							newName: newName,
+							expected: expected,
+							parent: parent
+						)
 					},
 					onCancel: { sheetMode = nil }
 				)
-			case .mkdir:
+			case .mkdir(let expected, let parent):
 				SimpleTextSheet(
 					title: "New Folder",
 					prompt: "Folder name",
@@ -184,7 +220,7 @@ struct FileDrawerView: View {
 					submitLabel: "Create",
 					onSubmit: { name in
 						sheetMode = nil
-						handleMkdir(name: name)
+						handleMkdir(name: name, expected: expected, parent: parent)
 					},
 					onCancel: { sheetMode = nil }
 				)
@@ -215,13 +251,19 @@ struct FileDrawerView: View {
 	}
 
 	private func handleDrop(urls: [URL], remoteDir: String) {
-		guard let host, let store = fileTransferStore else { return }
+		guard let host, let store = fileTransferStore,
+		      case .ready(let target) = context else { return }
+		let expected = taskIdentity
+		guard isCurrent(expected, target: target) else { return }
 		_ = store.enqueueUpload(localPaths: urls, remoteDir: remoteDir, host: host)
-		Task { await refresh() }
+		Task { await refresh(expected: expected) }
 	}
 
 	private func handleDownload(_ entry: RemoteEntry) {
-		guard let host, let store = fileTransferStore else { return }
+		guard let host, let store = fileTransferStore,
+		      case .ready(let target) = context else { return }
+		let expected = taskIdentity
+		let parent = path
 		let panel = NSOpenPanel()
 		panel.canChooseFiles = false
 		panel.canChooseDirectories = true
@@ -229,21 +271,30 @@ struct FileDrawerView: View {
 		panel.prompt = "Download"
 		panel.message = "Choose a destination folder"
 		guard panel.runModal() == .OK, let localDir = panel.url else { return }
-		let remotePath = (path as NSString).appendingPathComponent(entry.name)
+		guard isCurrent(expected, target: target) else { return }
+		let remotePath = (parent as NSString).appendingPathComponent(entry.name)
 		_ = store.enqueueDownload(remotePaths: [remotePath], localDir: localDir, host: host)
 	}
 
-	private func handleRename(_ entry: RemoteEntry, newName: String) {
+	private func handleRename(
+		_ entry: RemoteEntry,
+		newName: String,
+		expected: FileDrawerTaskIdentity,
+		parent: String
+	) {
 		guard let fs else { return }
+		guard isCurrent(expected) else { return }
 		let trimmed = newName.trimmingCharacters(in: .whitespaces)
 		guard !trimmed.isEmpty, trimmed != entry.name else { return }
-		let from = (path as NSString).appendingPathComponent(entry.name)
-		let to = (path as NSString).appendingPathComponent(trimmed)
+		let from = (parent as NSString).appendingPathComponent(entry.name)
+		let to = (parent as NSString).appendingPathComponent(trimmed)
 		Task {
+			guard isCurrent(expected) else { return }
 			do {
 				try await fs.rename(from: from, to: to)
-				await refresh()
+				await refresh(expected: expected)
 			} catch {
+				guard resultGate.accepts(expected) else { return }
 				self.error = "\(error)"
 			}
 		}
@@ -251,13 +302,17 @@ struct FileDrawerView: View {
 
 	private func handleDelete(_ entry: RemoteEntry) {
 		guard let fs else { return }
+		let expected = taskIdentity
+		guard isCurrent(expected) else { return }
 		let target = (path as NSString).appendingPathComponent(entry.name)
 		let isDir = entry.isDirectory
 		Task {
+			guard isCurrent(expected) else { return }
 			do {
 				try await fs.remove(target, isDirectory: isDir)
-				await refresh()
+				await refresh(expected: expected)
 			} catch {
+				guard resultGate.accepts(expected) else { return }
 				self.error = "\(error)"
 			}
 		}
@@ -270,16 +325,23 @@ struct FileDrawerView: View {
 		pasteboard.setString(full, forType: .string)
 	}
 
-	private func handleMkdir(name: String) {
+	private func handleMkdir(
+		name: String,
+		expected: FileDrawerTaskIdentity,
+		parent: String
+	) {
 		guard let fs else { return }
+		guard isCurrent(expected) else { return }
 		let trimmed = name.trimmingCharacters(in: .whitespaces)
 		guard !trimmed.isEmpty else { return }
-		let target = (path as NSString).appendingPathComponent(trimmed)
+		let target = (parent as NSString).appendingPathComponent(trimmed)
 		Task {
+			guard isCurrent(expected) else { return }
 			do {
 				try await fs.mkdir(target)
-				await refresh()
+				await refresh(expected: expected)
 			} catch {
+				guard resultGate.accepts(expected) else { return }
 				self.error = "\(error)"
 			}
 		}
@@ -302,15 +364,69 @@ struct FileDrawerView: View {
 		}
 	}
 
-	private func refresh() async {
+	private func refresh(expected: FileDrawerTaskIdentity? = nil) async {
+		let expected = expected ?? taskIdentity
 		guard let fs else { return }
 		do {
-			self.entries = try await fs.list(path)
+			let entries = try await fs.list(path)
+			guard resultGate.accepts(expected) else { return }
+			self.entries = entries
 			self.error = nil
-		} catch RemoteFileSystemError.sessionGone {
+		} catch RemoteFileError.sessionUnavailable {
+			guard resultGate.accepts(expected) else { return }
 			self.error = "Reconnect host to browse files"
 		} catch {
+			guard resultGate.accepts(expected) else { return }
 			self.error = "\(error)"
 		}
+	}
+
+	private func isCurrent(
+		_ identity: FileDrawerTaskIdentity,
+		target explicitTarget: ActivePaneFileTarget? = nil
+	) -> Bool {
+		guard resultGate.accepts(identity) else { return false }
+		let target: ActivePaneFileTarget
+		if let explicitTarget {
+			target = explicitTarget
+		} else if case .ready(let readyTarget) = identity.context {
+			target = readyTarget
+		} else {
+			return false
+		}
+		return FileDrawerOperationAuthorization.permits(
+			identity: identity,
+			expectedTarget: target,
+			gate: resultGate,
+			currentContext: currentContext()
+		)
+	}
+}
+
+struct FileDrawerTaskIdentity: Hashable {
+	let paneID: PaneID
+	let context: ActivePaneFileContext
+}
+
+struct FileDrawerResultGate {
+	private(set) var current: FileDrawerTaskIdentity?
+
+	mutating func begin(_ identity: FileDrawerTaskIdentity) {
+		current = identity
+	}
+
+	func accepts(_ identity: FileDrawerTaskIdentity) -> Bool {
+		current == identity
+	}
+}
+
+enum FileDrawerOperationAuthorization {
+	static func permits(
+		identity: FileDrawerTaskIdentity,
+		expectedTarget: ActivePaneFileTarget,
+		gate: FileDrawerResultGate,
+		currentContext: ActivePaneFileContext
+	) -> Bool {
+		gate.accepts(identity) && currentContext == .ready(expectedTarget)
 	}
 }

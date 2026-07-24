@@ -61,7 +61,7 @@ final class NoFallbackContractTests: XCTestCase {
 		do {
 			_ = try await fs.list("/")
 			XCTFail("expected sessionGone")
-		} catch RemoteFileSystemError.sessionGone {
+		} catch RemoteFileError.sessionUnavailable {
 			// OK — no fallback occurred.
 		}
 	}

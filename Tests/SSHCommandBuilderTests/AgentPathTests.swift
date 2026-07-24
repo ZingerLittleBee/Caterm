@@ -34,4 +34,31 @@ final class AgentPathTests: XCTestCase {
                                              knownHostsCaterm: "/A", knownHostsUser: "/B")
         XCTAssertFalse(result.command.contains("PubkeyAuthentication=no"))
     }
+
+	func testPreparedAgentUsesOnlyDeviceBoundSocket() {
+		let host = Host(
+			id: UUID(),
+			name: "x",
+			hostname: "h",
+			port: 22,
+			username: "u",
+			credential: .agent
+		)
+		let result = SSHCommandBuilder.build(
+			host: host,
+			askpassPath: "/x",
+			knownHostsCaterm: "/A",
+			knownHostsUser: "/B",
+			runtimeIdentity: .init(
+				identityAgentPath: "/private/session/agent.sock"
+			)
+		)
+
+		XCTAssertTrue(result.command.contains("IdentitiesOnly=yes"))
+		XCTAssertTrue(
+			result.command.contains(
+				"IdentityAgent=/private/session/agent.sock"
+			)
+		)
+	}
 }

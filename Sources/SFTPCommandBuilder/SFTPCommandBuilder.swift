@@ -1,10 +1,23 @@
 import Foundation
 import SSHCommandBuilder
 
-public struct SFTPInvocation: Equatable {
+public struct SFTPInvocation: Equatable, Sendable {
 	public let argv: [String]
 	public let environment: [String: String]
 	public let scriptStdin: String
+	public let workingDirectory: URL?
+
+	public init(
+		argv: [String],
+		environment: [String: String],
+		scriptStdin: String,
+		workingDirectory: URL? = nil
+	) {
+		self.argv = argv
+		self.environment = environment
+		self.scriptStdin = scriptStdin
+		self.workingDirectory = workingDirectory
+	}
 }
 
 public enum SFTPOperation {
@@ -29,7 +42,7 @@ public enum SFTPCommandBuilder {
 
 		// No-fallback options stay first because OpenSSH uses the first value.
 		let socketOptions = SSHConnectionPolicy.existingControlSocketPlan(
-			controlPath: controlPath.path,
+			controlPath: controlPath.lastPathComponent,
 			strictHostKeyChecking: credentials.strictHostKeyChecking.rawValue,
 			knownHostsFiles: [
 				credentials.knownHostsCaterm.path,
@@ -60,7 +73,12 @@ public enum SFTPCommandBuilder {
 			}
 		}
 
-		return SFTPInvocation(argv: argv, environment: [:], scriptStdin: script)
+		return SFTPInvocation(
+			argv: argv,
+			environment: [:],
+			scriptStdin: script,
+			workingDirectory: controlPath.deletingLastPathComponent()
+		)
 	}
 
 	private static func makeScript(_ op: SFTPOperation) throws -> String {
@@ -68,6 +86,9 @@ public enum SFTPCommandBuilder {
 		case .list(let dir):
 			return "cd \(try SFTPPathEncoder.encodeRemote(dir))\nls -la\nexit\n"
 		case .put(let local, let remote, let r, let resume):
+			// OpenSSH sftp does not follow symlinks while traversing `put -R`.
+			// This preserves the caller's authorized-root boundary after the
+			// selected top-level URL has been canonicalized.
 			let flags = "-p" + (r ? "R" : "") + (resume ? "a" : "")
 			return "put \(flags) \(try SFTPPathEncoder.encode(local.path)) \(try SFTPPathEncoder.encodeRemote(remote))\nexit\n"
 		case .get(let remote, let local, let r, let resume):

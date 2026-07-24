@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SFTPCredentials {
+public struct SFTPCredentials: Sendable {
 	public let askpassPath: URL?
 	public let identityFiles: [URL]
 	public let knownHostsCaterm: URL
@@ -37,7 +37,7 @@ public struct SFTPCredentials {
 	}
 }
 
-public enum StrictHostKeyChecking: String {
+public enum StrictHostKeyChecking: String, Sendable {
 	case yes = "yes"
 	case acceptNew = "accept-new"
 	case no = "no"

@@ -44,4 +44,56 @@ final class SettingsBlobCodecTests: XCTestCase {
     func test_decode_emptyData_throws() {
         XCTAssertThrowsError(try SettingsBlobCodec.decode(Data()))
     }
+
+	func test_roundTrip_preservesPlatformAndUnknownFutureFields() throws {
+		var settings = CatermSettings()
+		settings.version = 2
+		settings.revision = "future-compatible"
+		settings.global = PartialSettings(
+			fontSize: 15,
+			windowOpacity: 0.82,
+			titlebarStyle: .transparent,
+			theme: "Nord",
+			prefersNativeMobileKeyboard: true
+		)
+		settings.firstUserEditedAt = Date(timeIntervalSince1970: 1)
+		let baseline = try SettingsBlobCodec.encode(settings)
+		var raw = try XCTUnwrap(
+			PropertyListSerialization.propertyList(
+				from: baseline,
+				options: [],
+				format: nil
+			) as? [String: Any]
+		)
+		raw["futureTopLevel"] = ["enabled": true, "generation": 4]
+		var global = try XCTUnwrap(raw["global"] as? [String: Any])
+		global["futureTerminalFeature"] = ["mode": "adaptive", "levels": [1, 2, 3]]
+		raw["global"] = global
+		let futureBlob = try PropertyListSerialization.data(
+			fromPropertyList: raw,
+			format: .binary,
+			options: 0
+		)
+
+		let decoded = try SettingsBlobCodec.decode(futureBlob)
+		var local = decoded.toLocal(localMigrationsCompleted: ["device-only"])
+		local.global.fontSize = 17
+		let roundTripped = try SettingsBlobCodec.encode(local)
+		let result = try XCTUnwrap(
+			PropertyListSerialization.propertyList(
+				from: roundTripped,
+				options: [],
+				format: nil
+			) as? [String: Any]
+		)
+		let resultGlobal = try XCTUnwrap(result["global"] as? [String: Any])
+
+		XCTAssertEqual(resultGlobal["fontSize"] as? Int, 17)
+		XCTAssertEqual(resultGlobal["windowOpacity"] as? Double, 0.82)
+		XCTAssertEqual(resultGlobal["titlebarStyle"] as? String, "transparent")
+		XCTAssertEqual(resultGlobal["prefersNativeMobileKeyboard"] as? Bool, true)
+		XCTAssertNotNil(result["futureTopLevel"])
+		XCTAssertNotNil(resultGlobal["futureTerminalFeature"])
+		XCTAssertNil(result["migrationsCompleted"])
+	}
 }

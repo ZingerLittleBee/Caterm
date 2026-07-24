@@ -83,7 +83,7 @@ final class CredentialFullScanFlagTests: XCTestCase {
             name: "local-only", hostname: "h", port: 22, username: "u",
             credential: .password
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
 
         fakeClient.fetchSnapshotResult = HostChangeBatch(
             changedHosts: [], deletedHostIDs: [],

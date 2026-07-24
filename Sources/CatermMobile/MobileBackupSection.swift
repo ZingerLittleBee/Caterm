@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
 struct MobileBackupSection: View {
 	@Binding var hosts: [SSHHost]
 	@Binding var snippets: [Snippet]
+	@Environment(\.mobileBackupImportAction) private var backupImportAction
 
 	@State private var showingExportSheet = false
 	@State private var showingImportPicker = false
@@ -145,11 +146,22 @@ struct MobileBackupSection: View {
 	private func apply(_ pending: PendingImport) async {
 		pendingImport = nil
 		do {
-			let result = try await MobileBackupService.apply(
-				plan: pending.plan, hosts: hosts, snippets: snippets,
-				keychain: keychain, managedKeys: ManagedKeyStore()
-			)
-			hosts = result.hosts
+			let result: MobileBackupService.ApplyResult
+			if let backupImportAction {
+				result = try await backupImportAction.apply(
+					pending.payload,
+					snippets
+				)
+			} else {
+				result = try await MobileBackupService.apply(
+					plan: pending.plan,
+					hosts: hosts,
+					snippets: snippets,
+					keychain: keychain,
+					managedKeys: ManagedKeyStore()
+				)
+				hosts = result.hosts
+			}
 			snippets = result.snippets
 			importSummary = result.summary
 		} catch {

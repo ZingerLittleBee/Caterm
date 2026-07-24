@@ -19,6 +19,8 @@ public enum CKRecordHostMapping {
 		static let forwards = "forwards"
 		static let icon = "icon"
 		static let organization = "organization"
+		static let automation = "automation"
+		static let credentialIdentity = "credentialIdentity"
 		// Credential blob
 		static let credentialBlobState = "credentialBlobState"
 		static let credentialBlobRevision = "credentialBlobRevision"
@@ -36,6 +38,7 @@ public enum CKRecordHostMapping {
 
 	public enum DecodeError: Error, Equatable {
 		case missingField(String)
+		case invalidAutomation(String)
 	}
 
 	/// Used by `.createRemote` only. Initializes metadata + seeds credential
@@ -59,6 +62,10 @@ public enum CKRecordHostMapping {
 			rec[Field.icon] = icon as CKRecordValue
 		}
 		rec[Field.organization] = jsonEncoded(input.organization)
+		rec[Field.automation] = jsonEncoded(input.automation)
+		rec[Field.credentialIdentity] = input.credentialIdentity.map {
+			jsonEncoded($0, fallback: "{}")
+		}
 		rec[Field.credentialBlobState] = "none" as CKRecordValue
 		rec[Field.credentialBlobRevision] = Int64(0) as CKRecordValue
 		rec[Field.credentialCryptoVersion] = Int64(1) as CKRecordValue
@@ -85,6 +92,10 @@ public enum CKRecordHostMapping {
 			existing[Field.icon] = nil
 		}
 		existing[Field.organization] = jsonEncoded(host.organization)
+		existing[Field.automation] = jsonEncoded(host.automation)
+		existing[Field.credentialIdentity] = host.credentialIdentity.map {
+			jsonEncoded($0, fallback: "{}")
+		}
 		// `metadataUpdatedAt` was already advanced above to host.updatedAt;
 		// callers (HostSyncStore) MUST bump host.updatedAt on any forwards
 		// mutation, otherwise this push will not be considered newer by
@@ -112,6 +123,12 @@ public enum CKRecordHostMapping {
 		existing[Field.icon] = input.icon as CKRecordValue?
 		if let value = input.organization {
 			existing[Field.organization] = jsonEncoded(value)
+		}
+		if let value = input.automation {
+			existing[Field.automation] = jsonEncoded(value)
+		}
+		existing[Field.credentialIdentity] = input.credentialIdentity.map {
+			jsonEncoded($0, fallback: "{}")
 		}
 	}
 
@@ -178,6 +195,42 @@ public enum CKRecordHostMapping {
 			}
 			return value
 		}()
+		let automation: HostAutomation
+		if let rawAutomation = rec[Field.automation] {
+			guard let json = rawAutomation as? String,
+			      let data = json.data(using: .utf8) else {
+				throw DecodeError.invalidAutomation(
+					"automation is not a UTF-8 JSON string"
+				)
+			}
+			do {
+				automation = try JSONDecoder()
+					.decode(HostAutomation.self, from: data)
+					.validated()
+			} catch {
+				throw DecodeError.invalidAutomation(
+					(error as? LocalizedError)?.errorDescription
+						?? String(describing: error)
+				)
+			}
+		} else {
+			automation = .disabled
+		}
+		let credentialIdentity: HostCredentialIdentityReference?
+		if let rawIdentity = rec[Field.credentialIdentity] {
+			guard let json = rawIdentity as? String,
+			      let data = json.data(using: .utf8) else {
+				throw DecodeError.missingField(
+					"credentialIdentity is not a UTF-8 JSON string"
+				)
+			}
+			credentialIdentity = try JSONDecoder().decode(
+				HostCredentialIdentityReference.self,
+				from: data
+			)
+		} else {
+			credentialIdentity = nil
+		}
 
 		let host = RemoteHost(
 			id: rec.recordID.recordName,
@@ -191,7 +244,9 @@ public enum CKRecordHostMapping {
 			jumpHostServerId: rec[Field.jumpHostServerId] as? String,
 			forwards: decoded,
 			icon: rec[Field.icon] as? String,
-			organization: organization
+			organization: organization,
+			automation: automation,
+			credentialIdentity: credentialIdentity
 		)
 
 		let blob: CredentialBlob?
@@ -220,6 +275,10 @@ private func jsonEncoded(_ forwards: [PortForward]) -> CKRecordValue {
 
 private func jsonEncoded(_ organization: HostOrganization) -> CKRecordValue {
 	jsonEncoded(organization, fallback: "{}")
+}
+
+private func jsonEncoded(_ automation: HostAutomation) -> CKRecordValue {
+	jsonEncoded(automation, fallback: "{}")
 }
 
 private func jsonEncoded<T: Encodable>(

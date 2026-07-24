@@ -69,7 +69,7 @@ final class PortForwardPushTests: XCTestCase {
                 groupPath: ["Production"], tags: ["Linux"]
             )
         )
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         // Server empty -> reconciler emits .createRemote for this host.
         fakeClient.listResult = []
         fakeClient.createResult = RemoteHostCreateOutput(id: "srv-new")
@@ -99,7 +99,7 @@ final class PortForwardPushTests: XCTestCase {
             )
         )
         host.serverId = "srv-1"
-        try sessionStore.addHost(host)
+        try await sessionStore.addHost(host)
         // Same server row, older timestamp -> reconciler emits .updateRemote.
         fakeClient.listResult = [
             RemoteHost(

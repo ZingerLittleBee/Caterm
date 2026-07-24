@@ -12,6 +12,7 @@ final class AccountChangeSyncCoordinator {
     let drainSnippets: @MainActor () async -> Void
     let identityChanged: @MainActor () async -> Bool
     let resetCredentials: @MainActor () async throws -> Void
+    let resetCredentialIdentities: @MainActor () async throws -> Void
     let wipeSnippets: @MainActor () throws -> Void
     let acknowledgeIdentityChange: @MainActor () async -> Void
     let resumeHost: @MainActor () -> Void
@@ -56,6 +57,7 @@ final class AccountChangeSyncCoordinator {
     guard await dependencies.identityChanged() else { return }
     do {
       try await dependencies.resetCredentials()
+      try await dependencies.resetCredentialIdentities()
       try dependencies.wipeSnippets()
       await dependencies.acknowledgeIdentityChange()
       identityChanged = true

@@ -106,6 +106,9 @@ final class BackupEnvelopeTests: XCTestCase {
 
 	func test_payload_roundTrip() throws {
 		let hostId = UUID()
+		let snippetID = UUID()
+		let identityID = UUID()
+		let materialID = UUID()
 		let payload = BackupPayload(
 			exportedAt: Date(timeIntervalSince1970: 1_700_000_000),
 			appVersion: "2.0",
@@ -120,9 +123,42 @@ final class BackupEnvelopeTests: XCTestCase {
 				                             remoteHost: "localhost", remotePort: 80,
 				                             required: true)],
 				icon: "server.rack",
+				automation: BackupHostAutomation(
+					isEnabled: true,
+					startupSnippetID: snippetID,
+					environment: [
+						BackupHostEnvironmentVariable(
+							id: UUID(),
+							name: "REGION",
+							value: "west"
+						)
+					],
+					reviewPolicy: "always",
+					reconnectPolicy: "oncePerSession"
+				),
+				credentialIdentity: BackupHostCredentialIdentityReference(
+					identityID: identityID,
+					migrationState: "reversible"
+				),
 				password: nil, passphrase: "pp", privateKey: Data("KEY".utf8)
 			)],
-			snippets: [BackupSnippet(id: UUID(), name: "ls", content: "ls -la",
+			credentialIdentities: [
+				BackupCredentialIdentity(
+					kind: "sshCertificate",
+					id: identityID,
+					serverId: identityID.uuidString,
+					materialId: materialID,
+					name: "Production",
+					username: "deploy",
+					hasPassphrase: true,
+					publicCertificate: Data("CERT".utf8),
+					createdAt: Date(timeIntervalSince1970: 10),
+					updatedAt: Date(timeIntervalSince1970: 20),
+					passphrase: Data("pp".utf8),
+					privateKey: Data("PRIVATE".utf8)
+				)
+			],
+			snippets: [BackupSnippet(id: snippetID, name: "ls", content: "ls -la",
 			                         placeholders: nil,
 			                         createdAt: Date(timeIntervalSince1970: 0),
 			                         updatedAt: Date(timeIntervalSince1970: 1))],
@@ -135,6 +171,37 @@ final class BackupEnvelopeTests: XCTestCase {
 		)
 		let decoded = try BackupPayload.decode(payload.encoded())
 		XCTAssertEqual(decoded, payload)
+	}
+
+	func test_legacyBackupHostWithoutAutomationDecodesWithNilMetadata() throws {
+		let hostID = UUID()
+		let json = """
+		{
+		  "contentVersion": 1,
+		  "exportedAt": "2026-07-23T00:00:00Z",
+		  "hosts": [{
+		    "id": "\(hostID.uuidString)",
+		    "name": "Legacy",
+		    "hostname": "legacy.example",
+		    "port": 22,
+		    "username": "deploy",
+		    "credentialKind": "password",
+		    "hasPassphrase": false,
+		    "createdAt": "2026-07-22T00:00:00Z",
+		    "updatedAt": "2026-07-22T00:00:00Z",
+		    "forwards": []
+		  }],
+		  "snippets": [],
+		  "bookmarks": [],
+		  "knownHosts": []
+		}
+		""".data(using: .utf8)!
+
+		let payload = try BackupPayload.decode(json)
+
+		XCTAssertNil(payload.hosts.first?.automation)
+		XCTAssertTrue(payload.credentialIdentities.isEmpty)
+		XCTAssertNil(payload.hosts.first?.credentialIdentity)
 	}
 
 	func test_payload_futureContentVersion_rejected() throws {

@@ -7,9 +7,19 @@ final class RemoteFileSystemTests: XCTestCase {
 	final class FakeSFTPRunner: SFTPRunner, @unchecked Sendable {
 		var nextStdout: String = ""
 		var nextExit: Int32 = 0
+		var scriptedResults: [(String, Int32)] = []
+		var error: Error?
 		var lastInvocation: SFTPInvocation?
+		var invocations: [SFTPInvocation] = []
+		var onRun: ((SFTPInvocation) throws -> Void)?
 		func run(_ inv: SFTPInvocation) async throws -> (stdout: String, exit: Int32) {
+			if let error { throw error }
+			try onRun?(inv)
 			lastInvocation = inv
+			invocations.append(inv)
+			if !scriptedResults.isEmpty {
+				return scriptedResults.removeFirst()
+			}
 			return (nextStdout, nextExit)
 		}
 	}
@@ -38,7 +48,7 @@ final class RemoteFileSystemTests: XCTestCase {
 		do {
 			_ = try await fs.list("/")
 			XCTFail("expected throw")
-		} catch RemoteFileSystemError.sessionGone {
+		} catch RemoteFileError.sessionUnavailable {
 			// expected
 		} catch {
 			XCTFail("got \(error)")
@@ -67,6 +77,138 @@ final class RemoteFileSystemTests: XCTestCase {
 		XCTAssertEqual(entries[0].size, 1234)
 	}
 
+	func testListPreservesConsecutiveSpacesInFilename() async throws {
+		let runner = FakeSFTPRunner()
+		runner.nextStdout =
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00 report  final.txt\n" +
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00  leading.txt\n" +
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00 trailing.txt \n"
+		let fs = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+
+		let entries = try await fs.list("/remote")
+
+		XCTAssertEqual(
+			entries.map(\.name),
+			["report  final.txt", " leading.txt", "trailing.txt "]
+		)
+		let match = try await fs.stat("/remote/report  final.txt")
+		XCTAssertEqual(match?.name, "report  final.txt")
+	}
+
+	func testRecursiveUploadReportsRegularFileBytes() async throws {
+		let root = FileManager.default.temporaryDirectory
+			.appendingPathComponent(
+				"caterm-recursive-progress-\(UUID().uuidString)",
+				isDirectory: true
+			)
+		try FileManager.default.createDirectory(
+			at: root.appendingPathComponent("nested", isDirectory: true),
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: root) }
+		try Data("four".utf8).write(
+			to: root.appendingPathComponent("first.txt")
+		)
+		try Data("sixsix".utf8).write(
+			to: root.appendingPathComponent("nested/second.txt")
+		)
+		let runner = FakeSFTPRunner()
+		let fileSystem = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+
+		let result = try await fileSystem.upload(
+			localURL: root,
+			remotePath: "/remote/folder",
+			isDirectory: true,
+			resume: false,
+			replaceExisting: false,
+			progress: { _ in }
+		)
+
+		XCTAssertEqual(result.bytesTransferred, 10)
+	}
+
+	@MainActor
+	func testUploadConflictPreservesLeadingAndTrailingSpaces() async throws {
+		let runner = FakeSFTPRunner()
+		runner.nextStdout =
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00  leading.txt\n" +
+			"-rw-r--r-- 1 user staff 4 Jul 22 10:00 trailing.txt \n"
+		let host = makeHost()
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: host,
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let localDirectory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-space-conflict-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: localDirectory,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: localDirectory) }
+		let localURLs = [" leading.txt", "trailing.txt "].map {
+			localDirectory.appendingPathComponent($0)
+		}
+		for url in localURLs { try Data("new".utf8).write(to: url) }
+		let store = FileTransferStore(clientForHost: { _ in client })
+
+		let ids = store.enqueueUpload(
+			localPaths: localURLs,
+			remoteDir: "/remote",
+			host: host
+		)
+		try await store.waitIdle()
+
+		XCTAssertEqual(ids.map { store.task(id: $0)?.status }, [.conflict, .conflict])
+		XCTAssertFalse(runner.invocations.contains {
+			$0.scriptStdin.contains("put ")
+		})
+	}
+
+	@MainActor
+	func testUploadConflictWithConsecutiveSpacesDoesNotOverwrite() async throws {
+		let runner = FakeSFTPRunner()
+		runner.nextStdout = "-rw-r--r-- 1 user staff 4 Jul 22 10:00 report  final.txt\n"
+		let host = makeHost()
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: host,
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+		let local = FileManager.default.temporaryDirectory
+			.appendingPathComponent("report  final.txt")
+		try Data("new".utf8).write(to: local)
+		defer { try? FileManager.default.removeItem(at: local) }
+		let store = FileTransferStore(clientForHost: { _ in client })
+
+		let id = try XCTUnwrap(store.enqueueUpload(
+			localPaths: [local],
+			remoteDir: "/remote",
+			host: host
+		).first)
+		try await store.waitIdle()
+
+		XCTAssertEqual(store.task(id: id)?.status, .conflict)
+		XCTAssertEqual(runner.invocations.count, 1)
+		XCTAssertFalse(runner.invocations[0].scriptStdin.contains("put "))
+	}
+
 	func testMkdirInvokesSubprocessAndPropagatesFailure() async {
 		let runner = FakeSFTPRunner()
 		runner.nextStdout = "permission denied\n"
@@ -79,10 +221,65 @@ final class RemoteFileSystemTests: XCTestCase {
 		do {
 			try await fs.mkdir("/srv/new")
 			XCTFail()
-		} catch let RemoteFileSystemError.subprocessFailed(code, _) {
-			XCTAssertEqual(code, 1)
+		} catch let RemoteFileError.permissionDenied(message) {
+			XCTAssertTrue(message.contains("permission denied"))
 		} catch {
 			XCTFail("got \(error)")
 		}
+	}
+
+	func testPublicClientContractCoversListingStatMutationsAndTransfers() async throws {
+		let listing = "-rw-r--r-- 1 user staff 4 Jul 22 10:00 file.txt\n"
+		let runner = FakeSFTPRunner()
+		runner.scriptedResults = [
+			(listing, 0),
+			(listing, 0),
+			("", 0),
+			("", 0),
+			("", 0),
+			("", 0),
+			(listing, 0),
+			("", 0),
+		]
+		let workspace = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-client-contract-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(
+			at: workspace,
+			withIntermediateDirectories: true
+		)
+		defer { try? FileManager.default.removeItem(at: workspace) }
+		runner.onRun = { invocation in
+			if invocation.scriptStdin.hasPrefix("get") {
+				try Data("data".utf8).write(
+					to: workspace.appendingPathComponent("download.txt")
+				)
+			}
+		}
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+
+		try await RemoteFileClientContract.verifyBehavior(
+			client: client,
+			workspace: workspace
+		)
+	}
+
+	func testPublicClientMapsRunnerCancellationToTypedFailure() async {
+		let runner = FakeSFTPRunner()
+		runner.error = CancellationError()
+		let client: any RemoteFileClient = RemoteFileSystem(
+			host: makeHost(),
+			controlPath: URL(fileURLWithPath: "/sock"),
+			credentials: makeCreds(),
+			runner: runner,
+			liveness: AlwaysAlive()
+		)
+
+		await RemoteFileClientContract.verifyTypedCancellation(client: client)
 	}
 }

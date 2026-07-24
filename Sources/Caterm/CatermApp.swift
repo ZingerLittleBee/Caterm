@@ -2,10 +2,15 @@ import AppKit
 import CloudKit
 import CloudKitSyncClient
 import ConfigStore
+import CredentialIdentitySecurity
+import CredentialIdentityStore
+import CredentialIdentitySync
+import CredentialIdentityRuntime
 import CredentialSync
 import CredentialSyncStore
 import FileTransferStore
 import Foundation
+import HostAutomationRuntime
 import HostKeyProvisioning
 import HostSyncStore
 import KeychainStore
@@ -22,6 +27,8 @@ import SnippetStore
 import SnippetSyncClient
 import SwiftUI
 import TerminalEngine
+import WorkspaceCore
+import WorkspaceTemplateStore
 
 @main
 struct CatermApp: App {
@@ -34,9 +41,12 @@ struct CatermApp: App {
   @StateObject var settingsStore: SettingsStore
   @StateObject var remoteBookmarks: RemoteBookmarkStore
   @StateObject private var credentialSync: CredentialSyncPreferencesStore
+  @StateObject private var credentialIdentityStore: CredentialIdentityStore
   @StateObject var surfaceRegistry: SurfaceRegistry
   @StateObject private var snippetStore: SnippetStore
   @StateObject private var snippetSync: SnippetSyncStore
+  @StateObject private var workspaceCoordinator: WorkspaceCoordinator
+  @StateObject private var workspaceTemplateStore: WorkspaceTemplateStore
   private let updaterController = UpdaterController()
 
   /// Holds the live-reload dispatcher and its NotificationCenter
@@ -49,6 +59,8 @@ struct CatermApp: App {
   private let settingsSync: SettingsSyncStore
   private let masterKeyStore: KeychainSyncMasterKeyStore
   private let credentialSyncCoordinator: CredentialSyncCoordinator
+  private let credentialIdentityMaterialStore: CredentialIdentityMaterialStore
+  private let credentialIdentitySyncScheduler: CredentialIdentitySyncScheduler
   private let cloudSyncDisabled: Bool
 
   init() {
@@ -56,15 +68,35 @@ struct CatermApp: App {
     self.cloudSyncDisabled = cloudSyncDisabled
     try? ConfigStore.ensureExists(at: ConfigStore.defaultPath)
     let mngs = ManagedKeyStore()
+    let identityStore = makeCredentialIdentityStore()
+    let identityMaterialStore = CredentialIdentityMaterialStore(
+      secrets: IdentityKeychainSecretStore(
+        accessGroup: catermAccessGroup()
+      ),
+      managedKeys: mngs
+    )
+    _credentialIdentityStore = StateObject(wrappedValue: identityStore)
+    self.credentialIdentityMaterialStore = identityMaterialStore
     let history = makeSessionHistoryStore()
     let session = makeStore(
       managedKeyStore: mngs,
-      historyRecorder: history
+      historyRecorder: history,
+      credentialIdentityStore: identityStore,
+      credentialIdentityMaterialStore: identityMaterialStore
     )
     _historyStore = StateObject(wrappedValue: history)
     let surfaceRegistry = SurfaceRegistry()
     _surfaceRegistry = StateObject(wrappedValue: surfaceRegistry)
-    let cloudSync = CloudSyncBootstrap.make(disabled: cloudSyncDisabled)
+    let cloudSync = CloudSyncBootstrap.make(
+      disabled: cloudSyncDisabled,
+      additionalIdentityBoundState: {
+        await MainActor.run {
+          !identityStore.identities.isEmpty
+            || !identityStore.locallyDirtyIdentityIDs.isEmpty
+            || !identityStore.pendingDeletedIdentityIDs.isEmpty
+        }
+      }
+    )
     let icloudSession = cloudSync.accountSession
     self.icloudSession = icloudSession
     self.cloudKitClient = cloudSync.cloudKitClient
@@ -81,10 +113,49 @@ struct CatermApp: App {
       iCloudKeychainAvailable: { true }
     )
     self.credentialSyncCoordinator = credentialCoordinator
+    let identitySyncCoordinator = cloudSync.cloudKitClient.map {
+      CredentialIdentitySyncCoordinator(
+        store: identityStore,
+        materialStore: identityMaterialStore,
+        client: $0,
+        masterKeys: mks,
+        assignedHostIDs: { identityID in
+          Set(session.hosts.compactMap { host in
+            host.credentialIdentity?.identityID == identityID
+              ? host.id : nil
+          })
+        }
+      )
+    }
+    let identitySyncScheduler = CredentialIdentitySyncScheduler(
+      isEnabled: {
+        guard identitySyncCoordinator != nil else { return false }
+        if case .enabled = credentialSyncPrefs.prefs.state {
+          return true
+        }
+        return false
+      },
+      sync: {
+        guard let identitySyncCoordinator else { return }
+        try await identitySyncCoordinator.sync()
+      },
+      reportFailure: { error in
+        NSLog(
+          "[CatermApp] Credential identity sync failed: %@",
+          String(describing: error)
+        )
+      }
+    )
+    self.credentialIdentitySyncScheduler = identitySyncScheduler
     let credentialSyncAccountReset = CredentialSyncAccountResetCoordinator(
       prefsStore: credentialSyncPrefs,
       sessionStore: session
     )
+    let credentialIdentityAccountReset =
+      CredentialIdentityAccountResetCoordinator(
+        store: identityStore,
+        materialStore: identityMaterialStore
+      )
     _credentialSync = StateObject(wrappedValue: credentialSyncPrefs)
     // `_store = StateObject(wrappedValue:)` is the underscore-prefixed
     // property-wrapper init — required because `@StateObject` cannot be
@@ -115,14 +186,9 @@ struct CatermApp: App {
     if !cloudSyncDisabled {
       cloudSync.startObservingAccountChanges()
     }
-    // Per-app FileTransferStore. Closures capture plain value types
-    // (URLs / paths) rather than `ControlMasterManager` itself so the
-    // closure body remains nonisolated-callable. Liveness goes through
-    // `ControlMasterManager.shared`'s async `isAlive(hostId:)`, which
-    // crosses isolation properly.
-    let cmDir =
-      (try? CacheDirectories.controlMasterDir())
-      ?? URL(fileURLWithPath: NSTemporaryDirectory())
+    // Terminal sessions, file browsing, and transfers share one
+    // ControlMaster manager so every consumer resolves the exact same socket.
+    let controlMasterManager = ControlMasterManager.shared
     let knownCaterm = URL(fileURLWithPath: session.knownHostsCaterm)
     let knownUser = URL(fileURLWithPath: session.knownHostsUser)
     // SettingsStore: loaded eagerly through `BootSequence.run` so the
@@ -166,6 +232,26 @@ struct CatermApp: App {
     let snippetStoreInstance = SnippetStore(directory: snippetsDir)
     try? snippetStoreInstance.load()
     _snippetStore = StateObject(wrappedValue: snippetStoreInstance)
+    _workspaceCoordinator = StateObject(
+      wrappedValue: WorkspaceCoordinator(
+        sessionStore: session,
+        resolveAutomation: { host in
+          HostAutomationResolver.resolve(
+            host: host,
+            snippets: snippetStoreInstance.snippets
+          )
+        }
+      )
+    )
+    let workspaceTemplateStoreInstance = WorkspaceTemplateStore(directory: snippetsDir)
+    _workspaceTemplateStore = StateObject(wrappedValue: workspaceTemplateStoreInstance)
+    Task { @MainActor in
+      do {
+        try await workspaceTemplateStoreInstance.load()
+      } catch {
+        NSLog("[CatermApp] Workspace templates failed to load: %@", error.localizedDescription)
+      }
+    }
     let snippetSyncInstance = SnippetSyncStore(
       store: snippetStoreInstance, client: cloudSync.snippetClient)
     _snippetSync = StateObject(wrappedValue: snippetSyncInstance)
@@ -192,6 +278,9 @@ struct CatermApp: App {
         resetCredentials: {
           try await credentialSyncAccountReset.resetForAccountChange()
         },
+        resetCredentialIdentities: {
+          try await credentialIdentityAccountReset.resetForAccountChange()
+        },
         wipeSnippets: {
           try snippetStoreInstance.wipeLocal()
         },
@@ -212,7 +301,7 @@ struct CatermApp: App {
     _fileTransferStore = StateObject(
       wrappedValue: FileTransferStore(
         controlPathFor: { hostId in
-          cmDir.appendingPathComponent("\(hostId.uuidString).sock")
+          controlMasterManager.socketPath(for: hostId)
         },
         credentialsFor: { _ in
           SFTPCredentials(
@@ -221,7 +310,7 @@ struct CatermApp: App {
             strictHostKeyChecking: .acceptNew
           )
         },
-        liveness: ControlMasterManager.shared
+        liveness: controlMasterManager
       ))
     // Wire the live-reload pipeline. `LiveReloadDispatcher` posts
     // `catermNewSurfaceBanner` / `catermConfigDiagnostics`; active
@@ -270,7 +359,12 @@ struct CatermApp: App {
           credentialSyncCoordinator: credentialCoordinator,
           sessionStore: session,
           snippetStore: snippetStoreInstance,
-          bookmarkStore: remoteBookmarkStore
+          bookmarkStore: remoteBookmarkStore,
+          credentialIdentityStore: identityStore,
+          credentialIdentityMaterialStore: identityMaterialStore,
+          triggerCredentialIdentitySync: {
+            identitySyncScheduler.schedule()
+          }
         )
         if openSyncSettingsOnLaunch {
           preferencesWindow.activate(.cloudSync)
@@ -298,24 +392,15 @@ struct CatermApp: App {
   }
 
   var body: some Scene {
-    // Each tab in the OS-provided native tab bar is one window in this
-    // `WindowGroup(for: UUID.self)`. macOS auto-tabs them because
+    // Each tab in the OS-provided native tab bar is one Workspace window in
+    // this data-driven group. macOS auto-tabs them because
     // `NSWindow.allowsAutomaticWindowTabbing = true` (AppDelegate).
     //
-    // When `tabId == nil` the user opened a "fresh" window via the
-    // File > New Window default; show the landing screen with the host
-    // list sidebar.
-    WindowGroup(for: UUID.self) { $tabId in
-      Group {
-        if let id = tabId, store.tabs.contains(where: { $0.id == id }) {
-          MainWindow(tabId: id)
-        } else {
-          // Pass the tabId binding so connecting from this Landing
-          // window converts it into the new tab in place instead of
-          // spawning a sibling blank tab.
-          LandingView(tabId: $tabId)
-        }
-      }
+    // SwiftUI persists the Codable value for window restoration. Workspace
+    // state contains only stable identities and a safe Host reference; the
+    // coordinator rebuilds a fresh SessionStore mapping at runtime.
+    WindowGroup(for: WorkspaceWindowState.self) { $windowState in
+      WorkspaceSceneRoot(windowState: $windowState)
       .environmentObject(store)
       .environmentObject(historyStore)
       .environmentObject(syncStore)  // NEW (v1.4)
@@ -326,6 +411,9 @@ struct CatermApp: App {
       .environmentObject(surfaceRegistry)
       .environmentObject(snippetStore)
       .environmentObject(snippetSync)
+      .environmentObject(credentialIdentityStore)
+      .environmentObject(workspaceCoordinator)
+      .environmentObject(workspaceTemplateStore)
       .background(
         SyncSettingsCommandBridge {
           let preferencesWindow = PreferencesWindowController.shared
@@ -338,7 +426,13 @@ struct CatermApp: App {
             credentialSyncCoordinator: credentialSyncCoordinator,
             sessionStore: store,
             snippetStore: snippetStore,
-            bookmarkStore: remoteBookmarks
+            bookmarkStore: remoteBookmarks,
+            credentialIdentityStore: credentialIdentityStore,
+            credentialIdentityMaterialStore:
+              credentialIdentityMaterialStore,
+            triggerCredentialIdentitySync: {
+              credentialIdentitySyncScheduler.schedule()
+            }
           )
           preferencesWindow.activate(.cloudSync)
           preferencesWindow.showAndActivate()
@@ -358,6 +452,15 @@ struct CatermApp: App {
         if !cloudSyncDisabled, let cloudKitClient {
           try? await cloudKitClient.ensureHostSubscription()
         }
+      }
+      .task {
+        credentialIdentitySyncScheduler.schedule()
+      }
+      .onReceive(
+        NotificationCenter.default
+          .publisher(for: .catermCloudKitHostChanged)
+      ) { _ in
+        credentialIdentitySyncScheduler.schedule()
       }
       .task {
         if !cloudSyncDisabled, let cloudKitClient {
@@ -386,6 +489,8 @@ struct CatermApp: App {
         guard !cloudSyncDisabled else { return }
         accountChangeSyncCoordinator.enqueue()
       }
+    } defaultValue: {
+      WorkspaceWindowState.landing(id: UUID())
     }
     .commands {
       CatermWindowCommands()
@@ -404,7 +509,13 @@ struct CatermApp: App {
             credentialSyncCoordinator: credentialSyncCoordinator,
             sessionStore: store,
             snippetStore: snippetStore,
-            bookmarkStore: remoteBookmarks
+            bookmarkStore: remoteBookmarks,
+            credentialIdentityStore: credentialIdentityStore,
+            credentialIdentityMaterialStore:
+              credentialIdentityMaterialStore,
+            triggerCredentialIdentitySync: {
+              credentialIdentitySyncScheduler.schedule()
+            }
           )
           preferencesWindow.showAndActivate()
         }
@@ -455,17 +566,52 @@ struct CatermApp: App {
         }
         .keyboardShortcut("b", modifiers: .command)
       }
-      // ⌘⇧F toggles the key window's Files drawer. The target window travels
+      // ⌘⇧F toggles the active window's Files drawer. The target window travels
       // with the notification so background tabs ignore the command.
       CommandGroup(after: .toolbar) {
         Button("Toggle Files Drawer") {
           NotificationCenter.default.post(
             name: .toggleFileDrawer,
-            object: NSApp.keyWindow
+            object: WindowCommandScope.activeTargetWindow
           )
         }
         .keyboardShortcut("f", modifiers: [.command, .shift])
+
+        Divider()
+
+        Button("Save Workspace as Template…") {
+          NotificationCenter.default.post(
+            name: .catermSaveWorkspaceTemplate,
+            object: WindowCommandScope.activeTargetWindow
+          )
+        }
+
+        Button("Manage Workspace Templates…") {
+          NotificationCenter.default.post(
+            name: .catermManageWorkspaceTemplates,
+            object: WindowCommandScope.activeTargetWindow
+          )
+        }
+
+        Divider()
+
+        Button("Review Command Broadcast…") {
+          NotificationCenter.default.post(
+            name: .catermStartWorkspaceBroadcast,
+            object: WindowCommandScope.activeTargetWindow
+          )
+        }
+        .keyboardShortcut("b", modifiers: [.command, .option])
+
+        Button("Stop Command Broadcast") {
+          NotificationCenter.default.post(
+            name: .catermStopWorkspaceBroadcast,
+            object: WindowCommandScope.activeTargetWindow
+          )
+        }
+        .keyboardShortcut(".", modifiers: [.command, .option])
       }
+      WorkspacePaneCommands()
       // Snippet commands: palette (⌘⇧P), new snippet (⌘⇧S), manager.
       // These post notifications that `SnippetCommandObserver` picks up
       // in the key window only, avoiding multi-window broadcast.
@@ -498,10 +644,10 @@ struct CatermApp: App {
         // feeds through the real `connect(_:)` path, so the resulting
         // behavior is identical to a sidebar double-click.
         CommandMenu("Debug") {
-          Button("Open Tab for First Host") {
+          Button("Open Workspace for First Host") {
             NotificationCenter.default.post(
               name: .catermDebugOpenFirstHost,
-              object: NSApp.keyWindow
+              object: WindowCommandScope.activeTargetWindow
             )
           }
           .keyboardShortcut("o", modifiers: [.control, .option, .command])
@@ -513,18 +659,21 @@ struct CatermApp: App {
         .environmentObject(store)
         .environmentObject(historyStore)
         .environmentObject(preferences)
+        .environmentObject(workspaceCoordinator)
     }
     .defaultSize(width: 840, height: 520)
     Window("Hosts", id: HostManagerWindow.id) {
       HostManagerView()
         .environmentObject(store)
         .environmentObject(preferences)
+        .environmentObject(workspaceCoordinator)
     }
     .defaultSize(width: 1040, height: 620)
     Window("Port Forwarding", id: PortForwardWorkspaceWindow.id) {
       PortForwardWorkspaceView()
         .environmentObject(store)
         .environmentObject(preferences)
+        .environmentObject(workspaceCoordinator)
     }
     .defaultSize(width: 860, height: 520)
     Window("Known Hosts", id: KnownHostsWindow.id) {
@@ -534,33 +683,47 @@ struct CatermApp: App {
       )
     }
     .defaultSize(width: 920, height: 520)
+    Window("File Transfer", id: SFTPTaskWindow.id) {
+      SFTPTaskWindowView()
+        .environmentObject(store)
+        .environmentObject(fileTransferStore)
+    }
+    .defaultSize(width: 1120, height: 700)
   }
 }
 
 extension Notification.Name {
   static let catermAddHost = Notification.Name("CatermAddHostNotification")
+  static let catermSaveWorkspaceTemplate = Notification.Name(
+    "CatermSaveWorkspaceTemplateNotification")
+  static let catermManageWorkspaceTemplates = Notification.Name(
+    "CatermManageWorkspaceTemplatesNotification")
+  static let catermStartWorkspaceBroadcast = Notification.Name(
+    "CatermStartWorkspaceBroadcastNotification")
+  static let catermStopWorkspaceBroadcast = Notification.Name(
+    "CatermStopWorkspaceBroadcastNotification")
 }
 
 /// App-wide window commands use SwiftUI's scene action directly. A
 /// NotificationCenter bridge here would be mounted once per WindowGroup
-/// scene, so one menu action would be multiplied by the number of live tabs.
+/// scene, so one menu action would be multiplied by the number of live windows.
 struct CatermWindowCommands: Commands {
   @Environment(\.openWindow) private var openWindow
 
   var body: some Commands {
     CommandGroup(replacing: .newItem) {
       Button("New Window") {
-        openWindow(value: UUID())
+        openWindow(value: WorkspaceWindowState.landing(id: UUID()))
       }
       .keyboardShortcut("n", modifiers: .command)
       Button("New Tab") {
-        openWindow(value: UUID())
+        openWindow(value: WorkspaceWindowState.landing(id: UUID()))
       }
       .keyboardShortcut("t", modifiers: .command)
       Button("New Host…") {
         NotificationCenter.default.post(
           name: .catermAddHost,
-          object: NSApp.keyWindow
+          object: WindowCommandScope.activeTargetWindow
         )
       }
       .keyboardShortcut("t", modifiers: [.command, .shift])
@@ -579,27 +742,78 @@ struct CatermWindowCommands: Commands {
       Button("Known Hosts") {
         openWindow(id: KnownHostsWindow.id)
       }
+      Button("File Transfer") {
+        openWindow(id: SFTPTaskWindow.id)
+      }
+      .keyboardShortcut("f", modifiers: [.command, .option])
     }
   }
 }
 
-/// Initial landing view shown when a "fresh" (tabId-less) window opens.
-/// Embeds the host list sidebar so users can manage hosts before any tab
-/// is open. When the user picks a host, swap our own `tabId` binding to
-/// the new tab id — this morphs the current window from Landing into
-/// MainWindow rather than spawning a separate window/tab.
+struct WorkspaceSceneRoot: View {
+  @Binding var windowState: WorkspaceWindowState
+
+  @ViewBuilder
+  var body: some View {
+    if case .workspace(let workspace) = windowState {
+      WorkspaceSceneContent(
+        restoredWorkspace: workspace,
+        windowState: $windowState
+      )
+      .id(workspace.id)
+    } else {
+      LandingView(windowState: $windowState)
+    }
+  }
+}
+
+private struct WorkspaceSceneContent: View {
+  let restoredWorkspace: Workspace
+  @Binding var windowState: WorkspaceWindowState
+  @State private var workspace: Workspace
+
+  init(
+    restoredWorkspace: Workspace,
+    windowState: Binding<WorkspaceWindowState>
+  ) {
+    self.restoredWorkspace = restoredWorkspace
+    _windowState = windowState
+    _workspace = State(initialValue: restoredWorkspace)
+  }
+
+  var body: some View {
+    MainWindow(workspace: $workspace)
+      .onChange(of: workspace) { _, updatedWorkspace in
+        guard windowState.workspace != updatedWorkspace else { return }
+        windowState = .workspace(updatedWorkspace)
+      }
+      .onChange(of: restoredWorkspace) { _, updatedWorkspace in
+        guard workspace != updatedWorkspace else { return }
+        workspace = updatedWorkspace
+      }
+  }
+}
+
+/// Initial landing view shown for a fresh Workspace window.
+/// Embeds the Host list sidebar so users can manage Hosts before a Workspace
+/// exists. Picking a Host replaces this window's landing value with the new
+/// Workspace shell instead of leaving a sibling blank window behind.
 struct LandingView: View {
-  @Binding var tabId: UUID?
+  @Binding var windowState: WorkspaceWindowState
   @EnvironmentObject var snippetStore: SnippetStore
   @EnvironmentObject var snippetSync: SnippetSyncStore
   @State private var presentingPalette = false
   @State private var presentingEditor = false
   @State private var presentingManager = false
+  @State private var presentingTemplateManager = false
+  @State private var workspaceTemplateMessage: String?
   @State private var hostWindow: NSWindow?
 
   var body: some View {
     NavigationSplitView {
-      HostListSidebar(onOpenTab: { newId in tabId = newId })
+      HostListSidebar(onOpenWorkspace: { workspace in
+        windowState = .workspace(workspace)
+      })
         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
     } detail: {
       VStack(spacing: 12) {
@@ -612,6 +826,16 @@ struct LandingView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .frame(minWidth: 1000, minHeight: 600)
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button {
+          presentingTemplateManager = true
+        } label: {
+          Image(systemName: "rectangle.stack")
+        }
+        .help("Workspace Templates")
+      }
+    }
     .background(WindowAccessor(window: $hostWindow))
     .modifier(
       SnippetCommandObserver(
@@ -643,13 +867,53 @@ struct LandingView: View {
         .environmentObject(snippetStore)
         .environmentObject(snippetSync)
     }
+    .sheet(isPresented: $presentingTemplateManager) {
+      WorkspaceTemplateManagerSheet(
+        currentWorkspace: nil,
+        onOpen: { workspace in
+          windowState = .workspace(workspace)
+        }
+      )
+    }
+    .onReceive(NotificationCenter.default.publisher(
+      for: .catermManageWorkspaceTemplates
+    )) { note in
+      guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+      presentingTemplateManager = true
+    }
+    .onReceive(NotificationCenter.default.publisher(
+      for: .catermSaveWorkspaceTemplate
+    )) { note in
+      guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+      workspaceTemplateMessage = "Open a Host before saving a Workspace template."
+    }
+    .onReceive(NotificationCenter.default.publisher(
+      for: .catermStartWorkspaceBroadcast
+    )) { note in
+      guard WindowCommandScope.shouldHandle(note, in: hostWindow) else { return }
+      workspaceTemplateMessage = "Open a Workspace with at least two connected terminal Panes before starting a broadcast."
+    }
+    .alert(
+      "No Active Workspace",
+      isPresented: Binding(
+        get: { workspaceTemplateMessage != nil },
+        set: { if !$0 { workspaceTemplateMessage = nil } }
+      ),
+      presenting: workspaceTemplateMessage
+    ) { _ in
+      Button("OK") { workspaceTemplateMessage = nil }
+    } message: { message in
+      Text(message)
+    }
   }
 }
 
 @MainActor
 private func makeStore(
   managedKeyStore: ManagedKeyStore,
-  historyRecorder: SessionHistoryRecording
+  historyRecorder: SessionHistoryRecording,
+  credentialIdentityStore: CredentialIdentityStore,
+  credentialIdentityMaterialStore: CredentialIdentityMaterialStore
 ) -> SessionStore {
   let supportDir = FileManager.default
     .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -694,7 +958,47 @@ private func makeStore(
     keychain: keychain,
     controlMasterManager: ControlMasterManager.shared,
     managedKeyStore: managedKeyStore,
-    historyRecorder: historyRecorder)
+    historyRecorder: historyRecorder,
+    credentialIdentityStore: credentialIdentityStore,
+    credentialIdentityPreparer: CredentialIdentityConnectionPreparer(
+      materialStore: credentialIdentityMaterialStore,
+      managedKeyStore: managedKeyStore,
+      runtimeSecrets: IdentityKeychainSecretStore(
+        accessGroup: accessGroup
+      )
+    )
+  )
+}
+
+@MainActor
+private func makeCredentialIdentityStore() -> CredentialIdentityStore {
+  let supportDirectory = FileManager.default
+    .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+    .first
+    ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+  let fileURL = ProcessInfo.processInfo.environment[
+    "CATERM_CREDENTIAL_IDENTITIES_PATH"
+  ].map(URL.init(fileURLWithPath:))
+    ?? supportDirectory
+      .appendingPathComponent("Caterm", isDirectory: true)
+      .appendingPathComponent("credential-identities.json")
+  let store = CredentialIdentityStore(fileURL: fileURL)
+  Task { @MainActor in
+    do {
+      try await store.load()
+    } catch {
+      NSLog(
+        "[CatermApp] Credential identities failed to load: %@",
+        String(describing: error)
+      )
+    }
+  }
+  return store
+}
+
+private func catermAccessGroup() -> String? {
+  let teamID = ProcessInfo.processInfo.environment["CATERM_TEAM_ID"] ?? ""
+  return teamID.isEmpty ? nil : "\(teamID).caterm.shared"
 }
 
 @MainActor

@@ -9,6 +9,7 @@ final class AccountChangeSyncCoordinatorTests: XCTestCase {
 
   private enum ExpectedFailure: Error {
     case reset
+    case resetIdentities
     case wipe
   }
 
@@ -21,7 +22,7 @@ final class AccountChangeSyncCoordinatorTests: XCTestCase {
     XCTAssertEqual(recorder.events, [
       "begin-host", "begin-snippets",
       "drain-host", "drain-snippets", "identity",
-      "reset-credentials", "wipe-snippets", "acknowledge",
+      "reset-credentials", "reset-identities", "wipe-snippets", "acknowledge",
       "resume-host", "resume-snippets:true",
     ])
   }
@@ -57,7 +58,26 @@ final class AccountChangeSyncCoordinatorTests: XCTestCase {
     XCTAssertEqual(recorder.events, [
       "begin-host", "begin-snippets",
       "drain-host", "drain-snippets", "identity",
-      "reset-credentials", "wipe-snippets", "failure:wipe",
+      "reset-credentials", "reset-identities", "wipe-snippets", "failure:wipe",
+      "resume-host", "resume-snippets:false",
+    ])
+  }
+
+  func testIdentityResetFailureDoesNotAcknowledgeAccountChange() async {
+    let recorder = EventRecorder()
+    let coordinator = makeCoordinator(
+      recorder: recorder,
+      identityChanged: true,
+      identityResetError: ExpectedFailure.resetIdentities
+    )
+
+    await coordinator.enqueue().value
+
+    XCTAssertEqual(recorder.events, [
+      "begin-host", "begin-snippets",
+      "drain-host", "drain-snippets", "identity",
+      "reset-credentials", "reset-identities",
+      "failure:resetIdentities",
       "resume-host", "resume-snippets:false",
     ])
   }
@@ -91,6 +111,7 @@ final class AccountChangeSyncCoordinatorTests: XCTestCase {
           return false
         },
         resetCredentials: {},
+        resetCredentialIdentities: {},
         wipeSnippets: {},
         acknowledgeIdentityChange: {},
         resumeHost: {
@@ -128,6 +149,7 @@ final class AccountChangeSyncCoordinatorTests: XCTestCase {
     recorder: EventRecorder,
     identityChanged: Bool,
     resetError: Error? = nil,
+    identityResetError: Error? = nil,
     wipeError: Error? = nil
   ) -> AccountChangeSyncCoordinator {
     AccountChangeSyncCoordinator(
@@ -143,6 +165,10 @@ final class AccountChangeSyncCoordinatorTests: XCTestCase {
         resetCredentials: {
           recorder.events.append("reset-credentials")
           if let resetError { throw resetError }
+        },
+        resetCredentialIdentities: {
+          recorder.events.append("reset-identities")
+          if let identityResetError { throw identityResetError }
         },
         wipeSnippets: {
           recorder.events.append("wipe-snippets")

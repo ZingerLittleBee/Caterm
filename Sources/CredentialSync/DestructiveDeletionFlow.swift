@@ -25,14 +25,14 @@ public enum DestructiveDeletionFlow {
         sessionStore: SessionStore,
         credentialSync: CredentialSyncPreferencesStore,
         triggerSync: () -> Void = {}
-    ) {
+    ) async {
         let pendingIds = sessionStore.hosts.compactMap { host -> UUID? in
             host.serverId == nil ? nil : host.id
         }
         let log = Logger(subsystem: "com.caterm.app", category: "cloudkit-sync")
         for host in sessionStore.hosts where host.credentialMaterialDirty {
             do {
-                try sessionStore.clearCredentialMaterialDirty(host.id)
+                try await sessionStore.clearCredentialMaterialDirty(host.id)
             } catch {
                 // Best-effort pre-clear; the durable DeletionProgress list is
                 // the authoritative driver. Log so a persistent failure is

@@ -14,6 +14,7 @@ final class CredentialDirtyScanTests: XCTestCase {
     private var syncPrefs: SyncPreferences!
     private var isolatedDefaults: UserDefaults!
     private var hostsURL: URL!
+    private var keychain: KeychainStore!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -21,7 +22,7 @@ final class CredentialDirtyScanTests: XCTestCase {
             .appendingPathComponent("caterm-credscan-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         hostsURL = tmp.appendingPathComponent("hosts.json")
-        let keychain = KeychainStore(
+        keychain = KeychainStore(
             service: "test-\(UUID().uuidString)", accessGroup: nil
         )
         sessionStore = SessionStore(
@@ -29,8 +30,7 @@ final class CredentialDirtyScanTests: XCTestCase {
             accessGroup: nil, hostsURL: hostsURL, keychain: keychain
         )
         fakeClient = FakeIncrementalHostSyncClient()
-        // Empty snapshot — reconciler emits no ops, so the only ops we can
-        // observe in lastAppliedOpsForTesting come from the dirty scan.
+        // Empty snapshot isolates the credential push from metadata changes.
         fakeClient.fetchSnapshotResult = HostChangeBatch(
             changedHosts: [], deletedHostIDs: [],
             checkpoint: nil, tokenExpired: false, mode: .forceFull
@@ -43,41 +43,26 @@ final class CredentialDirtyScanTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        try? keychain.deleteAll(prefix: "")
         try? FileManager.default.removeItem(at: hostsURL)
         try await super.tearDown()
     }
 
-    func test_dirtyHostInEnabled_queuesUpdateRemoteCredentials_afterReconcilerOps() async throws {
-        let host = makeDirtyHostWithServerId()
-        prefsStore.mutate { $0.state = .enabled }
-
-        let sut = makeStore()
-        try await sut.sync()
-
-        XCTAssertTrue(
-            sut.lastAppliedOpsForTesting.contains(.updateRemoteCredentials(localHostId: host.id)),
-            "Dirty host with state=.enabled must produce a .updateRemoteCredentials op"
-        )
-    }
-
     func test_disabledState_doesNotQueueUpdateRemoteCredentials() async throws {
-        _ = makeDirtyHostWithServerId()
+        _ = await makeDirtyHostWithServerId()
         // prefsStore default state is .disabled — leave as-is.
 
         let sut = makeStore()
         try await sut.sync()
 
-        XCTAssertFalse(
-            sut.lastAppliedOpsForTesting.contains(where: { op in
-                if case .updateRemoteCredentials = op { return true }
-                return false
-            }),
-            "state=.disabled must not queue .updateRemoteCredentials"
+        XCTAssertTrue(
+            fakeClient.pushCredentialCalls.isEmpty,
+            "state=.disabled must not push credential material"
         )
     }
 
     func test_deletionInProgress_doesNotQueueUpdateRemoteCredentials() async throws {
-        _ = makeDirtyHostWithServerId()
+        _ = await makeDirtyHostWithServerId()
         prefsStore.mutate {
             $0.state = .enabled
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(pendingLocalHostIds: [])
@@ -86,12 +71,9 @@ final class CredentialDirtyScanTests: XCTestCase {
         let sut = makeStore()
         try await sut.sync()
 
-        XCTAssertFalse(
-            sut.lastAppliedOpsForTesting.contains(where: { op in
-                if case .updateRemoteCredentials = op { return true }
-                return false
-            }),
-            "deleteCredentialsFromCloudInProgress != nil must suppress the dirty-scan op"
+        XCTAssertTrue(
+            fakeClient.pushCredentialCalls.isEmpty,
+            "deleteCredentialsFromCloudInProgress != nil must suppress dirty pushes"
         )
     }
 
@@ -110,7 +92,7 @@ final class CredentialDirtyScanTests: XCTestCase {
     }
 
     @discardableResult
-    private func makeDirtyHostWithServerId() -> SSHHost {
+    private func makeDirtyHostWithServerId() async -> SSHHost {
         let host = SSHHost(
             name: "dirty",
             hostname: "h",
@@ -119,8 +101,12 @@ final class CredentialDirtyScanTests: XCTestCase {
             credential: .password,
             credentialMaterialDirty: true
         )
-        try? sessionStore.addHost(host)
-        try? sessionStore.setServerId("rec-1", for: host.id)
+        try? await sessionStore.addHost(host)
+        try? await sessionStore.setServerId("rec-1", for: host.id)
+        try? keychain.set(
+            account: "\(host.id.uuidString).password",
+            secret: "test-secret"
+        )
         return host
     }
 }

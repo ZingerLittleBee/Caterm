@@ -31,13 +31,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 	/// `@MainActor` teardown asynchronously with a hard time bound, then
 	/// call `reply(toApplicationShouldTerminate:)` exactly once.
 	func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
-		if isTerminating { return .terminateNow }
+		if isTerminating { return .terminateLater }
 		isTerminating = true
 		Task { @MainActor in
+			if RemoteExternalEditorRegistry.shared.hasActiveSessions {
+				let shouldDiscard = await Self.confirmDiscardExternalEdits()
+				guard shouldDiscard else {
+					isTerminating = false
+					NSApp.reply(toApplicationShouldTerminate: false)
+					return
+				}
+				guard await RemoteExternalEditorRegistry.shared.closeAll() else {
+					await Self.showExternalEditCleanupFailure()
+					isTerminating = false
+					NSApp.reply(toApplicationShouldTerminate: false)
+					return
+				}
+			}
 			await Self.tearDownControlMasters(timeout: .seconds(2))
 			NSApp.reply(toApplicationShouldTerminate: true)
 		}
 		return .terminateLater
+	}
+
+	@MainActor
+	private static func confirmDiscardExternalEdits() async -> Bool {
+		let alert = NSAlert()
+		alert.messageText = "Discard external-edit drafts and quit?"
+		alert.informativeText =
+			"Caterm has private local drafts that may not have been uploaded."
+		alert.alertStyle = .warning
+		alert.addButton(withTitle: "Discard Drafts and Quit")
+		alert.addButton(withTitle: "Cancel")
+		return await present(alert)
+			== .alertFirstButtonReturn
+	}
+
+	@MainActor
+	private static func showExternalEditCleanupFailure() async {
+		let alert = NSAlert()
+		alert.messageText = "Caterm could not remove a private draft"
+		alert.informativeText =
+			"The app will stay open. Retry cleanup from the File Transfer window before quitting."
+		alert.alertStyle = .critical
+		alert.addButton(withTitle: "OK")
+		_ = await present(alert)
+	}
+
+	@MainActor
+	private static func present(
+		_ alert: NSAlert
+	) async -> NSApplication.ModalResponse {
+		let hostWindow: NSWindow
+		let ownsHostWindow: Bool
+		if let visibleWindow = NSApp.keyWindow
+			?? NSApp.windows.first(where: \.isVisible) {
+			hostWindow = visibleWindow
+			ownsHostWindow = false
+		} else {
+			let window = NSWindow(
+				contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+				styleMask: [.titled],
+				backing: .buffered,
+				defer: false
+			)
+			window.center()
+			window.makeKeyAndOrderFront(nil)
+			hostWindow = window
+			ownsHostWindow = true
+		}
+		return await withCheckedContinuation { continuation in
+			alert.beginSheetModal(for: hostWindow) { response in
+				if ownsHostWindow {
+					hostWindow.close()
+				}
+				continuation.resume(returning: response)
+			}
+		}
 	}
 
 	/// Tear down all ControlMaster sockets, but never let a stuck

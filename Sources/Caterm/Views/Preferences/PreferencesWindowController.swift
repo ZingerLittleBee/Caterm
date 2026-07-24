@@ -1,4 +1,6 @@
 import AppKit
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import CredentialSync
 import CredentialSyncStore
 import HostSyncStore
@@ -24,6 +26,9 @@ public struct SyncEnvironment {
   // Backup (encrypted export/import) surface — nil hides the section.
   public let snippetStore: SnippetStore?
   public let bookmarkStore: RemoteBookmarkStore?
+  public let credentialIdentityStore: CredentialIdentityStore?
+  public let credentialIdentityMaterialStore: CredentialIdentityMaterialStore?
+  public let triggerCredentialIdentitySync: @MainActor () -> Void
 
   public init(
     authSession: AuthSessionProtocol,
@@ -33,7 +38,10 @@ public struct SyncEnvironment {
     credentialSyncCoordinator: CredentialSyncCoordinator? = nil,
     sessionStore: SessionStore? = nil,
     snippetStore: SnippetStore? = nil,
-    bookmarkStore: RemoteBookmarkStore? = nil
+    bookmarkStore: RemoteBookmarkStore? = nil,
+    credentialIdentityStore: CredentialIdentityStore? = nil,
+    credentialIdentityMaterialStore: CredentialIdentityMaterialStore? = nil,
+    triggerCredentialIdentitySync: @escaping @MainActor () -> Void = {}
   ) {
     self.authSession = authSession
     self.syncStore = syncStore
@@ -43,6 +51,9 @@ public struct SyncEnvironment {
     self.sessionStore = sessionStore
     self.snippetStore = snippetStore
     self.bookmarkStore = bookmarkStore
+    self.credentialIdentityStore = credentialIdentityStore
+    self.credentialIdentityMaterialStore = credentialIdentityMaterialStore
+    self.triggerCredentialIdentitySync = triggerCredentialIdentitySync
   }
 }
 

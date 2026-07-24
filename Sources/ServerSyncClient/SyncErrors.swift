@@ -11,6 +11,8 @@ public enum ServerSyncError: Error, Equatable, CustomStringConvertible {
     case notSignedIn
     /// Decoding the response body failed.
     case decode(String)
+	/// A Host referenced by local sync state no longer exists remotely.
+	case remoteHostNotFound(serverID: String)
 
     public var description: String {
         switch self {
@@ -19,6 +21,8 @@ public enum ServerSyncError: Error, Equatable, CustomStringConvertible {
         case let .authFailed(code, msg):    return "Auth \(code): \(msg)"
         case .notSignedIn:                   return "Not signed in"
         case let .decode(msg):              return "Decode failure: \(msg)"
+		case let .remoteHostNotFound(serverID):
+			return "Remote Host not found: \(serverID)"
         }
     }
 }

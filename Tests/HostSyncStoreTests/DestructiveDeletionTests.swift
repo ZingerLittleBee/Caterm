@@ -58,15 +58,15 @@ final class DestructiveDeletionTests: XCTestCase {
 
     // MARK: - 1. confirm() atomicity
 
-    func test_confirmAtomicallyClearsAllDirtyBits_andSetsInProgress() throws {
-        let hostA = makeHost(name: "A", dirty: true)
-        try sessionStore.setServerId("rec-a", for: hostA.id)
-        let hostB = makeHost(name: "B", dirty: true)
-        try sessionStore.setServerId("rec-b", for: hostB.id)
+    func test_confirmAtomicallyClearsAllDirtyBits_andSetsInProgress() async throws {
+        let hostA = await makeHost(name: "A", dirty: true)
+        try await sessionStore.setServerId("rec-a", for: hostA.id)
+        let hostB = await makeHost(name: "B", dirty: true)
+        try await sessionStore.setServerId("rec-b", for: hostB.id)
         // Locally-only host (no serverId) — must NOT appear in pending list.
-        let localOnly = makeHost(name: "C", dirty: true)
+        let localOnly = await makeHost(name: "C", dirty: true)
 
-        DestructiveDeletionFlow.confirm(
+        await DestructiveDeletionFlow.confirm(
             sessionStore: sessionStore,
             credentialSync: prefsStore
         )
@@ -88,10 +88,10 @@ final class DestructiveDeletionTests: XCTestCase {
     // MARK: - 2. Sub-pipeline tombstones each host atomically
 
     func test_subPipelineTombstonesEachHost_atomicallyShrinksList() async throws {
-        let hostA = makeHost(name: "A")
-        try sessionStore.setServerId("rec-a", for: hostA.id)
-        let hostB = makeHost(name: "B")
-        try sessionStore.setServerId("rec-b", for: hostB.id)
+        let hostA = await makeHost(name: "A")
+        try await sessionStore.setServerId("rec-a", for: hostA.id)
+        let hostB = await makeHost(name: "B")
+        try await sessionStore.setServerId("rec-b", for: hostB.id)
         prefsStore.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [hostA.id, hostB.id]
@@ -120,10 +120,10 @@ final class DestructiveDeletionTests: XCTestCase {
     // MARK: - 3. Simulated crash between hosts
 
     func test_simulatedCrashBetweenHosts_resumesFromPersistedList() async throws {
-        let hostA = makeHost(name: "A")
-        try sessionStore.setServerId("rec-a", for: hostA.id)
-        let hostB = makeHost(name: "B")
-        try sessionStore.setServerId("rec-b", for: hostB.id)
+        let hostA = await makeHost(name: "A")
+        try await sessionStore.setServerId("rec-a", for: hostA.id)
+        let hostB = await makeHost(name: "B")
+        try await sessionStore.setServerId("rec-b", for: hostB.id)
         prefsStore.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [hostA.id, hostB.id]
@@ -182,11 +182,11 @@ final class DestructiveDeletionTests: XCTestCase {
             name: "dirty", hostname: "h", port: 22, username: "u",
             credential: .password, credentialMaterialDirty: true
         )
-        try sessionStore.addHost(dirty)
-        try sessionStore.setServerId("rec-dirty", for: dirty.id)
+        try await sessionStore.addHost(dirty)
+        try await sessionStore.setServerId("rec-dirty", for: dirty.id)
 
-        let other = makeHost(name: "other")
-        try sessionStore.setServerId("rec-other", for: other.id)
+        let other = await makeHost(name: "other")
+        try await sessionStore.setServerId("rec-other", for: other.id)
         prefsStore.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [other.id]
@@ -196,13 +196,6 @@ final class DestructiveDeletionTests: XCTestCase {
         let sut = makeStore()
         try await sut.sync()
 
-        XCTAssertFalse(
-            sut.lastAppliedOpsForTesting.contains(where: { op in
-                if case .updateRemoteCredentials = op { return true }
-                return false
-            }),
-            "destructive in-progress must skip the dirty-scan op queue"
-        )
         XCTAssertEqual(fakeClient.pushCredentialCalls.count, 1,
                        "only the destructive tombstone for the pending host")
         XCTAssertEqual(fakeClient.pushCredentialCalls[0].blob.state, .tombstone)
@@ -211,9 +204,9 @@ final class DestructiveDeletionTests: XCTestCase {
 
     // MARK: - confirm() invokes triggerSync callback
 
-    func test_confirmInvokesTriggerSyncCallback_evenWhenNoHosts() {
+    func test_confirmInvokesTriggerSyncCallback_evenWhenNoHosts() async {
         var triggered = 0
-        DestructiveDeletionFlow.confirm(
+        await DestructiveDeletionFlow.confirm(
             sessionStore: sessionStore,
             credentialSync: prefsStore,
             triggerSync: { triggered += 1 }
@@ -226,8 +219,8 @@ final class DestructiveDeletionTests: XCTestCase {
     // MARK: - cloudCredentialsCleared flag transitions
 
     func test_subPipelineComplete_setsCloudCredentialsClearedTrue() async throws {
-        let host = makeHost(name: "tombstone-target")
-        try sessionStore.setServerId("rec-x", for: host.id)
+        let host = await makeHost(name: "tombstone-target")
+        try await sessionStore.setServerId("rec-x", for: host.id)
         prefsStore.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [host.id]
@@ -254,10 +247,10 @@ final class DestructiveDeletionTests: XCTestCase {
     func test_subPipelineMidFlight_doesNotPrematurelySetCloudCleared() async throws {
         // Two hosts pending, second tombstone push fails. cloudCredentialsCleared
         // must NOT flip true while the list still has remaining hosts.
-        let hostA = makeHost(name: "A")
-        try sessionStore.setServerId("rec-a", for: hostA.id)
-        let hostB = makeHost(name: "B")
-        try sessionStore.setServerId("rec-b", for: hostB.id)
+        let hostA = await makeHost(name: "A")
+        try await sessionStore.setServerId("rec-a", for: hostA.id)
+        let hostB = await makeHost(name: "B")
+        try await sessionStore.setServerId("rec-b", for: hostB.id)
         prefsStore.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [hostA.id, hostB.id]
@@ -305,8 +298,8 @@ final class DestructiveDeletionTests: XCTestCase {
     // MARK: - 6. Edit during deletion clears dirty + does not re-populate
 
     func test_editDuringDeletion_clearsDirtyAfterSet_doesNotRepopulate() async throws {
-        let host = makeHost(name: "editing")
-        try sessionStore.setServerId("rec-edit", for: host.id)
+        let host = await makeHost(name: "editing")
+        try await sessionStore.setServerId("rec-edit", for: host.id)
         prefsStore.mutate {
             $0.deleteCredentialsFromCloudInProgress = DeletionProgress(
                 pendingLocalHostIds: [UUID()]
@@ -357,12 +350,12 @@ final class DestructiveDeletionTests: XCTestCase {
     }
 
     @discardableResult
-    private func makeHost(name: String, dirty: Bool = false) -> SSHHost {
+    private func makeHost(name: String, dirty: Bool = false) async -> SSHHost {
         let host = SSHHost(
             name: name, hostname: "h", port: 22, username: "u",
             credential: .password, credentialMaterialDirty: dirty
         )
-        try? sessionStore.addHost(host)
+        try? await sessionStore.addHost(host)
         return host
     }
 }

@@ -26,4 +26,16 @@ final class AppDelegatePushParsingTests: XCTestCase {
 	func testMalformedUserInfoReturnsFalse() {
 		XCTAssertFalse(parsePushUserInfo(["random": "stuff"]))
 	}
+
+	func testSnippetNotificationRoutesToSnippetLane() {
+		let userInfo: [String: Any] = [
+			"ck": [
+				"nt": 1,
+				"qry": ["sid": CloudKitPushNames.snippetSubscriptionID],
+			]
+		]
+
+		XCTAssertEqual(cloudKitPushKind(userInfo), .snippet)
+		XCTAssertFalse(parsePushUserInfo(userInfo))
+	}
 }

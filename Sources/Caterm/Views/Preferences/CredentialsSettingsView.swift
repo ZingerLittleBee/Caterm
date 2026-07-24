@@ -1,3 +1,5 @@
+import CredentialIdentitySecurity
+import CredentialIdentityStore
 import CredentialSync
 import CredentialSyncStore
 import HostSyncStore
@@ -13,6 +15,9 @@ struct CredentialsSettingsView: View {
     let credentialSync: CredentialSyncPreferencesStore?
     let credentialSyncCoordinator: CredentialSyncCoordinator?
     let sessionStore: SessionStore?
+    let credentialIdentityStore: CredentialIdentityStore?
+    let credentialIdentityMaterialStore: CredentialIdentityMaterialStore?
+    let triggerCredentialIdentitySync: @MainActor () -> Void
     let triggerSync: () -> Void
 
     var body: some View {
@@ -23,6 +28,16 @@ struct CredentialsSettingsView: View {
                     coordinator: credentialSyncCoordinator,
                     sessionStore: sessionStore,
                     triggerSync: triggerSync
+                )
+            }
+            if let credentialIdentityStore,
+               let credentialIdentityMaterialStore,
+               let sessionStore {
+                CredentialIdentityManagementView(
+                    store: credentialIdentityStore,
+                    materialStore: credentialIdentityMaterialStore,
+                    sessionStore: sessionStore,
+                    triggerSync: triggerCredentialIdentitySync
                 )
             }
             Section("SSH Keys") {

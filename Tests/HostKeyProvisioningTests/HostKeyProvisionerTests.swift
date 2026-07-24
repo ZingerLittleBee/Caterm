@@ -42,10 +42,10 @@ final class HostKeyProvisionerTests: XCTestCase {
 		try await super.tearDown()
 	}
 
-	private func addHost(credential: CredentialSource) throws -> SSHHost {
+	private func addHost(credential: CredentialSource) async throws -> SSHHost {
 		let host = Host(name: "h", hostname: "example.com", port: 22,
 		                username: "u", credential: credential)
-		try store.addHost(host)
+		try await store.addHost(host)
 		return store.hosts.first { $0.id == host.id }!
 	}
 
@@ -57,13 +57,13 @@ final class HostKeyProvisionerTests: XCTestCase {
 
 	// MARK: keyBytes(from:)
 
-	func test_keyBytes_file_readsBytes() throws {
+	func test_keyBytes_file_readsBytes() async throws {
 		let path = try writeExternalKey("FILE_KEY")
 		XCTAssertEqual(try HostKeyProvisioner.keyBytes(from: .file(path: path)),
 		               Data("FILE_KEY".utf8))
 	}
 
-	func test_keyBytes_missingFile_throws() {
+	func test_keyBytes_missingFile_throws() async {
 		XCTAssertThrowsError(
 			try HostKeyProvisioner.keyBytes(from: .file(path: "/nonexistent/id_x"))
 		) { error in
@@ -72,14 +72,14 @@ final class HostKeyProvisionerTests: XCTestCase {
 		}
 	}
 
-	func test_keyBytes_pasted_trimsAndAppendsNewline() throws {
+	func test_keyBytes_pasted_trimsAndAppendsNewline() async throws {
 		let bytes = try HostKeyProvisioner.keyBytes(
 			from: .pasted(content: "  -----BEGIN KEY-----\nabc\n-----END KEY-----\n\n")
 		)
 		XCTAssertEqual(bytes, Data("-----BEGIN KEY-----\nabc\n-----END KEY-----\n".utf8))
 	}
 
-	func test_keyBytes_pastedWhitespaceOnly_throwsEmptyKey() {
+	func test_keyBytes_pastedWhitespaceOnly_throwsEmptyKey() async {
 		XCTAssertThrowsError(
 			try HostKeyProvisioner.keyBytes(from: .pasted(content: "  \n "))
 		) { error in
@@ -90,7 +90,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 	// MARK: provision
 
 	func test_provision_pasted_writesManagedKey_andPointsCredentialAtIt() async throws {
-		let host = try addHost(credential: .password)
+		let host = try await addHost(credential: .password)
 		try await HostKeyProvisioner.provision(
 			material: .pasted(content: "PASTED_KEY"),
 			hasPassphrase: false, passphrase: nil,
@@ -106,7 +106,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 	}
 
 	func test_provision_withPassphrase_storesPassphraseInKeychain() async throws {
-		let host = try addHost(credential: .password)
+		let host = try await addHost(credential: .password)
 		let path = try writeExternalKey()
 		try await HostKeyProvisioner.provision(
 			material: .file(path: path),
@@ -124,7 +124,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 
 	func test_migrate_externalPath_copiesBytes_rewritesPath_noDirtyNoUpdatedAtBump() async throws {
 		let path = try writeExternalKey("EXTERNAL")
-		let host = try addHost(credential: .keyFile(keyPath: path, hasPassphrase: true))
+		let host = try await addHost(credential: .keyFile(keyPath: path, hasPassphrase: true))
 		let updatedAtBefore = host.updatedAt
 
 		let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
@@ -148,7 +148,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 	}
 
 	func test_migrate_unreadableSource_leavesHostUntouched() async throws {
-		let host = try addHost(credential: .keyFile(keyPath: "/nonexistent/id_gone",
+		let host = try await addHost(credential: .keyFile(keyPath: "/nonexistent/id_gone",
 		                                            hasPassphrase: false))
 		let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
 			sessionStore: store
@@ -161,7 +161,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 	}
 
 	func test_migrate_alreadyManaged_isIdempotentSkip() async throws {
-		let host = try addHost(credential: .password)
+		let host = try await addHost(credential: .password)
 		try await HostKeyProvisioner.provision(
 			material: .pasted(content: "K"), hasPassphrase: false, passphrase: nil,
 			hostId: host.id, sessionStore: store
@@ -174,7 +174,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 	}
 
 	func test_migrate_passwordHosts_ignored() async throws {
-		_ = try addHost(credential: .password)
+		_ = try await addHost(credential: .password)
 		let summary = await HostKeyProvisioner.migrateExternalKeyPaths(
 			sessionStore: store
 		)
@@ -183,7 +183,7 @@ final class HostKeyProvisionerTests: XCTestCase {
 
 	func test_migrate_cancelledTask_stopsBeforeReadingHosts() async throws {
 		let path = try writeExternalKey("EXTERNAL")
-		let host = try addHost(
+		let host = try await addHost(
 			credential: .keyFile(keyPath: path, hasPassphrase: false)
 		)
 
