@@ -21,7 +21,7 @@ final class WorkspaceCoreTests: XCTestCase {
 		XCTAssertNotEqual(workspaceID.rawValue, paneID.rawValue)
 	}
 
-	func testWindowIdentityStaysStableWhileWorkspaceValueTracksPresentation() throws {
+	func testWindowStateChangesWhenRestorableWorkspaceValueChanges() throws {
 		let id = WorkspaceID(rawValue: UUID())
 		let paneID = PaneID(rawValue: UUID())
 		let split = Workspace.onePane(
@@ -40,10 +40,31 @@ final class WorkspaceCoreTests: XCTestCase {
 		XCTAssertEqual(split.id, focus.id)
 		XCTAssertNotEqual(split, focus)
 		XCTAssertEqual(Set([split, focus]).count, 2)
-		XCTAssertEqual(
+		XCTAssertNotEqual(
 			WorkspaceWindowState.workspace(split),
 			WorkspaceWindowState.workspace(focus)
 		)
+		XCTAssertEqual(Set([
+			WorkspaceWindowState.workspace(split),
+			WorkspaceWindowState.workspace(focus),
+		]).count, 2)
+	}
+
+	func testWindowStateChangesWhenRestorableTopologyChanges() throws {
+		let onePane = Workspace.onePane(host: .saved(id: UUID()))
+		let twoPanes = try onePane.splittingActivePane(.right)
+
+		XCTAssertEqual(onePane.id, twoPanes.id)
+		XCTAssertEqual(onePane.topology.paneCount, 1)
+		XCTAssertEqual(twoPanes.topology.paneCount, 2)
+		XCTAssertNotEqual(
+			WorkspaceWindowState.workspace(onePane),
+			WorkspaceWindowState.workspace(twoPanes)
+		)
+		XCTAssertEqual(Set([
+			WorkspaceWindowState.workspace(onePane),
+			WorkspaceWindowState.workspace(twoPanes),
+		]).count, 2)
 	}
 
 	func testWindowStateRoundTripsWithoutRuntimeSessionIdentity() throws {

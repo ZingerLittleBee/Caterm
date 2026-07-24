@@ -624,25 +624,4 @@ public enum WorkspaceWindowState: Codable, Hashable, Sendable {
 		}
 	}
 
-	public static func == (lhs: WorkspaceWindowState, rhs: WorkspaceWindowState) -> Bool {
-		switch (lhs, rhs) {
-		case let (.landing(lhsID), .landing(rhsID)):
-			lhsID == rhsID
-		case let (.workspace(lhsWorkspace), .workspace(rhsWorkspace)):
-			lhsWorkspace.id == rhsWorkspace.id
-		case (.landing, .workspace), (.workspace, .landing):
-			false
-		}
-	}
-
-	public func hash(into hasher: inout Hasher) {
-		switch self {
-		case .landing(let id):
-			hasher.combine(0)
-			hasher.combine(id)
-		case .workspace(let workspace):
-			hasher.combine(1)
-			hasher.combine(workspace.id)
-		}
-	}
 }
