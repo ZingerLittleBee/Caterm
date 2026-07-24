@@ -1,7 +1,12 @@
+import AppKit
+import FileTransferStore
 import HostAutomationRuntime
 import KeychainStore
 import SessionStore
+import SettingsStore
 import SSHCommandBuilder
+import SwiftUI
+import TerminalEngine
 import XCTest
 @testable import Caterm
 
@@ -214,6 +219,105 @@ final class SessionLivenessProbeTests: XCTestCase {
 		XCTAssertEqual(observedEvents, [.lost])
 	}
 
+	func testProductionSurfaceExitMovesConnectedSessionToCleanExit() async throws {
+		guard await childExitLocalSSHAvailable() else {
+			throw XCTSkip("Local SSH is unavailable on this host.")
+		}
+		_ = NSApplication.shared
+		let root = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-child-exit-\(UUID())")
+		try FileManager.default.createDirectory(
+			at: root,
+			withIntermediateDirectories: true
+		)
+		let sessionStore = SessionStore(
+			askpassPath: "/dev/null",
+			knownHostsCaterm: root.appendingPathComponent("known_hosts").path,
+			knownHostsUser: "/dev/null",
+			accessGroup: nil,
+			hostsURL: root.appendingPathComponent("hosts.json"),
+			keychain: KeychainStore(
+				service: "com.caterm.test.child-exit.\(UUID())",
+				accessGroup: nil
+			),
+			controlMasterManager: ControlMasterManager.shared,
+			preflight: ImmediatePreflight()
+		)
+		let tabID = sessionStore.openTab(host: SSHHost(
+			name: "Child Exit",
+			hostname: "localhost",
+			username: NSUserName(),
+			credential: .agent
+		))
+		await sessionStore.awaitConnectionAttempt(tabId: tabID)
+		let registry = SurfaceRegistry()
+		let settingsStore = SettingsStore(
+			settings: .empty,
+			path: root.appendingPathComponent("settings.plist")
+		)
+		let rootView = TerminalContainerView(tabId: tabID)
+			.environmentObject(sessionStore)
+			.environmentObject(settingsStore)
+			.environmentObject(registry)
+		let hostingView = NSHostingView(rootView: rootView)
+		let window = NSWindow(
+			contentRect: CGRect(x: 0, y: 0, width: 640, height: 400),
+			styleMask: [.titled, .resizable],
+			backing: .buffered,
+			defer: false
+		)
+		window.isReleasedWhenClosed = false
+		window.contentView = hostingView
+		window.makeKeyAndOrderFront(nil)
+		addTeardownBlock { @MainActor in
+			sessionStore.closeTab(tabId: tabID)
+			window.contentView = nil
+			window.close()
+			await ControlMasterManager.shared.tearDownAll()
+			try? FileManager.default.removeItem(at: root)
+		}
+
+		let surfaceDiscovered = try await waitUntil {
+			registry.surface(for: tabID) != nil
+		}
+		XCTAssertTrue(surfaceDiscovered, "production surface was not registered")
+		let connected = try await waitUntil(timeout: 8) {
+			guard let tab = sessionStore.tabs.first(where: { $0.id == tabID })
+			else { return false }
+			if case .connected = tab.state, tab.hadConnected { return true }
+			return false
+		}
+		XCTAssertTrue(connected, "local SSH session did not connect")
+
+		let surface = try XCTUnwrap(registry.surface(for: tabID))
+		surface.setFocus(true)
+		try await Task.sleep(for: .seconds(1))
+		let inputMarker = root.appendingPathComponent("input-ready")
+		surface.run("printf ready > '\(inputMarker.path)'")
+		let inputDelivered = try await waitUntil {
+			FileManager.default.fileExists(atPath: inputMarker.path)
+		}
+		XCTAssertTrue(inputDelivered, "production surface did not deliver input")
+		surface.run("exit")
+
+		let childExitReported = try await waitUntil {
+			surface.processExited
+		}
+		XCTAssertTrue(
+			childExitReported,
+			"libghostty did not report the exited PTY child"
+		)
+		let exited = try await waitUntil {
+			guard let tab = sessionStore.tabs.first(where: { $0.id == tabID })
+			else { return false }
+			return tab.state == .failed(.cleanExit)
+		}
+		XCTAssertTrue(
+			exited,
+			"exited PTY child left the production session marked connected"
+		)
+	}
+
 	func testTaskCancellationStopsWithoutReportingConnectionLoss() async {
 		let generation = SessionLivenessProbe.Generation(0)
 		var observedEvents: [SessionLivenessProbe.Event] = []
@@ -336,4 +440,42 @@ final class SessionLivenessProbeTests: XCTestCase {
 		}
 		XCTAssertEqual(failure, .authOrSetupFail)
 	}
+}
+
+@MainActor
+private func waitUntil(
+	timeout: TimeInterval = 5,
+	condition: @MainActor () -> Bool
+) async throws -> Bool {
+	let deadline = Date().addingTimeInterval(timeout)
+	while !condition() {
+		guard Date() < deadline else { return false }
+		try await Task.sleep(for: .milliseconds(50))
+	}
+	return true
+}
+
+private func childExitLocalSSHAvailable() async -> Bool {
+	await Task.detached {
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+		process.arguments = [
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=3",
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "LogLevel=ERROR",
+			"localhost", "true",
+		]
+		process.standardInput = FileHandle.nullDevice
+		process.standardOutput = FileHandle.nullDevice
+		process.standardError = FileHandle.nullDevice
+		do {
+			try process.run()
+			process.waitUntilExit()
+			return process.terminationStatus == 0
+		} catch {
+			return false
+		}
+	}.value
 }

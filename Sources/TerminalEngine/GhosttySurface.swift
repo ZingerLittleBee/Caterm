@@ -81,7 +81,9 @@ public final class GhosttySurface {
 	/// OSC 52 read (denied in v1.5).
 	public var pendingLocalPaste: Bool = false
 
-	private(set) public var processExited: Bool = false
+	public var processExited: Bool {
+		ghostty_surface_process_exited(raw)
+	}
 
 	/// Pixel dimensions of one terminal cell, updated by
 	/// `GHOSTTY_ACTION_CELL_SIZE`. The default is a sane fallback used for
@@ -345,7 +347,6 @@ public final class GhosttySurface {
 	// MARK: - Internal hooks (called by the global action callback)
 
 	func handleChildExited(exitCode: UInt32) {
-		processExited = true
 		onChildExit?(Int32(bitPattern: exitCode))
 	}
 
