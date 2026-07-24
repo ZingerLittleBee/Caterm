@@ -67,7 +67,7 @@ The status vocabulary is intentionally strict:
 | Reviewed multi-Host and multi-Pane Snippet execution | **Implemented** | [`WorkspaceBroadcast`](../Sources/WorkspaceBroadcast) freezes the selected recipients, requires one complete-command review, and reports per-Pane outcomes. The native review surface lives in [`WorkspaceBroadcastViews.swift`](../Sources/Caterm/Views/WorkspaceBroadcastViews.swift), with execution and policy coverage in [`WorkspaceBroadcastTests.swift`](../Tests/WorkspaceBroadcastTests/WorkspaceBroadcastTests.swift). |
 | Synchronized shell command history | **Deliberately excluded** | Caterm records local connection metadata, not terminal commands or output. This is a privacy boundary, not a missing sync lane. [`SessionHistory`](../Sources/SessionHistory) stores Host, timing, state, and outcome only. |
 | Recorded session logs and log bookmarks | **Deliberately excluded** | Caterm does not persist or synchronize terminal output by default. Connection history exists for operational diagnostics, but it is not a replayable terminal log. |
-| Desktop dual-pane SFTP, cross-Host copy, drag and drop, transfer tracking, and external-editor upload-back | **Deferred** | The native implementation and focused/real-OpenSSH tests exist in [`SFTPTaskWindowView.swift`](../Sources/Caterm/Views/SFTPTaskWindowView.swift), [`RemoteExternalEditorCoordinator.swift`](../Sources/Caterm/Views/RemoteExternalEditorCoordinator.swift), and [`RealOpenSSHTransferTests.swift`](../Tests/FileTransferStoreTests/RealOpenSSHTransferTests.swift). Signed shipping-configuration acceptance remains open in [#59](https://github.com/ZingerLittleBee/Caterm/issues/59) because current signing fails and the shipping app is not sandbox-entitled while the transport invokes `/usr/bin/sftp`. |
+| Desktop dual-pane SFTP, cross-Host copy, drag and drop, transfer tracking, and external-editor upload-back | **Deferred** | The native implementation and focused/real-OpenSSH tests exist in [`SFTPTaskWindowView.swift`](../Sources/Caterm/Views/SFTPTaskWindowView.swift), [`RemoteExternalEditorCoordinator.swift`](../Sources/Caterm/Views/RemoteExternalEditorCoordinator.swift), and [`RealOpenSSHTransferTests.swift`](../Tests/FileTransferStoreTests/RealOpenSSHTransferTests.swift). An ad-hoc signed GUI run authorized a local folder through the native panel, reused a live OpenSSH control socket, listed the remote location, uploaded a 43-byte fixture exactly, and refreshed the remote pane. Caterm deliberately remains outside App Sandbox because the current libghostty PTY child cannot execute OpenSSH in a sandbox-signed prototype; [ADR 0007](adr/0007-keep-macos-transport-outside-app-sandbox.md) records that shipping boundary. Apple Development-signed shipping-configuration acceptance remains open in [#59](https://github.com/ZingerLittleBee/Caterm/issues/59) because the current signing attempt fails with `errSecInternalComponent`. |
 | iPhone and iPad SFTP with Files integration, mutations, transfer state, and drag and drop | **Implemented** | NIO SFTP browsing/mutations and the shared transfer coordinator are composed in [`MobileAppComposition.swift`](../Sources/CatermMobile/MobileAppComposition.swift), [`MobileFileBrowserView.swift`](../Sources/CatermMobile/MobileFileBrowserView.swift), and [`MobileFileTransfer.swift`](../Sources/CatermMobile/MobileFileTransfer.swift). Mobile transport, real-fixture, Files, lifecycle, conflict, cancellation, and accessibility tests live under [`CatermMobileTests`](../Tests/CatermMobileTests). |
 | Mobile cross-Host SFTP copy | **Deliberately excluded** | The mobile product keeps transfer ownership inside one active Host session and provides explicit download, Files export, and upload workflows. It does not expose a multi-session remote-copy API or imply that the deferred desktop dual-pane workflow ships on iPhone or iPad. |
 | Mobile-native terminal input and hardware keyboard support | **Implemented** | The iOS terminal provides a programmable key strip, native-keyboard choice, hardware-keyboard routing, snippets, resize handling, and reconnect through [`CatermMobileTerminal`](../Sources/CatermMobileTerminal) and [`MobileTerminalSessionView.swift`](../Sources/CatermMobileTerminal/MobileTerminalSessionView.swift), with focused mobile terminal tests. Caterm does not claim Termius voice input or AI command generation. |
@@ -101,6 +101,10 @@ the roadmap.
   real-fixture tests skipped, plus 14 Swift Testing cases. The two real
   OpenSSH tests also passed separately against disposable single-Host and
   dual-Host fixtures.
+- The relative ControlMaster-path regression selection passed 78 XCTest cases
+  plus one Swift Testing case. An ad-hoc signed GUI run then connected to a
+  disposable OpenSSH fixture, authorized a local folder, listed the remote
+  location, uploaded an exact 43-byte file, and refreshed the remote pane.
 - The final mobile regression selection passed 87 XCTest cases plus 11 Swift
   Testing cases. A fresh `make ios-build` product installed and launched on an
   iPhone 17 Pro Simulator and an iPad Pro 13-inch Simulator; Computer Use
@@ -109,16 +113,19 @@ the roadmap.
 - The full unfiltered `make test` run remains non-green because suite-composed
   execution stalls in an XCTest asynchronous wait; focused affected suites
   pass and isolated suites around the last buffered output also pass.
-- `make run-app` now produces and launches a development-signed application.
-  Its disposable SSH fixture completed the startup-automation acceptance;
-  desktop SFTP shipping-configuration proof remains a separate gate.
+- A prior `make run-app` acceptance produced and launched a development-signed
+  application whose disposable SSH fixture completed startup automation.
+  The current rerun reaches the signing step but fails with
+  `errSecInternalComponent`; desktop SFTP Apple Development-signed
+  shipping-configuration proof remains a separate gate.
 - Signed physical-device acceptance created a Secure Enclave identity,
   restarted Caterm before connecting, and authenticated to a disposable
   OpenSSH fixture with no password fallback. Cleanup then confirmed that the
   identity metadata, device-bound Keychain accounts, temporary Host, and
   server authorization were absent.
-- Signed macOS Workspace restoration/accessibility/load proof and signed
-  desktop SFTP sandbox/process acceptance remain scoped by #55 and #59.
+- Signed macOS Workspace restoration/accessibility/load proof and Apple
+  Development-signed desktop SFTP shipping-configuration acceptance remain
+  scoped by #55 and #59.
 - No private Host address, account identity, credential, terminal content,
   screenshot, application log, or local fixture is included in this document
   or committed elsewhere by the parity audit.
