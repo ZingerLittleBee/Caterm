@@ -112,6 +112,38 @@ struct MainWindow: View {
 		}
 	}
 
+	private var restorationTaskID: WorkspaceRestorationTaskID {
+		let requiredSavedHostIDs: Set<UUID> = Set(
+			workspace.topology.panes.compactMap { pane -> UUID? in
+				guard case .saved(let hostID) = pane.host else { return nil }
+				return hostID
+			}
+		)
+		let availableSavedHostIDs = store.hosts
+			.lazy
+			.map(\.id)
+			.filter(requiredSavedHostIDs.contains)
+			.sorted { $0.uuidString < $1.uuidString }
+		let repositoryReadiness: WorkspaceHostRepositoryReadiness
+		if requiredSavedHostIDs.isEmpty {
+			repositoryReadiness = .notRequired
+		} else {
+			switch store.hostRepositoryLoadState {
+			case .loading:
+				repositoryReadiness = .loading
+			case .ready:
+				repositoryReadiness = .ready
+			case .failed(let message):
+				repositoryReadiness = .failed(message)
+			}
+		}
+		return WorkspaceRestorationTaskID(
+			workspaceID: workspace.id,
+			repositoryReadiness: repositoryReadiness,
+			availableSavedHostIDs: availableSavedHostIDs
+		)
+	}
+
 	/// Host backing the active Pane's runtime session.
 	private var activeHost: SSHHost? {
 		guard let activeSessionID else { return nil }
@@ -493,7 +525,17 @@ struct MainWindow: View {
 				}
 			)
 		}
-		.task(id: workspace.id) {
+		.task(id: restorationTaskID) {
+			switch restorationTaskID.repositoryReadiness {
+			case .loading:
+				restorationStatus = .pending
+				return
+			case .failed(let message):
+				restorationStatus = .failed(message)
+				return
+			case .notRequired, .ready:
+				break
+			}
 			do {
 				try workspaceCoordinator.ensureSessions(
 					for: workspace,
@@ -651,6 +693,19 @@ private enum WorkspaceRestorationStatus: Equatable {
 	case ready
 	case missingHost
 	case failed(String)
+}
+
+private enum WorkspaceHostRepositoryReadiness: Equatable {
+	case notRequired
+	case loading
+	case ready
+	case failed(String)
+}
+
+private struct WorkspaceRestorationTaskID: Equatable {
+	let workspaceID: WorkspaceID
+	let repositoryReadiness: WorkspaceHostRepositoryReadiness
+	let availableSavedHostIDs: [UUID]
 }
 
 /// Caches one `RemoteFileSystem` per active Pane/session/Host target so a stable instance

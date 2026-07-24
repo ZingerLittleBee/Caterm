@@ -25,23 +25,7 @@ final class WorkspaceSceneLiveStateTests: XCTestCase {
 		defer { fixture.cleanUp() }
 		let workspace = Workspace.onePane(host: .saved(id: UUID()))
 		let state = WorkspaceWindowStateBox(.workspace(workspace))
-		let root = WorkspaceSceneRoot(windowState: Binding(
-			get: { state.value },
-			set: { state.value = $0 }
-		))
-		.environmentObject(fixture.sessionStore)
-		.environmentObject(fixture.hostSyncStore)
-		.environmentObject(fixture.preferences)
-		.environmentObject(fixture.fileTransferStore)
-		.environmentObject(fixture.settingsStore)
-		.environmentObject(fixture.remoteBookmarkStore)
-		.environmentObject(fixture.surfaceRegistry)
-		.environmentObject(fixture.historyStore)
-		.environmentObject(fixture.snippetStore)
-		.environmentObject(fixture.snippetSyncStore)
-		.environmentObject(fixture.credentialIdentityStore)
-		.environmentObject(fixture.workspaceCoordinator)
-		.environmentObject(fixture.workspaceTemplateStore)
+		let root = fixture.sceneRoot(state: state)
 		let hostingView = NSHostingView(rootView: root)
 		let window = NSWindow(
 			contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -69,6 +53,48 @@ final class WorkspaceSceneLiveStateTests: XCTestCase {
 		XCTAssertTrue(waitUntil {
 			state.value.workspace?.topology.paneCount == 1
 				&& hostingView.workspacePaneGroupCount == 1
+		})
+	}
+
+	func testSavedHostBecomingAvailableRestoresSessionWithoutReopeningWindow() async throws {
+		_ = NSApplication.shared
+		let fixture = try WorkspaceSceneFixture()
+		defer { fixture.cleanUp() }
+		let host = SSHHost(
+			name: "Restored Host",
+			hostname: "restore.example.test",
+			username: "operator",
+			credential: .agent
+		)
+		try await fixture.sessionStore.prepareHostRepository()
+		let workspace = Workspace.onePane(host: .saved(id: host.id))
+		let state = WorkspaceWindowStateBox(.workspace(workspace))
+		let root = fixture.sceneRoot(state: state)
+		let hostingView = NSHostingView(rootView: root)
+		let window = NSWindow(
+			contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+			styleMask: [.titled, .closable, .resizable],
+			backing: .buffered,
+			defer: false
+		)
+		window.contentView = hostingView
+		window.makeKeyAndOrderFront(nil)
+		defer { window.close() }
+
+		XCTAssertTrue(waitUntil {
+			hostingView.workspacePaneGroupLabels.contains {
+				$0.hasPrefix("Missing Host,")
+			}
+		})
+		XCTAssertNil(fixture.workspaceCoordinator.sessionID(for: workspace))
+
+		try await fixture.sessionStore.addHost(host)
+
+		XCTAssertTrue(waitUntil(timeout: 2) {
+			fixture.workspaceCoordinator.sessionID(for: workspace) != nil
+		})
+		XCTAssertTrue(hostingView.workspacePaneGroupLabels.contains {
+			$0.hasPrefix("Restored Host,")
 		})
 	}
 
@@ -186,6 +212,28 @@ private final class WorkspaceSceneFixture {
 		)
 	}
 
+	func sceneRoot(
+		state: WorkspaceWindowStateBox
+	) -> some View {
+		WorkspaceSceneRoot(windowState: Binding(
+			get: { state.value },
+			set: { state.value = $0 }
+		))
+		.environmentObject(sessionStore)
+		.environmentObject(hostSyncStore)
+		.environmentObject(preferences)
+		.environmentObject(fileTransferStore)
+		.environmentObject(settingsStore)
+		.environmentObject(remoteBookmarkStore)
+		.environmentObject(surfaceRegistry)
+		.environmentObject(historyStore)
+		.environmentObject(snippetStore)
+		.environmentObject(snippetSyncStore)
+		.environmentObject(credentialIdentityStore)
+		.environmentObject(workspaceCoordinator)
+		.environmentObject(workspaceTemplateStore)
+	}
+
 	func cleanUp() {
 		defaults.removePersistentDomain(forName: defaultsSuiteName)
 		try? FileManager.default.removeItem(at: directory)
@@ -292,5 +340,12 @@ private extension NSView {
 		return current + subviews.reduce(0) {
 			$0 + $1.workspacePaneGroupCount
 		}
+	}
+
+	var workspacePaneGroupLabels: [String] {
+		let current = accessibilityIdentifier().hasPrefix("workspace-pane-")
+			? [accessibilityLabel()].compactMap { $0 }
+			: []
+		return current + subviews.flatMap(\.workspacePaneGroupLabels)
 	}
 }
