@@ -60,7 +60,7 @@ The status vocabulary is intentionally strict:
 | HTTP proxy configuration | **Deliberately excluded** | Caterm supports explicit SSH Jump Hosts and dynamic SOCKS forwarding, not a separate HTTP CONNECT proxy layer. Adding one would expand proxy credential, trust, and failure semantics without improving the core SSH path. |
 | Local, remote, and dynamic port forwarding | **Implemented** | macOS exposes all three OpenSSH forwarding kinds and records skipped-rule diagnostics through [`PortForward.swift`](../Sources/SSHCommandBuilder/PortForward.swift) and [`PortForwardWorkspaceView.swift`](../Sources/Caterm/Views/PortForwardWorkspaceView.swift). Builder, preflight, persistence, and UI behavior are covered by [`PortForwardValidationTests.swift`](../Tests/SSHCommandBuilderTests/PortForwardValidationTests.swift), [`PortForwardPreflightTests.swift`](../Tests/SessionStoreTests/PortForwardPreflightTests.swift), and [`PortForwardWorkspaceTests.swift`](../Tests/CatermTests/PortForwardWorkspaceTests.swift). iOS synchronizes the declarations but does not advertise an always-on mobile tunnel because background suspension makes that promise false. |
 | Desktop Workspaces with split/focus presentation, reusable layout, and broadcast | **Implemented** | A native window tab owns a Workspace tree while `SessionStore` continues to own each connection. Evidence: [`WorkspaceCore`](../Sources/WorkspaceCore), [`WorkspaceCoordinator.swift`](../Sources/Caterm/WorkspaceCoordinator.swift), [`NativeWorkspaceSplitView.swift`](../Sources/Caterm/Views/NativeWorkspaceSplitView.swift), [`WorkspaceTemplateStore`](../Sources/WorkspaceTemplateStore), and [`WorkspaceBroadcast`](../Sources/WorkspaceBroadcast), plus their mirrored tests. Templates create fresh sessions; broadcast reviews one complete command against a frozen recipient snapshot and reports per-Pane outcomes. |
-| Exact restoration and an advertised 16-terminal Workspace limit | **Unverified** | Caterm deliberately advertises no numeric Pane limit. An ad-hoc signed real-SSH run exposed and fixed the embedded-terminal wakeup path and the asynchronous saved-Host restoration race; a restarted three-Pane Workspace then restored three independent connected sessions while a genuinely missing Host retained its safe recovery surface. Apple Development-signed restoration, accessibility, and multi-surface resource evidence remain open in [#55](https://github.com/ZingerLittleBee/Caterm/issues/55). |
+| Exact Workspace restoration and tested multi-surface capacity | **Implemented** | Caterm deliberately advertises no numeric Pane limit. An Apple Development-signed run restored a four-Pane Workspace after normal macOS termination with the same Pane identities, Host order, active state, and fresh independent SSH sessions. The same acceptance campaign verified accessible Pane labels, four-recipient broadcast, nested split geometry, child-exit delivery, asynchronous saved-Host recovery, and an eight-surface production-libghostty resource smoke. The eight-surface run used 26 descendant processes, peaked at 310,919,168 RSS bytes, and consumed 0.05 CPU seconds during the two-second sample. Evidence and defect history are recorded in [#55](https://github.com/ZingerLittleBee/Caterm/issues/55). |
 | IDE-style autocomplete and shell integration | **Deliberately excluded** | Caterm does not open extra exec channels to collect remote history, working directory, or active-command state. This avoids a hidden compatibility and privacy expansion. Ghostty remains the terminal engine, not a shell telemetry service. |
 | Saved Snippets and explicit terminal paste/run | **Implemented** | Snippets persist and synchronize on macOS and iOS through [`SnippetStore`](../Sources/SnippetStore), [`SnippetSyncClient`](../Sources/SnippetSyncClient), and [`MobileSnippetSyncRuntime.swift`](../Sources/CatermMobile/MobileSnippetSyncRuntime.swift). Store, reconciliation, transport-model, and mobile lifecycle behavior are covered by the mirrored Snippet test targets. |
 | Startup Snippets and per-Host environment variables | **Implemented** | [`HostAutomation.swift`](../Sources/SSHCommandBuilder/HostAutomation.swift) provides stable Snippet references, validated non-secret environment metadata, explicit review/suppression, and reconnect policy across macOS and iOS. Signed disposable SSH fixtures verified the full command review, one exact startup execution, an accepted environment value, a rejected value remaining absent, the macOS OpenSSH acceptance-limit warning, and a suppression connection with no automation. |
@@ -116,12 +116,16 @@ the roadmap.
   after explicit discard. The watcher fix remains covered by 12 Swift Testing
   cases for in-place writes and atomic replacement followed by later in-place
   writes.
-- Ad-hoc signed #55 GUI coverage found and fixed a terminal-lifecycle defect:
+- Apple Development-signed #55 GUI coverage found and fixed a
+  terminal-lifecycle defect:
   embedded libghostty wakeups now drain on the main actor so child exit state
   reaches the Pane. A separate Workspace restoration defect was also fixed:
   saved Workspaces now retry after the asynchronous Host repository loads. A
-  restarted three-Pane fixture restored three independent connected SSH
-  surfaces; an actually missing Host remained on the safe recovery surface.
+  restarted four-Pane fixture preserved exact Pane identities, order, focus,
+  and layout while creating four fresh independent SSH sessions; an actually
+  missing Host remained on the safe recovery surface. Nested same-axis splits
+  retained positive geometry, command broadcast reached four receivers, and
+  the eight-surface production-libghostty resource smoke passed.
 - The final mobile regression selection passed 87 XCTest cases plus 11 Swift
   Testing cases. A fresh `make ios-build` product installed and launched on an
   iPhone 17 Pro Simulator and an iPad Pro 13-inch Simulator; Computer Use
@@ -130,19 +134,15 @@ the roadmap.
 - The full unfiltered `make test` run remains non-green because suite-composed
   execution stalls in an XCTest asynchronous wait; focused affected suites
   pass and isolated suites around the last buffered output also pass.
-- A prior `make run-app` acceptance produced and launched an Apple
-  Development-signed application. That product completed startup automation
-  and the desktop SFTP shipping-configuration matrix against disposable
-  localhost fixtures. A later attempt to package the Workspace split-layout
-  fix still fails in the automation shell with `errSecInternalComponent`;
-  this is the remaining #55 replay gate, not a desktop SFTP evidence gap.
+- `make run-app` produced and launched an Apple Development-signed
+  application. That product completed startup automation, desktop SFTP, and
+  Workspace accessibility, restoration, split-layout, and multi-surface
+  acceptance against disposable localhost fixtures.
 - Signed physical-device acceptance created a Secure Enclave identity,
   restarted Caterm before connecting, and authenticated to a disposable
   OpenSSH fixture with no password fallback. Cleanup then confirmed that the
   identity metadata, device-bound Keychain accounts, temporary Host, and
   server authorization were absent.
-- Signed macOS Workspace restoration/accessibility/load proof remains scoped
-  by #55.
 - No private Host address, account identity, credential, terminal content,
   screenshot, application log, or local fixture is included in this document
   or committed elsewhere by the parity audit.

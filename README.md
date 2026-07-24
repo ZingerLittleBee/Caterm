@@ -119,13 +119,10 @@ automatic, with explicit status and manual recovery when attention is needed.
   terminal output, and team collaboration are not part of the current
   individual-user product.
 - Workspace template restoration, signed Pane accessibility/load acceptance,
-  and the desktop dual-pane/external-editor SFTP workspace exist in source but
-  remain verification-gated. A Workspace template's defined contract creates
+  and the desktop dual-pane/external-editor SFTP workspace are verified in
+  shipping configuration. A Workspace template's defined contract creates
   fresh SSH sessions; it never preserves a live PTY, socket, remote process,
-  working directory, or terminal output. These capabilities are not advertised
-  as shipped until
-  [#55](https://github.com/ZingerLittleBee/Caterm/issues/55),
-  [#59](https://github.com/ZingerLittleBee/Caterm/issues/59) close.
+  working directory, or terminal output.
 - Secure Enclave SSH identities are physically verified on signed iOS:
   device-bound creation, restart restoration, and authentication to a
   disposable OpenSSH fixture succeeded without exporting private key material.
