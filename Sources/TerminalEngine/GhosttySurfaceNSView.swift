@@ -12,6 +12,7 @@ public final class GhosttySurfaceNSView: NSView {
 
 	private let pendingCommand: String?
 	private let pendingEnv: [(String, String)]
+	private let pendingWorkingDirectory: URL?
 	private let createsSurfaceOnAttach: Bool
 	private var didCreateSurface = false
 	private var backgroundTransparencyEnabled = false
@@ -47,17 +48,28 @@ public final class GhosttySurfaceNSView: NSView {
 	/// path, libghostty must not re-emit it.
 	var imeConsumedThisEvent: Bool = false
 
-	public convenience init(command: String?, env: [(String, String)] = []) {
-		self.init(command: command, env: env, createsSurfaceOnAttach: true)
+	public convenience init(
+		command: String?,
+		env: [(String, String)] = [],
+		workingDirectory: URL? = nil
+	) {
+		self.init(
+			command: command,
+			env: env,
+			workingDirectory: workingDirectory,
+			createsSurfaceOnAttach: true
+		)
 	}
 
 	init(
 		command: String?,
 		env: [(String, String)] = [],
+		workingDirectory: URL? = nil,
 		createsSurfaceOnAttach: Bool
 	) {
 		self.pendingCommand = command
 		self.pendingEnv = env
+		self.pendingWorkingDirectory = workingDirectory
 		self.createsSurfaceOnAttach = createsSurfaceOnAttach
 		super.init(frame: .zero)
 		translatesAutoresizingMaskIntoConstraints = false
@@ -87,7 +99,8 @@ public final class GhosttySurfaceNSView: NSView {
 			let surface = try GhosttySurface(
 				hostView: self,
 				command: pendingCommand,
-				env: pendingEnv
+				env: pendingEnv,
+				workingDirectory: pendingWorkingDirectory
 			)
 			self.surface = surface
 			didCreateSurface = true

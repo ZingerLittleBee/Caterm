@@ -704,14 +704,21 @@ public final class SessionStore: ObservableObject {
     public func surfaceConfig(
         for tabId: UUID,
         installTerminfo _: Bool = false
-    ) -> (command: String, env: [(String, String)])? {
+    ) -> (
+		command: String,
+		env: [(String, String)],
+		workingDirectory: URL?
+	)? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
         if let output = tab.connectionOutput {
             var env = output.env
             if let accessGroup {
                 env.append((SSHCredentialEnvironmentKey.accessGroup.rawValue, accessGroup))
             }
-            return (output.command, env)
+			let workingDirectory = controlMasterManager?
+				.socketPath(for: tab.host.id)
+				.deletingLastPathComponent()
+            return (output.command, env, workingDirectory)
         }
 		return nil
     }
@@ -1696,7 +1703,10 @@ public final class SessionStore: ObservableObject {
 		guard let controlMasterManager else { return [:] }
 		return Dictionary(
 			uniqueKeysWithValues: hosts.map {
-				($0.id, controlMasterManager.socketPath(for: $0.id).path)
+				(
+					$0.id,
+					controlMasterManager.socketPath(for: $0.id).lastPathComponent
+				)
 			}
 		)
 	}

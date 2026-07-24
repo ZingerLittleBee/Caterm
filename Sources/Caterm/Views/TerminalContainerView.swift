@@ -236,7 +236,11 @@ struct TerminalSurfaceRepresentable: NSViewRepresentable {
 			configureFocus(for: view)
 			return view
 		}
-		let view = GhosttySurfaceNSView(command: cfg.command, env: cfg.env)
+		let view = GhosttySurfaceNSView(
+			command: cfg.command,
+			env: cfg.env,
+			workingDirectory: cfg.workingDirectory
+		)
 		view.setBackgroundTransparencyEnabled(backgroundTransparencyEnabled)
 		configureFocus(for: view)
 

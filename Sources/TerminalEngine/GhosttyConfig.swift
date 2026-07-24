@@ -41,6 +41,7 @@ public enum GhosttyError: Error, CustomStringConvertible {
 	case configCreateFailed
 	case appCreateFailed
 	case surfaceCreateFailed
+	case stringAllocationFailed
 
 	public var description: String {
 		switch self {
@@ -48,6 +49,7 @@ public enum GhosttyError: Error, CustomStringConvertible {
 		case .configCreateFailed: return "ghostty_config_new returned nil"
 		case .appCreateFailed: return "ghostty_app_new returned nil"
 		case .surfaceCreateFailed: return "ghostty_surface_new returned nil"
+		case .stringAllocationFailed: return "failed to allocate surface config string"
 		}
 	}
 }

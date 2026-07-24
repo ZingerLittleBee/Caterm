@@ -5,6 +5,31 @@ import XCTest
 import SFTPCommandBuilder
 
 final class SystemSFTPRunnerTests: XCTestCase {
+	func testRunUsesInvocationWorkingDirectory() async throws {
+		let directory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("caterm-sftp-cwd-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: directory) }
+		let invocation = SFTPInvocation(
+			argv: ["/bin/pwd"],
+			environment: [:],
+			scriptStdin: "",
+			workingDirectory: directory
+		)
+
+		let result = try await SystemSFTPRunner().run(invocation)
+
+		XCTAssertEqual(result.exit, 0)
+		XCTAssertEqual(
+			URL(
+				fileURLWithPath: result.stdout.trimmingCharacters(
+					in: .whitespacesAndNewlines
+				)
+			).resolvingSymlinksInPath(),
+			directory.resolvingSymlinksInPath()
+		)
+	}
+
 	func testCancellingRunTerminatesSubprocessPromptly() async throws {
 		let invocation = SFTPInvocation(
 			argv: ["/bin/sleep", "2"],

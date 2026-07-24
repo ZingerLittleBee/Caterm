@@ -1,7 +1,11 @@
 import Foundation
 
 public protocol ProcessRunner: Sendable {
-    func run(argv: [String], env: [String: String]) async -> Int32
+    func run(
+		argv: [String],
+		env: [String: String],
+		workingDirectory: URL
+	) async -> Int32
 }
 
 /// Non-macOS ControlMaster runner. ControlMaster relies on shelling out to
@@ -9,17 +13,26 @@ public protocol ProcessRunner: Sendable {
 /// `isAlive` reports the master as down rather than crashing.
 public struct UnavailableProcessRunner: ProcessRunner {
     public init() {}
-    public func run(argv: [String], env: [String: String]) async -> Int32 { 127 }
+    public func run(
+		argv: [String],
+		env: [String: String],
+		workingDirectory: URL
+	) async -> Int32 { 127 }
 }
 
 #if os(macOS)
 public struct SystemProcessRunner: ProcessRunner {
     public init() {}
-    public func run(argv: [String], env: [String: String]) async -> Int32 {
+    public func run(
+		argv: [String],
+		env: [String: String],
+		workingDirectory: URL
+	) async -> Int32 {
         await withCheckedContinuation { (cont: CheckedContinuation<Int32, Never>) in
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: argv[0])
             proc.arguments = Array(argv.dropFirst())
+			proc.currentDirectoryURL = workingDirectory
             if !env.isEmpty {
                 var e = ProcessInfo.processInfo.environment
                 for (k, v) in env { e[k] = v }
@@ -65,8 +78,19 @@ public final class ControlMasterManager {
     }
 
     public nonisolated func socketPath(for hostId: UUID) -> URL {
-        cacheDir.appendingPathComponent("\(hostId.uuidString).sock")
+        cacheDir.appendingPathComponent("\(Self.socketToken(for: hostId)).sock")
     }
+
+	private nonisolated static func socketToken(for hostId: UUID) -> String {
+		var bytes = hostId.uuid
+		return withUnsafeBytes(of: &bytes) { rawBuffer in
+			Data(rawBuffer)
+				.base64EncodedString()
+				.replacingOccurrences(of: "+", with: "-")
+				.replacingOccurrences(of: "/", with: "_")
+				.replacingOccurrences(of: "=", with: "")
+		}
+	}
 
     public func register(hostId: UUID, destination: String) {
         destinations[hostId] = destination
@@ -75,16 +99,24 @@ public final class ControlMasterManager {
     public func isAlive(hostId: UUID) async -> Bool {
         guard let dest = destinations[hostId] else { return false }
         let sock = socketPath(for: hostId)
-        let argv = ["/usr/bin/ssh", "-S", sock.path, "-O", "check", dest]
-        let code = await runner.run(argv: argv, env: [:])
+        let argv = ["/usr/bin/ssh", "-S", sock.lastPathComponent, "-O", "check", dest]
+        let code = await runner.run(
+			argv: argv,
+			env: [:],
+			workingDirectory: cacheDir
+		)
         return code == 0
     }
 
     public func tearDown(hostId: UUID) async {
         guard let dest = destinations[hostId] else { return }
         let sock = socketPath(for: hostId)
-        let argv = ["/usr/bin/ssh", "-S", sock.path, "-O", "exit", dest]
-        _ = await runner.run(argv: argv, env: [:])
+        let argv = ["/usr/bin/ssh", "-S", sock.lastPathComponent, "-O", "exit", dest]
+        _ = await runner.run(
+			argv: argv,
+			env: [:],
+			workingDirectory: cacheDir
+		)
         destinations.removeValue(forKey: hostId)
     }
 

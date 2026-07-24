@@ -12,22 +12,25 @@ public enum CacheDirectories {
 	/// OpenSSH creates the master at a temporary suffixed path before rename.
 	public static let openSSHTemporarySuffixBytes = 16
 
-	/// Returns a short, user-scoped ControlMaster directory under `/tmp`.
+	/// A UUID encoded as unpadded base64 occupies 22 bytes.
+	public static let socketTokenBytes = 22
+
+	/// Returns a protected ControlMaster directory in the user's temporary area.
 	///
-	/// OpenSSH appends a temporary suffix while creating a multiplex socket.
-	/// A home-relative cache path can therefore exceed `sun_path` even when
-	/// the final `.sock` path appears to fit. The user ID keeps the directory
-	/// isolated across local accounts, while mode 0700 protects its contents.
-	/// `root` and `userID` are injectable for deterministic tests.
+	/// Foundation resolves the temporary root to a sandbox-accessible,
+	/// user-scoped location. SSH children use this directory as their working
+	/// directory and receive only a relative socket name, so a long sandbox
+	/// container path never enters Darwin's fixed-size `sun_path`. The
+	/// product-scoped directory avoids collisions with unrelated temporary
+	/// data, while mode 0700 protects the sockets. `root` is injectable for
+	/// deterministic tests.
 	public static func controlMasterDir(
-		root: URL? = nil,
-		userID: UInt32? = nil
+		root: URL? = nil
 	) throws -> URL {
 		let ownerID = getuid()
-		let namespaceID = userID ?? ownerID
-		let base = root ?? URL(fileURLWithPath: "/tmp", isDirectory: true)
+		let base = root ?? FileManager.default.temporaryDirectory
 		let directory = base.appendingPathComponent(
-			"caterm-cm-\(namespaceID)",
+			"caterm-cm",
 			isDirectory: true
 		)
 		try validateExistingDirectory(directory, ownerID: ownerID)

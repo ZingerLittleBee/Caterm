@@ -124,7 +124,8 @@ public final class GhosttySurface {
 	public init(
 		hostView: NSView,
 		command: String? = nil,
-		env: [(String, String)] = []
+		env: [(String, String)] = [],
+		workingDirectory: URL? = nil
 	) throws {
 		self.hostView = hostView
 
@@ -145,37 +146,50 @@ public final class GhosttySurface {
 		// outlive the call. libghostty may or may not copy; we assume it
 		// does not.
 		var ownedStrings: [UnsafeMutablePointer<CChar>] = []
+		var envBuffer: UnsafeMutablePointer<ghostty_env_var_s>?
+		var transferredOwnership = false
+		defer {
+			if !transferredOwnership {
+				for pointer in ownedStrings { free(pointer) }
+				envBuffer?.deallocate()
+			}
+		}
+
+		func duplicate(_ value: String) throws -> UnsafeMutablePointer<CChar> {
+			guard let pointer = strdup(value) else {
+				throw GhosttyError.stringAllocationFailed
+			}
+			ownedStrings.append(pointer)
+			return pointer
+		}
 
 		if let command {
-			let dup = strdup(command)!
-			ownedStrings.append(dup)
+			let dup = try duplicate(command)
 			surfaceConfig.command = UnsafePointer(dup)
+		}
+		if let workingDirectory {
+			let dup = try duplicate(workingDirectory.path)
+			surfaceConfig.working_directory = UnsafePointer(dup)
 		}
 		// When `command == nil`, we deliberately leave `surfaceConfig.command`
 		// as the zero-init value (NULL) so libghostty falls back to `$SHELL`.
 
 		// Optional env var array. Allocated as a contiguous C array; freed in
 		// `deinit` along with each key/value strdup.
-		var envBuffer: UnsafeMutablePointer<ghostty_env_var_s>?
 		if !env.isEmpty {
 			let count = env.count
 			let buf = UnsafeMutablePointer<ghostty_env_var_s>.allocate(capacity: count)
+			envBuffer = buf
 			for (idx, pair) in env.enumerated() {
-				let keyDup = strdup(pair.0)!
-				let valDup = strdup(pair.1)!
-				ownedStrings.append(keyDup)
-				ownedStrings.append(valDup)
+				let keyDup = try duplicate(pair.0)
+				let valDup = try duplicate(pair.1)
 				buf[idx] = ghostty_env_var_s(key: UnsafePointer(keyDup), value: UnsafePointer(valDup))
 			}
 			surfaceConfig.env_vars = buf
 			surfaceConfig.env_var_count = count
-			envBuffer = buf
 		}
 
 		guard let surfaceHandle = ghostty_surface_new(GhosttyApp.shared.raw, &surfaceConfig) else {
-			// Free anything we allocated before throwing.
-			for ptr in ownedStrings { free(ptr) }
-			if let buf = envBuffer { buf.deallocate() }
 			throw GhosttyError.surfaceCreateFailed
 		}
 
@@ -183,6 +197,7 @@ public final class GhosttySurface {
 		self.ownedCStrings = ownedStrings
 		self.envStorage = envBuffer
 		self.envStorageCount = env.count
+		transferredOwnership = true
 
 		Self.registry[OpaquePointer(surfaceHandle)] = WeakSurfaceBox(self)
 	}

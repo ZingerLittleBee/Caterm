@@ -41,8 +41,8 @@ struct ControlMasterPathTests {
 		func tearDownAll() async {}
 	}
 
-	@Test("Connection command uses the manager's exact socket path")
-	func connectionCommandUsesManagerSocketPath() async throws {
+	@Test("Connection command uses a relative socket from the manager directory")
+	func connectionCommandUsesRelativeManagerSocketPath() async throws {
 		let root = FileManager.default.temporaryDirectory
 			.appendingPathComponent("caterm isolated home", isDirectory: true)
 		let manager = PathManager(directory: root)
@@ -71,8 +71,11 @@ struct ControlMasterPathTests {
 		await store.awaitConnectionAttempt(tabId: tabID)
 
 		let config = try #require(store.surfaceConfig(for: tabID))
-		let expectedPath = manager.socketPath(for: host.id).path
-		#expect(config.command.contains("ControlPath=\"\(expectedPath)\""))
+		let expectedPath = manager.socketPath(for: host.id)
+		#expect(config.command.contains(
+			"ControlPath=\(expectedPath.lastPathComponent)"
+		))
+		#expect(config.workingDirectory == expectedPath.deletingLastPathComponent())
 		#expect(!config.command.contains("~/Library/Caches/Caterm/cm/"))
 	}
 }

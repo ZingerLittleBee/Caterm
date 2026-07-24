@@ -156,6 +156,14 @@ public struct SystemSFTPRunner: SFTPRunner {
 		posix_spawn_file_actions_addclose(&actions, stdoutPipe.write) == 0 else {
 			throw SFTPProcessError.spawnSetupFailed
 		}
+		if let workingDirectory = invocation.workingDirectory {
+			guard posix_spawn_file_actions_addchdir_np(
+				&actions,
+				workingDirectory.path
+			) == 0 else {
+				throw SFTPProcessError.spawnSetupFailed
+			}
+		}
 
 		var attributes: posix_spawnattr_t?
 		guard posix_spawnattr_init(&attributes) == 0 else {
