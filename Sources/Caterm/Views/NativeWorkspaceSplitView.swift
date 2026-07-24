@@ -242,6 +242,12 @@ final class ManagedWorkspaceSplitView: NSSplitView, NSSplitViewDelegate {
 		delegate = self
 	}
 
+	override func layout() {
+		super.layout()
+		guard !isApplyingRatio else { return }
+		applyDesiredRatio()
+	}
+
 	func configure(
 		axis: WorkspaceSplitAxis,
 		ratio: Double,

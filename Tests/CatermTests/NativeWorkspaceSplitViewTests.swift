@@ -137,6 +137,59 @@ final class NativeWorkspaceSplitViewTests: XCTestCase {
 		XCTAssertTrue(focusedHosts.contains { $0 === originalHost })
 	}
 
+	func testIncrementalSameAxisSplitsKeepEveryPaneVisible() throws {
+		let original = Workspace.onePane(host: .saved(id: UUID()))
+		let two = try original.splittingActivePane(.right)
+		let connectedTwo = try two.assigningHost(
+			.saved(id: UUID()),
+			to: two.activePaneID
+		)
+		let three = try connectedTwo.splittingActivePane(.right)
+		let connectedThree = try three.assigningHost(
+			.saved(id: UUID()),
+			to: three.activePaneID
+		)
+		let coordinator = NativeWorkspaceTreeView.Coordinator { _, _ in }
+		let container = WorkspaceTreeContainerView(
+			frame: CGRect(x: 0, y: 0, width: 730, height: 700)
+		)
+		let content: (WorkspacePane) -> AnyView = {
+			AnyView(Text($0.id.rawValue.uuidString))
+		}
+
+		for workspace in [original, connectedTwo, connectedThree] {
+			container.frame = CGRect(x: 0, y: 0, width: 730, height: 700)
+			coordinator.update(
+				container,
+				topology: workspace.topology,
+				activePaneID: workspace.activePaneID,
+				presentation: .split,
+				paneContent: content,
+				onRatioChange: { _, _ in }
+			)
+			container.layoutSubtreeIfNeeded()
+			RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+			container.layoutSubtreeIfNeeded()
+
+			let paneHosts = container.descendants.compactMap {
+				$0 as? NSHostingView<AnyView>
+			}
+			XCTAssertEqual(paneHosts.count, workspace.topology.paneCount)
+			for paneHost in paneHosts {
+				XCTAssertGreaterThan(
+					paneHost.frame.width,
+					0,
+					"Incremental split collapsed a Pane to zero width at \(workspace.topology.paneCount) Panes"
+				)
+				XCTAssertGreaterThan(
+					paneHost.frame.height,
+					0,
+					"Incremental split collapsed a Pane to zero height at \(workspace.topology.paneCount) Panes"
+				)
+			}
+		}
+	}
+
 	func testReparentingPaneDoesNotDismantleItsRepresentable() throws {
 		let originalPaneID = PaneID(rawValue: UUID())
 		let original = Workspace.onePane(
