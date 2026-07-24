@@ -137,7 +137,7 @@ final class NativeWorkspaceSplitViewTests: XCTestCase {
 		XCTAssertTrue(focusedHosts.contains { $0 === originalHost })
 	}
 
-	func testIncrementalSameAxisSplitsKeepEveryPaneVisible() throws {
+	func testIncrementalSameAxisSplitsKeepEveryPaneVisible() async throws {
 		let original = Workspace.onePane(host: .saved(id: UUID()))
 		let two = try original.splittingActivePane(.right)
 		let connectedTwo = try two.assigningHost(
@@ -168,7 +168,7 @@ final class NativeWorkspaceSplitViewTests: XCTestCase {
 				onRatioChange: { _, _ in }
 			)
 			container.layoutSubtreeIfNeeded()
-			RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+			await waitForPendingSplitLayout()
 			container.layoutSubtreeIfNeeded()
 
 			let paneHosts = container.descendants.compactMap {
@@ -186,6 +186,14 @@ final class NativeWorkspaceSplitViewTests: XCTestCase {
 					0,
 					"Incremental split collapsed a Pane to zero height at \(workspace.topology.paneCount) Panes"
 				)
+			}
+		}
+	}
+
+	private func waitForPendingSplitLayout() async {
+		await withCheckedContinuation { continuation in
+			DispatchQueue.main.async {
+				continuation.resume()
 			}
 		}
 	}
